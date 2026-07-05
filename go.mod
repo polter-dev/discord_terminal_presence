@@ -3,6 +3,8 @@ module github.com/polter-dev/discord_terminal_presence
 go 1.24.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/hugolgst/rich-go v0.0.0-20240715122152-74618cc1ace2
 	github.com/shirou/gopsutil/v4 v4.26.6
 )
