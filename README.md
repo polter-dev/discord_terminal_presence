@@ -134,7 +134,7 @@ warnings in `termp status`.
 | `[privacy].directory_allowlist` | string array | `[]` | Optional allowed path prefixes. `~` is expanded. Empty allowlist allows any directory when directory display is enabled. |
 | `[privacy].directory_basename_only` | bool | `true` | Shows only the final directory name instead of the full path. |
 | `[cta].enabled` | bool | `true` | Adds the prototype termp CTA button if fewer than two tool buttons are present. |
-| `[cta].label` | string | `"⬇ Get termp"` | Prototype CTA button label. |
+| `[cta].label` | string | `"Get Termp (WIP)"` | Prototype CTA button label. |
 | `[cta].url` | string | `"https://termp.example"` | Placeholder CTA URL. This is intentionally not a real landing page yet. |
 
 ### Per-Tool Overrides
@@ -194,7 +194,7 @@ directory_basename_only = true
 
 [cta]
 enabled = true
-label = "Get termp"
+label = "Get Termp (WIP)"
 url = "https://termp.example"
 
 [tools.claude-code]

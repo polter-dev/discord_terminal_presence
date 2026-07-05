@@ -103,7 +103,7 @@ func TestBuildActivityAddsCTAWhenToolHasNoButtons(t *testing.T) {
 	if activity == nil {
 		t.Fatal("activity = nil, want activity")
 	}
-	want := []presence.Button{{Label: "⬇ Get termp", URL: "https://termp.example"}}
+	want := []presence.Button{{Label: "Get Termp (WIP)", URL: "https://termp.example"}}
 	if !equalButtons(activity.Buttons, want) {
 		t.Fatalf("buttons = %#v, want %#v", activity.Buttons, want)
 	}
