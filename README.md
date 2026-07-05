@@ -42,6 +42,11 @@ termpresence status     # show what's currently detected / displayed
 termpresence stop       # stop the daemon
 ```
 
+## Autostart
+
+Use `termpresence install` to start the daemon at login and let the OS restart it if it
+dies. Use `termpresence uninstall` to remove the login service.
+
 ## Configuration
 
 Config lives at `~/.config/termpresence/config.toml` (respects `$XDG_CONFIG_HOME`) and is
