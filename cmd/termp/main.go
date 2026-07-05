@@ -169,6 +169,7 @@ func run(ctx context.Context, manager *config.Manager) error {
 	}
 	det, err := detector.New(reg, detector.GopsutilLister{}, detector.Config{
 		ScanInterval:         cfg.ScanIntervalDuration(),
+		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
 		Pin:                  cfg.Pin,
 		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
 		ActivitySwitching:    cfg.ActivitySwitching,
@@ -298,20 +299,25 @@ func buildActivity(cfg config.Config, detection detector.Detection) *presence.Ac
 		return nil
 	}
 
-	// Let presence set details/image/timer; the CLI owns directory and buttons.
+	displayDir, showDir := resolved.DisplayDirectory(detection.Cwd)
 	detection.Others = enabledOthers(cfg, detection.Others)
+	if showDir {
+		detection.Cwd = displayDir
+	} else {
+		detection.Cwd = ""
+	}
 	opts := presence.DisplayOptions{
-		ToolName:     resolved.ToolName,
-		ElapsedTimer: resolved.ElapsedTimer,
-		SmallImage:   resolved.SmallImage,
-		Collection:   cfg.Display.Collection,
+		ToolName:              resolved.ToolName,
+		DetailsFormat:         cfg.DetailsFormat,
+		ElapsedTimer:          resolved.ElapsedTimer,
+		SmallImage:            resolved.SmallImage,
+		Collection:            cfg.Display.Collection,
+		ShowDirectory:         showDir,
+		DirectoryBasenameOnly: false,
 	}
 	activity, ok := presence.ActivityFromDetection(detection, opts)
 	if !ok {
 		return nil
-	}
-	if dir, show := resolved.DisplayDirectory(detection.Cwd); show {
-		activity.State = dir
 	}
 	if resolved.ButtonsEnabled {
 		activity.Buttons = activityButtons(resolved.Buttons, cfg.CTA)

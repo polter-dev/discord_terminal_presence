@@ -157,6 +157,63 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 	}
 }
 
+func TestSelectorIdleClearAfterAllToolsIdleAndRestoresOnActivity(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:  30 * time.Second,
+		ActivitySwitching: true,
+	}, clock)
+
+	processes := []Process{
+		{Name: "claude", CreateTime: base, CPUTime: 0},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 0},
+	}
+	first := selector.Select(processes)
+	if first.None {
+		t.Fatal("first idle sample should still display before idle_clear_timeout")
+	}
+
+	clock.Advance(31 * time.Second)
+	cleared := selector.Select(processes)
+	if !cleared.None {
+		t.Fatalf("expected idle clear none detection, got %#v", cleared)
+	}
+
+	clock.Advance(time.Second)
+	resumed := selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 0},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
+	})
+	if resumed.None {
+		t.Fatal("expected activity to restore detection")
+	}
+	if resumed.Tool.ID != "codex-cli" {
+		t.Fatalf("restored tool = %q, want codex-cli", resumed.Tool.ID)
+	}
+}
+
+func TestSelectorIdleClearDisabledNeverClears(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:  0,
+		ActivitySwitching: true,
+	}, clock)
+
+	processes := []Process{{Name: "claude", CreateTime: base, CPUTime: 0}}
+	first := selector.Select(processes)
+	if first.None {
+		t.Fatal("expected detection while idle clear is disabled")
+	}
+
+	clock.Advance(24 * time.Hour)
+	stillActive := selector.Select(processes)
+	if stillActive.None {
+		t.Fatal("idle_clear_timeout=0 should never clear a running known tool")
+	}
+}
+
 func TestSelectorOrdersOthersByActivityThenPriority(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}

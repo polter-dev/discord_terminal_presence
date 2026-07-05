@@ -60,9 +60,11 @@ type ToolOverride struct {
 type Config struct {
 	Enabled              bool                    `toml:"enabled"`
 	ScanInterval         string                  `toml:"scan_interval"`
+	IdleClearTimeout     string                  `toml:"idle_clear_timeout"`
 	Pin                  string                  `toml:"pin"`
 	HeadlinerIdleTimeout string                  `toml:"headliner_idle_timeout"`
 	ActivitySwitching    bool                    `toml:"activity_switching"`
+	DetailsFormat        string                  `toml:"details_format"`
 	Display              Display                 `toml:"display"`
 	Privacy              Privacy                 `toml:"privacy"`
 	CTA                  CTA                     `toml:"cta"`
@@ -75,9 +77,11 @@ type Config struct {
 type fileConfig struct {
 	Enabled              bool                    `toml:"enabled"`
 	ScanInterval         string                  `toml:"scan_interval"`
+	IdleClearTimeout     string                  `toml:"idle_clear_timeout"`
 	Pin                  string                  `toml:"pin"`
 	HeadlinerIdleTimeout string                  `toml:"headliner_idle_timeout"`
 	ActivitySwitching    bool                    `toml:"activity_switching"`
+	DetailsFormat        string                  `toml:"details_format"`
 	Display              Display                 `toml:"display"`
 	Privacy              Privacy                 `toml:"privacy"`
 	CTA                  CTA                     `toml:"cta"`
@@ -118,8 +122,10 @@ func Default() Config {
 	return Config{
 		Enabled:              true,
 		ScanInterval:         "3s",
+		IdleClearTimeout:     "0",
 		HeadlinerIdleTimeout: "60s",
 		ActivitySwitching:    true,
+		DetailsFormat:        "Using {tool}",
 		Display: Display{
 			ToolName:     true,
 			ElapsedTimer: true,
@@ -204,9 +210,11 @@ func LoadPath(path string) (Config, error) {
 	raw := fileConfig{
 		Enabled:              cfg.Enabled,
 		ScanInterval:         cfg.ScanInterval,
+		IdleClearTimeout:     cfg.IdleClearTimeout,
 		Pin:                  cfg.Pin,
 		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeout,
 		ActivitySwitching:    cfg.ActivitySwitching,
+		DetailsFormat:        cfg.DetailsFormat,
 		Display:              cfg.Display,
 		Privacy:              cfg.Privacy,
 		CTA:                  cfg.CTA,
@@ -218,9 +226,11 @@ func LoadPath(path string) (Config, error) {
 	}
 	cfg.Enabled = raw.Enabled
 	cfg.ScanInterval = raw.ScanInterval
+	cfg.IdleClearTimeout = raw.IdleClearTimeout
 	cfg.Pin = raw.Pin
 	cfg.HeadlinerIdleTimeout = raw.HeadlinerIdleTimeout
 	cfg.ActivitySwitching = raw.ActivitySwitching
+	cfg.DetailsFormat = raw.DetailsFormat
 	cfg.Display = raw.Display
 	cfg.Privacy = raw.Privacy
 	cfg.CTA = raw.CTA
@@ -268,6 +278,15 @@ func (c Config) ScanIntervalDuration() time.Duration {
 	d, err := time.ParseDuration(c.ScanInterval)
 	if err != nil || d <= 0 {
 		return 3 * time.Second
+	}
+	return d
+}
+
+// IdleClearTimeoutDuration parses IdleClearTimeout; invalid or non-positive values disable idle clear.
+func (c Config) IdleClearTimeoutDuration() time.Duration {
+	d, err := time.ParseDuration(c.IdleClearTimeout)
+	if err != nil || d <= 0 {
+		return 0
 	}
 	return d
 }
@@ -389,9 +408,11 @@ func saveDocument(cfg Config) map[string]any {
 	doc := map[string]any{
 		"enabled":                cfg.Enabled,
 		"scan_interval":          cfg.ScanInterval,
+		"idle_clear_timeout":     cfg.IdleClearTimeout,
 		"pin":                    cfg.Pin,
 		"headliner_idle_timeout": cfg.HeadlinerIdleTimeout,
 		"activity_switching":     cfg.ActivitySwitching,
+		"details_format":         cfg.DetailsFormat,
 		"display":                saveDisplay(cfg.Display),
 		"privacy":                savePrivacy(cfg.Privacy),
 		"cta":                    saveCTA(cfg.CTA),
