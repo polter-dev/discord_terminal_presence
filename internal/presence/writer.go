@@ -27,6 +27,7 @@ type Writer struct {
 	retryDelay       retryDelay
 	minWriteInterval time.Duration
 	clock            writeClock
+	debugf           func(string, ...any)
 }
 
 // WriterOption configures a Writer.
@@ -50,6 +51,15 @@ func WithRetryDelays(delays ...time.Duration) WriterOption {
 func WithMinWriteInterval(interval time.Duration) WriterOption {
 	return func(writer *Writer) {
 		writer.minWriteInterval = interval
+	}
+}
+
+// WithDebugf enables optional diagnostic logging for connection and write state.
+func WithDebugf(debugf func(string, ...any)) WriterOption {
+	return func(writer *Writer) {
+		if debugf != nil {
+			writer.debugf = debugf
+		}
 	}
 }
 
@@ -77,6 +87,7 @@ func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, e
 		retryDelay:       newRetryDelay(defaultRetryDelays),
 		minWriteInterval: defaultMinWriteInterval,
 		clock:            realWriteClock{},
+		debugf:           func(string, ...any) {},
 	}
 	for _, option := range options {
 		option(writer)
@@ -148,7 +159,9 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 
 	scheduleRetry := func() {
 		stopRetry()
-		retry = time.NewTimer(w.retryDelay.Next())
+		delay := w.retryDelay.Next()
+		w.debugf("presence reconnect scheduled in %s", delay)
+		retry = time.NewTimer(delay)
 		retryC = retry.C
 	}
 
@@ -168,6 +181,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 	}
 
 	clear := func() {
+		w.debugf("presence clear")
 		desired = nil
 		pending = false
 		stopWrite()
@@ -184,17 +198,21 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 			return
 		}
 		if !connected {
+			w.debugf("presence connect attempt")
 			if err := w.client.Login(w.appID); err != nil {
+				w.debugf("presence connect failed: %v", err)
 				scheduleRetry()
 				return
 			}
 			connected = true
 		}
 		if err := w.client.SetActivity(*desired); err != nil {
+			w.debugf("presence push failed: %v", err)
 			connected = false
 			scheduleRetry()
 			return
 		}
+		w.debugf("presence push: details=%q state=%q", desired.Details, desired.State)
 		lastWrite = w.clock.Now()
 		wrote = true
 		pending = false

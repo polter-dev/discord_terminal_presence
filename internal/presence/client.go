@@ -33,6 +33,26 @@ func (RichClient) Logout() (err error) {
 	return nil
 }
 
+// Probe checks whether Discord IPC is reachable without setting an activity.
+func Probe(appID string) error {
+	return probeWith(RichClient{}, appID)
+}
+
+func probeWith(client Client, appID string) (err error) {
+	if appID == "" {
+		appID = DefaultAppID
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = errFromPanic(recovered)
+		}
+	}()
+	if err := client.Login(appID); err != nil {
+		return err
+	}
+	return client.Logout()
+}
+
 func toRichActivity(activity Activity) richclient.Activity {
 	richActivity := richclient.Activity{
 		Details:    activity.Details,
