@@ -1,0 +1,413 @@
+[
+  {
+    "id": "claude-code",
+    "display_name": "Claude Code",
+    "match": {
+      "name": "claude",
+      "regex": "(^|/)claude/versions/"
+    },
+    "image_url": "https://unpkg.com/@lobehub/icons-static-png@1.91.0/dark/claude-color.png",
+    "icon_slug": "claude-color",
+    "icon_source": "lobehub",
+    "priority": 100
+  },
+  {
+    "id": "gemini-cli",
+    "display_name": "Gemini CLI",
+    "match": {
+      "name": "gemini"
+    },
+    "icon_slug": "gemini-color",
+    "icon_source": "lobehub",
+    "priority": 100
+  },
+  {
+    "id": "codex-cli",
+    "display_name": "Codex CLI",
+    "match": {
+      "name": "codex"
+    },
+    "icon_slug": "openai",
+    "icon_source": "lobehub",
+    "priority": 100
+  },
+  {
+    "id": "aider",
+    "display_name": "aider",
+    "match": {
+      "name": "aider"
+    },
+    "icon_slug": "openai",
+    "icon_source": "lobehub",
+    "priority": 95
+  },
+  {
+    "id": "ollama",
+    "display_name": "Ollama",
+    "match": {
+      "name": "ollama"
+    },
+    "icon_slug": "ollama",
+    "icon_source": "lobehub",
+    "priority": 95
+  },
+  {
+    "id": "nvim",
+    "display_name": "Neovim",
+    "match": {
+      "name": "nvim"
+    },
+    "icon_slug": "neovim",
+    "icon_source": "simpleicons",
+    "priority": 80
+  },
+  {
+    "id": "vim",
+    "display_name": "Vim",
+    "match": {
+      "name": "vim"
+    },
+    "icon_slug": "vim",
+    "icon_source": "simpleicons",
+    "priority": 80
+  },
+  {
+    "id": "emacs",
+    "display_name": "Emacs",
+    "match": {
+      "name": "emacs"
+    },
+    "icon_slug": "gnuemacs",
+    "icon_source": "simpleicons",
+    "priority": 80
+  },
+  {
+    "id": "helix",
+    "display_name": "Helix",
+    "match": {
+      "name": "hx"
+    },
+    "priority": 80
+  },
+  {
+    "id": "nano",
+    "display_name": "nano",
+    "match": {
+      "name": "nano"
+    },
+    "priority": 75
+  },
+  {
+    "id": "micro",
+    "display_name": "micro",
+    "match": {
+      "name": "micro"
+    },
+    "priority": 75
+  },
+  {
+    "id": "kakoune",
+    "display_name": "Kakoune",
+    "match": {
+      "name": "kak"
+    },
+    "priority": 75
+  },
+  {
+    "id": "tmux",
+    "display_name": "tmux",
+    "match": {
+      "name": "tmux"
+    },
+    "icon_slug": "tmux",
+    "icon_source": "simpleicons",
+    "priority": 70
+  },
+  {
+    "id": "zellij",
+    "display_name": "Zellij",
+    "match": {
+      "name": "zellij"
+    },
+    "priority": 70
+  },
+  {
+    "id": "screen",
+    "display_name": "GNU Screen",
+    "match": {
+      "name": "screen"
+    },
+    "priority": 70
+  },
+  {
+    "id": "lazygit",
+    "display_name": "lazygit",
+    "match": {
+      "name": "lazygit"
+    },
+    "priority": 82
+  },
+  {
+    "id": "gitui",
+    "display_name": "GitUI",
+    "match": {
+      "name": "gitui"
+    },
+    "priority": 82
+  },
+  {
+    "id": "tig",
+    "display_name": "tig",
+    "match": {
+      "name": "tig"
+    },
+    "priority": 82
+  },
+  {
+    "id": "yazi",
+    "display_name": "Yazi",
+    "match": {
+      "name": "yazi"
+    },
+    "priority": 55
+  },
+  {
+    "id": "ranger",
+    "display_name": "ranger",
+    "match": {
+      "name": "ranger"
+    },
+    "priority": 55
+  },
+  {
+    "id": "nnn",
+    "display_name": "nnn",
+    "match": {
+      "name": "nnn"
+    },
+    "priority": 55
+  },
+  {
+    "id": "lf",
+    "display_name": "lf",
+    "match": {
+      "name": "lf"
+    },
+    "priority": 55
+  },
+  {
+    "id": "mc",
+    "display_name": "Midnight Commander",
+    "match": {
+      "name": "mc"
+    },
+    "priority": 55
+  },
+  {
+    "id": "broot",
+    "display_name": "broot",
+    "match": {
+      "name": "broot"
+    },
+    "priority": 55
+  },
+  {
+    "id": "htop",
+    "display_name": "htop",
+    "match": {
+      "name": "htop"
+    },
+    "priority": 45
+  },
+  {
+    "id": "btop",
+    "display_name": "btop",
+    "match": {
+      "name": "btop"
+    },
+    "priority": 45
+  },
+  {
+    "id": "glances",
+    "display_name": "Glances",
+    "match": {
+      "name": "glances"
+    },
+    "priority": 45
+  },
+  {
+    "id": "bottom",
+    "display_name": "bottom",
+    "match": {
+      "name": "btm"
+    },
+    "priority": 45
+  },
+  {
+    "id": "gtop",
+    "display_name": "gtop",
+    "match": {
+      "name": "gtop"
+    },
+    "priority": 45
+  },
+  {
+    "id": "bpytop",
+    "display_name": "bpytop",
+    "match": {
+      "name": "bpytop"
+    },
+    "priority": 45
+  },
+  {
+    "id": "k9s",
+    "display_name": "k9s",
+    "match": {
+      "name": "k9s"
+    },
+    "priority": 60
+  },
+  {
+    "id": "lazydocker",
+    "display_name": "lazydocker",
+    "match": {
+      "name": "lazydocker"
+    },
+    "icon_slug": "docker",
+    "icon_source": "simpleicons",
+    "priority": 60
+  },
+  {
+    "id": "ctop",
+    "display_name": "ctop",
+    "match": {
+      "name": "ctop"
+    },
+    "icon_slug": "docker",
+    "icon_source": "simpleicons",
+    "priority": 55
+  },
+  {
+    "id": "kubectl-tui",
+    "display_name": "kubectl tui",
+    "match": {
+      "name": "kubectl-tui"
+    },
+    "icon_slug": "kubernetes",
+    "icon_source": "simpleicons",
+    "priority": 55
+  },
+  {
+    "id": "ncdu",
+    "display_name": "ncdu",
+    "match": {
+      "name": "ncdu"
+    },
+    "priority": 45
+  },
+  {
+    "id": "gdu",
+    "display_name": "gdu",
+    "match": {
+      "name": "gdu"
+    },
+    "priority": 45
+  },
+  {
+    "id": "taskwarrior",
+    "display_name": "Taskwarrior",
+    "match": {
+      "name": "task"
+    },
+    "priority": 45
+  },
+  {
+    "id": "calcurse",
+    "display_name": "calcurse",
+    "match": {
+      "name": "calcurse"
+    },
+    "priority": 45
+  },
+  {
+    "id": "neomutt",
+    "display_name": "NeoMutt",
+    "match": {
+      "name": "neomutt",
+      "regex": "(^|/)(neomutt|mutt)(\\s|$)"
+    },
+    "priority": 45
+  },
+  {
+    "id": "weechat",
+    "display_name": "WeeChat",
+    "match": {
+      "name": "weechat"
+    },
+    "priority": 45
+  },
+  {
+    "id": "irssi",
+    "display_name": "Irssi",
+    "match": {
+      "name": "irssi"
+    },
+    "priority": 45
+  },
+  {
+    "id": "cmus",
+    "display_name": "cmus",
+    "match": {
+      "name": "cmus"
+    },
+    "priority": 45
+  },
+  {
+    "id": "ncmpcpp",
+    "display_name": "ncmpcpp",
+    "match": {
+      "name": "ncmpcpp"
+    },
+    "priority": 45
+  },
+  {
+    "id": "spotify-tui",
+    "display_name": "spotify-tui",
+    "match": {
+      "name": "spt"
+    },
+    "priority": 45
+  },
+  {
+    "id": "spotify-player",
+    "display_name": "spotify_player",
+    "match": {
+      "name": "spotify_player"
+    },
+    "priority": 45
+  },
+  {
+    "id": "gping",
+    "display_name": "gping",
+    "match": {
+      "name": "gping"
+    },
+    "priority": 45
+  },
+  {
+    "id": "bandwhich",
+    "display_name": "bandwhich",
+    "match": {
+      "name": "bandwhich"
+    },
+    "priority": 45
+  },
+  {
+    "id": "dust",
+    "display_name": "dust",
+    "match": {
+      "name": "dust"
+    },
+    "priority": 45
+  }
+]

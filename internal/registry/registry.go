@@ -1,11 +1,34 @@
 package registry
 
 import (
+	_ "embed"
+	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 )
+
+const (
+	// IconSourceSimpleIcons resolves a Simple Icons slug to a raster PNG. Discord activity
+	// images must be raster (PNG/JPG); Simple Icons ships SVG, so it is rendered to PNG
+	// on the fly through the free wsrv.nl image proxy (brand-colored by default).
+	IconSourceSimpleIcons = "simpleicons"
+	IconSourceLobeHub     = "lobehub"
+	IconSourceURL         = "url"
+	IconSourceKey         = "key"
+
+	simpleIconsURLTemplate = "https://wsrv.nl/?url=cdn.simpleicons.org/%s&output=png&w=256&h=256"
+	lobehubURLTemplate     = "https://unpkg.com/@lobehub/icons-static-png@1.91.0/dark/%s.png"
+
+	// GenericLogoURL is a raster fallback so a tool is never blank (a terminal glyph).
+	// TODO: replace with a project-owned terminal PNG asset.
+	GenericLogoURL = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f5a5.png"
+)
+
+//go:embed catalog.json
+var catalogJSON []byte
 
 // Button is a Discord activity button definition owned by a tool entry.
 type Button struct {
@@ -36,6 +59,8 @@ type Tool struct {
 	Match       MatchSpec
 	ImageKey    string
 	ImageURL    string
+	IconSlug    string
+	IconSource  string
 	Priority    int
 	Buttons     []Button
 
@@ -55,6 +80,8 @@ type CustomTool struct {
 	Match       CustomMatch
 	ImageKey    string
 	ImageURL    string
+	IconSlug    string
+	IconSource  string
 	Priority    int
 	Buttons     []Button
 }
@@ -66,7 +93,10 @@ type Registry struct {
 
 // New returns a registry containing built-ins plus custom tool overrides/extensions.
 func New(custom ...Tool) (*Registry, error) {
-	tools := builtinTools()
+	tools, err := builtinTools()
+	if err != nil {
+		return nil, err
+	}
 	byID := make(map[string]int, len(tools)+len(custom))
 	for i := range tools {
 		byID[tools[i].ID] = i
@@ -97,10 +127,12 @@ func NewWithCustom(custom ...CustomTool) (*Registry, error) {
 				Name:  customTool.Match.Name,
 				Regex: customTool.Match.Regex,
 			},
-			ImageKey: customTool.ImageKey,
-			ImageURL: customTool.ImageURL,
-			Priority: customTool.Priority,
-			Buttons:  append([]Button(nil), customTool.Buttons...),
+			ImageKey:   customTool.ImageKey,
+			ImageURL:   customTool.ImageURL,
+			IconSlug:   customTool.IconSlug,
+			IconSource: customTool.IconSource,
+			Priority:   customTool.Priority,
+			Buttons:    append([]Button(nil), customTool.Buttons...),
 		})
 	}
 	return New(tools...)
@@ -147,6 +179,7 @@ func newFromTools(tools []Tool) (*Registry, error) {
 			compiled[i].order = i
 		}
 		compiled[i].Buttons = append([]Button(nil), compiled[i].Buttons...)
+		resolveIcon(&compiled[i])
 		if compiled[i].Match.Regex == "" {
 			continue
 		}
@@ -222,53 +255,80 @@ func argv0FromCmdline(cmdline string) string {
 	return fields[0]
 }
 
-func builtinTools() []Tool {
-	return []Tool{
-		{
-			ID:          "claude-code",
-			DisplayName: "Claude Code",
-			Match: MatchSpec{
-				Name:  "claude",
-				Regex: `(^|/)claude/versions/`,
-			},
-			ImageKey: "claude-code",
-			ImageURL: "https://unpkg.com/@lobehub/icons-static-png@1.91.0/dark/claude-color.png",
-			Priority: 100,
-		},
-		{
-			ID:          "gemini-cli",
-			DisplayName: "Gemini CLI",
-			Match:       MatchSpec{Name: "gemini"},
-			ImageKey:    "gemini-cli",
-			Priority:    100,
-		},
-		{
-			ID:          "codex-cli",
-			DisplayName: "Codex CLI",
-			Match:       MatchSpec{Name: "codex"},
-			ImageKey:    "codex-cli",
-			Priority:    100,
-		},
-		{
-			ID:          "lazygit",
-			DisplayName: "lazygit",
-			Match:       MatchSpec{Name: "lazygit"},
-			ImageKey:    "lazygit",
-			Priority:    50,
-		},
-		{
-			ID:          "nvim",
-			DisplayName: "Neovim",
-			Match:       MatchSpec{Name: "nvim"},
-			ImageKey:    "nvim",
-			Priority:    40,
-		},
-		{
-			ID:          "htop",
-			DisplayName: "htop",
-			Match:       MatchSpec{Name: "htop"},
-			ImageKey:    "htop",
-			Priority:    30,
-		},
+func resolveIcon(tool *Tool) {
+	if strings.TrimSpace(tool.ImageURL) != "" || strings.TrimSpace(tool.ImageKey) != "" {
+		return
 	}
+
+	slug := strings.TrimSpace(tool.IconSlug)
+	if slug == "" {
+		tool.ImageURL = GenericLogoURL
+		return
+	}
+
+	source := strings.ToLower(strings.TrimSpace(tool.IconSource))
+	if source == "" {
+		if strings.HasPrefix(slug, "http://") || strings.HasPrefix(slug, "https://") {
+			source = IconSourceURL
+		} else {
+			source = IconSourceSimpleIcons
+		}
+	}
+
+	switch source {
+	case IconSourceSimpleIcons:
+		tool.ImageURL = fmt.Sprintf(simpleIconsURLTemplate, slug)
+	case IconSourceLobeHub:
+		tool.ImageURL = fmt.Sprintf(lobehubURLTemplate, slug)
+	case IconSourceURL:
+		tool.ImageURL = slug
+	case IconSourceKey:
+		tool.ImageKey = slug
+	default:
+		tool.ImageURL = GenericLogoURL
+	}
+}
+
+func builtinTools() ([]Tool, error) {
+	var entries []catalogTool
+	if err := json.Unmarshal(catalogJSON, &entries); err != nil {
+		return nil, fmt.Errorf("load registry catalog: %w", err)
+	}
+
+	tools := make([]Tool, 0, len(entries))
+	for i, entry := range entries {
+		tools = append(tools, Tool{
+			ID:          entry.ID,
+			DisplayName: entry.DisplayName,
+			Match: MatchSpec{
+				Name:  entry.Match.Name,
+				Regex: entry.Match.Regex,
+			},
+			ImageKey:   entry.ImageKey,
+			ImageURL:   entry.ImageURL,
+			IconSlug:   entry.IconSlug,
+			IconSource: entry.IconSource,
+			Priority:   entry.Priority,
+			Buttons:    append([]Button(nil), entry.Buttons...),
+			order:      i,
+		})
+	}
+	return tools, nil
+}
+
+type catalogTool struct {
+	ID          string       `json:"id"`
+	DisplayName string       `json:"display_name"`
+	Match       catalogMatch `json:"match"`
+	ImageKey    string       `json:"image_key"`
+	ImageURL    string       `json:"image_url"`
+	IconSlug    string       `json:"icon_slug"`
+	IconSource  string       `json:"icon_source"`
+	Priority    int          `json:"priority"`
+	Buttons     []Button     `json:"buttons"`
+}
+
+type catalogMatch struct {
+	Name  string `json:"name"`
+	Regex string `json:"regex"`
 }
