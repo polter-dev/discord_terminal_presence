@@ -232,6 +232,7 @@ func builtinTools() []Tool {
 				Regex: `(^|/)claude/versions/`,
 			},
 			ImageKey: "claude-code",
+			ImageURL: "https://unpkg.com/@lobehub/icons-static-png@1.91.0/dark/claude-color.png",
 			Priority: 100,
 		},
 		{
