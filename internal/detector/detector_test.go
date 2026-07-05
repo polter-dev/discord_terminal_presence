@@ -48,6 +48,18 @@ func testRegistry(t *testing.T) *registry.Registry {
 	return reg
 }
 
+type fakeClock struct {
+	now time.Time
+}
+
+func (f *fakeClock) Now() time.Time {
+	return f.now
+}
+
+func (f *fakeClock) Advance(d time.Duration) {
+	f.now = f.now.Add(d)
+}
+
 func TestActiveDetectionPicksMostRecentlyStarted(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	detection := ActiveDetection(testRegistry(t), []Process{
@@ -63,6 +75,115 @@ func TestActiveDetectionPicksMostRecentlyStarted(t *testing.T) {
 	}
 	if detection.Cwd != "/new" {
 		t.Fatalf("cwd = %q, want /new", detection.Cwd)
+	}
+}
+
+func TestSelectorPinOverridesHeadliner(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		Pin:               "claude-code",
+		ActivitySwitching: true,
+	}, clock)
+
+	detection := selector.Select([]Process{
+		{Name: "claude", CreateTime: base, Cwd: "/claude", CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex", CPUTime: 100},
+	})
+
+	if detection.Tool.ID != "claude-code" {
+		t.Fatalf("tool ID = %q, want pinned claude-code", detection.Tool.ID)
+	}
+	if detection.Cwd != "/claude" {
+		t.Fatalf("cwd = %q, want pinned cwd", detection.Cwd)
+	}
+}
+
+func TestSelectorStickyKeepsPreviousHeadliner(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
+
+	first := selector.Select([]Process{
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+	})
+	if first.Tool.ID != "codex-cli" {
+		t.Fatalf("first tool = %q, want codex-cli", first.Tool.ID)
+	}
+
+	clock.Advance(time.Second)
+	next := selector.Select([]Process{
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
+		{Name: "claude", CreateTime: base, CPUTime: 1.5},
+	})
+	if next.Tool.ID != "codex-cli" {
+		t.Fatalf("sticky tool = %q, want codex-cli", next.Tool.ID)
+	}
+}
+
+func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		HeadlinerIdleTimeout: 30 * time.Second,
+		ActivitySwitching:    true,
+	}, clock)
+
+	first := selector.Select([]Process{
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10},
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+	})
+	if first.Tool.ID != "codex-cli" {
+		t.Fatalf("first tool = %q, want codex-cli", first.Tool.ID)
+	}
+
+	clock.Advance(time.Second)
+	sticky := selector.Select([]Process{
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10},
+		{Name: "claude", CreateTime: base, CPUTime: 2},
+	})
+	if sticky.Tool.ID != "codex-cli" {
+		t.Fatalf("tool before timeout = %q, want codex-cli", sticky.Tool.ID)
+	}
+
+	clock.Advance(31 * time.Second)
+	switched := selector.Select([]Process{
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10},
+		{Name: "claude", CreateTime: base, CPUTime: 4},
+	})
+	if switched.Tool.ID != "claude-code" {
+		t.Fatalf("tool after timeout = %q, want claude-code", switched.Tool.ID)
+	}
+}
+
+func TestSelectorOrdersOthersByActivityThenPriority(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		Pin:               "claude-code",
+		ActivitySwitching: true,
+	}, clock)
+
+	detection := selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "nvim", CreateTime: base, CPUTime: 2},
+		{Name: "lazygit", CreateTime: base, CPUTime: 2},
+		{Name: "htop", CreateTime: base, CPUTime: 5},
+	})
+
+	got := []string{}
+	for _, tool := range detection.Others {
+		got = append(got, tool.ID)
+	}
+	want := []string{"htop", "lazygit", "nvim"}
+	if len(got) != len(want) {
+		t.Fatalf("others = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("others = %#v, want %#v", got, want)
+		}
 	}
 }
 

@@ -18,6 +18,7 @@ type DisplayOptions struct {
 	ToolName              bool
 	ElapsedTimer          bool
 	SmallImage            bool
+	Collection            bool
 	Buttons               bool
 	ShowDirectory         bool
 	DirectoryBasenameOnly bool
@@ -29,6 +30,7 @@ func DefaultDisplayOptions() DisplayOptions {
 		ToolName:              true,
 		ElapsedTimer:          true,
 		SmallImage:            true,
+		Collection:            true,
 		Buttons:               true,
 		ShowDirectory:         false,
 		DirectoryBasenameOnly: true,
@@ -64,7 +66,10 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		return Activity{}, false
 	}
 
-	tool := detection.Tool
+	tool := detection.Featured.Tool
+	if tool.ID == "" {
+		tool = detection.Tool
+	}
 	activity := Activity{
 		LargeImage: Image{
 			Key:  tool.ImageKey,
@@ -78,6 +83,16 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 	}
 	if options.ShowDirectory && detection.Cwd != "" {
 		activity.State = directoryState(detection.Cwd, options.DirectoryBasenameOnly)
+	} else if options.Collection {
+		activity.State = CollectionState(detection.Others)
+	}
+	if options.SmallImage && len(detection.Others) > 0 {
+		other := detection.Others[0]
+		activity.SmallImage = Image{
+			Key:  other.ImageKey,
+			URL:  other.ImageURL,
+			Text: other.DisplayName,
+		}
 	}
 	if options.ElapsedTimer && !detection.StartedAt.IsZero() {
 		startedAt := detection.StartedAt
@@ -88,6 +103,23 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 	}
 
 	return activity, true
+}
+
+// CollectionState summarizes the other running tools for Discord's single state line.
+func CollectionState(others []registry.Tool) string {
+	const maxTools = 3
+	if len(others) == 0 {
+		return ""
+	}
+	count := len(others)
+	if count > maxTools {
+		count = maxTools
+	}
+	state := "also: " + others[0].DisplayName
+	for _, tool := range others[1:count] {
+		state += " · " + tool.DisplayName
+	}
+	return state
 }
 
 func directoryState(cwd string, basenameOnly bool) string {

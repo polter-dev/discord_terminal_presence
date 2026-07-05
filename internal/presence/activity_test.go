@@ -11,6 +11,20 @@ import (
 func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 	startedAt := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
 	detection := detector.Detection{
+		Featured: detector.FeaturedTool{
+			Tool: registry.Tool{
+				ID:          "claude-code",
+				DisplayName: "Claude Code",
+				ImageKey:    "claude-code",
+				Buttons: []registry.Button{
+					{Label: "One", URL: "https://example.com/one"},
+					{Label: "Two", URL: "https://example.com/two"},
+					{Label: "Three", URL: "https://example.com/three"},
+				},
+			},
+			Cwd:       "/Users/marcus/private-project",
+			StartedAt: startedAt,
+		},
 		Tool: registry.Tool{
 			ID:          "claude-code",
 			DisplayName: "Claude Code",
@@ -23,6 +37,10 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 		},
 		Cwd:       "/Users/marcus/private-project",
 		StartedAt: startedAt,
+		Others: []registry.Tool{
+			{ID: "lazygit", DisplayName: "lazygit", ImageKey: "lazygit"},
+			{ID: "nvim", DisplayName: "Neovim", ImageKey: "nvim"},
+		},
 	}
 
 	activity, ok := ActivityFromDetection(detection, DefaultDisplayOptions())
@@ -32,11 +50,14 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 	if activity.Details != "Using Claude Code" {
 		t.Fatalf("details = %q, want %q", activity.Details, "Using Claude Code")
 	}
-	if activity.State != "" {
-		t.Fatalf("state = %q, want empty by default", activity.State)
+	if activity.State != "also: lazygit · Neovim" {
+		t.Fatalf("state = %q, want collection summary", activity.State)
 	}
 	if activity.LargeImage.Key != "claude-code" || activity.LargeImage.URL != "" || activity.LargeImage.Text != "Claude Code" {
 		t.Fatalf("large image = %#v, want key claude-code with display text", activity.LargeImage)
+	}
+	if activity.SmallImage.Key != "lazygit" || activity.SmallImage.Text != "lazygit" {
+		t.Fatalf("small image = %#v, want top other tool", activity.SmallImage)
 	}
 	if activity.StartTimestamp == nil || !activity.StartTimestamp.Equal(startedAt) {
 		t.Fatalf("start timestamp = %v, want %v", activity.StartTimestamp, startedAt)
@@ -49,6 +70,36 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 	}
 	if activity.Buttons[1] != (Button{Label: "Two", URL: "https://example.com/two"}) {
 		t.Fatalf("button[1] = %#v", activity.Buttons[1])
+	}
+}
+
+func TestActivityFromDetectionCollectionCanBeDisabledAndCapsList(t *testing.T) {
+	detection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code", ImageKey: "claude-code"},
+		Others: []registry.Tool{
+			{DisplayName: "one"},
+			{DisplayName: "two"},
+			{DisplayName: "three"},
+			{DisplayName: "four"},
+		},
+	}
+
+	activity, ok := ActivityFromDetection(detection, DefaultDisplayOptions())
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.State != "also: one · two · three" {
+		t.Fatalf("state = %q, want capped collection", activity.State)
+	}
+
+	options := DefaultDisplayOptions()
+	options.Collection = false
+	activity, ok = ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.State != "" {
+		t.Fatalf("state = %q, want empty collection when disabled", activity.State)
 	}
 }
 

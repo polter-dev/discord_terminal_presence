@@ -16,13 +16,17 @@ var defaultRetryDelays = []time.Duration{
 	30 * time.Second,
 }
 
+const defaultMinWriteInterval = 15 * time.Second
+
 // Writer consumes activities and owns all Discord IPC client calls.
 type Writer struct {
 	client Client
 	appID  string
 
-	options    DisplayOptions
-	retryDelay retryDelay
+	options          DisplayOptions
+	retryDelay       retryDelay
+	minWriteInterval time.Duration
+	clock            writeClock
 }
 
 // WriterOption configures a Writer.
@@ -42,6 +46,21 @@ func WithRetryDelays(delays ...time.Duration) WriterOption {
 	}
 }
 
+// WithMinWriteInterval replaces the minimum interval between SetActivity calls.
+func WithMinWriteInterval(interval time.Duration) WriterOption {
+	return func(writer *Writer) {
+		writer.minWriteInterval = interval
+	}
+}
+
+func withWriteClock(clock writeClock) WriterOption {
+	return func(writer *Writer) {
+		if clock != nil {
+			writer.clock = clock
+		}
+	}
+}
+
 // NewWriter creates a presence writer. An empty appID uses DefaultAppID.
 func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, error) {
 	if client == nil {
@@ -52,10 +71,12 @@ func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, e
 	}
 
 	writer := &Writer{
-		client:     client,
-		appID:      appID,
-		options:    DefaultDisplayOptions(),
-		retryDelay: newRetryDelay(defaultRetryDelays),
+		client:           client,
+		appID:            appID,
+		options:          DefaultDisplayOptions(),
+		retryDelay:       newRetryDelay(defaultRetryDelays),
+		minWriteInterval: defaultMinWriteInterval,
+		clock:            realWriteClock{},
 	}
 	for _, option := range options {
 		option(writer)
@@ -100,10 +121,15 @@ func (w *Writer) Run(ctx context.Context, detections <-chan detector.Detection) 
 // unavailable, re-applying the current activity once it reconnects.
 func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity) {
 	var (
-		current   *Activity
+		desired   *Activity
 		connected bool
 		retry     *time.Timer
 		retryC    <-chan time.Time
+		write     writeTimer
+		writeC    <-chan time.Time
+		lastWrite time.Time
+		wrote     bool
+		pending   bool
 	)
 
 	stopRetry := func() {
@@ -126,8 +152,25 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		retryC = retry.C
 	}
 
+	stopWrite := func() {
+		if write == nil {
+			return
+		}
+		write.Stop()
+		write = nil
+		writeC = nil
+	}
+
+	scheduleWrite := func(delay time.Duration) {
+		stopWrite()
+		write = w.clock.NewTimer(delay)
+		writeC = write.C()
+	}
+
 	clear := func() {
-		current = nil
+		desired = nil
+		pending = false
+		stopWrite()
 		stopRetry()
 		w.retryDelay.Reset()
 		if connected {
@@ -136,8 +179,8 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		}
 	}
 
-	applyCurrent := func() {
-		if current == nil {
+	applyDesired := func() {
+		if desired == nil {
 			return
 		}
 		if !connected {
@@ -147,17 +190,39 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 			}
 			connected = true
 		}
-		if err := w.client.SetActivity(*current); err != nil {
+		if err := w.client.SetActivity(*desired); err != nil {
 			connected = false
 			scheduleRetry()
 			return
 		}
+		lastWrite = w.clock.Now()
+		wrote = true
+		pending = false
+		stopWrite()
 		stopRetry()
 		w.retryDelay.Reset()
 	}
 
+	requestApply := func() {
+		if desired == nil {
+			return
+		}
+		if w.minWriteInterval <= 0 || !wrote {
+			applyDesired()
+			return
+		}
+		elapsed := w.clock.Now().Sub(lastWrite)
+		if elapsed >= w.minWriteInterval {
+			applyDesired()
+			return
+		}
+		pending = true
+		scheduleWrite(w.minWriteInterval - elapsed)
+	}
+
 	defer func() {
 		stopRetry()
+		stopWrite()
 		if connected {
 			_ = w.client.Logout()
 		}
@@ -173,14 +238,60 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 				clear()
 				continue
 			}
-			current = activity
-			applyCurrent()
+			desired = activity
+			requestApply()
 		case <-retryC:
 			retry = nil
 			retryC = nil
-			applyCurrent()
+			applyDesired()
+		case <-writeC:
+			write = nil
+			writeC = nil
+			if pending {
+				applyDesired()
+			}
 		case <-ctx.Done():
 			return
+		}
+	}
+}
+
+type writeClock interface {
+	Now() time.Time
+	NewTimer(time.Duration) writeTimer
+}
+
+type writeTimer interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type realWriteClock struct{}
+
+func (realWriteClock) Now() time.Time {
+	return time.Now()
+}
+
+func (realWriteClock) NewTimer(delay time.Duration) writeTimer {
+	if delay < 0 {
+		delay = 0
+	}
+	return &realWriteTimer{timer: time.NewTimer(delay)}
+}
+
+type realWriteTimer struct {
+	timer *time.Timer
+}
+
+func (t *realWriteTimer) C() <-chan time.Time {
+	return t.timer.C
+}
+
+func (t *realWriteTimer) Stop() {
+	if !t.timer.Stop() {
+		select {
+		case <-t.timer.C:
+		default:
 		}
 	}
 }

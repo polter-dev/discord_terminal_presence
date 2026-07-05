@@ -94,7 +94,10 @@ func run(ctx context.Context, manager *config.Manager) error {
 		return err
 	}
 	det, err := detector.New(reg, detector.GopsutilLister{}, detector.Config{
-		ScanInterval: cfg.ScanIntervalDuration(),
+		ScanInterval:         cfg.ScanIntervalDuration(),
+		Pin:                  cfg.Pin,
+		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
+		ActivitySwitching:    cfg.ActivitySwitching,
 	})
 	if err != nil {
 		return err
@@ -136,7 +139,7 @@ func run(ctx context.Context, manager *config.Manager) error {
 				if detection.None {
 					log.Print("no known terminal tool detected")
 				} else {
-					log.Printf("detected %s cwd=%s", detection.Tool.ID, detection.Cwd)
+					log.Printf("detected %s cwd=%s others=%d", detection.Tool.ID, detection.Cwd, len(detection.Others))
 				}
 				if !send(buildActivity(cfg, detection)) {
 					return
@@ -174,10 +177,12 @@ func buildActivity(cfg config.Config, detection detector.Detection) *presence.Ac
 	}
 
 	// Let presence set details/image/timer; the CLI owns directory and buttons.
+	detection.Others = enabledOthers(cfg, detection.Others)
 	opts := presence.DisplayOptions{
 		ToolName:     resolved.ToolName,
 		ElapsedTimer: resolved.ElapsedTimer,
 		SmallImage:   resolved.SmallImage,
+		Collection:   cfg.Display.Collection,
 	}
 	activity, ok := presence.ActivityFromDetection(detection, opts)
 	if !ok {
@@ -190,6 +195,19 @@ func buildActivity(cfg config.Config, detection detector.Detection) *presence.Ac
 		activity.Buttons = presenceButtons(resolved.Buttons)
 	}
 	return &activity
+}
+
+func enabledOthers(cfg config.Config, others []registry.Tool) []registry.Tool {
+	if len(others) == 0 {
+		return nil
+	}
+	filtered := make([]registry.Tool, 0, len(others))
+	for _, tool := range others {
+		if cfg.Resolve(tool).Enabled {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }
 
 func presenceButtons(buttons []registry.Button) []presence.Button {

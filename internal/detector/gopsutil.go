@@ -52,6 +52,11 @@ func (GopsutilLister) List() ([]Process, error) {
 			createTime = time.UnixMilli(millis)
 		}
 
+		var cpuTime float64
+		if times, err := proc.Times(); err == nil && times != nil {
+			cpuTime = times.User + times.System
+		}
+
 		out = append(out, Process{
 			Pid:        proc.Pid,
 			Name:       name,
@@ -60,6 +65,7 @@ func (GopsutilLister) List() ([]Process, error) {
 			Argv0:      argv0,
 			Cwd:        cwd,
 			CreateTime: createTime,
+			CPUTime:    cpuTime,
 		})
 	}
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 )
@@ -46,7 +47,10 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if !cfg.Enabled || cfg.ScanInterval != "3s" {
 		t.Fatalf("unexpected global defaults: %#v", cfg)
 	}
-	if !cfg.Display.ToolName || !cfg.Display.ElapsedTimer || !cfg.Display.SmallImage || !cfg.Display.Buttons {
+	if cfg.Pin != "" || cfg.HeadlinerIdleTimeout != "60s" || !cfg.ActivitySwitching {
+		t.Fatalf("unexpected headliner defaults: %#v", cfg)
+	}
+	if !cfg.Display.ToolName || !cfg.Display.ElapsedTimer || !cfg.Display.SmallImage || !cfg.Display.Collection || !cfg.Display.Buttons {
 		t.Fatalf("display defaults not enabled: %#v", cfg.Display)
 	}
 	if cfg.Privacy.ShowDirectory {
@@ -62,11 +66,15 @@ func TestLoadValidConfig(t *testing.T) {
 	writeConfig(t, path, `
 enabled = true
 scan_interval = "5s"
+pin = "codex-cli"
+headliner_idle_timeout = "45s"
+activity_switching = false
 
 [display]
 tool_name = false
 elapsed_timer = true
 small_image = false
+collection = false
 buttons = true
 
 [privacy]
@@ -95,6 +103,12 @@ priority = 5
 	if cfg.ScanInterval != "5s" || cfg.Display.ToolName {
 		t.Fatalf("unexpected loaded values: %#v", cfg)
 	}
+	if cfg.Pin != "codex-cli" || cfg.HeadlinerIdleTimeout != "45s" || cfg.ActivitySwitching {
+		t.Fatalf("unexpected headliner values: %#v", cfg)
+	}
+	if cfg.Display.Collection {
+		t.Fatalf("collection should be false: %#v", cfg.Display)
+	}
 	if got := cfg.Privacy.DirectoryAllowlist[0]; got != filepath.Join(os.Getenv("HOME"), "dev") {
 		t.Fatalf("allowlist = %q", got)
 	}
@@ -107,6 +121,19 @@ priority = 5
 	}
 	if len(cfg.CustomTools) != 1 || cfg.CustomTools[0].ID != "mine" || cfg.CustomTools[0].Match.Name != "mine" {
 		t.Fatalf("custom tool not loaded: %#v", cfg.CustomTools)
+	}
+}
+
+func TestDurationFallbacks(t *testing.T) {
+	cfg := Default()
+	cfg.ScanInterval = "bad"
+	cfg.HeadlinerIdleTimeout = "also-bad"
+
+	if got := cfg.ScanIntervalDuration(); got != 3*time.Second {
+		t.Fatalf("scan interval duration = %v, want 3s", got)
+	}
+	if got := cfg.HeadlinerIdleTimeoutDuration(); got != time.Minute {
+		t.Fatalf("headliner idle timeout = %v, want 1m", got)
 	}
 }
 

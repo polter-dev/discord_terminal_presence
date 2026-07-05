@@ -23,6 +23,7 @@ type Display struct {
 	ToolName     bool `toml:"tool_name"`
 	ElapsedTimer bool `toml:"elapsed_timer"`
 	SmallImage   bool `toml:"small_image"`
+	Collection   bool `toml:"collection"`
 	Buttons      bool `toml:"buttons"`
 }
 
@@ -49,23 +50,29 @@ type ToolOverride struct {
 
 // Config is the loaded TOML configuration plus load metadata.
 type Config struct {
-	Enabled      bool                    `toml:"enabled"`
-	ScanInterval string                  `toml:"scan_interval"`
-	Display      Display                 `toml:"display"`
-	Privacy      Privacy                 `toml:"privacy"`
-	Tools        map[string]ToolOverride `toml:"tools"`
-	CustomTools  []registry.CustomTool   `toml:"custom_tools"`
-	Path         string                  `toml:"-"`
-	Warnings     []string                `toml:"-"`
+	Enabled              bool                    `toml:"enabled"`
+	ScanInterval         string                  `toml:"scan_interval"`
+	Pin                  string                  `toml:"pin"`
+	HeadlinerIdleTimeout string                  `toml:"headliner_idle_timeout"`
+	ActivitySwitching    bool                    `toml:"activity_switching"`
+	Display              Display                 `toml:"display"`
+	Privacy              Privacy                 `toml:"privacy"`
+	Tools                map[string]ToolOverride `toml:"tools"`
+	CustomTools          []registry.CustomTool   `toml:"custom_tools"`
+	Path                 string                  `toml:"-"`
+	Warnings             []string                `toml:"-"`
 }
 
 type fileConfig struct {
-	Enabled      bool                    `toml:"enabled"`
-	ScanInterval string                  `toml:"scan_interval"`
-	Display      Display                 `toml:"display"`
-	Privacy      Privacy                 `toml:"privacy"`
-	Tools        map[string]ToolOverride `toml:"tools"`
-	CustomTools  []customTool            `toml:"custom_tools"`
+	Enabled              bool                    `toml:"enabled"`
+	ScanInterval         string                  `toml:"scan_interval"`
+	Pin                  string                  `toml:"pin"`
+	HeadlinerIdleTimeout string                  `toml:"headliner_idle_timeout"`
+	ActivitySwitching    bool                    `toml:"activity_switching"`
+	Display              Display                 `toml:"display"`
+	Privacy              Privacy                 `toml:"privacy"`
+	Tools                map[string]ToolOverride `toml:"tools"`
+	CustomTools          []customTool            `toml:"custom_tools"`
 }
 
 type customTool struct {
@@ -99,12 +106,15 @@ type ResolvedTool struct {
 // Default returns the privacy-first config defaults.
 func Default() Config {
 	return Config{
-		Enabled:      true,
-		ScanInterval: "3s",
+		Enabled:              true,
+		ScanInterval:         "3s",
+		HeadlinerIdleTimeout: "60s",
+		ActivitySwitching:    true,
 		Display: Display{
 			ToolName:     true,
 			ElapsedTimer: true,
 			SmallImage:   true,
+			Collection:   true,
 			Buttons:      true,
 		},
 		Privacy: Privacy{
@@ -146,11 +156,14 @@ func LoadPath(path string) (Config, error) {
 	}
 
 	raw := fileConfig{
-		Enabled:      cfg.Enabled,
-		ScanInterval: cfg.ScanInterval,
-		Display:      cfg.Display,
-		Privacy:      cfg.Privacy,
-		Tools:        cfg.Tools,
+		Enabled:              cfg.Enabled,
+		ScanInterval:         cfg.ScanInterval,
+		Pin:                  cfg.Pin,
+		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeout,
+		ActivitySwitching:    cfg.ActivitySwitching,
+		Display:              cfg.Display,
+		Privacy:              cfg.Privacy,
+		Tools:                cfg.Tools,
 	}
 	meta, err := toml.Decode(string(data), &raw)
 	if err != nil {
@@ -158,6 +171,9 @@ func LoadPath(path string) (Config, error) {
 	}
 	cfg.Enabled = raw.Enabled
 	cfg.ScanInterval = raw.ScanInterval
+	cfg.Pin = raw.Pin
+	cfg.HeadlinerIdleTimeout = raw.HeadlinerIdleTimeout
+	cfg.ActivitySwitching = raw.ActivitySwitching
 	cfg.Display = raw.Display
 	cfg.Privacy = raw.Privacy
 	cfg.Tools = raw.Tools
@@ -204,6 +220,15 @@ func (c Config) ScanIntervalDuration() time.Duration {
 	d, err := time.ParseDuration(c.ScanInterval)
 	if err != nil || d <= 0 {
 		return 3 * time.Second
+	}
+	return d
+}
+
+// HeadlinerIdleTimeoutDuration parses HeadlinerIdleTimeout, falling back to 60s for invalid values.
+func (c Config) HeadlinerIdleTimeoutDuration() time.Duration {
+	d, err := time.ParseDuration(c.HeadlinerIdleTimeout)
+	if err != nil || d <= 0 {
+		return time.Minute
 	}
 	return d
 }

@@ -77,6 +77,97 @@ func TestWriterReconnectsAndReappliesActivity(t *testing.T) {
 	<-done
 }
 
+func TestWriterThrottlesAndCoalescesActivityUpdates(t *testing.T) {
+	client := newFakeClient(nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(15*time.Second),
+		withWriteClock(clock),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "first"})
+	client.waitForSet(t, 1)
+	sendActivity(t, ctx, activities, &Activity{Details: "second"})
+	clock.waitForTimerCount(t, 1)
+	sendActivity(t, ctx, activities, &Activity{Details: "third"})
+	clock.waitForTimerCount(t, 2)
+
+	if got := len(client.activities()); got != 1 {
+		t.Fatalf("set count before interval = %d, want 1", got)
+	}
+
+	clock.Advance(15 * time.Second)
+	client.waitForSet(t, 2)
+	sets := client.activities()
+	if sets[1].Details != "third" {
+		t.Fatalf("coalesced details = %q, want third", sets[1].Details)
+	}
+
+	cancel()
+	<-done
+}
+
+func TestWriterClearsPromptlyWhileUpdateIsThrottled(t *testing.T) {
+	client := newFakeClient(nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(15*time.Second),
+		withWriteClock(clock),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "first"})
+	client.waitForSet(t, 1)
+	sendActivity(t, ctx, activities, &Activity{Details: "pending"})
+	clock.waitForTimerCount(t, 1)
+	sendActivity(t, ctx, activities, nil)
+	client.waitForLogout(t, 1)
+
+	clock.Advance(15 * time.Second)
+	if got := len(client.activities()); got != 1 {
+		t.Fatalf("set count after clear = %d, want 1", got)
+	}
+
+	cancel()
+	<-done
+}
+
+func sendActivity(t *testing.T, ctx context.Context, ch chan<- *Activity, activity *Activity) {
+	t.Helper()
+	select {
+	case ch <- activity:
+	case <-ctx.Done():
+		t.Fatal("context ended while sending activity")
+	case <-time.After(time.Second):
+		t.Fatal("timed out sending activity")
+	}
+}
+
 func activeDetection(startedAt time.Time) detector.Detection {
 	return detector.Detection{
 		Tool: registry.Tool{
@@ -87,6 +178,110 @@ func activeDetection(startedAt time.Time) detector.Detection {
 		Cwd:       "/tmp/project",
 		StartedAt: startedAt,
 	}
+}
+
+type fakeWriteClock struct {
+	mu      sync.Mutex
+	now     time.Time
+	timers  []*fakeWriteTimer
+	changed chan struct{}
+}
+
+func newFakeWriteClock(now time.Time) *fakeWriteClock {
+	return &fakeWriteClock{
+		now:     now,
+		changed: make(chan struct{}),
+	}
+}
+
+func (f *fakeWriteClock) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.now
+}
+
+func (f *fakeWriteClock) NewTimer(delay time.Duration) writeTimer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	timer := &fakeWriteTimer{
+		deadline: f.now.Add(delay),
+		ch:       make(chan time.Time, 1),
+	}
+	f.timers = append(f.timers, timer)
+	f.notifyLocked()
+	return timer
+}
+
+func (f *fakeWriteClock) Advance(d time.Duration) {
+	f.mu.Lock()
+	f.now = f.now.Add(d)
+	now := f.now
+	timers := append([]*fakeWriteTimer(nil), f.timers...)
+	f.mu.Unlock()
+
+	for _, timer := range timers {
+		timer.fire(now)
+	}
+}
+
+func (f *fakeWriteClock) waitForTimerCount(t *testing.T, count int) {
+	t.Helper()
+	f.waitFor(t, func() bool {
+		return len(f.timers) >= count
+	})
+}
+
+func (f *fakeWriteClock) waitFor(t *testing.T, ready func() bool) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		f.mu.Lock()
+		if ready() {
+			f.mu.Unlock()
+			return
+		}
+		ch := f.changed
+		f.mu.Unlock()
+
+		select {
+		case <-ch:
+		case <-deadline:
+			t.Fatal("timed out waiting for fake clock")
+		}
+	}
+}
+
+func (f *fakeWriteClock) notifyLocked() {
+	close(f.changed)
+	f.changed = make(chan struct{})
+}
+
+type fakeWriteTimer struct {
+	mu       sync.Mutex
+	deadline time.Time
+	stopped  bool
+	fired    bool
+	ch       chan time.Time
+}
+
+func (f *fakeWriteTimer) C() <-chan time.Time {
+	return f.ch
+}
+
+func (f *fakeWriteTimer) Stop() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = true
+}
+
+func (f *fakeWriteTimer) fire(now time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stopped || f.fired || now.Before(f.deadline) {
+		return
+	}
+	f.fired = true
+	f.ch <- now
 }
 
 type fakeClient struct {
