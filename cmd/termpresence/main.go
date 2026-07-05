@@ -17,6 +17,7 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
+	"github.com/polter-dev/discord_terminal_presence/internal/service"
 )
 
 func main() {
@@ -30,6 +31,10 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "install":
+		err = install(os.Args[2:])
+	case "uninstall":
+		err = uninstall(os.Args[2:])
 	case "start":
 		err = start(os.Args[2:])
 	case "stop":
@@ -46,7 +51,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: termpresence start|stop|status")
+	fmt.Fprintln(os.Stderr, "usage: termpresence install|uninstall|start|stop|status")
 }
 
 func start(args []string) error {
@@ -247,6 +252,21 @@ func status(args []string) error {
 	}
 
 	fmt.Printf("running: %t\n", running)
+	serviceState := service.NewManager().Status()
+	fmt.Printf("service_supported: %t\n", serviceState.Supported)
+	if serviceState.Path != "" {
+		fmt.Printf("service_path: %s\n", serviceState.Path)
+	}
+	fmt.Printf("service_installed: %t\n", serviceState.Installed)
+	if serviceState.Loaded != "" {
+		fmt.Printf("service_loaded: %s\n", serviceState.Loaded)
+	}
+	if serviceState.Enabled != "" {
+		fmt.Printf("service_enabled: %s\n", serviceState.Enabled)
+	}
+	if serviceState.Message != "" {
+		fmt.Printf("service_message: %s\n", serviceState.Message)
+	}
 	fmt.Printf("config_path: %s\n", cfg.Path)
 	if loadErr != nil {
 		fmt.Printf("config_ok: false\nconfig_error: %v\n", loadErr)
