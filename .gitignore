@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────
+# Internal build harness & design docs — kept LOCAL, never pushed.
+# Agents still read these on disk; they are intentionally excluded
+# from the public repository.
+# ─────────────────────────────────────────────────────────────
+/docs/
+/AGENTS.md
+/CLAUDE.md
+/ROADMAP.md
+/.claude/
+
+# ── Go build artifacts ───────────────────────────────────────
+# Compiled binary (single-binary project) and Go tooling output
+/termpresence
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+/coverage.*
+
+# ── Local dev / runtime ──────────────────────────────────────
+*.pid
+*.log
+*.local
+.env
+.env.*
+
+# ── Editor / OS cruft ────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
