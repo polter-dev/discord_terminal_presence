@@ -16,7 +16,7 @@ var defaultRetryDelays = []time.Duration{
 	30 * time.Second,
 }
 
-// Writer consumes detector events and owns all Discord IPC client calls.
+// Writer consumes activities and owns all Discord IPC client calls.
 type Writer struct {
 	client Client
 	appID  string
@@ -28,7 +28,7 @@ type Writer struct {
 // WriterOption configures a Writer.
 type WriterOption func(*Writer)
 
-// WithDisplayOptions replaces the default display/privacy options.
+// WithDisplayOptions replaces the default display/privacy options used by Run.
 func WithDisplayOptions(options DisplayOptions) WriterOption {
 	return func(writer *Writer) {
 		writer.options = options
@@ -63,8 +63,42 @@ func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, e
 	return writer, nil
 }
 
-// Run consumes detections until ctx is cancelled or detections is closed.
+// Run consumes detector events until ctx is cancelled or detections is closed,
+// mapping each detection to an activity via the writer's DisplayOptions. For
+// config-driven per-tool options (per-tool toggles, directory allowlist, button
+// overrides), build activities yourself and use RunActivities instead.
 func (w *Writer) Run(ctx context.Context, detections <-chan detector.Detection) {
+	activities := make(chan *Activity)
+	go func() {
+		defer close(activities)
+		for {
+			select {
+			case detection, ok := <-detections:
+				if !ok {
+					return
+				}
+				var next *Activity
+				if activity, active := ActivityFromDetection(detection, w.options); active {
+					next = &activity
+				}
+				select {
+				case activities <- next:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	w.RunActivities(ctx, activities)
+}
+
+// RunActivities applies pre-built activities to Discord until ctx is cancelled or
+// the channel is closed. A nil activity clears presence. The writer owns the IPC
+// client on this single goroutine and reconnects with backoff when Discord is
+// unavailable, re-applying the current activity once it reconnects.
+func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity) {
 	var (
 		current   *Activity
 		connected bool
@@ -131,16 +165,15 @@ func (w *Writer) Run(ctx context.Context, detections <-chan detector.Detection) 
 
 	for {
 		select {
-		case detection, ok := <-detections:
+		case activity, ok := <-activities:
 			if !ok {
 				return
 			}
-			activity, active := ActivityFromDetection(detection, w.options)
-			if !active {
+			if activity == nil {
 				clear()
 				continue
 			}
-			current = &activity
+			current = activity
 			applyCurrent()
 		case <-retryC:
 			retry = nil

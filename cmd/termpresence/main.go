@@ -15,6 +15,7 @@ import (
 
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
+	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 )
 
@@ -99,26 +100,108 @@ func run(ctx context.Context, manager *config.Manager) error {
 		return err
 	}
 
-	detections := det.Run(ctx)
-	for {
-		select {
-		case detection, ok := <-detections:
-			if !ok {
-				return nil
-			}
-			if detection.None {
-				log.Print("no known terminal tool detected")
-				continue
-			}
-			log.Printf("detected %s cwd=%s", detection.Tool.ID, detection.Cwd)
-			// TODO(M2 integration): send detections to internal/presence.Writer once that package merges.
-		case <-manager.Changes():
-			log.Print("config reloaded")
-			// TODO(M2 integration): rebuild registry/detector or pass config changes to presence writer.
-		case <-ctx.Done():
-			return nil
-		}
+	writer, err := presence.NewWriter(presence.RichClient{}, presence.DefaultAppID)
+	if err != nil {
+		return err
 	}
+
+	detections := det.Run(ctx)
+
+	// Translate detector events into config-resolved activities. A config reload
+	// re-applies the current detection so toggles take effect without waiting for
+	// the active tool to change.
+	activities := make(chan *presence.Activity)
+	go func() {
+		defer close(activities)
+		var (
+			last     detector.Detection
+			haveLast bool
+		)
+		send := func(a *presence.Activity) bool {
+			select {
+			case activities <- a:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		for {
+			select {
+			case detection, ok := <-detections:
+				if !ok {
+					return
+				}
+				last, haveLast = detection, true
+				cfg, _ := manager.Current()
+				if detection.None {
+					log.Print("no known terminal tool detected")
+				} else {
+					log.Printf("detected %s cwd=%s", detection.Tool.ID, detection.Cwd)
+				}
+				if !send(buildActivity(cfg, detection)) {
+					return
+				}
+			case <-manager.Changes():
+				log.Print("config reloaded")
+				if haveLast {
+					cfg, _ := manager.Current()
+					if !send(buildActivity(cfg, last)) {
+						return
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	writer.RunActivities(ctx, activities)
+	return nil
+}
+
+// buildActivity resolves the config for a detection and produces the presence
+// activity to display, or nil to clear presence. The directory (state) and
+// buttons are decided here so the privacy allowlist and per-tool button
+// overrides in internal/config are honored; internal/presence stays
+// config-agnostic.
+func buildActivity(cfg config.Config, detection detector.Detection) *presence.Activity {
+	if detection.None {
+		return nil
+	}
+	resolved := cfg.Resolve(detection.Tool)
+	if !resolved.Enabled {
+		return nil
+	}
+
+	// Let presence set details/image/timer; the CLI owns directory and buttons.
+	opts := presence.DisplayOptions{
+		ToolName:     resolved.ToolName,
+		ElapsedTimer: resolved.ElapsedTimer,
+		SmallImage:   resolved.SmallImage,
+	}
+	activity, ok := presence.ActivityFromDetection(detection, opts)
+	if !ok {
+		return nil
+	}
+	if dir, show := resolved.DisplayDirectory(detection.Cwd); show {
+		activity.State = dir
+	}
+	if resolved.ButtonsEnabled {
+		activity.Buttons = presenceButtons(resolved.Buttons)
+	}
+	return &activity
+}
+
+func presenceButtons(buttons []registry.Button) []presence.Button {
+	const maxButtons = 2
+	if len(buttons) > maxButtons {
+		buttons = buttons[:maxButtons]
+	}
+	out := make([]presence.Button, 0, len(buttons))
+	for _, button := range buttons {
+		out = append(out, presence.Button{Label: button.Label, URL: button.URL})
+	}
+	return out
 }
 
 func stop(args []string) error {
