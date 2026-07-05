@@ -2,7 +2,11 @@ module github.com/polter-dev/discord_terminal_presence
 
 go 1.24.0
 
-require github.com/shirou/gopsutil/v4 v4.26.6
+require (
+	github.com/BurntSushi/toml v1.6.0
+	github.com/fsnotify/fsnotify v1.10.1
+	github.com/shirou/gopsutil/v4 v4.26.6
+)
 
 require (
 	github.com/ebitengine/purego v0.10.0 // indirect
