@@ -314,7 +314,7 @@ func buildActivity(cfg config.Config, detection detector.Detection) *presence.Ac
 		activity.State = dir
 	}
 	if resolved.ButtonsEnabled {
-		activity.Buttons = presenceButtons(resolved.Buttons)
+		activity.Buttons = activityButtons(resolved.Buttons, cfg.CTA)
 	}
 	return &activity
 }
@@ -332,14 +332,17 @@ func enabledOthers(cfg config.Config, others []registry.Tool) []registry.Tool {
 	return filtered
 }
 
-func presenceButtons(buttons []registry.Button) []presence.Button {
+func activityButtons(buttons []registry.Button, cta config.CTA) []presence.Button {
 	const maxButtons = 2
-	if len(buttons) > maxButtons {
-		buttons = buttons[:maxButtons]
-	}
-	out := make([]presence.Button, 0, len(buttons))
+	out := make([]presence.Button, 0, maxButtons)
 	for _, button := range buttons {
+		if len(out) == maxButtons {
+			return out
+		}
 		out = append(out, presence.Button{Label: button.Label, URL: button.URL})
+	}
+	if cta.Enabled && len(out) < maxButtons {
+		out = append(out, presence.Button{Label: cta.Label, URL: cta.URL})
 	}
 	return out
 }

@@ -35,6 +35,13 @@ type Privacy struct {
 	DirectoryBasenameOnly bool     `toml:"directory_basename_only"`
 }
 
+// CTA controls the prototype call-to-action presence button.
+type CTA struct {
+	Enabled bool   `toml:"enabled"`
+	Label   string `toml:"label"`
+	URL     string `toml:"url"`
+}
+
 // ToolOverride contains optional per-tool display/privacy settings.
 type ToolOverride struct {
 	Enabled               *bool             `toml:"enabled"`
@@ -58,6 +65,7 @@ type Config struct {
 	ActivitySwitching    bool                    `toml:"activity_switching"`
 	Display              Display                 `toml:"display"`
 	Privacy              Privacy                 `toml:"privacy"`
+	CTA                  CTA                     `toml:"cta"`
 	Tools                map[string]ToolOverride `toml:"tools"`
 	CustomTools          []registry.CustomTool   `toml:"custom_tools"`
 	Path                 string                  `toml:"-"`
@@ -72,6 +80,7 @@ type fileConfig struct {
 	ActivitySwitching    bool                    `toml:"activity_switching"`
 	Display              Display                 `toml:"display"`
 	Privacy              Privacy                 `toml:"privacy"`
+	CTA                  CTA                     `toml:"cta"`
 	Tools                map[string]ToolOverride `toml:"tools"`
 	CustomTools          []customTool            `toml:"custom_tools"`
 }
@@ -121,6 +130,12 @@ func Default() Config {
 		Privacy: Privacy{
 			ShowDirectory:         false,
 			DirectoryBasenameOnly: true,
+		},
+		CTA: CTA{
+			Enabled: true,
+			Label:   "⬇ Get termp",
+			// TODO: replace this intentional placeholder/dead link with the real landing page when it exists.
+			URL: "https://termp.example",
 		},
 		Tools: make(map[string]ToolOverride),
 	}
@@ -194,6 +209,7 @@ func LoadPath(path string) (Config, error) {
 		ActivitySwitching:    cfg.ActivitySwitching,
 		Display:              cfg.Display,
 		Privacy:              cfg.Privacy,
+		CTA:                  cfg.CTA,
 		Tools:                cfg.Tools,
 	}
 	meta, err := toml.Decode(string(data), &raw)
@@ -207,6 +223,7 @@ func LoadPath(path string) (Config, error) {
 	cfg.ActivitySwitching = raw.ActivitySwitching
 	cfg.Display = raw.Display
 	cfg.Privacy = raw.Privacy
+	cfg.CTA = raw.CTA
 	cfg.Tools = raw.Tools
 	cfg.CustomTools = convertCustomTools(raw.CustomTools)
 	cfg.Path = path
@@ -377,6 +394,7 @@ func saveDocument(cfg Config) map[string]any {
 		"activity_switching":     cfg.ActivitySwitching,
 		"display":                saveDisplay(cfg.Display),
 		"privacy":                savePrivacy(cfg.Privacy),
+		"cta":                    saveCTA(cfg.CTA),
 		"tools":                  saveTools(cfg.Tools),
 		"custom_tools":           saveCustomTools(cfg.CustomTools),
 	}
@@ -398,6 +416,14 @@ func savePrivacy(privacy Privacy) map[string]any {
 		"show_directory":          privacy.ShowDirectory,
 		"directory_allowlist":     append([]string(nil), privacy.DirectoryAllowlist...),
 		"directory_basename_only": privacy.DirectoryBasenameOnly,
+	}
+}
+
+func saveCTA(cta CTA) map[string]any {
+	return map[string]any{
+		"enabled": cta.Enabled,
+		"label":   cta.Label,
+		"url":     cta.URL,
 	}
 }
 

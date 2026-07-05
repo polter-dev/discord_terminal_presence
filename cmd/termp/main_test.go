@@ -6,6 +6,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/polter-dev/discord_terminal_presence/internal/config"
+	"github.com/polter-dev/discord_terminal_presence/internal/detector"
+	"github.com/polter-dev/discord_terminal_presence/internal/presence"
+	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 )
 
 func TestFormatVersionIncludesBuildAndPlatform(t *testing.T) {
@@ -90,4 +95,83 @@ func TestDebugfEmitsOnlyWhenVerbose(t *testing.T) {
 	if got := buf.String(); !strings.Contains(got, "hello world") {
 		t.Fatalf("debugf output = %q, want hello world", got)
 	}
+}
+
+func TestBuildActivityAddsCTAWhenToolHasNoButtons(t *testing.T) {
+	cfg := config.Default()
+	activity := buildActivity(cfg, detectionWithButtons(nil))
+	if activity == nil {
+		t.Fatal("activity = nil, want activity")
+	}
+	want := []presence.Button{{Label: "⬇ Get termp", URL: "https://termp.example"}}
+	if !equalButtons(activity.Buttons, want) {
+		t.Fatalf("buttons = %#v, want %#v", activity.Buttons, want)
+	}
+}
+
+func TestBuildActivityDoesNotExceedTwoButtons(t *testing.T) {
+	cfg := config.Default()
+	activity := buildActivity(cfg, detectionWithButtons([]registry.Button{
+		{Label: "One", URL: "https://example.test/one"},
+		{Label: "Two", URL: "https://example.test/two"},
+	}))
+	if activity == nil {
+		t.Fatal("activity = nil, want activity")
+	}
+	want := []presence.Button{
+		{Label: "One", URL: "https://example.test/one"},
+		{Label: "Two", URL: "https://example.test/two"},
+	}
+	if !equalButtons(activity.Buttons, want) {
+		t.Fatalf("buttons = %#v, want %#v", activity.Buttons, want)
+	}
+}
+
+func TestBuildActivitySkipsDisabledCTA(t *testing.T) {
+	cfg := config.Default()
+	cfg.CTA.Enabled = false
+	activity := buildActivity(cfg, detectionWithButtons(nil))
+	if activity == nil {
+		t.Fatal("activity = nil, want activity")
+	}
+	if len(activity.Buttons) != 0 {
+		t.Fatalf("buttons = %#v, want none", activity.Buttons)
+	}
+}
+
+func TestBuildActivitySkipsAllButtonsWhenDisabled(t *testing.T) {
+	cfg := config.Default()
+	cfg.Display.Buttons = false
+	activity := buildActivity(cfg, detectionWithButtons([]registry.Button{
+		{Label: "One", URL: "https://example.test/one"},
+	}))
+	if activity == nil {
+		t.Fatal("activity = nil, want activity")
+	}
+	if len(activity.Buttons) != 0 {
+		t.Fatalf("buttons = %#v, want none", activity.Buttons)
+	}
+}
+
+func detectionWithButtons(buttons []registry.Button) detector.Detection {
+	return detector.Detection{
+		Tool: registry.Tool{
+			ID:          "test-tool",
+			DisplayName: "Test Tool",
+			ImageKey:    "test-tool",
+			Buttons:     buttons,
+		},
+	}
+}
+
+func equalButtons(a, b []presence.Button) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -59,6 +59,9 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if !cfg.Privacy.DirectoryBasenameOnly {
 		t.Fatal("directory_basename_only default should be true")
 	}
+	if !cfg.CTA.Enabled || cfg.CTA.Label != "⬇ Get termp" || cfg.CTA.URL != "https://termp.example" {
+		t.Fatalf("unexpected CTA defaults: %#v", cfg.CTA)
+	}
 }
 
 func TestLoadValidConfig(t *testing.T) {
@@ -81,6 +84,11 @@ buttons = true
 show_directory = true
 directory_allowlist = ["~/dev"]
 directory_basename_only = false
+
+[cta]
+enabled = false
+label = "Preview termp"
+url = "https://example.test/dead-cta"
 
 [tools.claude-code]
 enabled = true
@@ -108,6 +116,9 @@ priority = 5
 	}
 	if cfg.Display.Collection {
 		t.Fatalf("collection should be false: %#v", cfg.Display)
+	}
+	if cfg.CTA.Enabled || cfg.CTA.Label != "Preview termp" || cfg.CTA.URL != "https://example.test/dead-cta" {
+		t.Fatalf("CTA not loaded: %#v", cfg.CTA)
 	}
 	if got := cfg.Privacy.DirectoryAllowlist[0]; got != filepath.Join(os.Getenv("HOME"), "dev") {
 		t.Fatalf("allowlist = %q", got)
@@ -281,6 +292,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	cfg.ActivitySwitching = false
 	cfg.Display.ToolName = false
 	cfg.Display.Collection = false
+	cfg.CTA.Enabled = false
+	cfg.CTA.Label = "Preview termp"
+	cfg.CTA.URL = "https://example.test/dead-cta"
 	cfg.Privacy.ShowDirectory = true
 	cfg.Privacy.DirectoryAllowlist = []string{"~/dev"}
 	cfg.Privacy.DirectoryBasenameOnly = false
@@ -316,6 +330,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if loaded.Display.ToolName || loaded.Display.Collection {
 		t.Fatalf("display did not round-trip: %#v", loaded.Display)
+	}
+	if loaded.CTA.Enabled || loaded.CTA.Label != "Preview termp" || loaded.CTA.URL != "https://example.test/dead-cta" {
+		t.Fatalf("CTA did not round-trip: %#v", loaded.CTA)
 	}
 	if !loaded.Privacy.ShowDirectory || loaded.Privacy.DirectoryBasenameOnly {
 		t.Fatalf("privacy did not round-trip: %#v", loaded.Privacy)
