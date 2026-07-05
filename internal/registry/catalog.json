@@ -4,7 +4,7 @@
     "display_name": "Claude Code",
     "match": {
       "name": "claude",
-      "regex": "(^|/)claude/versions/"
+      "regex": "(^|\\s|/)(claude|claude\\.exe|claude\\.js)(\\s|$)|(^|/)@anthropic-ai/claude-code/|(^|/)claude/versions/"
     },
     "image_url": "https://unpkg.com/@lobehub/icons-static-png@1.91.0/dark/claude-color.png",
     "icon_slug": "claude-color",
@@ -15,7 +15,8 @@
     "id": "gemini-cli",
     "display_name": "Gemini CLI",
     "match": {
-      "name": "gemini"
+      "name": "gemini",
+      "regex": "(^|\\s|/)(gemini|gemini\\.js)(\\s|$)|(^|/)@google/gemini-cli/"
     },
     "icon_slug": "gemini-color",
     "icon_source": "lobehub",
@@ -25,7 +26,8 @@
     "id": "codex-cli",
     "display_name": "Codex CLI",
     "match": {
-      "name": "codex"
+      "name": "codex",
+      "regex": "(^|\\s|/)(codex|codex\\.js)(\\s|$)|(^|/)@openai/codex/"
     },
     "icon_slug": "openai",
     "icon_source": "lobehub",
@@ -35,7 +37,8 @@
     "id": "aider",
     "display_name": "aider",
     "match": {
-      "name": "aider"
+      "name": "aider",
+      "regex": "(^|\\s|/)(aider|aider\\.py)(\\s|$)"
     },
     "icon_slug": "openai",
     "icon_source": "lobehub",
@@ -175,7 +178,8 @@
     "id": "ranger",
     "display_name": "ranger",
     "match": {
-      "name": "ranger"
+      "name": "ranger",
+      "regex": "(^|\\s|/)(ranger|ranger\\.py)(\\s|$)"
     },
     "priority": 55
   },
@@ -231,7 +235,8 @@
     "id": "glances",
     "display_name": "Glances",
     "match": {
-      "name": "glances"
+      "name": "glances",
+      "regex": "(^|\\s|/)(glances|glances\\.py)(\\s|$)"
     },
     "priority": 45
   },
@@ -247,7 +252,8 @@
     "id": "gtop",
     "display_name": "gtop",
     "match": {
-      "name": "gtop"
+      "name": "gtop",
+      "regex": "(^|\\s|/)(gtop|gtop\\.js)(\\s|$)"
     },
     "priority": 45
   },
@@ -255,7 +261,8 @@
     "id": "bpytop",
     "display_name": "bpytop",
     "match": {
-      "name": "bpytop"
+      "name": "bpytop",
+      "regex": "(^|\\s|/)(bpytop|bpytop\\.py)(\\s|$)"
     },
     "priority": 45
   },

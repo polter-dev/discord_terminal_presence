@@ -248,21 +248,167 @@ func TestEmbeddedCatalogSampleMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tests := map[string]string{
-		"nvim":    "nvim",
-		"lazygit": "lazygit",
-		"k9s":     "k9s",
-		"tmux":    "tmux",
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{name: "nvim", id: "nvim"},
+		{name: "vim", id: "vim"},
+		{name: "lazygit", id: "lazygit"},
+		{name: "k9s", id: "k9s"},
+		{name: "tmux", id: "tmux"},
+		{name: "zellij", id: "zellij"},
+		{name: "yazi", id: "yazi"},
+		{name: "htop", id: "htop"},
+		{name: "btop", id: "btop"},
+		{name: "btm", id: "bottom"},
+		{name: "lazydocker", id: "lazydocker"},
+		{name: "ncdu", id: "ncdu"},
+		{name: "neomutt", id: "neomutt"},
+		// These short names are intentionally exact-name only. They are useful tools
+		// but remain ambiguous outside process identity matching.
+		{name: "lf", id: "lf"},
+		{name: "mc", id: "mc"},
+		{name: "task", id: "taskwarrior"},
+		{name: "spt", id: "spotify-tui"},
+		{name: "dust", id: "dust"},
 	}
 
-	for name, wantID := range tests {
-		tool, ok := reg.Match(name)
-		if !ok {
-			t.Fatalf("expected %q to match", name)
-		}
-		if tool.ID != wantID {
-			t.Fatalf("Match(%q) ID = %q, want %q", name, tool.ID, wantID)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool, ok := reg.Match(tt.name)
+			if !ok {
+				t.Fatalf("expected %q to match", tt.name)
+			}
+			if tool.ID != tt.id {
+				t.Fatalf("Match(%q) ID = %q, want %q", tt.name, tool.ID, tt.id)
+			}
+		})
+	}
+}
+
+func TestEmbeddedCatalogWrapperMatches(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		process ProcessInfo
+		id      string
+	}{
+		{
+			name: "claude npm node wrapper",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/usr/local/bin/node",
+				Cmdline: "node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+			},
+			id: "claude-code",
+		},
+		{
+			name: "claude published bin target",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/usr/local/bin/node",
+				Cmdline: "node /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+			},
+			id: "claude-code",
+		},
+		{
+			name: "gemini npm node wrapper",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/opt/homebrew/bin/node",
+				Cmdline: "node /opt/homebrew/bin/gemini --model gemini-pro",
+			},
+			id: "gemini-cli",
+		},
+		{
+			name: "gemini package path",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/usr/bin/node",
+				Cmdline: "node /usr/local/lib/node_modules/@google/gemini-cli/dist/index.js",
+			},
+			id: "gemini-cli",
+		},
+		{
+			name: "codex npm node wrapper",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/opt/homebrew/bin/node",
+				Cmdline: "node /opt/homebrew/bin/codex exec",
+			},
+			id: "codex-cli",
+		},
+		{
+			name: "codex package path",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/usr/bin/node",
+				Cmdline: "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js",
+			},
+			id: "codex-cli",
+		},
+		{
+			name: "aider python module",
+			process: ProcessInfo{
+				Name:    "python3",
+				Exe:     "/usr/bin/python3",
+				Cmdline: "python3 -m aider --model sonnet",
+			},
+			id: "aider",
+		},
+		{
+			name: "ranger python script",
+			process: ProcessInfo{
+				Name:    "python",
+				Exe:     "/usr/bin/python",
+				Cmdline: "python /usr/local/bin/ranger",
+			},
+			id: "ranger",
+		},
+		{
+			name: "glances python script",
+			process: ProcessInfo{
+				Name:    "python3",
+				Exe:     "/usr/bin/python3",
+				Cmdline: "python3 /usr/local/bin/glances",
+			},
+			id: "glances",
+		},
+		{
+			name: "gtop node script",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/usr/local/bin/node",
+				Cmdline: "node /usr/local/bin/gtop",
+			},
+			id: "gtop",
+		},
+		{
+			name: "bpytop python script",
+			process: ProcessInfo{
+				Name:    "python3",
+				Exe:     "/usr/bin/python3",
+				Cmdline: "python3 /usr/local/bin/bpytop",
+			},
+			id: "bpytop",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool, ok := reg.MatchProcess(tt.process)
+			if !ok {
+				t.Fatalf("expected process to match %q", tt.id)
+			}
+			if tool.ID != tt.id {
+				t.Fatalf("MatchProcess(%#v) ID = %q, want %q", tt.process, tool.ID, tt.id)
+			}
+		})
 	}
 }
 
@@ -272,9 +418,61 @@ func TestEmbeddedCatalogDoesNotMatchUbiquitousProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"bash", "zsh", "fish", "sh", "node", "python", "ruby", "perl", "ssh", "git", "vi", "view", "less", "cat"} {
-		if tool, ok := reg.Match(name); ok {
-			t.Fatalf("Match(%q) = %q, want no match", name, tool.ID)
+	for _, name := range []string{
+		"bash", "zsh", "fish", "sh", "dash",
+		"ssh", "sshd", "node", "python", "python3", "ruby", "perl",
+		"git", "code", "vi", "view", "less", "cat", "man", "top",
+		"go", "cc", "ld",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if tool, ok := reg.Match(name); ok {
+				t.Fatalf("Match(%q) = %q, want no match", name, tool.ID)
+			}
+
+			tool, ok := reg.MatchProcess(ProcessInfo{
+				Name:    name,
+				Exe:     "/usr/bin/" + name,
+				Cmdline: name + " --version",
+			})
+			if ok {
+				t.Fatalf("MatchProcess(%q) = %q, want no match", name, tool.ID)
+			}
+		})
+	}
+}
+
+func TestEmbeddedCatalogWrapperRegexesDoNotMatchGenericInterpreters(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []ProcessInfo{
+		{
+			Name:    "node",
+			Exe:     "/usr/local/bin/node",
+			Cmdline: "node /srv/app/server.js",
+		},
+		{
+			Name:    "node",
+			Exe:     "/usr/local/bin/node",
+			Cmdline: "node /srv/app/my-codex-helper.js",
+		},
+		{
+			Name:    "python3",
+			Exe:     "/usr/bin/python3",
+			Cmdline: "python3 /srv/app/manage.py",
+		},
+		{
+			Name:    "python",
+			Exe:     "/usr/bin/python",
+			Cmdline: "python /srv/app/ranger_plugin.py",
+		},
+	}
+
+	for _, process := range tests {
+		if tool, ok := reg.MatchProcess(process); ok {
+			t.Fatalf("MatchProcess(%#v) = %q, want no match", process, tool.ID)
 		}
 	}
 }
