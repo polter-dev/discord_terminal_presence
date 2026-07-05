@@ -62,7 +62,7 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if !cfg.Privacy.DirectoryBasenameOnly {
 		t.Fatal("directory_basename_only default should be true")
 	}
-	if !cfg.CTA.Enabled || cfg.CTA.Label != "⬇ Get termp" || cfg.CTA.URL != "https://termp.example" {
+	if !cfg.CTA.Enabled || cfg.CTA.Label != "Get Termp (WIP)" || cfg.CTA.URL != "https://termp.example" {
 		t.Fatalf("unexpected CTA defaults: %#v", cfg.CTA)
 	}
 }

@@ -142,7 +142,7 @@ func Default() Config {
 		},
 		CTA: CTA{
 			Enabled: true,
-			Label:   "⬇ Get termp",
+			Label:   "Get Termp (WIP)",
 			// TODO: replace this intentional placeholder/dead link with the real landing page when it exists.
 			URL: "https://termp.example",
 		},
