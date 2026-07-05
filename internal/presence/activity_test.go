@@ -73,6 +73,49 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 	}
 }
 
+func TestActivityFromDetectionDetailsFormat(t *testing.T) {
+	options := DefaultDisplayOptions()
+	options.DetailsFormat = "{tool} @ {dir}"
+	options.ShowDirectory = true
+	detection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Codex CLI"},
+		Cwd:  "/Users/marcus/work/termp",
+	}
+
+	activity, ok := ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.Details != "Codex CLI @ termp" {
+		t.Fatalf("details = %q, want custom format with directory", activity.Details)
+	}
+
+	options.ToolName = false
+	activity, ok = ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.Details != "" {
+		t.Fatalf("details = %q, want empty when tool_name is false", activity.Details)
+	}
+}
+
+func TestActivityFromDetectionBlankDetailsFormatRendersEmpty(t *testing.T) {
+	options := DefaultDisplayOptions()
+	options.DetailsFormat = "   "
+	detection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+	}
+
+	activity, ok := ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.Details != "" {
+		t.Fatalf("details = %q, want empty", activity.Details)
+	}
+}
+
 func TestActivityFromDetectionCollectionCanBeDisabledAndCapsList(t *testing.T) {
 	detection := detector.Detection{
 		Tool: registry.Tool{DisplayName: "Claude Code", ImageKey: "claude-code"},

@@ -2,6 +2,7 @@ package presence
 
 import (
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
@@ -16,6 +17,7 @@ const DefaultAppID = "1523168764793847918"
 // DisplayOptions is the M2 stand-in for future config-driven display/privacy settings.
 type DisplayOptions struct {
 	ToolName              bool
+	DetailsFormat         string
 	ElapsedTimer          bool
 	SmallImage            bool
 	Collection            bool
@@ -28,6 +30,7 @@ type DisplayOptions struct {
 func DefaultDisplayOptions() DisplayOptions {
 	return DisplayOptions{
 		ToolName:              true,
+		DetailsFormat:         "Using {tool}",
 		ElapsedTimer:          true,
 		SmallImage:            true,
 		Collection:            true,
@@ -78,13 +81,15 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		},
 	}
 
-	if options.ToolName {
-		activity.Details = "Using " + tool.DisplayName
-	}
+	directory := ""
 	if options.ShowDirectory && detection.Cwd != "" {
-		activity.State = directoryState(detection.Cwd, options.DirectoryBasenameOnly)
+		directory = directoryState(detection.Cwd, options.DirectoryBasenameOnly)
+		activity.State = directory
 	} else if options.Collection {
 		activity.State = CollectionState(detection.Others)
+	}
+	if options.ToolName {
+		activity.Details = renderDetails(options.DetailsFormat, tool.DisplayName, directory)
 	}
 	if options.SmallImage && len(detection.Others) > 0 {
 		other := detection.Others[0]
@@ -103,6 +108,15 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 	}
 
 	return activity, true
+}
+
+func renderDetails(format, toolName, directory string) string {
+	if format == "" {
+		format = "Using {tool}"
+	}
+	details := strings.ReplaceAll(format, "{tool}", toolName)
+	details = strings.ReplaceAll(details, "{dir}", directory)
+	return strings.TrimSpace(details)
 }
 
 // CollectionState summarizes the other running tools for Discord's single state line.

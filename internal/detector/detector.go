@@ -58,6 +58,7 @@ type Config struct {
 	DebounceCycles       int
 	Pin                  string
 	HeadlinerIdleTimeout time.Duration
+	IdleClearTimeout     time.Duration
 	ActivitySwitching    bool
 }
 
@@ -208,11 +209,27 @@ func (s *Selector) Select(processes []Process) Detection {
 		}
 	}
 
+	// Idle clear is opt-in because CPU deltas can miss quiet interactive work
+	// such as editing text without invoking CPU-heavy operations.
+	if s.config.IdleClearTimeout > 0 && s.allRunningToolsIdle(candidates, now) {
+		return Detection{None: true}
+	}
+
 	featured := s.selectFeatured(candidates, now)
 	s.previousFeatured = featured.Tool.ID
 
 	others := sortedOthers(candidates, featured.Tool.ID)
 	return detectionFromFeatured(featured, others)
+}
+
+func (s *Selector) allRunningToolsIdle(candidates map[string]toolCandidate, now time.Time) bool {
+	for id := range candidates {
+		idleSince, idle := s.idleSince[id]
+		if !idle || now.Sub(idleSince) < s.config.IdleClearTimeout {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Selector) selectFeatured(candidates map[string]toolCandidate, now time.Time) FeaturedTool {

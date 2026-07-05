@@ -47,6 +47,9 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if !cfg.Enabled || cfg.ScanInterval != "3s" {
 		t.Fatalf("unexpected global defaults: %#v", cfg)
 	}
+	if cfg.IdleClearTimeout != "0" || cfg.DetailsFormat != "Using {tool}" {
+		t.Fatalf("unexpected polish defaults: %#v", cfg)
+	}
 	if cfg.Pin != "" || cfg.HeadlinerIdleTimeout != "60s" || !cfg.ActivitySwitching {
 		t.Fatalf("unexpected headliner defaults: %#v", cfg)
 	}
@@ -69,9 +72,11 @@ func TestLoadValidConfig(t *testing.T) {
 	writeConfig(t, path, `
 enabled = true
 scan_interval = "5s"
+idle_clear_timeout = "8h"
 pin = "codex-cli"
 headliner_idle_timeout = "45s"
 activity_switching = false
+details_format = "Working in {tool}"
 
 [display]
 tool_name = false
@@ -111,6 +116,9 @@ priority = 5
 	if cfg.ScanInterval != "5s" || cfg.Display.ToolName {
 		t.Fatalf("unexpected loaded values: %#v", cfg)
 	}
+	if cfg.IdleClearTimeout != "8h" || cfg.DetailsFormat != "Working in {tool}" {
+		t.Fatalf("unexpected polish values: %#v", cfg)
+	}
 	if cfg.Pin != "codex-cli" || cfg.HeadlinerIdleTimeout != "45s" || cfg.ActivitySwitching {
 		t.Fatalf("unexpected headliner values: %#v", cfg)
 	}
@@ -143,8 +151,16 @@ func TestDurationFallbacks(t *testing.T) {
 	if got := cfg.ScanIntervalDuration(); got != 3*time.Second {
 		t.Fatalf("scan interval duration = %v, want 3s", got)
 	}
+	if got := cfg.IdleClearTimeoutDuration(); got != 0 {
+		t.Fatalf("idle clear timeout = %v, want disabled", got)
+	}
 	if got := cfg.HeadlinerIdleTimeoutDuration(); got != time.Minute {
 		t.Fatalf("headliner idle timeout = %v, want 1m", got)
+	}
+
+	cfg.IdleClearTimeout = "10m"
+	if got := cfg.IdleClearTimeoutDuration(); got != 10*time.Minute {
+		t.Fatalf("idle clear timeout = %v, want 10m", got)
 	}
 }
 
@@ -287,9 +303,11 @@ func TestSaveRoundTrip(t *testing.T) {
 	cfg := Default()
 	cfg.Enabled = false
 	cfg.ScanInterval = "9s"
+	cfg.IdleClearTimeout = "6h"
 	cfg.Pin = "codex-cli"
 	cfg.HeadlinerIdleTimeout = "2m"
 	cfg.ActivitySwitching = false
+	cfg.DetailsFormat = "{tool} in {dir}"
 	cfg.Display.ToolName = false
 	cfg.Display.Collection = false
 	cfg.CTA.Enabled = false
@@ -324,6 +342,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if loaded.Enabled || loaded.ScanInterval != "9s" || loaded.Pin != "codex-cli" {
 		t.Fatalf("globals did not round-trip: %#v", loaded)
+	}
+	if loaded.IdleClearTimeout != "6h" || loaded.DetailsFormat != "{tool} in {dir}" {
+		t.Fatalf("polish settings did not round-trip: %#v", loaded)
 	}
 	if loaded.ActivitySwitching || loaded.HeadlinerIdleTimeout != "2m" {
 		t.Fatalf("headliner did not round-trip: %#v", loaded)
