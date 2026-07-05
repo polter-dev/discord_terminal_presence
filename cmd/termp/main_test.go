@@ -17,7 +17,7 @@ func TestFormatVersionIncludesBuildAndPlatform(t *testing.T) {
 
 	got := formatVersion()
 	for _, want := range []string{
-		"termpresence 1.2.3 (abc123, 2026-07-05)",
+		"termp 1.2.3 (abc123, 2026-07-05)",
 		"go " + runtime.Version(),
 		runtime.GOOS + "/" + runtime.GOARCH,
 	} {

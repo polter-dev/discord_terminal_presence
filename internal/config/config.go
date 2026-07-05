@@ -15,7 +15,7 @@ import (
 const (
 	defaultConfigDir  = ".config"
 	defaultConfigFile = "config.toml"
-	appConfigDir      = "termpresence"
+	appConfigDir      = "termp"
 )
 
 // Display controls which activity fields are shown by default.

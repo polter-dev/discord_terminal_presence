@@ -26,8 +26,8 @@ func install(args []string) error {
 		return err
 	}
 	fmt.Printf("installed: %s\n", state.Path)
-	fmt.Println("runs: termpresence start")
-	fmt.Println("undo: termpresence uninstall")
+	fmt.Println("runs: termp start")
+	fmt.Println("undo: termp uninstall")
 	return nil
 }
 

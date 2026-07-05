@@ -30,7 +30,7 @@ var (
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("termpresence: ")
+	log.SetPrefix("termp: ")
 
 	command, args, showVersion, err := parseRoot(os.Args[1:])
 	if err != nil {
@@ -65,11 +65,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: termpresence [--verbose] [--version] install|uninstall|start|stop|status|version")
+	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|start|stop|status|version")
 }
 
 func parseRoot(args []string) (command string, commandArgs []string, showVersion bool, err error) {
-	fs := flag.NewFlagSet("termpresence", flag.ContinueOnError)
+	fs := flag.NewFlagSet("termp", flag.ContinueOnError)
 	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	fs.BoolVar(&verbose, "v", false, "enable verbose logging")
 	fs.BoolVar(&showVersion, "version", false, "print version information")
@@ -112,7 +112,7 @@ func printVersion() {
 }
 
 func formatVersion() string {
-	return fmt.Sprintf("termpresence %s (%s, %s)\ngo %s\n%s/%s\n",
+	return fmt.Sprintf("termp %s (%s, %s)\ngo %s\n%s/%s\n",
 		version, commit, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
 
@@ -400,9 +400,9 @@ func status(args []string) error {
 
 func pidFilePath() string {
 	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
-		return filepath.Join(runtimeDir, "termpresence.pid")
+		return filepath.Join(runtimeDir, "termp.pid")
 	}
-	return filepath.Join(os.TempDir(), "termpresence.pid")
+	return filepath.Join(os.TempDir(), "termp.pid")
 }
 
 func readPID(path string) (int, error) {

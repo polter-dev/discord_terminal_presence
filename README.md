@@ -1,8 +1,8 @@
-# termpresence
+# termp
 
 > Working name — final name TBD.
 
-**termpresence** detects which CLI you're running in your terminal —
+**termp** detects which CLI you're running in your terminal —
 [Claude Code](https://claude.com/claude-code) (`claude`), gemini-cli (`gemini`),
 Codex CLI (`codex`), and any other interesting TUI — and shows it as a **Discord Rich
 Presence** activity: a per-tool logo, an optional working directory, an elapsed timer,
@@ -37,19 +37,19 @@ pointing at an image URL in your config — no code changes and no Discord app o
 ## Quickstart (planned)
 
 ```sh
-termpresence start      # run the background daemon
-termpresence status     # show what's currently detected / displayed
-termpresence stop       # stop the daemon
+termp start      # run the background daemon
+termp status     # show what's currently detected / displayed
+termp stop       # stop the daemon
 ```
 
 ## Autostart
 
-Use `termpresence install` to start the daemon at login and let the OS restart it if it
-dies. Use `termpresence uninstall` to remove the login service.
+Use `termp install` to start the daemon at login and let the OS restart it if it
+dies. Use `termp uninstall` to remove the login service.
 
 ## Configuration
 
-Config lives at `~/.config/termpresence/config.toml` (respects `$XDG_CONFIG_HOME`) and is
+Config lives at `~/.config/termp/config.toml` (respects `$XDG_CONFIG_HOME`) and is
 **hot-reloaded** — edits apply without restarting the daemon.
 
 ```toml

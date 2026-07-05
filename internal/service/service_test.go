@@ -47,7 +47,7 @@ func TestLaunchAgentPathsUseHomeAndLabel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(home, "Library", "Logs", "termpresence.log"); logPath != want {
+	if want := filepath.Join(home, "Library", "Logs", "termp.log"); logPath != want {
 		t.Fatalf("launchAgentLogPath() = %q, want %q", logPath, want)
 	}
 }
@@ -65,20 +65,20 @@ func TestSystemdUnitPathUsesHome(t *testing.T) {
 }
 
 func TestBuildLaunchAgentPlist(t *testing.T) {
-	content, err := BuildLaunchAgentPlist("/opt/Term Presence/termpresence", "/tmp/termpresence.log")
+	content, err := BuildLaunchAgentPlist("/opt/Term Presence/termp", "/tmp/termp.log")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(content)
 	for _, want := range []string{
 		"<string>" + Label + "</string>",
-		"<string>/opt/Term Presence/termpresence</string>",
+		"<string>/opt/Term Presence/termp</string>",
 		"<string>start</string>",
 		"<key>RunAtLoad</key>\n\t<true/>",
 		"<key>KeepAlive</key>\n\t<true/>",
 		"<key>StandardOutPath</key>",
 		"<key>StandardErrorPath</key>",
-		"<string>/tmp/termpresence.log</string>",
+		"<string>/tmp/termp.log</string>",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("plist missing %q:\n%s", want, text)
@@ -87,12 +87,12 @@ func TestBuildLaunchAgentPlist(t *testing.T) {
 }
 
 func TestBuildSystemdUnit(t *testing.T) {
-	text := string(BuildSystemdUnit("/opt/Term Presence/termpresence"))
+	text := string(BuildSystemdUnit("/opt/Term Presence/termp"))
 	for _, want := range []string{
 		"[Unit]",
-		"Description=termpresence Discord Rich Presence daemon",
+		"Description=termp Discord Rich Presence daemon",
 		"[Service]",
-		`ExecStart="/opt/Term Presence/termpresence" start`,
+		`ExecStart="/opt/Term Presence/termp" start`,
 		"Restart=on-failure",
 		"[Install]",
 		"WantedBy=default.target",
@@ -112,7 +112,7 @@ func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 		out: map[string]string{},
 	}
 	manager := Manager{GOOS: "darwin", Runner: runner}
-	state, err := manager.Install("/bin/termpresence")
+	state, err := manager.Install("/bin/termp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "<string>/bin/termpresence</string>") || !strings.Contains(text, "<string>start</string>") {
+	if !strings.Contains(text, "<string>/bin/termp</string>") || !strings.Contains(text, "<string>start</string>") {
 		t.Fatalf("plist missing executable/start:\n%s", text)
 	}
 	if len(runner.calls) == 0 {
@@ -143,7 +143,7 @@ func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 		},
 	}
 	manager := Manager{GOOS: "linux", Runner: runner}
-	state, err := manager.Install("/bin/termpresence")
+	state, err := manager.Install("/bin/termp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,13 +156,13 @@ func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "ExecStart=/bin/termpresence start") || !strings.Contains(text, "Restart=on-failure") {
+	if !strings.Contains(text, "ExecStart=/bin/termp start") || !strings.Contains(text, "Restart=on-failure") {
 		t.Fatalf("unit missing executable/restart:\n%s", text)
 	}
 }
 
 func TestUnsupportedOS(t *testing.T) {
-	_, err := (Manager{GOOS: "plan9", Runner: &recordingRunner{}}).Install("/bin/termpresence")
+	_, err := (Manager{GOOS: "plan9", Runner: &recordingRunner{}}).Install("/bin/termp")
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("Install unsupported error = %v, want ErrUnsupported", err)
 	}

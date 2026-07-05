@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	Label       = "dev.termpresence.daemon"
-	ServiceName = "termpresence.service"
+	Label       = "dev.termp.daemon"
+	ServiceName = "termp.service"
 )
 
 // Runner executes service-manager commands. Tests replace it so launchctl and
@@ -118,7 +118,7 @@ func launchAgentLogPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "Library", "Logs", "termpresence.log"), nil
+	return filepath.Join(home, "Library", "Logs", "termp.log"), nil
 }
 
 func systemdUnitPath() (string, error) {
@@ -163,7 +163,7 @@ func BuildLaunchAgentPlist(exe, logPath string) ([]byte, error) {
 
 func BuildSystemdUnit(exe string) []byte {
 	return []byte(fmt.Sprintf(`[Unit]
-Description=termpresence Discord Rich Presence daemon
+Description=termp Discord Rich Presence daemon
 
 [Service]
 ExecStart=%s start

@@ -8,7 +8,7 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 )
 
-// DefaultAppID is termpresence's public Discord Application ID. An application ID is
+// DefaultAppID is termp's public Discord Application ID. An application ID is
 // public (it is sent to every Discord client to render presence) and safe to embed and
 // commit — it is not a secret and requires no bot token.
 const DefaultAppID = "1523168764793847918"
@@ -37,7 +37,7 @@ func DefaultDisplayOptions() DisplayOptions {
 	}
 }
 
-// Activity captures the Discord Rich Presence activity fields termpresence uses.
+// Activity captures the Discord Rich Presence activity fields termp uses.
 type Activity struct {
 	Details        string
 	State          string

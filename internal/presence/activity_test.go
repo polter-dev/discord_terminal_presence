@@ -111,14 +111,14 @@ func TestActivityFromDetectionDirectoryBasename(t *testing.T) {
 			DisplayName: "Gemini CLI",
 			ImageURL:    "https://example.com/gemini.png",
 		},
-		Cwd: "/Users/marcus/work/termpresence",
+		Cwd: "/Users/marcus/work/termp",
 	}
 
 	activity, ok := ActivityFromDetection(detection, options)
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
-	if activity.State != "termpresence" {
+	if activity.State != "termp" {
 		t.Fatalf("state = %q, want basename", activity.State)
 	}
 	if activity.LargeImage.URL != "https://example.com/gemini.png" || activity.LargeImage.Key != "" {
@@ -132,14 +132,14 @@ func TestActivityFromDetectionDirectoryFullPath(t *testing.T) {
 	options.DirectoryBasenameOnly = false
 	detection := detector.Detection{
 		Tool: registry.Tool{DisplayName: "Codex CLI", ImageKey: "codex-cli"},
-		Cwd:  "/Users/marcus/work/termpresence",
+		Cwd:  "/Users/marcus/work/termp",
 	}
 
 	activity, ok := ActivityFromDetection(detection, options)
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
-	if activity.State != "/Users/marcus/work/termpresence" {
+	if activity.State != "/Users/marcus/work/termp" {
 		t.Fatalf("state = %q, want full path", activity.State)
 	}
 }
