@@ -162,14 +162,25 @@ Add custom entries with `[[custom_tools]]`.
 | `display_name` | string | yes | Name shown in Discord. |
 | `match.name` | string | one match required | Exact executable/base name match, case-insensitive. |
 | `match.regex` | string | one match required | Case-insensitive regex matched against executable path and command line. |
-| `image_url` | string | one image required | External raster image URL for Discord. |
-| `image_key` | string | one image required | Uploaded Discord asset key. Most custom tools should use `image_url`. |
+| `image_url` | string | one image or slug required | External raster image URL for Discord. |
+| `image_key` | string | one image or slug required | Uploaded Discord asset key. |
+| `icon_slug` | string | one image or slug required | CDN logo slug resolved automatically. |
+| `icon_source` | string | no | Slug source: `simpleicons` or `lobehub`. Defaults to `simpleicons`. |
 | `priority` | int | no | Tie-breaker when multiple tools match. Higher wins. |
 | `buttons` | array | no | Default buttons for this tool. At most two reach Discord. |
 
-Built-ins use `icon_slug` and `icon_source` internally for dynamic logo
-resolution, but the current TOML loader supports custom-tool images through
-`image_url` or `image_key`.
+Custom tools can use `image_url`, `image_key`, or `icon_slug` for logos.
+Explicit image URLs take precedence over image keys, which take precedence over
+slug resolution.
+
+```toml
+[[custom_tools]]
+id = "lazygit"
+display_name = "lazygit"
+match = { name = "lazygit" }
+icon_slug = "lazygit"
+icon_source = "simpleicons"
+```
 
 ### Example
 

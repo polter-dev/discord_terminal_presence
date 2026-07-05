@@ -143,6 +143,59 @@ priority = 5
 	}
 }
 
+func TestCustomToolIconSlugLoadsAndResolves(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `
+[[custom_tools]]
+id = "slug-tool"
+display_name = "Slug Tool"
+match = { name = "slug-tool" }
+icon_slug = "lazygit"
+icon_source = "simpleicons"
+priority = 11
+
+[[custom_tools]]
+id = "url-wins"
+display_name = "URL Wins"
+match = { name = "url-wins" }
+image_url = "https://example.test/url-wins.png"
+icon_slug = "ignored-slug"
+icon_source = "simpleicons"
+`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CustomTools) != 2 {
+		t.Fatalf("custom tools = %#v", cfg.CustomTools)
+	}
+	slugTool := cfg.CustomTools[0]
+	if slugTool.IconSlug != "lazygit" || slugTool.IconSource != "simpleicons" {
+		t.Fatalf("slug fields not loaded: %#v", slugTool)
+	}
+
+	reg, err := registry.NewWithCustom(cfg.CustomTools...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedSlug, ok := reg.Match("slug-tool")
+	if !ok {
+		t.Fatal("slug-tool did not match")
+	}
+	if !strings.Contains(resolvedSlug.ImageURL, "cdn.simpleicons.org/lazygit") {
+		t.Fatalf("resolved image URL = %q, want Simple Icons CDN slug URL", resolvedSlug.ImageURL)
+	}
+
+	resolvedURL, ok := reg.Match("url-wins")
+	if !ok {
+		t.Fatal("url-wins did not match")
+	}
+	if resolvedURL.ImageURL != "https://example.test/url-wins.png" {
+		t.Fatalf("image_url precedence failed: %q", resolvedURL.ImageURL)
+	}
+}
+
 func TestDurationFallbacks(t *testing.T) {
 	cfg := Default()
 	cfg.ScanInterval = "bad"
@@ -293,7 +346,7 @@ match = { name = "missing-image" }
 	if err == nil {
 		t.Fatal("expected missing image validation error")
 	}
-	if !strings.Contains(err.Error(), "image_key or image_url") {
+	if !strings.Contains(err.Error(), "image_key, image_url, or icon_slug") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -328,7 +381,8 @@ func TestSaveRoundTrip(t *testing.T) {
 		ID:          "mine",
 		DisplayName: "Mine",
 		Match:       registry.CustomMatch{Name: "mine"},
-		ImageURL:    "https://example.test/mine.png",
+		IconSlug:    "lazygit",
+		IconSource:  "simpleicons",
 		Priority:    7,
 		Buttons:     []registry.Button{{Label: "Mine", URL: "https://example.test/mine"}},
 	}}
@@ -371,5 +425,8 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if len(loaded.CustomTools) != 1 || loaded.CustomTools[0].ID != "mine" || loaded.CustomTools[0].Priority != 7 {
 		t.Fatalf("custom tools did not round-trip: %#v", loaded.CustomTools)
+	}
+	if loaded.CustomTools[0].IconSlug != "lazygit" || loaded.CustomTools[0].IconSource != "simpleicons" {
+		t.Fatalf("custom tool slug fields did not round-trip: %#v", loaded.CustomTools[0])
 	}
 }

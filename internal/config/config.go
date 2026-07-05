@@ -90,13 +90,16 @@ type fileConfig struct {
 }
 
 type customTool struct {
-	ID          string            `toml:"id"`
-	DisplayName string            `toml:"display_name"`
-	Match       customMatch       `toml:"match"`
-	ImageKey    string            `toml:"image_key"`
-	ImageURL    string            `toml:"image_url"`
-	Priority    int               `toml:"priority"`
-	Buttons     []registry.Button `toml:"buttons"`
+	ID          string      `toml:"id"`
+	DisplayName string      `toml:"display_name"`
+	Match       customMatch `toml:"match"`
+	ImageKey    string      `toml:"image_key"`
+	ImageURL    string      `toml:"image_url"`
+	IconSlug    string      `toml:"icon_slug"`
+	// IconSource optionally selects "simpleicons" or "lobehub"; empty defaults in registry.
+	IconSource string            `toml:"icon_source"`
+	Priority   int               `toml:"priority"`
+	Buttons    []registry.Button `toml:"buttons"`
 }
 
 type customMatch struct {
@@ -258,10 +261,12 @@ func convertCustomTools(raw []customTool) []registry.CustomTool {
 				Name:  tool.Match.Name,
 				Regex: tool.Match.Regex,
 			},
-			ImageKey: tool.ImageKey,
-			ImageURL: tool.ImageURL,
-			Priority: tool.Priority,
-			Buttons:  append([]registry.Button(nil), tool.Buttons...),
+			ImageKey:   tool.ImageKey,
+			ImageURL:   tool.ImageURL,
+			IconSlug:   tool.IconSlug,
+			IconSource: tool.IconSource,
+			Priority:   tool.Priority,
+			Buttons:    append([]registry.Button(nil), tool.Buttons...),
 		})
 	}
 	return out
@@ -397,8 +402,8 @@ func validate(cfg *Config) error {
 		if strings.TrimSpace(customTool.Match.Name) == "" && strings.TrimSpace(customTool.Match.Regex) == "" {
 			return fmt.Errorf("custom_tools[%d]: match is required", i)
 		}
-		if strings.TrimSpace(customTool.ImageKey) == "" && strings.TrimSpace(customTool.ImageURL) == "" {
-			return fmt.Errorf("custom_tools[%d]: image_key or image_url is required", i)
+		if strings.TrimSpace(customTool.ImageKey) == "" && strings.TrimSpace(customTool.ImageURL) == "" && strings.TrimSpace(customTool.IconSlug) == "" {
+			return fmt.Errorf("custom_tools[%d]: image_key, image_url, or icon_slug is required", i)
 		}
 	}
 	return nil
@@ -491,10 +496,12 @@ func saveCustomTools(tools []registry.CustomTool) []map[string]any {
 				"name":  tool.Match.Name,
 				"regex": tool.Match.Regex,
 			},
-			"image_key": tool.ImageKey,
-			"image_url": tool.ImageURL,
-			"priority":  tool.Priority,
-			"buttons":   saveButtons(tool.Buttons),
+			"image_key":   tool.ImageKey,
+			"image_url":   tool.ImageURL,
+			"icon_slug":   tool.IconSlug,
+			"icon_source": tool.IconSource,
+			"priority":    tool.Priority,
+			"buttons":     saveButtons(tool.Buttons),
 		}
 		out = append(out, entry)
 	}
