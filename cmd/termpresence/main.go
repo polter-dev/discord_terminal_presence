@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,27 +21,40 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/service"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+	verbose bool
+)
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("termpresence: ")
 
-	if len(os.Args) < 2 {
+	command, args, showVersion, err := parseRoot(os.Args[1:])
+	if err != nil {
 		usage()
 		os.Exit(2)
 	}
+	if showVersion {
+		printVersion()
+		return
+	}
 
-	var err error
-	switch os.Args[1] {
+	switch command {
 	case "install":
-		err = install(os.Args[2:])
+		err = install(args)
 	case "uninstall":
-		err = uninstall(os.Args[2:])
+		err = uninstall(args)
 	case "start":
-		err = start(os.Args[2:])
+		err = start(args)
 	case "stop":
-		err = stop(os.Args[2:])
+		err = stop(args)
 	case "status":
-		err = status(os.Args[2:])
+		err = status(args)
+	case "version":
+		err = versionCommand(args)
 	default:
 		usage()
 		os.Exit(2)
@@ -51,11 +65,60 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: termpresence install|uninstall|start|stop|status")
+	fmt.Fprintln(os.Stderr, "usage: termpresence [--verbose] [--version] install|uninstall|start|stop|status|version")
+}
+
+func parseRoot(args []string) (command string, commandArgs []string, showVersion bool, err error) {
+	fs := flag.NewFlagSet("termpresence", flag.ContinueOnError)
+	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
+	fs.BoolVar(&verbose, "v", false, "enable verbose logging")
+	fs.BoolVar(&showVersion, "version", false, "print version information")
+	if err := fs.Parse(args); err != nil {
+		return "", nil, false, err
+	}
+	if showVersion {
+		return "", nil, true, nil
+	}
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		return "", nil, false, flag.ErrHelp
+	}
+	return remaining[0], remaining[1:], false, nil
+}
+
+func addVerboseFlag(fs *flag.FlagSet) {
+	fs.BoolVar(&verbose, "verbose", verbose, "enable verbose logging")
+	fs.BoolVar(&verbose, "v", verbose, "enable verbose logging")
+}
+
+func debugf(format string, args ...any) {
+	if verbose {
+		log.Printf(format, args...)
+	}
+}
+
+func versionCommand(args []string) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	addVerboseFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	printVersion()
+	return nil
+}
+
+func printVersion() {
+	fmt.Print(formatVersion())
+}
+
+func formatVersion() string {
+	return fmt.Sprintf("termpresence %s (%s, %s)\ngo %s\n%s/%s\n",
+		version, commit, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
 
 func start(args []string) error {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	addVerboseFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -108,7 +171,11 @@ func run(ctx context.Context, manager *config.Manager) error {
 		return err
 	}
 
-	writer, err := presence.NewWriter(presence.RichClient{}, presence.DefaultAppID)
+	writerOptions := []presence.WriterOption{}
+	if verbose {
+		writerOptions = append(writerOptions, presence.WithDebugf(debugf))
+	}
+	writer, err := presence.NewWriter(presence.RichClient{}, presence.DefaultAppID, writerOptions...)
 	if err != nil {
 		return err
 	}
@@ -142,15 +209,15 @@ func run(ctx context.Context, manager *config.Manager) error {
 				last, haveLast = detection, true
 				cfg, _ := manager.Current()
 				if detection.None {
-					log.Print("no known terminal tool detected")
+					debugf("scan result: none")
 				} else {
-					log.Printf("detected %s cwd=%s others=%d", detection.Tool.ID, detection.Cwd, len(detection.Others))
+					debugf("scan result: featured=%s cwd=%s others=%s", detection.Tool.ID, detection.Cwd, otherToolIDs(detection.Others))
 				}
 				if !send(buildActivity(cfg, detection)) {
 					return
 				}
 			case <-manager.Changes():
-				log.Print("config reloaded")
+				debugf("config reloaded")
 				if haveLast {
 					cfg, _ := manager.Current()
 					if !send(buildActivity(cfg, last)) {
@@ -165,6 +232,17 @@ func run(ctx context.Context, manager *config.Manager) error {
 
 	writer.RunActivities(ctx, activities)
 	return nil
+}
+
+func otherToolIDs(tools []registry.Tool) string {
+	if len(tools) == 0 {
+		return "none"
+	}
+	ids := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		ids = append(ids, tool.ID)
+	}
+	return strings.Join(ids, ",")
 }
 
 // buildActivity resolves the config for a detection and produces the presence
@@ -229,6 +307,7 @@ func presenceButtons(buttons []registry.Button) []presence.Button {
 
 func stop(args []string) error {
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
+	addVerboseFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -258,6 +337,7 @@ func stop(args []string) error {
 
 func status(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	addVerboseFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -270,6 +350,11 @@ func status(args []string) error {
 	}
 
 	fmt.Printf("running: %t\n", running)
+	if err := presence.Probe(presence.DefaultAppID); err != nil {
+		fmt.Println("discord: not running (start Discord to show presence)")
+	} else {
+		fmt.Println("discord: connected")
+	}
 	serviceState := service.NewManager().Status()
 	fmt.Printf("service_supported: %t\n", serviceState.Supported)
 	if serviceState.Path != "" {
