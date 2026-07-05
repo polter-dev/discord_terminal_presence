@@ -15,12 +15,16 @@ import (
 // SaveFunc persists a settings config.
 type SaveFunc func(config.Config) error
 
+// OpenURLFunc opens a URL outside the TUI.
+type OpenURLFunc func(string) error
+
 type rowKind int
 
 const (
 	rowToggle rowKind = iota
 	rowText
 	rowPin
+	rowLink
 	rowSave
 	rowQuit
 	rowLabel
@@ -44,7 +48,9 @@ type Model struct {
 	input    textinput.Model
 	editing  int
 	save     SaveFunc
+	openURL  OpenURLFunc
 	err      error
+	status   string
 	saved    bool
 	quitting bool
 	styles   styles
@@ -59,7 +65,7 @@ type styles struct {
 }
 
 // NewSettingsModel creates a settings model. Tools are ordered by rankedIDs first.
-func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []string, save SaveFunc) Model {
+func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []string, save SaveFunc, openURL OpenURLFunc) Model {
 	ordered := OrderToolsByUsage(tools, rankedIDs)
 	input := textinput.New()
 	input.Prompt = ""
@@ -72,6 +78,7 @@ func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []stri
 		editing: -1,
 		input:   input,
 		save:    save,
+		openURL: openURL,
 		styles: styles{
 			title:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
 			cursor:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
@@ -197,7 +204,7 @@ func (m Model) View() string {
 				mark = "(*)"
 			}
 			b.WriteString(prefix + mark + " " + row.label)
-		case rowSave, rowQuit:
+		case rowLink, rowSave, rowQuit:
 			label := row.label
 			if i == m.cursor {
 				label = m.styles.selected.Render(label)
@@ -213,6 +220,10 @@ func (m Model) View() string {
 	} else if m.saved {
 		b.WriteString("\n")
 		b.WriteString(m.styles.muted.Render("saved"))
+		b.WriteByte('\n')
+	} else if m.status != "" {
+		b.WriteString("\n")
+		b.WriteString(m.styles.muted.Render(m.status))
 		b.WriteByte('\n')
 	}
 	return b.String()
@@ -246,6 +257,8 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 		} else {
 			m.cfg.Pin = row.id
 		}
+	case rowLink:
+		m.openFeedback()
 	case rowSave:
 		if m.saveConfig() {
 			m.quitting = true
@@ -269,16 +282,37 @@ func (m *Model) saveConfig() bool {
 	if m.save == nil {
 		m.saved = true
 		m.err = nil
+		m.status = ""
 		return true
 	}
 	if err := m.save(m.cfg); err != nil {
 		m.err = err
 		m.saved = false
+		m.status = ""
 		return false
 	}
 	m.err = nil
 	m.saved = true
+	m.status = ""
 	return true
+}
+
+func (m *Model) openFeedback() {
+	url := strings.TrimSpace(m.cfg.FeedbackURL)
+	if url == "" {
+		url = config.DefaultFeedbackURL
+	}
+	m.err = nil
+	m.saved = false
+	if m.openURL == nil {
+		m.status = "Feedback: " + url
+		return
+	}
+	if err := m.openURL(url); err != nil {
+		m.status = "Feedback: " + url
+		return
+	}
+	m.status = "Opened feedback in your browser"
 }
 
 func settingsRows(tools []registry.Tool) []row {
@@ -308,6 +342,7 @@ func settingsRows(tools []registry.Tool) []row {
 		rows = append(rows, row{kind: rowPin, label: label, id: tool.ID})
 	}
 	rows = append(rows,
+		row{kind: rowLink, label: "Leave feedback"},
 		row{kind: rowSave, label: "Save & quit"},
 		row{kind: rowQuit, label: "Quit without saving"},
 	)

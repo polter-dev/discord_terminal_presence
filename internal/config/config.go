@@ -17,6 +17,8 @@ const (
 	defaultConfigDir  = ".config"
 	defaultConfigFile = "config.toml"
 	appConfigDir      = "termp"
+	// DefaultFeedbackURL is an intentional dead-link placeholder pending issue #16.
+	DefaultFeedbackURL = "https://termp.example/feedback"
 )
 
 // Display controls which activity fields are shown by default.
@@ -65,6 +67,7 @@ type Config struct {
 	HeadlinerIdleTimeout string                  `toml:"headliner_idle_timeout"`
 	ActivitySwitching    bool                    `toml:"activity_switching"`
 	DetailsFormat        string                  `toml:"details_format"`
+	FeedbackURL          string                  `toml:"feedback_url"`
 	Display              Display                 `toml:"display"`
 	Privacy              Privacy                 `toml:"privacy"`
 	CTA                  CTA                     `toml:"cta"`
@@ -82,6 +85,7 @@ type fileConfig struct {
 	HeadlinerIdleTimeout string                  `toml:"headliner_idle_timeout"`
 	ActivitySwitching    bool                    `toml:"activity_switching"`
 	DetailsFormat        string                  `toml:"details_format"`
+	FeedbackURL          string                  `toml:"feedback_url"`
 	Display              Display                 `toml:"display"`
 	Privacy              Privacy                 `toml:"privacy"`
 	CTA                  CTA                     `toml:"cta"`
@@ -129,6 +133,7 @@ func Default() Config {
 		HeadlinerIdleTimeout: "60s",
 		ActivitySwitching:    true,
 		DetailsFormat:        "Using {tool}",
+		FeedbackURL:          DefaultFeedbackURL,
 		Display: Display{
 			ToolName:     true,
 			ElapsedTimer: true,
@@ -218,6 +223,7 @@ func LoadPath(path string) (Config, error) {
 		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeout,
 		ActivitySwitching:    cfg.ActivitySwitching,
 		DetailsFormat:        cfg.DetailsFormat,
+		FeedbackURL:          cfg.FeedbackURL,
 		Display:              cfg.Display,
 		Privacy:              cfg.Privacy,
 		CTA:                  cfg.CTA,
@@ -234,6 +240,7 @@ func LoadPath(path string) (Config, error) {
 	cfg.HeadlinerIdleTimeout = raw.HeadlinerIdleTimeout
 	cfg.ActivitySwitching = raw.ActivitySwitching
 	cfg.DetailsFormat = raw.DetailsFormat
+	cfg.FeedbackURL = raw.FeedbackURL
 	cfg.Display = raw.Display
 	cfg.Privacy = raw.Privacy
 	cfg.CTA = raw.CTA
@@ -418,6 +425,7 @@ func saveDocument(cfg Config) map[string]any {
 		"headliner_idle_timeout": cfg.HeadlinerIdleTimeout,
 		"activity_switching":     cfg.ActivitySwitching,
 		"details_format":         cfg.DetailsFormat,
+		"feedback_url":           cfg.FeedbackURL,
 		"display":                saveDisplay(cfg.Display),
 		"privacy":                savePrivacy(cfg.Privacy),
 		"cta":                    saveCTA(cfg.CTA),

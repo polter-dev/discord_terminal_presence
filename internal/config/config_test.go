@@ -50,6 +50,9 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.IdleClearTimeout != "0" || cfg.DetailsFormat != "Using {tool}" {
 		t.Fatalf("unexpected polish defaults: %#v", cfg)
 	}
+	if cfg.FeedbackURL != DefaultFeedbackURL {
+		t.Fatalf("feedback_url default = %q, want %q", cfg.FeedbackURL, DefaultFeedbackURL)
+	}
 	if cfg.Pin != "" || cfg.HeadlinerIdleTimeout != "60s" || !cfg.ActivitySwitching {
 		t.Fatalf("unexpected headliner defaults: %#v", cfg)
 	}
@@ -77,6 +80,7 @@ pin = "codex-cli"
 headliner_idle_timeout = "45s"
 activity_switching = false
 details_format = "Working in {tool}"
+feedback_url = "https://example.test/feedback"
 
 [display]
 tool_name = false
@@ -118,6 +122,9 @@ priority = 5
 	}
 	if cfg.IdleClearTimeout != "8h" || cfg.DetailsFormat != "Working in {tool}" {
 		t.Fatalf("unexpected polish values: %#v", cfg)
+	}
+	if cfg.FeedbackURL != "https://example.test/feedback" {
+		t.Fatalf("feedback_url = %q", cfg.FeedbackURL)
 	}
 	if cfg.Pin != "codex-cli" || cfg.HeadlinerIdleTimeout != "45s" || cfg.ActivitySwitching {
 		t.Fatalf("unexpected headliner values: %#v", cfg)
@@ -361,6 +368,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	cfg.HeadlinerIdleTimeout = "2m"
 	cfg.ActivitySwitching = false
 	cfg.DetailsFormat = "{tool} in {dir}"
+	cfg.FeedbackURL = "https://example.test/feedback"
 	cfg.Display.ToolName = false
 	cfg.Display.Collection = false
 	cfg.CTA.Enabled = false
@@ -399,6 +407,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if loaded.IdleClearTimeout != "6h" || loaded.DetailsFormat != "{tool} in {dir}" {
 		t.Fatalf("polish settings did not round-trip: %#v", loaded)
+	}
+	if loaded.FeedbackURL != "https://example.test/feedback" {
+		t.Fatalf("feedback_url did not round-trip: %#v", loaded)
 	}
 	if loaded.ActivitySwitching || loaded.HeadlinerIdleTimeout != "2m" {
 		t.Fatalf("headliner did not round-trip: %#v", loaded)

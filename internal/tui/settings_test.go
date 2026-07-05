@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -31,7 +33,7 @@ func TestModelTogglePinAndSave(t *testing.T) {
 	}, []string{"codex-cli"}, func(cfg config.Config) error {
 		saved = cfg
 		return nil
-	})
+	}, nil)
 
 	updated, _ := model.Update(key(" "))
 	model = updated.(Model)
@@ -57,7 +59,7 @@ func TestModelTogglePinAndSave(t *testing.T) {
 }
 
 func TestModelTextEdit(t *testing.T) {
-	model := NewSettingsModel(config.Default(), nil, nil, nil)
+	model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
 	model.cursor = findRow(t, model, rowText, "scan_interval")
 
 	updated, _ := model.Update(key("enter"))
@@ -71,6 +73,44 @@ func TestModelTextEdit(t *testing.T) {
 
 	if model.Config().ScanInterval != "3s12s" {
 		t.Fatalf("scan_interval = %q, want 3s12s", model.Config().ScanInterval)
+	}
+}
+
+func TestModelLeaveFeedbackOpensConfiguredURL(t *testing.T) {
+	cfg := config.Default()
+	cfg.FeedbackURL = "https://example.test/feedback-form"
+	var opened string
+	model := NewSettingsModel(cfg, nil, nil, nil, func(url string) error {
+		opened = url
+		return nil
+	})
+	model.cursor = findRow(t, model, rowLink, "Leave feedback")
+
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+
+	if opened != cfg.FeedbackURL {
+		t.Fatalf("opened URL = %q, want %q", opened, cfg.FeedbackURL)
+	}
+	if !strings.Contains(model.View(), "Opened feedback in your browser") {
+		t.Fatalf("view did not show success status:\n%s", model.View())
+	}
+}
+
+func TestModelLeaveFeedbackFailureShowsURL(t *testing.T) {
+	cfg := config.Default()
+	cfg.FeedbackURL = ""
+	model := NewSettingsModel(cfg, nil, nil, nil, func(url string) error {
+		return errors.New("no opener")
+	})
+	model.cursor = findRow(t, model, rowLink, "Leave feedback")
+
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+
+	want := "Feedback: " + config.DefaultFeedbackURL
+	if !strings.Contains(model.View(), want) {
+		t.Fatalf("view did not show fallback URL %q:\n%s", want, model.View())
 	}
 }
 

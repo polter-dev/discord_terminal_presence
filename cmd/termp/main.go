@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -471,9 +472,20 @@ func settings(args []string) error {
 	}
 	model := tui.NewSettingsModel(cfg, reg.Tools(), usageStore.Rank(), func(next config.Config) error {
 		return config.Save(next, config.DefaultPath())
-	})
+	}, openInBrowser)
 	_, err = tea.NewProgram(model).Run()
 	return err
+}
+
+func openInBrowser(url string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", url).Run()
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Run()
+	default:
+		return exec.Command("xdg-open", url).Run()
+	}
 }
 
 func pidFilePath() string {
