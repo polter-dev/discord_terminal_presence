@@ -1,0 +1,323 @@
+package tui
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/polter-dev/discord_terminal_presence/internal/config"
+	"github.com/polter-dev/discord_terminal_presence/internal/registry"
+)
+
+// SaveFunc persists a settings config.
+type SaveFunc func(config.Config) error
+
+type rowKind int
+
+const (
+	rowToggle rowKind = iota
+	rowText
+	rowPin
+	rowSave
+	rowQuit
+	rowLabel
+)
+
+type row struct {
+	kind  rowKind
+	label string
+	id    string
+	get   func(config.Config) bool
+	set   func(*config.Config, bool)
+	text  func(config.Config) string
+	apply func(*config.Config, string)
+}
+
+// Model is the testable Bubble Tea settings model.
+type Model struct {
+	cfg      config.Config
+	rows     []row
+	cursor   int
+	input    textinput.Model
+	editing  int
+	save     SaveFunc
+	err      error
+	saved    bool
+	quitting bool
+	styles   styles
+}
+
+type styles struct {
+	title    lipgloss.Style
+	cursor   lipgloss.Style
+	muted    lipgloss.Style
+	error    lipgloss.Style
+	selected lipgloss.Style
+}
+
+// NewSettingsModel creates a settings model. Tools are ordered by rankedIDs first.
+func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []string, save SaveFunc) Model {
+	ordered := OrderToolsByUsage(tools, rankedIDs)
+	input := textinput.New()
+	input.Prompt = ""
+	input.CharLimit = 32
+	input.Width = 24
+	return Model{
+		cfg:     cfg,
+		rows:    settingsRows(ordered),
+		cursor:  1,
+		editing: -1,
+		input:   input,
+		save:    save,
+		styles: styles{
+			title:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
+			cursor:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
+			muted:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+			error:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
+			selected: lipgloss.NewStyle().Bold(true),
+		},
+	}
+}
+
+// OrderToolsByUsage returns tools ranked by usage first, then by display name.
+func OrderToolsByUsage(tools []registry.Tool, rankedIDs []string) []registry.Tool {
+	byID := make(map[string]registry.Tool, len(tools))
+	for _, tool := range tools {
+		byID[tool.ID] = tool
+	}
+	out := make([]registry.Tool, 0, len(tools))
+	seen := make(map[string]bool, len(tools))
+	for _, id := range rankedIDs {
+		if tool, ok := byID[id]; ok {
+			out = append(out, tool)
+			seen[id] = true
+		}
+	}
+	remaining := make([]registry.Tool, 0, len(tools)-len(out))
+	for _, tool := range tools {
+		if !seen[tool.ID] {
+			remaining = append(remaining, tool)
+		}
+	}
+	sort.SliceStable(remaining, func(i, j int) bool {
+		left := strings.ToLower(remaining[i].DisplayName)
+		right := strings.ToLower(remaining[j].DisplayName)
+		if left != right {
+			return left < right
+		}
+		return remaining[i].ID < remaining[j].ID
+	})
+	return append(out, remaining...)
+}
+
+// Config returns the model's current config.
+func (m Model) Config() config.Config {
+	return m.cfg
+}
+
+// Saved reports whether the model successfully saved.
+func (m Model) Saved() bool {
+	return m.saved
+}
+
+// Err returns the latest save error.
+func (m Model) Err() error {
+	return m.err
+}
+
+func (m Model) Init() tea.Cmd {
+	return nil
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok && m.editing >= 0 {
+		switch key.String() {
+		case "enter":
+			m.commitEdit()
+			return m, nil
+		case "esc":
+			m.editing = -1
+			m.input.Blur()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q", "esc":
+			m.quitting = true
+			return m, tea.Quit
+		case "up", "k":
+			m.move(-1)
+		case "down", "j":
+			m.move(1)
+		case " ", "enter":
+			return m.activate()
+		case "s":
+			m.saveConfig()
+		}
+	}
+	return m, nil
+}
+
+func (m Model) View() string {
+	var b strings.Builder
+	b.WriteString(m.styles.title.Render("termp settings"))
+	b.WriteString("\n\n")
+	for i, row := range m.rows {
+		prefix := "  "
+		if i == m.cursor {
+			prefix = m.styles.cursor.Render("> ")
+		}
+		switch row.kind {
+		case rowLabel:
+			b.WriteString(m.styles.muted.Render(row.label))
+		case rowToggle:
+			mark := "[ ]"
+			if row.get(m.cfg) {
+				mark = "[x]"
+			}
+			b.WriteString(prefix + mark + " " + row.label)
+		case rowText:
+			value := row.text(m.cfg)
+			if m.editing == i {
+				value = m.input.View()
+			}
+			b.WriteString(fmt.Sprintf("%s%s: %s", prefix, row.label, value))
+		case rowPin:
+			mark := "( )"
+			if m.cfg.Pin == row.id {
+				mark = "(*)"
+			}
+			b.WriteString(prefix + mark + " " + row.label)
+		case rowSave, rowQuit:
+			label := row.label
+			if i == m.cursor {
+				label = m.styles.selected.Render(label)
+			}
+			b.WriteString(prefix + label)
+		}
+		b.WriteByte('\n')
+	}
+	if m.err != nil {
+		b.WriteString("\n")
+		b.WriteString(m.styles.error.Render("save failed: " + m.err.Error()))
+		b.WriteByte('\n')
+	} else if m.saved {
+		b.WriteString("\n")
+		b.WriteString(m.styles.muted.Render("saved"))
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func (m *Model) move(delta int) {
+	if len(m.rows) == 0 {
+		return
+	}
+	for {
+		m.cursor = (m.cursor + delta + len(m.rows)) % len(m.rows)
+		if m.rows[m.cursor].kind != rowLabel {
+			return
+		}
+	}
+}
+
+func (m Model) activate() (tea.Model, tea.Cmd) {
+	row := m.rows[m.cursor]
+	switch row.kind {
+	case rowToggle:
+		row.set(&m.cfg, !row.get(m.cfg))
+	case rowText:
+		m.editing = m.cursor
+		m.input.SetValue(row.text(m.cfg))
+		m.input.CursorEnd()
+		m.input.Focus()
+	case rowPin:
+		if m.cfg.Pin == row.id {
+			m.cfg.Pin = ""
+		} else {
+			m.cfg.Pin = row.id
+		}
+	case rowSave:
+		if m.saveConfig() {
+			m.quitting = true
+			return m, tea.Quit
+		}
+	case rowQuit:
+		m.quitting = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m *Model) commitEdit() {
+	row := m.rows[m.editing]
+	row.apply(&m.cfg, strings.TrimSpace(m.input.Value()))
+	m.editing = -1
+	m.input.Blur()
+}
+
+func (m *Model) saveConfig() bool {
+	if m.save == nil {
+		m.saved = true
+		m.err = nil
+		return true
+	}
+	if err := m.save(m.cfg); err != nil {
+		m.err = err
+		m.saved = false
+		return false
+	}
+	m.err = nil
+	m.saved = true
+	return true
+}
+
+func settingsRows(tools []registry.Tool) []row {
+	rows := []row{
+		{kind: rowLabel, label: "Global"},
+		toggle("enabled", func(c config.Config) bool { return c.Enabled }, func(c *config.Config, v bool) { c.Enabled = v }),
+		text("scan_interval", func(c config.Config) string { return c.ScanInterval }, func(c *config.Config, v string) { c.ScanInterval = v }),
+		{kind: rowLabel, label: "Display"},
+		toggle("tool_name", func(c config.Config) bool { return c.Display.ToolName }, func(c *config.Config, v bool) { c.Display.ToolName = v }),
+		toggle("elapsed_timer", func(c config.Config) bool { return c.Display.ElapsedTimer }, func(c *config.Config, v bool) { c.Display.ElapsedTimer = v }),
+		toggle("small_image", func(c config.Config) bool { return c.Display.SmallImage }, func(c *config.Config, v bool) { c.Display.SmallImage = v }),
+		toggle("buttons", func(c config.Config) bool { return c.Display.Buttons }, func(c *config.Config, v bool) { c.Display.Buttons = v }),
+		toggle("collection", func(c config.Config) bool { return c.Display.Collection }, func(c *config.Config, v bool) { c.Display.Collection = v }),
+		{kind: rowLabel, label: "Privacy"},
+		toggle("show_directory", func(c config.Config) bool { return c.Privacy.ShowDirectory }, func(c *config.Config, v bool) { c.Privacy.ShowDirectory = v }),
+		toggle("directory_basename_only", func(c config.Config) bool { return c.Privacy.DirectoryBasenameOnly }, func(c *config.Config, v bool) { c.Privacy.DirectoryBasenameOnly = v }),
+		{kind: rowLabel, label: "Headliner"},
+		toggle("activity_switching", func(c config.Config) bool { return c.ActivitySwitching }, func(c *config.Config, v bool) { c.ActivitySwitching = v }),
+		text("headliner_idle_timeout", func(c config.Config) string { return c.HeadlinerIdleTimeout }, func(c *config.Config, v string) { c.HeadlinerIdleTimeout = v }),
+		{kind: rowLabel, label: "Pin"},
+	}
+	for _, tool := range tools {
+		label := tool.DisplayName
+		if label == "" {
+			label = tool.ID
+		}
+		rows = append(rows, row{kind: rowPin, label: label, id: tool.ID})
+	}
+	rows = append(rows,
+		row{kind: rowSave, label: "Save & quit"},
+		row{kind: rowQuit, label: "Quit without saving"},
+	)
+	return rows
+}
+
+func toggle(label string, get func(config.Config) bool, set func(*config.Config, bool)) row {
+	return row{kind: rowToggle, label: label, get: get, set: set}
+}
+
+func text(label string, get func(config.Config) string, set func(*config.Config, string)) row {
+	return row{kind: rowText, label: label, text: get, apply: set}
+}

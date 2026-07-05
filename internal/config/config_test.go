@@ -270,3 +270,68 @@ match = { name = "missing-image" }
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestSaveRoundTrip(t *testing.T) {
+	path := withConfigHome(t)
+	cfg := Default()
+	cfg.Enabled = false
+	cfg.ScanInterval = "9s"
+	cfg.Pin = "codex-cli"
+	cfg.HeadlinerIdleTimeout = "2m"
+	cfg.ActivitySwitching = false
+	cfg.Display.ToolName = false
+	cfg.Display.Collection = false
+	cfg.Privacy.ShowDirectory = true
+	cfg.Privacy.DirectoryAllowlist = []string{"~/dev"}
+	cfg.Privacy.DirectoryBasenameOnly = false
+	cfg.Tools["claude-code"] = ToolOverride{
+		Enabled:               boolPtr(true),
+		ToolName:              boolPtr(false),
+		ShowDirectory:         boolPtr(true),
+		DirectoryBasenameOnly: boolPtr(true),
+		Buttons:               []registry.Button{{Label: "Claude", URL: "https://example.test/claude"}},
+		buttonsSet:            true,
+	}
+	cfg.CustomTools = []registry.CustomTool{{
+		ID:          "mine",
+		DisplayName: "Mine",
+		Match:       registry.CustomMatch{Name: "mine"},
+		ImageURL:    "https://example.test/mine.png",
+		Priority:    7,
+		Buttons:     []registry.Button{{Label: "Mine", URL: "https://example.test/mine"}},
+	}}
+
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Enabled || loaded.ScanInterval != "9s" || loaded.Pin != "codex-cli" {
+		t.Fatalf("globals did not round-trip: %#v", loaded)
+	}
+	if loaded.ActivitySwitching || loaded.HeadlinerIdleTimeout != "2m" {
+		t.Fatalf("headliner did not round-trip: %#v", loaded)
+	}
+	if loaded.Display.ToolName || loaded.Display.Collection {
+		t.Fatalf("display did not round-trip: %#v", loaded.Display)
+	}
+	if !loaded.Privacy.ShowDirectory || loaded.Privacy.DirectoryBasenameOnly {
+		t.Fatalf("privacy did not round-trip: %#v", loaded.Privacy)
+	}
+	wantAllow := filepath.Join(os.Getenv("HOME"), "dev")
+	if len(loaded.Privacy.DirectoryAllowlist) != 1 || loaded.Privacy.DirectoryAllowlist[0] != wantAllow {
+		t.Fatalf("allowlist = %#v, want %q", loaded.Privacy.DirectoryAllowlist, wantAllow)
+	}
+	override := loaded.Tools["claude-code"]
+	if override.ToolName == nil || *override.ToolName || override.ShowDirectory == nil || !*override.ShowDirectory {
+		t.Fatalf("override did not round-trip: %#v", override)
+	}
+	if len(override.Buttons) != 1 || override.Buttons[0].Label != "Claude" {
+		t.Fatalf("override buttons = %#v", override.Buttons)
+	}
+	if len(loaded.CustomTools) != 1 || loaded.CustomTools[0].ID != "mine" || loaded.CustomTools[0].Priority != 7 {
+		t.Fatalf("custom tools did not round-trip: %#v", loaded.CustomTools)
+	}
+}

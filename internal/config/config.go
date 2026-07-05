@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -140,6 +141,36 @@ func DefaultPath() string {
 // Load reads the default config path. A missing file returns defaults.
 func Load() (Config, error) {
 	return LoadPath(DefaultPath())
+}
+
+// Save writes cfg to path as TOML. The write is atomic within the destination directory.
+func Save(cfg Config, path string) error {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(saveDocument(cfg)); err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // LoadPath reads a TOML config from path. A missing file returns defaults.
@@ -335,6 +366,103 @@ func validate(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func saveDocument(cfg Config) map[string]any {
+	doc := map[string]any{
+		"enabled":                cfg.Enabled,
+		"scan_interval":          cfg.ScanInterval,
+		"pin":                    cfg.Pin,
+		"headliner_idle_timeout": cfg.HeadlinerIdleTimeout,
+		"activity_switching":     cfg.ActivitySwitching,
+		"display":                saveDisplay(cfg.Display),
+		"privacy":                savePrivacy(cfg.Privacy),
+		"tools":                  saveTools(cfg.Tools),
+		"custom_tools":           saveCustomTools(cfg.CustomTools),
+	}
+	return doc
+}
+
+func saveDisplay(display Display) map[string]any {
+	return map[string]any{
+		"tool_name":     display.ToolName,
+		"elapsed_timer": display.ElapsedTimer,
+		"small_image":   display.SmallImage,
+		"collection":    display.Collection,
+		"buttons":       display.Buttons,
+	}
+}
+
+func savePrivacy(privacy Privacy) map[string]any {
+	return map[string]any{
+		"show_directory":          privacy.ShowDirectory,
+		"directory_allowlist":     append([]string(nil), privacy.DirectoryAllowlist...),
+		"directory_basename_only": privacy.DirectoryBasenameOnly,
+	}
+}
+
+func saveTools(tools map[string]ToolOverride) map[string]any {
+	out := make(map[string]any, len(tools))
+	for id, override := range tools {
+		entry := make(map[string]any)
+		if override.Enabled != nil {
+			entry["enabled"] = *override.Enabled
+		}
+		if override.ToolName != nil {
+			entry["tool_name"] = *override.ToolName
+		}
+		if override.ElapsedTimer != nil {
+			entry["elapsed_timer"] = *override.ElapsedTimer
+		}
+		if override.SmallImage != nil {
+			entry["small_image"] = *override.SmallImage
+		}
+		if override.ShowDirectory != nil {
+			entry["show_directory"] = *override.ShowDirectory
+		}
+		if override.allowlistSet || len(override.DirectoryAllowlist) > 0 {
+			entry["directory_allowlist"] = append([]string(nil), override.DirectoryAllowlist...)
+		}
+		if override.DirectoryBasenameOnly != nil {
+			entry["directory_basename_only"] = *override.DirectoryBasenameOnly
+		}
+		if override.buttonsSet || len(override.Buttons) > 0 {
+			entry["buttons"] = saveButtons(override.Buttons)
+		}
+		out[id] = entry
+	}
+	return out
+}
+
+func saveCustomTools(tools []registry.CustomTool) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		entry := map[string]any{
+			"id":           tool.ID,
+			"display_name": tool.DisplayName,
+			"match": map[string]any{
+				"name":  tool.Match.Name,
+				"regex": tool.Match.Regex,
+			},
+			"image_key": tool.ImageKey,
+			"image_url": tool.ImageURL,
+			"priority":  tool.Priority,
+			"buttons":   saveButtons(tool.Buttons),
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func saveButtons(buttons []registry.Button) []map[string]string {
+	out := make([]map[string]string, 0, len(buttons))
+	for _, button := range buttons {
+		out = append(out, map[string]string{
+			"label": button.Label,
+			"url":   button.URL,
+		})
+	}
+	return out
 }
 
 func unknownKeyWarnings(keys []toml.Key) []string {

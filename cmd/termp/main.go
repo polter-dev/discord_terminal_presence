@@ -13,12 +13,16 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 	"github.com/polter-dev/discord_terminal_presence/internal/service"
+	"github.com/polter-dev/discord_terminal_presence/internal/tui"
+	usagepkg "github.com/polter-dev/discord_terminal_presence/internal/usage"
 )
 
 var (
@@ -53,6 +57,8 @@ func main() {
 		err = stop(args)
 	case "status":
 		err = status(args)
+	case "settings":
+		err = settings(args)
 	case "version":
 		err = versionCommand(args)
 	default:
@@ -65,7 +71,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|start|stop|status|version")
+	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|start|stop|status|settings|version")
 }
 
 func parseRoot(args []string) (command string, commandArgs []string, showVersion bool, err error) {
@@ -181,6 +187,26 @@ func run(ctx context.Context, manager *config.Manager) error {
 	}
 
 	detections := det.Run(ctx)
+	usagePath := usagepkg.StatePath()
+	usageStore, err := usagepkg.Load(usagePath)
+	if err != nil {
+		debugf("usage load skipped: %v", err)
+	}
+	lastUsageSave := time.Time{}
+	saveUsage := func(force bool) {
+		if usageStore == nil {
+			return
+		}
+		now := time.Now()
+		if !force && !lastUsageSave.IsZero() && now.Sub(lastUsageSave) < 30*time.Second {
+			return
+		}
+		if err := usagepkg.Save(usagePath, usageStore); err != nil {
+			debugf("usage save skipped: %v", err)
+			return
+		}
+		lastUsageSave = now
+	}
 
 	// Translate detector events into config-resolved activities. A config reload
 	// re-applies the current detection so toggles take effect without waiting for
@@ -212,6 +238,8 @@ func run(ctx context.Context, manager *config.Manager) error {
 					debugf("scan result: none")
 				} else {
 					debugf("scan result: featured=%s cwd=%s others=%s", detection.Tool.ID, detection.Cwd, otherToolIDs(detection.Others))
+					recordUsage(usageStore, detection, time.Now())
+					saveUsage(false)
 				}
 				if !send(buildActivity(cfg, detection)) {
 					return
@@ -231,7 +259,18 @@ func run(ctx context.Context, manager *config.Manager) error {
 	}()
 
 	writer.RunActivities(ctx, activities)
+	saveUsage(true)
 	return nil
+}
+
+func recordUsage(store *usagepkg.Store, detection detector.Detection, now time.Time) {
+	if store == nil || detection.None {
+		return
+	}
+	store.Record(detection.Tool.ID, now)
+	for _, tool := range detection.Others {
+		store.Record(tool.ID, now)
+	}
 }
 
 func otherToolIDs(tools []registry.Tool) string {
@@ -398,6 +437,36 @@ func status(args []string) error {
 	return nil
 }
 
+func settings(args []string) error {
+	fs := flag.NewFlagSet("settings", flag.ContinueOnError)
+	addVerboseFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		fmt.Fprintln(os.Stderr, "termp settings requires an interactive terminal (TTY)")
+		return errors.New("settings requires a TTY")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	reg, err := registry.NewWithCustom(cfg.CustomTools...)
+	if err != nil {
+		return err
+	}
+	usageStore, err := usagepkg.Load(usagepkg.StatePath())
+	if err != nil {
+		debugf("usage load skipped: %v", err)
+		usageStore = usagepkg.New()
+	}
+	model := tui.NewSettingsModel(cfg, reg.Tools(), usageStore.Rank(), func(next config.Config) error {
+		return config.Save(next, config.DefaultPath())
+	})
+	_, err = tea.NewProgram(model).Run()
+	return err
+}
+
 func pidFilePath() string {
 	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
 		return filepath.Join(runtimeDir, "termp.pid")
@@ -437,4 +506,12 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return process.Signal(syscall.Signal(0)) == nil
+}
+
+func isTerminal(file *os.File) bool {
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
