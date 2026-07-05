@@ -110,4 +110,4 @@ Platforms: macOS and Linux first; Windows (named-pipe IPC) later.
 
 ## License
 
-TBD.
+[MIT](LICENSE).
