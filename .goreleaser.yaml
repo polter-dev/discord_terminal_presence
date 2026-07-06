@@ -1,0 +1,68 @@
+version: 2
+
+project_name: termp
+
+builds:
+  - id: termp
+    main: ./cmd/termp
+    binary: termp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+
+archives:
+  - id: termp
+    ids:
+      - termp
+    formats:
+      - tar.gz
+    name_template: "termp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+nfpms:
+  - id: termp
+    ids:
+      - termp
+    package_name: termp
+    vendor: polter-dev
+    homepage: https://github.com/polter-dev/discord_terminal_presence
+    maintainer: polter-dev
+    description: Discord Rich Presence daemon for terminal tools.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+
+brews:
+  - name: termp
+    ids:
+      - termp
+    repository:
+      owner: polter-dev
+      name: homebrew-tap
+    directory: Formula
+    homepage: https://github.com/polter-dev/discord_terminal_presence
+    description: Discord Rich Presence daemon for terminal tools.
+    license: MIT
+    install: |
+      bin.install "termp"
+    test: |
+      assert_match "termp", shell_output("#{bin}/termp version")
+
+release:
+  # The polter-dev/homebrew-tap repository must exist before running goreleaser release.
+  draft: true

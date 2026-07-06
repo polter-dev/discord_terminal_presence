@@ -38,12 +38,43 @@ not a secret.
 
 ## Install
 
+### Homebrew
+
+```sh
+brew install polter-dev/tap/termp
+```
+
+Homebrew installs the prebuilt binary from GitHub Releases on macOS and Linux.
+
+### Shell Installer
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/main/install.sh | sh
+```
+
+The installer downloads the latest matching tarball from GitHub Releases,
+verifies it with `checksums.txt`, and installs `termp` to `/usr/local/bin` by
+default. Set `BINDIR` to choose another install directory or `VERSION` to install
+a specific release tag.
+
+### Linux Packages
+
+Download the `.deb` or `.rpm` package for your architecture from the
+[GitHub Releases](https://github.com/polter-dev/discord_terminal_presence/releases)
+page, then install it with your package manager:
+
+```sh
+sudo dpkg -i ./termp_*.deb
+sudo rpm -i ./termp_*.rpm
+```
+
+### Go Install
+
 ```sh
 go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
 ```
 
-This installs the `termp` binary into your Go bin directory. Prebuilt binaries
-and Homebrew packaging are planned, but are not available yet.
+This installs the `termp` binary into your Go bin directory.
 
 ## Usage
 
