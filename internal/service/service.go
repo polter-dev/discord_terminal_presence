@@ -15,6 +15,7 @@ import (
 const (
 	Label       = "dev.termp.daemon"
 	ServiceName = "termp.service"
+	TaskName    = "termp"
 )
 
 // Runner executes service-manager commands. Tests replace it so launchctl and
@@ -69,6 +70,8 @@ func (m Manager) Install(exe string) (State, error) {
 		return darwinService{runner: m.runner()}.Install(exe)
 	case "linux":
 		return linuxService{runner: m.runner()}.Install(exe)
+	case "windows":
+		return windowsService{runner: m.runner()}.Install(exe)
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
@@ -80,6 +83,8 @@ func (m Manager) Uninstall() (State, error) {
 		return darwinService{runner: m.runner()}.Uninstall()
 	case "linux":
 		return linuxService{runner: m.runner()}.Uninstall()
+	case "windows":
+		return windowsService{runner: m.runner()}.Uninstall()
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
@@ -91,6 +96,8 @@ func (m Manager) Status() State {
 		return darwinService{runner: m.runner()}.Status()
 	case "linux":
 		return linuxService{runner: m.runner()}.Status()
+	case "windows":
+		return windowsService{runner: m.runner()}.Status()
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}
 	}

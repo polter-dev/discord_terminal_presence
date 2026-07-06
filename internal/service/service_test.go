@@ -161,6 +161,67 @@ func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 	}
 }
 
+func TestWindowsInstallCreatesLogonTaskWithoutRealSchtasks(t *testing.T) {
+	runner := &recordingRunner{
+		fail: map[string]error{},
+		out:  map[string]string{},
+	}
+	manager := Manager{GOOS: "windows", Runner: runner}
+	state, err := manager.Install(`C:\Program Files\termp\termp.exe`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Installed || state.Enabled != "true" || state.Loaded != "true" {
+		t.Fatalf("state = %+v, want installed enabled true loaded true", state)
+	}
+	if len(runner.calls) < 1 {
+		t.Fatal("runner was not called")
+	}
+	create := runner.calls[0]
+	for _, want := range []string{
+		"schtasks /Create",
+		"/TN " + TaskName,
+		`/TR "C:\Program Files\termp\termp.exe" start`,
+		"/SC ONLOGON",
+		"/RL LIMITED",
+		"/F",
+	} {
+		if !strings.Contains(create, want) {
+			t.Fatalf("create call missing %q:\n%s", want, create)
+		}
+	}
+}
+
+func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
+	runner := &recordingRunner{
+		fail: map[string]error{
+			"schtasks /Query /TN " + TaskName: errors.New("task not found"),
+		},
+		out: map[string]string{},
+	}
+	manager := Manager{GOOS: "windows", Runner: runner}
+	state, err := manager.Uninstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Installed || state.Enabled != "false" || state.Loaded != "false" {
+		t.Fatalf("state = %+v, want not installed enabled false loaded false", state)
+	}
+	if len(runner.calls) < 1 {
+		t.Fatal("runner was not called")
+	}
+	delete := runner.calls[0]
+	for _, want := range []string{
+		"schtasks /Delete",
+		"/TN " + TaskName,
+		"/F",
+	} {
+		if !strings.Contains(delete, want) {
+			t.Fatalf("delete call missing %q:\n%s", want, delete)
+		}
+	}
+}
+
 func TestUnsupportedOS(t *testing.T) {
 	_, err := (Manager{GOOS: "plan9", Runner: &recordingRunner{}}).Install("/bin/termp")
 	if !errors.Is(err, ErrUnsupported) {
