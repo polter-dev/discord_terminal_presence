@@ -10,6 +10,8 @@ type Client interface {
 }
 
 // RichClient adapts github.com/hugolgst/rich-go/client to the local Client interface.
+// rich-go owns Discord IPC transport selection, including Windows named pipes
+// (\\.\pipe\discord-ipc-0) through gopkg.in/natefinch/npipe.v2.
 type RichClient struct{}
 
 // Login connects to Discord IPC using the public application ID.
