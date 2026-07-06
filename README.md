@@ -76,6 +76,22 @@ go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
 
 This installs the `termp` binary into your Go bin directory.
 
+## Quick Start
+
+Run the setup wizard once:
+
+```sh
+termp setup
+```
+
+The wizard writes your config, asks for explicit autostart consent, and keeps
+privacy-sensitive directory display off unless you opt in. If you enable
+autostart, termp starts automatically at login. To run it immediately, use:
+
+```sh
+termp start
+```
+
 ## Usage
 
 ```sh
@@ -91,6 +107,9 @@ termp start
 | `termp uninstall` | Removes the autostart service. |
 | `termp settings` | Opens the interactive terminal settings TUI. Requires a TTY. |
 | `termp version` | Prints version, commit, build date, Go version, OS, and architecture. |
+| `termp setup` | Opens the install-and-forget onboarding wizard. In non-interactive shells, writes default config and prints next steps. |
+| `termp config init` | Writes a fully-commented sample config to the default config path. Refuses to overwrite unless `--force` is passed. |
+| `termp completion <bash\|zsh\|fish>` | Prints a shell completion script. |
 
 Global flags:
 
@@ -146,6 +165,13 @@ $XDG_CONFIG_HOME/termp/config.toml
 The daemon creates the config directory when it starts and hot-reloads the file.
 Malformed reloads keep the last-good config active; unknown keys are reported as
 warnings in `termp status`.
+
+Create a fully-commented starter config with every default key:
+
+```sh
+termp config init
+termp config init --force
+```
 
 ### Defaults
 
@@ -258,6 +284,24 @@ priority = 90
 buttons = [
   { label = "Project", url = "https://example.com/my-tui" },
 ]
+```
+
+## Shell Completions
+
+Print completion scripts with:
+
+```sh
+termp completion bash
+termp completion zsh
+termp completion fish
+```
+
+Examples:
+
+```sh
+source <(termp completion bash)
+termp completion zsh > "${fpath[1]}/_termp"
+termp completion fish > ~/.config/fish/completions/termp.fish
 ```
 
 ## Tools And Logos

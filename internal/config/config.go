@@ -167,6 +167,69 @@ func DefaultPath() string {
 	return filepath.Join(home, defaultConfigDir, appConfigDir, defaultConfigFile)
 }
 
+// AnnotatedSample returns a fully-commented config file containing every default key.
+func AnnotatedSample() string {
+	cfg := Default()
+	return fmt.Sprintf(`# termp config
+# This file is hot-reloaded by the daemon.
+
+enabled = %t                # Master switch. When false, no Discord presence is shown.
+scan_interval = %q        # How often termp scans local processes.
+idle_clear_timeout = %q       # Clear presence after this much idle time; "0" disables idle clear.
+pin = %q                    # Prefer this tool ID as the headliner when it is running.
+headliner_idle_timeout = %q # How long the current headliner must be idle before switching.
+activity_switching = %t     # Let recent activity switch the headliner after the idle timeout.
+details_format = %q # Details text; {tool} expands to the display name.
+feedback_url = %q # URL opened by the settings feedback action.
+
+[display]
+tool_name = %t              # Show the tool display name in Discord details.
+elapsed_timer = %t          # Show Discord's elapsed timer for the session.
+small_image = %t            # Show an optional small image for another running tool.
+collection = %t             # Show other running tools in the state line when no directory is shown.
+buttons = %t                # Show Discord activity buttons when available.
+
+[privacy]
+show_directory = %t         # Show the working directory on Discord. Off by default.
+directory_allowlist = []    # Optional path prefixes allowed when show_directory is true.
+directory_basename_only = %t # Show only the final directory name instead of the full path.
+
+[cta]
+enabled = %t                # Show the "What is this?" button when fewer than two tool buttons exist.
+label = %q       # Label for the CTA button.
+url = %q       # URL for the CTA button.
+
+# [[custom_tools]]
+# id = "lazygit"            # Stable tool ID.
+# display_name = "lazygit"  # Name shown in Discord.
+# match = { name = "lazygit" } # Match by executable name; regex is also supported.
+# image_url = "https://example.com/lazygit.png" # Logo URL used by Discord.
+# priority = 10              # Higher priority wins when multiple tools match.
+`, cfg.Enabled, cfg.ScanInterval, cfg.IdleClearTimeout, cfg.Pin, cfg.HeadlinerIdleTimeout,
+		cfg.ActivitySwitching, cfg.DetailsFormat, cfg.FeedbackURL,
+		cfg.Display.ToolName, cfg.Display.ElapsedTimer, cfg.Display.SmallImage, cfg.Display.Collection, cfg.Display.Buttons,
+		cfg.Privacy.ShowDirectory, cfg.Privacy.DirectoryBasenameOnly,
+		cfg.CTA.Enabled, cfg.CTA.Label, cfg.CTA.URL)
+}
+
+// InitFile writes the annotated default config, refusing to overwrite unless force is true.
+func InitFile(path string, force bool) error {
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("config already exists: %s", path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, []byte(AnnotatedSample()), 0o644)
+}
+
 // Load reads the default config path. A missing file returns defaults.
 func Load() (Config, error) {
 	return LoadPath(DefaultPath())
