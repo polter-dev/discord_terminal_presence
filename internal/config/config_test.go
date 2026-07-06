@@ -72,6 +72,71 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	}
 }
 
+func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
+	path := withConfigHome(t)
+	if err := InitFile(path, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"enabled = true",
+		"scan_interval = \"3s\"",
+		"idle_clear_timeout = \"0\"",
+		"headliner_idle_timeout = \"60s\"",
+		"activity_switching = true",
+		"details_format = \"Using {tool}\"",
+		"[display]",
+		"[privacy]",
+		"[cta]",
+		"# [[custom_tools]]",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("annotated config missing %q:\n%s", want, content)
+		}
+	}
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ScanInterval != Default().ScanInterval || cfg.CTA.Label != Default().CTA.Label {
+		t.Fatalf("loaded config = %#v, want defaults", cfg)
+	}
+}
+
+func TestInitFileRefusesExistingWithoutForce(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `enabled = false`)
+	if err := InitFile(path, false); err == nil {
+		t.Fatal("InitFile without force should refuse existing config")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `enabled = false` {
+		t.Fatalf("existing config was overwritten: %q", data)
+	}
+}
+
+func TestInitFileForceOverwrites(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `enabled = false`)
+	if err := InitFile(path, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Enabled {
+		t.Fatal("force init should overwrite with default enabled=true")
+	}
+}
+
 func TestLoadValidConfig(t *testing.T) {
 	path := withConfigHome(t)
 	writeConfig(t, path, `

@@ -114,6 +114,84 @@ func TestModelLeaveFeedbackFailureShowsURL(t *testing.T) {
 	}
 }
 
+func TestSetupModelApplyDefaultsInstallsAutostart(t *testing.T) {
+	var saved config.Config
+	var installedExe string
+	model := NewSetupModel(func(cfg config.Config) (string, error) {
+		saved = cfg
+		return "/tmp/config.toml", nil
+	}, func(exe string) error {
+		installedExe = exe
+		return nil
+	}, func() (string, error) {
+		return "/usr/local/bin/termp", nil
+	})
+
+	updated, _ := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("enter"))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("enter"))
+	model = updated.(SetupModel)
+
+	if !model.Applied() {
+		t.Fatal("setup should be applied")
+	}
+	if installedExe != "/usr/local/bin/termp" {
+		t.Fatalf("installed exe = %q", installedExe)
+	}
+	if saved.Privacy.ShowDirectory {
+		t.Fatal("default setup should keep directory display disabled")
+	}
+	if !saved.CTA.Enabled {
+		t.Fatal("default setup should keep CTA enabled")
+	}
+	if !strings.Contains(model.View(), "Setup applied") {
+		t.Fatalf("summary not shown:\n%s", model.View())
+	}
+}
+
+func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
+	var saved config.Config
+	installed := false
+	model := NewSetupModel(func(cfg config.Config) (string, error) {
+		saved = cfg
+		return "/tmp/config.toml", nil
+	}, func(exe string) error {
+		installed = true
+		return nil
+	}, func() (string, error) {
+		return "/usr/local/bin/termp", nil
+	})
+
+	updated, _ := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key(" "))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("down"))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key(" "))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("down"))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key(" "))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("enter"))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("enter"))
+	model = updated.(SetupModel)
+
+	if installed {
+		t.Fatal("install should be skipped when autostart is disabled")
+	}
+	if !saved.Privacy.ShowDirectory {
+		t.Fatal("show_directory choice should be saved")
+	}
+	if saved.CTA.Enabled {
+		t.Fatal("CTA opt-out should be saved")
+	}
+}
+
 func key(value string) tea.KeyMsg {
 	switch value {
 	case " ":
@@ -122,6 +200,8 @@ func key(value string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "s":
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
 	}

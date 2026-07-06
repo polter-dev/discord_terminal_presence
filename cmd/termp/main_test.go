@@ -97,6 +97,23 @@ func TestDebugfEmitsOnlyWhenVerbose(t *testing.T) {
 	}
 }
 
+func TestCompletionScriptsContainCommands(t *testing.T) {
+	commands := []string{"start", "stop", "status", "install", "uninstall", "settings", "version", "setup", "completion"}
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			script, err := completionScript(shell)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, command := range commands {
+				if !strings.Contains(script, command) {
+					t.Fatalf("%s completion missing %q:\n%s", shell, command, script)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildActivityAddsCTAWhenToolHasNoButtons(t *testing.T) {
 	cfg := config.Default()
 	activity := buildActivity(cfg, detectionWithButtons(nil))

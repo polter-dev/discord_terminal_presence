@@ -62,6 +62,12 @@ func main() {
 		err = settings(args)
 	case "version":
 		err = versionCommand(args)
+	case "setup":
+		err = setup(args)
+	case "config":
+		err = configCommand(args)
+	case "completion":
+		err = completion(args)
 	default:
 		usage()
 		os.Exit(2)
@@ -72,7 +78,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|start|stop|status|settings|version")
+	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|start|stop|status|settings|version|setup|config|completion")
 }
 
 func parseRoot(args []string) (command string, commandArgs []string, showVersion bool, err error) {
@@ -121,6 +127,127 @@ func printVersion() {
 func formatVersion() string {
 	return fmt.Sprintf("termp %s (%s, %s)\ngo %s\n%s/%s\n",
 		version, commit, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
+
+func configCommand(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: termp config init [--force]")
+		return flag.ErrHelp
+	}
+	switch args[0] {
+	case "init":
+		return configInit(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, "usage: termp config init [--force]")
+		return flag.ErrHelp
+	}
+}
+
+func configInit(args []string) error {
+	fs := flag.NewFlagSet("config init", flag.ContinueOnError)
+	addVerboseFlag(fs)
+	force := fs.Bool("force", false, "overwrite an existing config")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	path := config.DefaultPath()
+	if err := config.InitFile(path, *force); err != nil {
+		return err
+	}
+	fmt.Println(path)
+	return nil
+}
+
+func setup(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	addVerboseFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	save := func(cfg config.Config) (string, error) {
+		path := config.DefaultPath()
+		return path, config.Save(cfg, path)
+	}
+	installAutostart := func(exe string) error {
+		_, err := service.NewManager().Install(exe)
+		return err
+	}
+	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		path, err := save(config.Default())
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Wrote default config: %s\n", path)
+		fmt.Println("Non-interactive setup skipped autostart. Run `termp install` to enable autostart, then `termp start` to run now.")
+		return nil
+	}
+	model := tui.NewSetupModel(save, installAutostart, service.ResolveExecutable)
+	finalModel, err := tea.NewProgram(model).Run()
+	if err != nil {
+		return err
+	}
+	if setupModel, ok := finalModel.(tui.SetupModel); ok && setupModel.Err() != nil {
+		return setupModel.Err()
+	}
+	return nil
+}
+
+func completion(args []string) error {
+	fs := flag.NewFlagSet("completion", flag.ContinueOnError)
+	addVerboseFlag(fs)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: termp completion <bash|zsh|fish>")
+		fmt.Fprintln(os.Stderr, "bash: source <(termp completion bash)")
+		fmt.Fprintln(os.Stderr, "zsh:  termp completion zsh > ${fpath[1]}/_termp")
+		fmt.Fprintln(os.Stderr, "fish: termp completion fish > ~/.config/fish/completions/termp.fish")
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return flag.ErrHelp
+	}
+	script, err := completionScript(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	fmt.Print(script)
+	return nil
+}
+
+func completionScript(shell string) (string, error) {
+	commands := "start stop status install uninstall settings version setup completion"
+	switch shell {
+	case "bash":
+		return `_termp_complete() {
+  local cur="${COMP_WORDS[COMP_CWORD]}"
+  if [[ ${COMP_CWORD} -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "--verbose -v --version ` + commands + `" -- "$cur") )
+  fi
+}
+complete -F _termp_complete termp
+`, nil
+	case "zsh":
+		return `#compdef termp
+_arguments \
+  '(-v --verbose)'{-v,--verbose}'[enable verbose logging]' \
+  '--version[print version information]' \
+  '1:command:(` + commands + `)' \
+  '*::arg:->args'
+`, nil
+	case "fish":
+		var b strings.Builder
+		b.WriteString("complete -c termp -f\n")
+		b.WriteString("complete -c termp -s v -l verbose -d 'enable verbose logging'\n")
+		b.WriteString("complete -c termp -l version -d 'print version information'\n")
+		for _, command := range strings.Fields(commands) {
+			b.WriteString(fmt.Sprintf("complete -c termp -n '__fish_use_subcommand' -a %s\n", command))
+		}
+		return b.String(), nil
+	default:
+		return "", fmt.Errorf("unsupported shell %q (want bash, zsh, or fish)", shell)
+	}
 }
 
 func start(args []string) error {
