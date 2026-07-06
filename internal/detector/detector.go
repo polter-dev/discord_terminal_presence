@@ -34,6 +34,16 @@ type ProcessLister interface {
 	List() ([]Process, error)
 }
 
+// ProcessIdentityLister can provide cheap identity fields before expensive enrichment.
+type ProcessIdentityLister interface {
+	ListIdentities() ([]Process, error)
+}
+
+// ProcessEnricher fills expensive fields for a process that already matched a known tool.
+type ProcessEnricher interface {
+	Enrich(Process) Process
+}
+
 // FeaturedTool is the headliner tool selected for the primary Discord activity.
 type FeaturedTool struct {
 	Tool      registry.Tool
@@ -153,6 +163,11 @@ func NewSelector(reg *registry.Registry, config Config, clock Clock) *Selector {
 
 // Select returns the collection snapshot for one process list.
 func (s *Selector) Select(processes []Process) Detection {
+	return s.SelectWithEnricher(processes, nil)
+}
+
+// SelectWithEnricher returns the collection snapshot, enriching only matched processes.
+func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnricher) Detection {
 	candidates := make(map[string]toolCandidate)
 	cpuTotals := make(map[string]float64)
 	for _, proc := range processes {
@@ -164,6 +179,9 @@ func (s *Selector) Select(processes []Process) Detection {
 		})
 		if !ok {
 			continue
+		}
+		if enricher != nil {
+			proc = enricher.Enrich(proc)
 		}
 
 		cpuTotals[tool.ID] += proc.CPUTime
@@ -342,11 +360,11 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 	selector := NewSelector(d.registry, d.config, systemClock{})
 
 	scan := func() bool {
-		processes, err := d.lister.List()
+		processes, err := listProcesses(d.lister)
 		if err != nil {
 			processes = nil
 		}
-		current := selector.Select(processes)
+		current := selector.SelectWithEnricher(processes, processEnricher(d.lister))
 
 		if !candidateSet || !sameDetection(current, candidate) {
 			candidate = current
@@ -390,6 +408,18 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 			return
 		}
 	}
+}
+
+func listProcesses(lister ProcessLister) ([]Process, error) {
+	if identityLister, ok := lister.(ProcessIdentityLister); ok {
+		return identityLister.ListIdentities()
+	}
+	return lister.List()
+}
+
+func processEnricher(lister ProcessLister) ProcessEnricher {
+	enricher, _ := lister.(ProcessEnricher)
+	return enricher
 }
 
 func isBetterInstance(left, right FeaturedTool) bool {

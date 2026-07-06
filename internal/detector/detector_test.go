@@ -25,6 +25,27 @@ func (f *fakeLister) List() ([]Process, error) {
 	return f.snapshots[idx], nil
 }
 
+type fakeEnricher struct {
+	processes map[int32]Process
+	enriched  []int32
+}
+
+func newFakeEnricher(processes []Process) *fakeEnricher {
+	enricher := &fakeEnricher{processes: make(map[int32]Process, len(processes))}
+	for _, process := range processes {
+		enricher.processes[process.Pid] = process
+	}
+	return enricher
+}
+
+func (f *fakeEnricher) Enrich(process Process) Process {
+	f.enriched = append(f.enriched, process.Pid)
+	if enriched, ok := f.processes[process.Pid]; ok {
+		return enriched
+	}
+	return process
+}
+
 type channelLister struct {
 	snapshots chan []Process
 	last      []Process
@@ -48,7 +69,7 @@ func (f *channelLister) List() ([]Process, error) {
 	return append([]Process(nil), snapshot...), nil
 }
 
-func testRegistry(t *testing.T) *registry.Registry {
+func testRegistry(t testing.TB) *registry.Registry {
 	t.Helper()
 
 	reg, err := registry.New(
@@ -324,6 +345,47 @@ func TestActiveDetectionMatchesClaudeVersionBinaryAndDedupes(t *testing.T) {
 	}
 	if detection.Cwd != "/new" {
 		t.Fatalf("cwd = %q, want /new", detection.Cwd)
+	}
+}
+
+func TestSelectWithEnricherMatchesFullSnapshotResults(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	full := []Process{
+		{Pid: 1, Name: "bash", Cwd: "/ignored", CreateTime: base.Add(10 * time.Minute), CPUTime: 50},
+		{Pid: 2, Name: "claude", Cwd: "/claude-old", CreateTime: base, CPUTime: 2},
+		{Pid: 3, Name: "codex", Cwd: "/codex", CreateTime: base.Add(time.Minute), CPUTime: 3},
+		{Pid: 4, Name: "nvim", Cwd: "/nvim", CreateTime: base.Add(-time.Minute), CPUTime: 4},
+		{Pid: 5, Name: "claude", Cwd: "/claude-new", CreateTime: base.Add(2 * time.Minute), CPUTime: 5},
+		{Pid: 6, Name: "zsh", Cwd: "/ignored-too", CreateTime: base.Add(20 * time.Minute), CPUTime: 60},
+	}
+	identities := make([]Process, 0, len(full))
+	for _, process := range full {
+		identities = append(identities, Process{
+			Pid:     process.Pid,
+			Name:    process.Name,
+			Exe:     process.Exe,
+			Cmdline: process.Cmdline,
+			Argv0:   process.Argv0,
+		})
+	}
+
+	reg := testRegistry(t)
+	fullDetection := NewSelector(reg, Config{ActivitySwitching: true}, systemClock{}).Select(full)
+	enricher := newFakeEnricher(full)
+	lazyDetection := NewSelector(reg, Config{ActivitySwitching: true}, systemClock{}).
+		SelectWithEnricher(identities, enricher)
+
+	if !sameDetection(fullDetection, lazyDetection) {
+		t.Fatalf("lazy detection = %#v, want %#v", lazyDetection, fullDetection)
+	}
+	wantEnriched := []int32{2, 3, 4, 5}
+	if len(enricher.enriched) != len(wantEnriched) {
+		t.Fatalf("enriched PIDs = %#v, want %#v", enricher.enriched, wantEnriched)
+	}
+	for i := range wantEnriched {
+		if enricher.enriched[i] != wantEnriched[i] {
+			t.Fatalf("enriched PIDs = %#v, want %#v", enricher.enriched, wantEnriched)
+		}
 	}
 }
 

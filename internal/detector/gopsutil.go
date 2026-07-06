@@ -1,6 +1,7 @@
 package detector
 
 import (
+	"strings"
 	"time"
 
 	psprocess "github.com/shirou/gopsutil/v4/process"
@@ -18,56 +19,75 @@ func (GopsutilLister) List() ([]Process, error) {
 
 	out := make([]Process, 0, len(processes))
 	for _, proc := range processes {
-		var name string
-		if resolved, err := proc.Name(); err == nil {
-			name = resolved
-		}
-
-		var exe string
-		if resolved, err := proc.Exe(); err == nil {
-			exe = resolved
-		}
-
-		var cmdline string
-		if resolved, err := proc.Cmdline(); err == nil {
-			cmdline = resolved
-		}
-
-		var argv0 string
-		if args, err := proc.CmdlineSlice(); err == nil && len(args) > 0 {
-			argv0 = args[0]
-		}
-
-		if name == "" && exe == "" && cmdline == "" && argv0 == "" {
+		process := processIdentity(proc)
+		if process.Name == "" && process.Exe == "" && process.Cmdline == "" && process.Argv0 == "" {
 			continue
 		}
 
-		var cwd string
-		if resolved, err := proc.Cwd(); err == nil {
-			cwd = resolved
-		}
-
-		var createTime time.Time
-		if millis, err := proc.CreateTime(); err == nil && millis > 0 {
-			createTime = time.UnixMilli(millis)
-		}
-
-		var cpuTime float64
-		if times, err := proc.Times(); err == nil && times != nil {
-			cpuTime = times.User + times.System
-		}
-
-		out = append(out, Process{
-			Pid:        proc.Pid,
-			Name:       name,
-			Exe:        exe,
-			Cmdline:    cmdline,
-			Argv0:      argv0,
-			Cwd:        cwd,
-			CreateTime: createTime,
-			CPUTime:    cpuTime,
-		})
+		out = append(out, enrichProcess(proc, process))
 	}
 
 	return out, nil
+}
+
+// ListIdentities returns only fields needed for registry matching.
+func (GopsutilLister) ListIdentities() ([]Process, error) {
+	processes, err := psprocess.Processes()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Process, 0, len(processes))
+	for _, proc := range processes {
+		process := processIdentity(proc)
+		if process.Name == "" && process.Exe == "" && process.Cmdline == "" && process.Argv0 == "" {
+			continue
+		}
+		out = append(out, process)
+	}
+	return out, nil
+}
+
+// Enrich resolves fields needed only after a process matches a known tool.
+func (GopsutilLister) Enrich(process Process) Process {
+	proc, err := psprocess.NewProcess(process.Pid)
+	if err != nil {
+		return process
+	}
+	return enrichProcess(proc, process)
+}
+
+func processIdentity(proc *psprocess.Process) Process {
+	process := Process{Pid: proc.Pid}
+	if resolved, err := proc.Name(); err == nil {
+		process.Name = resolved
+	}
+	if resolved, err := proc.Exe(); err == nil {
+		process.Exe = resolved
+	}
+	if args, err := proc.CmdlineSlice(); err == nil {
+		if len(args) > 0 {
+			process.Argv0 = args[0]
+			process.Cmdline = strings.Join(args, " ")
+		}
+	}
+	if process.Cmdline == "" {
+		if resolved, err := proc.Cmdline(); err == nil {
+			process.Cmdline = resolved
+		}
+	}
+	return process
+}
+
+func enrichProcess(proc *psprocess.Process, process Process) Process {
+	if resolved, err := proc.Cwd(); err == nil {
+		process.Cwd = resolved
+	}
+	if millis, err := proc.CreateTime(); err == nil && millis > 0 {
+		process.CreateTime = time.UnixMilli(millis)
+	}
+	if times, err := proc.Times(); err == nil && times != nil {
+		process.CPUTime = times.User + times.System
+	}
+	return process
 }
