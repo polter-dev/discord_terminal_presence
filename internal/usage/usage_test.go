@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -73,5 +74,52 @@ func TestStatePathHonorsXDGStateHome(t *testing.T) {
 	want := filepath.Join(root, appStateDir, defaultStateFile)
 	if got != want {
 		t.Fatalf("StatePath() = %q, want %q", got, want)
+	}
+}
+
+func TestConcurrentRecordRankSaveLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "usage.json")
+	store := New()
+	base := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	toolIDs := []string{"codex-cli", "claude-code", "gemini-cli", "lazygit"}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+	for worker := 0; worker < 8; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				store.Record(toolIDs[(worker+i)%len(toolIDs)], base.Add(time.Duration(worker*100+i)*time.Second))
+				_ = store.Rank()
+				if i%10 == 0 {
+					if err := Save(path, store); err != nil {
+						errs <- err
+						return
+					}
+					if _, err := Load(path); err != nil {
+						errs <- err
+						return
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	if err := Save(path, store); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Rank()) != len(toolIDs) {
+		t.Fatalf("loaded rank = %#v, want %d tools", loaded.Rank(), len(toolIDs))
 	}
 }

@@ -25,6 +25,29 @@ func (f *fakeLister) List() ([]Process, error) {
 	return f.snapshots[idx], nil
 }
 
+type channelLister struct {
+	snapshots chan []Process
+	last      []Process
+}
+
+func newChannelLister(snapshots ...[]Process) *channelLister {
+	lister := &channelLister{snapshots: make(chan []Process, len(snapshots))}
+	for _, snapshot := range snapshots {
+		lister.snapshots <- append([]Process(nil), snapshot...)
+	}
+	close(lister.snapshots)
+	return lister
+}
+
+func (f *channelLister) List() ([]Process, error) {
+	snapshot, ok := <-f.snapshots
+	if !ok {
+		return append([]Process(nil), f.last...), nil
+	}
+	f.last = append([]Process(nil), snapshot...)
+	return append([]Process(nil), snapshot...), nil
+}
+
 func testRegistry(t *testing.T) *registry.Registry {
 	t.Helper()
 
@@ -368,5 +391,61 @@ func TestRunEmitsNoneAfterDebounce(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for none detection")
+	}
+}
+
+func TestRunEmitsDebouncedSequenceAndClosesOnCancel(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	lister := newChannelLister(
+		[]Process{{Name: "claude", CreateTime: base, Cwd: "/claude"}},
+		[]Process{{Name: "bash"}},
+		[]Process{{Name: "claude", CreateTime: base, Cwd: "/claude"}},
+		[]Process{{Name: "claude", CreateTime: base, Cwd: "/claude"}},
+		[]Process{{Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex"}},
+		[]Process{{Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex"}},
+		[]Process{{Name: "bash"}},
+		[]Process{{Name: "bash"}},
+	)
+	det, err := New(testRegistry(t), lister, Config{
+		ScanInterval:   time.Nanosecond,
+		DebounceCycles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := det.Run(ctx)
+
+	got := make([]Detection, 0, 3)
+	for len(got) < 3 {
+		select {
+		case detection, ok := <-ch:
+			if !ok {
+				t.Fatalf("detection channel closed after %d emissions, want 3", len(got))
+			}
+			got = append(got, detection)
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for detection %d", len(got)+1)
+		}
+	}
+	cancel()
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("detection channel remained open after cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for detector shutdown")
+	}
+
+	if got[0].Tool.ID != "claude-code" || got[0].Cwd != "/claude" {
+		t.Fatalf("first detection = %#v, want claude-code /claude", got[0])
+	}
+	if got[1].Tool.ID != "codex-cli" || got[1].Cwd != "/codex" {
+		t.Fatalf("second detection = %#v, want codex-cli /codex", got[1])
+	}
+	if !got[2].None {
+		t.Fatalf("third detection = %#v, want none", got[2])
 	}
 }

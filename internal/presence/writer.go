@@ -134,7 +134,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 	var (
 		desired   *Activity
 		connected bool
-		retry     *time.Timer
+		retry     writeTimer
 		retryC    <-chan time.Time
 		write     writeTimer
 		writeC    <-chan time.Time
@@ -147,12 +147,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		if retry == nil {
 			return
 		}
-		if !retry.Stop() {
-			select {
-			case <-retry.C:
-			default:
-			}
-		}
+		retry.Stop()
 		retry = nil
 		retryC = nil
 	}
@@ -161,8 +156,8 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		stopRetry()
 		delay := w.retryDelay.Next()
 		w.debugf("presence reconnect scheduled in %s", delay)
-		retry = time.NewTimer(delay)
-		retryC = retry.C
+		retry = w.clock.NewTimer(delay)
+		retryC = retry.C()
 	}
 
 	stopWrite := func() {

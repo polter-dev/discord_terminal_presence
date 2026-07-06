@@ -157,6 +157,72 @@ func TestWriterClearsPromptlyWhileUpdateIsThrottled(t *testing.T) {
 	<-done
 }
 
+func TestWriterRunActivitiesReconnectsCoalescesClearsAndShutsDown(t *testing.T) {
+	client := newFakeClient([]error{errors.New("discord unavailable"), nil, nil})
+	client.setSetErrors(errors.New("socket reset"), nil, nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(15*time.Second),
+		withWriteClock(clock),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "first"})
+	clock.waitForTimerCount(t, 1)
+	if got := client.loginCount(); got != 1 {
+		t.Fatalf("login count after first attempt = %d, want 1", got)
+	}
+
+	clock.Advance(0)
+	clock.waitForTimerCount(t, 2)
+	if got := len(client.activities()); got != 1 {
+		t.Fatalf("set attempts after reconnect = %d, want 1", got)
+	}
+
+	clock.Advance(0)
+	client.waitForSet(t, 2)
+	if got := client.loginCount(); got != 3 {
+		t.Fatalf("login count after set failure reconnect = %d, want 3", got)
+	}
+	if got := client.activities()[1].Details; got != "first" {
+		t.Fatalf("reapplied details = %q, want first", got)
+	}
+
+	sendActivity(t, ctx, activities, &Activity{Details: "second"})
+	clock.waitForTimerCount(t, 3)
+	sendActivity(t, ctx, activities, &Activity{Details: "third"})
+	clock.waitForTimerCount(t, 4)
+	if got := len(client.activities()); got != 2 {
+		t.Fatalf("set attempts before throttle interval = %d, want 2", got)
+	}
+
+	clock.Advance(15 * time.Second)
+	client.waitForSet(t, 3)
+	if got := client.activities()[2].Details; got != "third" {
+		t.Fatalf("coalesced details = %q, want third", got)
+	}
+
+	sendActivity(t, ctx, activities, nil)
+	client.waitForLogout(t, 1)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not shut down after context cancellation")
+	}
+}
+
 func sendActivity(t *testing.T, ctx context.Context, ch chan<- *Activity, activity *Activity) {
 	t.Helper()
 	select {
@@ -289,6 +355,7 @@ type fakeClient struct {
 
 	loginErrs []error
 	appIDs    []string
+	setErrs   []error
 
 	setActivities []Activity
 	logoutCalls   int
@@ -303,6 +370,12 @@ func newFakeClient(loginErrs []error) *fakeClient {
 		setChanged:    make(chan struct{}),
 		logoutChanged: make(chan struct{}),
 	}
+}
+
+func (f *fakeClient) setSetErrors(errs ...error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setErrs = append([]error(nil), errs...)
 }
 
 func (f *fakeClient) Login(appID string) error {
@@ -325,6 +398,14 @@ func (f *fakeClient) SetActivity(activity Activity) error {
 	f.setActivities = append(f.setActivities, activity)
 	close(f.setChanged)
 	f.setChanged = make(chan struct{})
+	if len(f.setErrs) == 0 {
+		return nil
+	}
+	err := f.setErrs[0]
+	f.setErrs = f.setErrs[1:]
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

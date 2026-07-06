@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -338,6 +340,68 @@ func TestManagerKeepsLastGoodOnMalformedReload(t *testing.T) {
 	}
 	if cfg.ScanInterval != "7s" {
 		t.Fatalf("last-good scan interval = %q, want 7s", cfg.ScanInterval)
+	}
+}
+
+func TestManagerConcurrentCurrentDuringReloadKeepsLastGood(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `scan_interval = "7s"`)
+	manager := NewManagerPath(path)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	stop := make(chan struct{})
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					cfg, _ := manager.Current()
+					if cfg.ScanInterval != "7s" && cfg.ScanInterval != "9s" {
+						errs <- fmt.Errorf("Current() scan_interval = %q, want last-good value", cfg.ScanInterval)
+						return
+					}
+				}
+			}
+		}()
+	}
+	close(start)
+
+	writeConfig(t, path, `scan_interval = "broken" =`)
+	if err := manager.Reload(); err == nil {
+		t.Fatal("expected malformed reload error")
+	}
+	cfg, err := manager.Current()
+	if err == nil {
+		t.Fatal("expected LastError after malformed reload")
+	}
+	if cfg.ScanInterval != "7s" {
+		t.Fatalf("last-good scan interval after malformed reload = %q, want 7s", cfg.ScanInterval)
+	}
+
+	writeConfig(t, path, `scan_interval = "9s"`)
+	if err := manager.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	close(stop)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	cfg, err = manager.Current()
+	if err != nil {
+		t.Fatalf("Current() err after valid reload = %v", err)
+	}
+	if cfg.ScanInterval != "9s" {
+		t.Fatalf("scan interval after valid reload = %q, want 9s", cfg.ScanInterval)
 	}
 }
 
