@@ -39,6 +39,12 @@ func main() {
 
 	command, args, showVersion, err := parseRoot(os.Args[1:])
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) && len(os.Args) == 1 && isTerminal(os.Stdin) && isTerminal(os.Stdout) {
+			if err := watch(nil); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
 		usage()
 		os.Exit(2)
 	}
@@ -60,6 +66,8 @@ func main() {
 		err = status(args)
 	case "settings":
 		err = settings(args)
+	case "watch":
+		err = watch(args)
 	case "version":
 		err = versionCommand(args)
 	case "setup":
@@ -78,7 +86,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|start|stop|status|settings|version|setup|config|completion")
+	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|start|stop|status|settings|watch|version|setup|config|completion")
 }
 
 func parseRoot(args []string) (command string, commandArgs []string, showVersion bool, err error) {
@@ -217,7 +225,7 @@ func completion(args []string) error {
 }
 
 func completionScript(shell string) (string, error) {
-	commands := "start stop status install uninstall settings version setup completion"
+	commands := "start stop status install uninstall settings watch version setup config completion"
 	switch shell {
 	case "bash":
 		return `_termp_complete() {
@@ -602,6 +610,148 @@ func settings(args []string) error {
 	}, openInBrowser)
 	_, err = tea.NewProgram(model).Run()
 	return err
+}
+
+func watch(args []string) error {
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	addVerboseFlag(fs)
+	once := fs.Bool("once", false, "render one preview snapshot and exit")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *once {
+		card, err := watchSnapshot(time.Now())
+		if err != nil {
+			return err
+		}
+		fmt.Println(card)
+		return nil
+	}
+	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		fmt.Fprintln(os.Stderr, "termp watch requires an interactive terminal (TTY); use --once for scripting")
+		return errors.New("watch requires a TTY")
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	manager := config.NewManager()
+	cfg, loadErr := manager.Current()
+	if loadErr != nil {
+		log.Printf("config load error, using last-good/default config: %v", loadErr)
+	}
+	for _, warning := range cfg.Warnings {
+		log.Print(warning)
+	}
+	if err := config.EnsureConfigDir(cfg.Path); err != nil {
+		log.Printf("config watch disabled: %v", err)
+	} else if err := manager.Watch(ctx); err != nil {
+		log.Printf("config watch disabled: %v", err)
+	}
+
+	reg, err := registry.NewWithCustom(cfg.CustomTools...)
+	if err != nil {
+		return err
+	}
+	det, err := detector.New(reg, detector.GopsutilLister{}, detector.Config{
+		ScanInterval:         cfg.ScanIntervalDuration(),
+		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
+		Pin:                  cfg.Pin,
+		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
+		ActivitySwitching:    cfg.ActivitySwitching,
+	})
+	if err != nil {
+		return err
+	}
+
+	model := tui.NewWatchModel()
+	program := tea.NewProgram(model, tea.WithContext(ctx))
+	detections := det.Run(ctx)
+
+	go bridgeWatchActivities(ctx, manager, detections, program)
+	go bridgeWatchConnection(ctx, program, 5*time.Second)
+
+	_, err = program.Run()
+	cancel()
+	return err
+}
+
+func watchSnapshot(now time.Time) (string, error) {
+	cfg, loadErr := config.Load()
+	if loadErr != nil {
+		debugf("config load error, using last-good/default config: %v", loadErr)
+	}
+	reg, err := registry.NewWithCustom(cfg.CustomTools...)
+	if err != nil {
+		return "", err
+	}
+	processes, err := detector.GopsutilLister{}.List()
+	if err != nil {
+		debugf("watch snapshot scan skipped: %v", err)
+	}
+	detection := detector.ActiveDetection(reg, processes)
+	connected := presence.Probe(presence.DefaultAppID) == nil
+	activity := buildActivity(cfg, detection)
+	recent := []tui.RecentDetection(nil)
+	if activity != nil && detection.Tool.DisplayName != "" {
+		recent = []tui.RecentDetection{{Name: detection.Tool.DisplayName, At: now}}
+	}
+	return tui.RenderCard(tui.CardState{
+		Activity:  activity,
+		Connected: connected,
+		Now:       now,
+		Recent:    recent,
+	}, tui.DefaultCardStyles()), nil
+}
+
+func bridgeWatchActivities(ctx context.Context, manager *config.Manager, detections <-chan detector.Detection, program *tea.Program) {
+	var (
+		last     detector.Detection
+		haveLast bool
+	)
+	send := func(cfg config.Config, detection detector.Detection) {
+		activity := buildActivity(cfg, detection)
+		name := ""
+		if activity != nil {
+			name = detection.Tool.DisplayName
+		}
+		program.Send(tui.ActivityMsg{Activity: activity, FeaturedName: name})
+	}
+	for {
+		select {
+		case detection, ok := <-detections:
+			if !ok {
+				return
+			}
+			last, haveLast = detection, true
+			cfg, _ := manager.Current()
+			send(cfg, detection)
+		case <-manager.Changes():
+			if haveLast {
+				cfg, _ := manager.Current()
+				send(cfg, last)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func bridgeWatchConnection(ctx context.Context, program *tea.Program, interval time.Duration) {
+	send := func() {
+		program.Send(tui.ConnMsg(presence.Probe(presence.DefaultAppID) == nil))
+	}
+	send()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			send()
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func openInBrowser(url string) error {

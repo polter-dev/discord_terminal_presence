@@ -98,7 +98,7 @@ func TestDebugfEmitsOnlyWhenVerbose(t *testing.T) {
 }
 
 func TestCompletionScriptsContainCommands(t *testing.T) {
-	commands := []string{"start", "stop", "status", "install", "uninstall", "settings", "version", "setup", "completion"}
+	commands := []string{"start", "stop", "status", "install", "uninstall", "settings", "watch", "version", "setup", "config", "completion"}
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		t.Run(shell, func(t *testing.T) {
 			script, err := completionScript(shell)
