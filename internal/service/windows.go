@@ -54,15 +54,30 @@ func (s windowsService) Enable() (State, error) {
 
 func (s windowsService) Status() State {
 	state := State{Supported: true, Path: TaskName, Loaded: "unknown", Enabled: "unknown"}
-	if out, err := s.runner.Run("schtasks", "/Query", "/TN", TaskName); err == nil {
-		_ = out
-		state.Installed = true
-		state.Loaded = "true"
-		state.Enabled = "true"
-	} else {
+	out, err := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/FO", "LIST", "/V")
+	if err != nil {
 		state.Installed = false
+		state.Loaded = "false"
+		state.Enabled = "false"
+		return state
+	}
+	state.Installed = true
+	state.Loaded = "true"
+	state.Enabled = "true"
+	if strings.EqualFold(windowsTaskStatus(out), "Disabled") {
 		state.Loaded = "false"
 		state.Enabled = "false"
 	}
 	return state
+}
+
+func windowsTaskStatus(out []byte) string {
+	for _, line := range strings.Split(string(out), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "Status") {
+			continue
+		}
+		return strings.TrimSpace(value)
+	}
+	return ""
 }

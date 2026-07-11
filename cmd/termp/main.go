@@ -534,6 +534,10 @@ func serviceWillRelaunch(state service.State) bool {
 	if !state.Installed {
 		return false
 	}
+	switch strings.ToLower(strings.TrimSpace(state.Enabled)) {
+	case "false", "disabled", "inactive":
+		return false
+	}
 	switch strings.ToLower(strings.TrimSpace(state.Loaded)) {
 	case "true", "active", "activating", "reloading", "running":
 		return true

@@ -113,6 +113,9 @@ func (s darwinService) load(path string) error {
 	}
 	out, err := s.runner.Run("launchctl", "load", "-w", path)
 	if err != nil {
+		if isBenignLaunchctlLoadError(out) {
+			return nil
+		}
 		return fmt.Errorf("launchctl load failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -126,7 +129,37 @@ func (s darwinService) unload(path string) error {
 	}
 	out, err := s.runner.Run("launchctl", "unload", "-w", path)
 	if err != nil {
+		if isBenignLaunchctlUnloadError(out) {
+			return nil
+		}
 		return fmt.Errorf("launchctl unload failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func isBenignLaunchctlLoadError(out []byte) bool {
+	return containsAnyFold(string(out),
+		"already loaded",
+		"service already exists",
+	)
+}
+
+func isBenignLaunchctlUnloadError(out []byte) bool {
+	return containsAnyFold(string(out),
+		"could not find specified service",
+		"no such process",
+		"not found",
+		"not loaded",
+		"service is not loaded",
+	)
+}
+
+func containsAnyFold(text string, needles ...string) bool {
+	text = strings.ToLower(text)
+	for _, needle := range needles {
+		if strings.Contains(text, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
 }

@@ -69,7 +69,10 @@ func disable(args []string) error {
 		fmt.Println("autostart not installed (nothing to disable); run: termp stop")
 		return nil
 	}
-	removePID(pidFilePath())
+	pidPath := pidFilePath()
+	if pid, err := readPID(pidPath); err == nil && !processAlive(pid) {
+		removePID(pidPath)
+	}
 	fmt.Println("disabled: autostart paused (re-enable with: termp enable)")
 	return nil
 }

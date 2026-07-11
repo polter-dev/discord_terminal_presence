@@ -164,6 +164,57 @@ func TestDarwinDisableAndEnableToggleLaunchAgentWithoutRemovingPlist(t *testing.
 	}
 }
 
+func TestDarwinDisableAndEnableAreIdempotent(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		fail map[string]error
+		out  map[string]string
+		run  func(Manager) (State, error)
+	}{
+		{
+			name: "disable already unloaded",
+			fail: map[string]error{
+				"launchctl bootout gui/" + userID() + " " + path: errors.New("not loaded"),
+				"launchctl unload -w " + path:                    errors.New("not loaded"),
+			},
+			out: map[string]string{
+				"launchctl unload -w " + path: "Could not find specified service\n",
+			},
+			run: func(m Manager) (State, error) { return m.Disable() },
+		},
+		{
+			name: "enable already loaded",
+			fail: map[string]error{
+				"launchctl bootstrap gui/" + userID() + " " + path: errors.New("already loaded"),
+				"launchctl load -w " + path:                        errors.New("already loaded"),
+			},
+			out: map[string]string{
+				"launchctl load -w " + path: "service already loaded\n",
+			},
+			run: func(m Manager) (State, error) { return m.Enable() },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingRunner{fail: tt.fail, out: tt.out}
+			manager := Manager{GOOS: "darwin", Runner: runner}
+			if _, err := tt.run(manager); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestDarwinDisableEnableMissingPlistReturnStatusWithoutLaunchctl(t *testing.T) {
 	fakeHome(t)
 	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
@@ -255,7 +306,9 @@ func TestLinuxDisableAndEnableToggleUserService(t *testing.T) {
 func TestWindowsInstallCreatesLogonTaskWithoutRealSchtasks(t *testing.T) {
 	runner := &recordingRunner{
 		fail: map[string]error{},
-		out:  map[string]string{},
+		out: map[string]string{
+			"schtasks /Query /TN " + TaskName + " /FO LIST /V": "Status: Ready\n",
+		},
 	}
 	manager := Manager{GOOS: "windows", Runner: runner}
 	state, err := manager.Install(`C:\Program Files\termp\termp.exe`)
@@ -286,7 +339,9 @@ func TestWindowsInstallCreatesLogonTaskWithoutRealSchtasks(t *testing.T) {
 func TestWindowsDisableAndEnableToggleTaskWithoutRealSchtasks(t *testing.T) {
 	runner := &recordingRunner{
 		fail: map[string]error{},
-		out:  map[string]string{},
+		out: map[string]string{
+			"schtasks /Query /TN " + TaskName + " /FO LIST /V": "Status: Ready\n",
+		},
 	}
 	manager := Manager{GOOS: "windows", Runner: runner}
 
@@ -312,7 +367,7 @@ func TestWindowsDisableAndEnableToggleTaskWithoutRealSchtasks(t *testing.T) {
 func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 	runner := &recordingRunner{
 		fail: map[string]error{
-			"schtasks /Query /TN " + TaskName: errors.New("task not found"),
+			"schtasks /Query /TN " + TaskName + " /FO LIST /V": errors.New("task not found"),
 		},
 		out: map[string]string{},
 	}
@@ -336,6 +391,57 @@ func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 		if !strings.Contains(delete, want) {
 			t.Fatalf("delete call missing %q:\n%s", want, delete)
 		}
+	}
+}
+
+func TestWindowsStatusParsesTaskState(t *testing.T) {
+	tests := []struct {
+		name          string
+		queryOut      string
+		queryErr      error
+		wantInstalled bool
+		wantLoaded    string
+		wantEnabled   string
+	}{
+		{
+			name:          "ready task is enabled",
+			queryOut:      "TaskName: termp\nStatus: Ready\n",
+			wantInstalled: true,
+			wantLoaded:    "true",
+			wantEnabled:   "true",
+		},
+		{
+			name:          "disabled task is not enabled",
+			queryOut:      "TaskName: termp\nStatus: Disabled\n",
+			wantInstalled: true,
+			wantLoaded:    "false",
+			wantEnabled:   "false",
+		},
+		{
+			name:          "absent task is not installed",
+			queryErr:      errors.New("task not found"),
+			wantInstalled: false,
+			wantLoaded:    "false",
+			wantEnabled:   "false",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			query := "schtasks /Query /TN " + TaskName + " /FO LIST /V"
+			runner := &recordingRunner{
+				fail: map[string]error{},
+				out:  map[string]string{query: tt.queryOut},
+			}
+			if tt.queryErr != nil {
+				runner.fail[query] = tt.queryErr
+			}
+
+			state := (Manager{GOOS: "windows", Runner: runner}).Status()
+			if state.Installed != tt.wantInstalled || state.Loaded != tt.wantLoaded || state.Enabled != tt.wantEnabled {
+				t.Fatalf("Status() = %+v, want installed=%t loaded=%q enabled=%q", state, tt.wantInstalled, tt.wantLoaded, tt.wantEnabled)
+			}
+		})
 	}
 }
 
