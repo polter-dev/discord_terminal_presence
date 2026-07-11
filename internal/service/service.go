@@ -90,6 +90,32 @@ func (m Manager) Uninstall() (State, error) {
 	}
 }
 
+func (m Manager) Disable() (State, error) {
+	switch m.GOOS {
+	case "darwin":
+		return darwinService{runner: m.runner()}.Disable()
+	case "linux":
+		return linuxService{runner: m.runner()}.Disable()
+	case "windows":
+		return windowsService{runner: m.runner()}.Disable()
+	default:
+		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
+	}
+}
+
+func (m Manager) Enable() (State, error) {
+	switch m.GOOS {
+	case "darwin":
+		return darwinService{runner: m.runner()}.Enable()
+	case "linux":
+		return linuxService{runner: m.runner()}.Enable()
+	case "windows":
+		return windowsService{runner: m.runner()}.Enable()
+	default:
+		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
+	}
+}
+
 func (m Manager) Status() State {
 	switch m.GOOS {
 	case "darwin":

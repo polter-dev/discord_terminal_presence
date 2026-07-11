@@ -52,6 +52,38 @@ func (s darwinService) Uninstall() (State, error) {
 	return s.Status(), nil
 }
 
+func (s darwinService) Disable() (State, error) {
+	path, err := launchAgentPath()
+	if err != nil {
+		return State{Supported: true}, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return s.Status(), nil
+	} else if err != nil {
+		return State{Supported: true, Path: path}, err
+	}
+	if err := s.unload(path); err != nil {
+		return State{Supported: true, Installed: true, Path: path}, err
+	}
+	return s.Status(), nil
+}
+
+func (s darwinService) Enable() (State, error) {
+	path, err := launchAgentPath()
+	if err != nil {
+		return State{Supported: true}, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return s.Status(), nil
+	} else if err != nil {
+		return State{Supported: true, Path: path}, err
+	}
+	if err := s.load(path); err != nil {
+		return State{Supported: true, Installed: true, Path: path}, err
+	}
+	return s.Status(), nil
+}
+
 func (s darwinService) Status() State {
 	path, err := launchAgentPath()
 	if err != nil {

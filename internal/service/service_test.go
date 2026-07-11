@@ -133,6 +133,63 @@ func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 	}
 }
 
+func TestDarwinDisableAndEnableToggleLaunchAgentWithoutRemovingPlist(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
+	manager := Manager{GOOS: "darwin", Runner: runner}
+
+	if _, err := manager.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("plist should remain after Disable: %v", err)
+	}
+	if !hasCall(runner.calls, "launchctl bootout gui/"+userID()+" "+path) {
+		t.Fatalf("Disable calls = %#v, want launchctl bootout", runner.calls)
+	}
+
+	runner.calls = nil
+	if _, err := manager.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCall(runner.calls, "launchctl bootstrap gui/"+userID()+" "+path) {
+		t.Fatalf("Enable calls = %#v, want launchctl bootstrap", runner.calls)
+	}
+}
+
+func TestDarwinDisableEnableMissingPlistReturnStatusWithoutLaunchctl(t *testing.T) {
+	fakeHome(t)
+	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
+	manager := Manager{GOOS: "darwin", Runner: runner}
+
+	state, err := manager.Disable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Installed {
+		t.Fatalf("Disable state = %+v, want not installed", state)
+	}
+	state, err = manager.Enable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Installed {
+		t.Fatalf("Enable state = %+v, want not installed", state)
+	}
+	for _, call := range runner.calls {
+		if strings.Contains(call, "bootout") || strings.Contains(call, "bootstrap") || strings.Contains(call, "load") || strings.Contains(call, "unload") {
+			t.Fatalf("unexpected launchctl toggle call for missing plist: %#v", runner.calls)
+		}
+	}
+}
+
 func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 	home := fakeHome(t)
 	runner := &recordingRunner{
@@ -158,6 +215,40 @@ func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 	text := string(data)
 	if !strings.Contains(text, "ExecStart=/bin/termp start") || !strings.Contains(text, "Restart=on-failure") {
 		t.Fatalf("unit missing executable/restart:\n%s", text)
+	}
+}
+
+func TestLinuxDisableAndEnableToggleUserService(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{
+		fail: map[string]error{},
+		out: map[string]string{
+			"systemctl --user is-enabled " + ServiceName: "disabled\n",
+			"systemctl --user is-active " + ServiceName:  "inactive\n",
+		},
+	}
+	manager := Manager{GOOS: "linux", Runner: runner}
+
+	if _, err := manager.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCall(runner.calls, "systemctl --user disable --now "+ServiceName) {
+		t.Fatalf("Disable calls = %#v, want systemctl disable --now", runner.calls)
+	}
+
+	runner.calls = nil
+	if _, err := manager.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCall(runner.calls, "systemctl --user enable --now "+ServiceName) {
+		t.Fatalf("Enable calls = %#v, want systemctl enable --now", runner.calls)
 	}
 }
 
@@ -189,6 +280,32 @@ func TestWindowsInstallCreatesLogonTaskWithoutRealSchtasks(t *testing.T) {
 		if !strings.Contains(create, want) {
 			t.Fatalf("create call missing %q:\n%s", want, create)
 		}
+	}
+}
+
+func TestWindowsDisableAndEnableToggleTaskWithoutRealSchtasks(t *testing.T) {
+	runner := &recordingRunner{
+		fail: map[string]error{},
+		out:  map[string]string{},
+	}
+	manager := Manager{GOOS: "windows", Runner: runner}
+
+	if _, err := manager.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCall(runner.calls, "schtasks /Change /TN "+TaskName+" /DISABLE") {
+		t.Fatalf("Disable calls = %#v, want schtasks disable", runner.calls)
+	}
+	if !hasCall(runner.calls, "schtasks /End /TN "+TaskName) {
+		t.Fatalf("Disable calls = %#v, want schtasks end", runner.calls)
+	}
+
+	runner.calls = nil
+	if _, err := manager.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	if !hasCall(runner.calls, "schtasks /Change /TN "+TaskName+" /ENABLE") {
+		t.Fatalf("Enable calls = %#v, want schtasks enable", runner.calls)
 	}
 }
 
@@ -231,4 +348,13 @@ func TestUnsupportedOS(t *testing.T) {
 
 func userID() string {
 	return currentUID()
+}
+
+func hasCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
 }
