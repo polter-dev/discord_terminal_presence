@@ -11,6 +11,7 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
+	"github.com/polter-dev/discord_terminal_presence/internal/service"
 )
 
 func TestFormatVersionIncludesBuildAndPlatform(t *testing.T) {
@@ -98,7 +99,7 @@ func TestDebugfEmitsOnlyWhenVerbose(t *testing.T) {
 }
 
 func TestCompletionScriptsContainCommands(t *testing.T) {
-	commands := []string{"start", "stop", "status", "install", "uninstall", "settings", "watch", "version", "setup", "config", "completion"}
+	commands := []string{"start", "stop", "status", "install", "uninstall", "disable", "enable", "settings", "watch", "version", "setup", "config", "completion"}
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		t.Run(shell, func(t *testing.T) {
 			script, err := completionScript(shell)
@@ -167,6 +168,48 @@ func TestBuildActivitySkipsAllButtonsWhenDisabled(t *testing.T) {
 	}
 	if len(activity.Buttons) != 0 {
 		t.Fatalf("buttons = %#v, want none", activity.Buttons)
+	}
+}
+
+func TestServiceWillRelaunch(t *testing.T) {
+	tests := []struct {
+		name  string
+		state service.State
+		want  bool
+	}{
+		{
+			name:  "not installed",
+			state: service.State{Installed: false},
+			want:  false,
+		},
+		{
+			name:  "loaded active",
+			state: service.State{Installed: true, Loaded: "active"},
+			want:  true,
+		},
+		{
+			name:  "loaded inactive",
+			state: service.State{Installed: true, Loaded: "inactive"},
+			want:  false,
+		},
+		{
+			name:  "loaded true but disabled",
+			state: service.State{Installed: true, Loaded: "true", Enabled: "false"},
+			want:  false,
+		},
+		{
+			name:  "loaded unknown",
+			state: service.State{Installed: true, Loaded: "unknown"},
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := serviceWillRelaunch(tt.state); got != tt.want {
+				t.Fatalf("serviceWillRelaunch(%+v) = %t, want %t", tt.state, got, tt.want)
+			}
+		})
 	}
 }
 

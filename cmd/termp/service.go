@@ -51,3 +51,49 @@ func uninstall(args []string) error {
 	fmt.Printf("removed: %s\n", state.Path)
 	return nil
 }
+
+func disable(args []string) error {
+	fs := flag.NewFlagSet("disable", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	state, err := service.NewManager().Disable()
+	if errors.Is(err, service.ErrUnsupported) {
+		fmt.Println(state.Message)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if !state.Installed {
+		fmt.Println("autostart not installed (nothing to disable); run: termp stop")
+		return nil
+	}
+	pidPath := pidFilePath()
+	if pid, err := readPID(pidPath); err == nil && !processAlive(pid) {
+		removePID(pidPath)
+	}
+	fmt.Println("disabled: autostart paused (re-enable with: termp enable)")
+	return nil
+}
+
+func enable(args []string) error {
+	fs := flag.NewFlagSet("enable", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	state, err := service.NewManager().Enable()
+	if errors.Is(err, service.ErrUnsupported) {
+		fmt.Println(state.Message)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if !state.Installed {
+		fmt.Println("autostart not installed; run: termp install")
+		return nil
+	}
+	fmt.Println("enabled: autostart active")
+	return nil
+}

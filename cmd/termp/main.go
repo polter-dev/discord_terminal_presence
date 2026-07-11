@@ -58,6 +58,10 @@ func main() {
 		err = install(args)
 	case "uninstall":
 		err = uninstall(args)
+	case "disable":
+		err = disable(args)
+	case "enable":
+		err = enable(args)
 	case "start":
 		err = start(args)
 	case "stop":
@@ -86,7 +90,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|start|stop|status|settings|watch|version|setup|config|completion")
+	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|disable|enable|start|stop|status|settings|watch|version|setup|config|completion")
 }
 
 func parseRoot(args []string) (command string, commandArgs []string, showVersion bool, err error) {
@@ -225,7 +229,7 @@ func completion(args []string) error {
 }
 
 func completionScript(shell string) (string, error) {
-	commands := "start stop status install uninstall settings watch version setup config completion"
+	commands := "start stop status install uninstall disable enable settings watch version setup config completion"
 	switch shell {
 	case "bash":
 		return `_termp_complete() {
@@ -515,8 +519,31 @@ func stop(args []string) error {
 		return err
 	}
 	removePID(pidPath)
+	serviceState := service.NewManager().Status()
+	if serviceWillRelaunch(serviceState) {
+		fmt.Printf("stopped (pid %d), but autostart is enabled - the login service will relaunch it.\n", pid)
+		fmt.Println("To pause until next login or manual start: termp disable")
+		fmt.Println("To remove autostart entirely:          termp uninstall")
+		return nil
+	}
 	fmt.Println("stopped")
 	return nil
+}
+
+func serviceWillRelaunch(state service.State) bool {
+	if !state.Installed {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(state.Enabled)) {
+	case "false", "disabled", "inactive":
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(state.Loaded)) {
+	case "true", "active", "activating", "reloading", "running":
+		return true
+	default:
+		return false
+	}
 }
 
 func status(args []string) error {

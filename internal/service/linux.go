@@ -44,6 +44,38 @@ func (s linuxService) Uninstall() (State, error) {
 	return s.Status(), nil
 }
 
+func (s linuxService) Disable() (State, error) {
+	path, err := systemdUnitPath()
+	if err != nil {
+		return State{Supported: true}, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return s.Status(), nil
+	} else if err != nil {
+		return State{Supported: true, Path: path}, err
+	}
+	if out, err := s.runner.Run("systemctl", "--user", "disable", "--now", ServiceName); err != nil {
+		return State{Supported: true, Installed: true, Path: path}, fmt.Errorf("systemctl disable failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return s.Status(), nil
+}
+
+func (s linuxService) Enable() (State, error) {
+	path, err := systemdUnitPath()
+	if err != nil {
+		return State{Supported: true}, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return s.Status(), nil
+	} else if err != nil {
+		return State{Supported: true, Path: path}, err
+	}
+	if out, err := s.runner.Run("systemctl", "--user", "enable", "--now", ServiceName); err != nil {
+		return State{Supported: true, Installed: true, Path: path}, fmt.Errorf("systemctl enable failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return s.Status(), nil
+}
+
 func (s linuxService) Status() State {
 	path, err := systemdUnitPath()
 	if err != nil {
