@@ -157,6 +157,68 @@ func TestWriterClearsPromptlyWhileUpdateIsThrottled(t *testing.T) {
 	<-done
 }
 
+func TestWriterSwitchesDiscordAppIDPerActivity(t *testing.T) {
+	client := newFakeClient(nil)
+	writer, err := NewWriter(client, "default-app", WithMinWriteInterval(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{AppID: "A", Details: "first"})
+	client.waitForSet(t, 1)
+	sendActivity(t, ctx, activities, &Activity{AppID: "B", Details: "second"})
+	client.waitForSet(t, 2)
+
+	if got := client.loginAppIDs(); len(got) != 2 || got[0] != "A" || got[1] != "B" {
+		t.Fatalf("login app IDs = %#v, want [A B]", got)
+	}
+	if got := client.callLog(); len(got) < 4 || got[0] != "login:A" || got[1] != "set:first" || got[2] != "logout" || got[3] != "login:B" {
+		t.Fatalf("calls = %#v, want login A, set first, logout, login B", got)
+	}
+	sets := client.activities()
+	if len(sets) != 2 || sets[0].Details != "first" || sets[1].Details != "second" {
+		t.Fatalf("set activities = %#v, want first and second", sets)
+	}
+
+	cancel()
+	<-done
+}
+
+func TestWriterUsesDefaultAppIDWhenActivityAppIDEmpty(t *testing.T) {
+	client := newFakeClient(nil)
+	writer, err := NewWriter(client, "default-app", WithMinWriteInterval(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "default"})
+	client.waitForSet(t, 1)
+	if got := client.loginAppIDs(); len(got) != 1 || got[0] != "default-app" {
+		t.Fatalf("login app IDs = %#v, want [default-app]", got)
+	}
+
+	cancel()
+	<-done
+}
+
 func TestWriterRunActivitiesReconnectsCoalescesClearsAndShutsDown(t *testing.T) {
 	client := newFakeClient([]error{errors.New("discord unavailable"), nil, nil})
 	client.setSetErrors(errors.New("socket reset"), nil, nil)
@@ -356,6 +418,7 @@ type fakeClient struct {
 	loginErrs []error
 	appIDs    []string
 	setErrs   []error
+	calls     []string
 
 	setActivities []Activity
 	logoutCalls   int
@@ -383,6 +446,7 @@ func (f *fakeClient) Login(appID string) error {
 	defer f.mu.Unlock()
 
 	f.appIDs = append(f.appIDs, appID)
+	f.calls = append(f.calls, "login:"+appID)
 	if len(f.loginErrs) == 0 {
 		return nil
 	}
@@ -396,6 +460,7 @@ func (f *fakeClient) SetActivity(activity Activity) error {
 	defer f.mu.Unlock()
 
 	f.setActivities = append(f.setActivities, activity)
+	f.calls = append(f.calls, "set:"+activity.Details)
 	close(f.setChanged)
 	f.setChanged = make(chan struct{})
 	if len(f.setErrs) == 0 {
@@ -414,6 +479,7 @@ func (f *fakeClient) Logout() error {
 	defer f.mu.Unlock()
 
 	f.logoutCalls++
+	f.calls = append(f.calls, "logout")
 	close(f.logoutChanged)
 	f.logoutChanged = make(chan struct{})
 	return nil
@@ -473,4 +539,10 @@ func (f *fakeClient) activities() []Activity {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]Activity(nil), f.setActivities...)
+}
+
+func (f *fakeClient) callLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
 }

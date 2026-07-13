@@ -434,6 +434,10 @@ func buildActivity(cfg config.Config, detection detector.Detection) *presence.Ac
 	if !resolved.Enabled {
 		return nil
 	}
+	featuredTool := detection.Featured.Tool
+	if featuredTool.ID == "" {
+		featuredTool = detection.Tool
+	}
 
 	displayDir, showDir := resolved.DisplayDirectory(detection.Cwd)
 	detection.Others = enabledOthers(cfg, detection.Others)
@@ -455,6 +459,7 @@ func buildActivity(cfg config.Config, detection detector.Detection) *presence.Ac
 	if !ok {
 		return nil
 	}
+	activity.AppID = cfg.AppIDForTool(featuredTool)
 	if resolved.ButtonsEnabled {
 		activity.Buttons = activityButtons(resolved.Buttons, cfg.CTA)
 	}

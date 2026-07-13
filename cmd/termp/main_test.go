@@ -170,6 +170,33 @@ func TestBuildActivitySkipsAllButtonsWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildActivitySetsConfiguredAppIDForFeaturedTool(t *testing.T) {
+	cfg := config.Default()
+	cfg.AppIDs["featured-tool"] = "featured-app"
+	detection := detector.Detection{
+		Tool: registry.Tool{
+			ID:          "fallback-tool",
+			DisplayName: "Fallback Tool",
+			ImageKey:    "fallback-tool",
+		},
+		Featured: detector.FeaturedTool{
+			Tool: registry.Tool{
+				ID:          "featured-tool",
+				DisplayName: "Featured Tool",
+				ImageKey:    "featured-tool",
+			},
+		},
+	}
+
+	activity := buildActivity(cfg, detection)
+	if activity == nil {
+		t.Fatal("activity = nil, want activity")
+	}
+	if activity.AppID != "featured-app" {
+		t.Fatalf("app ID = %q, want featured-app", activity.AppID)
+	}
+}
+
 func detectionWithButtons(buttons []registry.Button) detector.Detection {
 	return detector.Detection{
 		Tool: registry.Tool{

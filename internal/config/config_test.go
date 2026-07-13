@@ -166,6 +166,9 @@ enabled = false
 label = "Preview termp"
 url = "https://example.test/dead-cta"
 
+[app_ids]
+claude-code = "111111111111111111"
+
 [tools.claude-code]
 enabled = true
 tool_name = true
@@ -175,6 +178,7 @@ buttons = [{ label = "Claude", url = "https://example.test/claude" }]
 [[custom_tools]]
 id = "mine"
 display_name = "Mine"
+app_id = "222222222222222222"
 match = { name = "mine" }
 image_url = "https://example.test/mine.png"
 priority = 5
@@ -202,6 +206,9 @@ priority = 5
 	if cfg.CTA.Enabled || cfg.CTA.Label != "Preview termp" || cfg.CTA.URL != "https://example.test/dead-cta" {
 		t.Fatalf("CTA not loaded: %#v", cfg.CTA)
 	}
+	if cfg.AppIDs["claude-code"] != "111111111111111111" {
+		t.Fatalf("app_ids not loaded: %#v", cfg.AppIDs)
+	}
 	if got := cfg.Privacy.DirectoryAllowlist[0]; got != filepath.Join(os.Getenv("HOME"), "dev") {
 		t.Fatalf("allowlist = %q", got)
 	}
@@ -214,6 +221,9 @@ priority = 5
 	}
 	if len(cfg.CustomTools) != 1 || cfg.CustomTools[0].ID != "mine" || cfg.CustomTools[0].Match.Name != "mine" {
 		t.Fatalf("custom tool not loaded: %#v", cfg.CustomTools)
+	}
+	if cfg.CustomTools[0].AppID != "222222222222222222" {
+		t.Fatalf("custom tool app_id not loaded: %#v", cfg.CustomTools[0])
 	}
 }
 
@@ -368,6 +378,31 @@ directory_basename_only = true
 	}
 }
 
+func TestAppIDForToolResolution(t *testing.T) {
+	cfg := Default()
+	cfg.AppIDs["configured"] = "config-app"
+	cfg.AppIDs["blank"] = "  "
+
+	tests := []struct {
+		name string
+		tool registry.Tool
+		want string
+	}{
+		{name: "config wins", tool: registry.Tool{ID: "configured", AppID: "tool-app"}, want: "config-app"},
+		{name: "tool fallback", tool: registry.Tool{ID: "builtin", AppID: "tool-app"}, want: "tool-app"},
+		{name: "blank config falls back to tool", tool: registry.Tool{ID: "blank", AppID: "tool-app"}, want: "tool-app"},
+		{name: "empty means writer default", tool: registry.Tool{ID: "none"}, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cfg.AppIDForTool(tt.tool); got != tt.want {
+				t.Fatalf("AppIDForTool() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUnknownKeyWarns(t *testing.T) {
 	path := withConfigHome(t)
 	writeConfig(t, path, `
@@ -506,6 +541,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	cfg.Privacy.ShowDirectory = true
 	cfg.Privacy.DirectoryAllowlist = []string{"~/dev"}
 	cfg.Privacy.DirectoryBasenameOnly = false
+	cfg.AppIDs["claude-code"] = "111111111111111111"
 	cfg.Tools["claude-code"] = ToolOverride{
 		Enabled:               boolPtr(true),
 		ToolName:              boolPtr(false),
@@ -517,6 +553,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	cfg.CustomTools = []registry.CustomTool{{
 		ID:          "mine",
 		DisplayName: "Mine",
+		AppID:       "222222222222222222",
 		Match:       registry.CustomMatch{Name: "mine"},
 		IconSlug:    "lazygit",
 		IconSource:  "simpleicons",
@@ -543,6 +580,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	if loaded.ActivitySwitching || loaded.HeadlinerIdleTimeout != "2m" {
 		t.Fatalf("headliner did not round-trip: %#v", loaded)
 	}
+	if loaded.AppIDs["claude-code"] != "111111111111111111" {
+		t.Fatalf("app_ids did not round-trip: %#v", loaded.AppIDs)
+	}
 	if loaded.Display.ToolName || loaded.Display.Collection {
 		t.Fatalf("display did not round-trip: %#v", loaded.Display)
 	}
@@ -568,5 +608,8 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if loaded.CustomTools[0].IconSlug != "lazygit" || loaded.CustomTools[0].IconSource != "simpleicons" {
 		t.Fatalf("custom tool slug fields did not round-trip: %#v", loaded.CustomTools[0])
+	}
+	if loaded.CustomTools[0].AppID != "222222222222222222" {
+		t.Fatalf("custom tool app_id did not round-trip: %#v", loaded.CustomTools[0])
 	}
 }

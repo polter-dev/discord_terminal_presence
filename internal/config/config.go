@@ -72,6 +72,7 @@ type Config struct {
 	Privacy              Privacy                 `toml:"privacy"`
 	CTA                  CTA                     `toml:"cta"`
 	Tools                map[string]ToolOverride `toml:"tools"`
+	AppIDs               map[string]string       `toml:"app_ids"`
 	CustomTools          []registry.CustomTool   `toml:"custom_tools"`
 	Path                 string                  `toml:"-"`
 	Warnings             []string                `toml:"-"`
@@ -90,12 +91,14 @@ type fileConfig struct {
 	Privacy              Privacy                 `toml:"privacy"`
 	CTA                  CTA                     `toml:"cta"`
 	Tools                map[string]ToolOverride `toml:"tools"`
+	AppIDs               map[string]string       `toml:"app_ids"`
 	CustomTools          []customTool            `toml:"custom_tools"`
 }
 
 type customTool struct {
 	ID          string      `toml:"id"`
 	DisplayName string      `toml:"display_name"`
+	AppID       string      `toml:"app_id"`
 	Match       customMatch `toml:"match"`
 	ImageKey    string      `toml:"image_key"`
 	ImageURL    string      `toml:"image_url"`
@@ -151,7 +154,8 @@ func Default() Config {
 			// TODO: replace this intentional placeholder/dead link with the real landing page when it exists.
 			URL: "https://termp.example",
 		},
-		Tools: make(map[string]ToolOverride),
+		Tools:  make(map[string]ToolOverride),
+		AppIDs: make(map[string]string),
 	}
 }
 
@@ -199,9 +203,16 @@ enabled = %t                # Show the "What is this?" button when fewer than tw
 label = %q       # Label for the CTA button.
 url = %q       # URL for the CTA button.
 
+# [app_ids]
+# Registers a Discord Application ID per tool so the presence HEADER shows that tool's name.
+# The app must be named after the tool in the Discord Developer Portal. Unmapped tools use the
+# default termp app. Art-asset image_keys are per-app; prefer image_url for tools with their own app.
+# claude-code = "123456789012345678"
+
 # [[custom_tools]]
 # id = "lazygit"            # Stable tool ID.
 # display_name = "lazygit"  # Name shown in Discord.
+# app_id = "123456789012345678" # Optional Discord Application ID for this custom tool.
 # match = { name = "lazygit" } # Match by executable name; regex is also supported.
 # image_url = "https://example.com/lazygit.png" # Logo URL used by Discord.
 # priority = 10              # Higher priority wins when multiple tools match.
@@ -291,6 +302,7 @@ func LoadPath(path string) (Config, error) {
 		Privacy:              cfg.Privacy,
 		CTA:                  cfg.CTA,
 		Tools:                cfg.Tools,
+		AppIDs:               cfg.AppIDs,
 	}
 	meta, err := toml.Decode(string(data), &raw)
 	if err != nil {
@@ -308,6 +320,7 @@ func LoadPath(path string) (Config, error) {
 	cfg.Privacy = raw.Privacy
 	cfg.CTA = raw.CTA
 	cfg.Tools = raw.Tools
+	cfg.AppIDs = raw.AppIDs
 	cfg.CustomTools = convertCustomTools(raw.CustomTools)
 	cfg.Path = path
 	cfg.Warnings = unknownKeyWarnings(meta.Undecoded())
@@ -327,6 +340,7 @@ func convertCustomTools(raw []customTool) []registry.CustomTool {
 		out = append(out, registry.CustomTool{
 			ID:          tool.ID,
 			DisplayName: tool.DisplayName,
+			AppID:       tool.AppID,
 			Match: registry.CustomMatch{
 				Name:  tool.Match.Name,
 				Regex: tool.Match.Regex,
@@ -346,6 +360,17 @@ func DefaultWithPath(path string) Config {
 	cfg := Default()
 	cfg.Path = path
 	return cfg
+}
+
+// AppIDForTool returns the Discord Application ID configured for a tool. Empty
+// means callers should use their default application ID.
+func (c Config) AppIDForTool(tool registry.Tool) string {
+	if c.AppIDs != nil {
+		if appID := strings.TrimSpace(c.AppIDs[tool.ID]); appID != "" {
+			return appID
+		}
+	}
+	return strings.TrimSpace(tool.AppID)
 }
 
 // ScanIntervalDuration parses ScanInterval, falling back to 3s for invalid values.
@@ -493,6 +518,7 @@ func saveDocument(cfg Config) map[string]any {
 		"privacy":                savePrivacy(cfg.Privacy),
 		"cta":                    saveCTA(cfg.CTA),
 		"tools":                  saveTools(cfg.Tools),
+		"app_ids":                saveAppIDs(cfg.AppIDs),
 		"custom_tools":           saveCustomTools(cfg.CustomTools),
 	}
 	return doc
@@ -557,12 +583,21 @@ func saveTools(tools map[string]ToolOverride) map[string]any {
 	return out
 }
 
+func saveAppIDs(appIDs map[string]string) map[string]string {
+	out := make(map[string]string, len(appIDs))
+	for id, appID := range appIDs {
+		out[id] = appID
+	}
+	return out
+}
+
 func saveCustomTools(tools []registry.CustomTool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
 		entry := map[string]any{
 			"id":           tool.ID,
 			"display_name": tool.DisplayName,
+			"app_id":       tool.AppID,
 			"match": map[string]any{
 				"name":  tool.Match.Name,
 				"regex": tool.Match.Regex,
@@ -666,6 +701,13 @@ func cloneConfig(cfg Config) Config {
 			tools[id] = override
 		}
 		cfg.Tools = tools
+	}
+	if cfg.AppIDs != nil {
+		appIDs := make(map[string]string, len(cfg.AppIDs))
+		for id, appID := range cfg.AppIDs {
+			appIDs[id] = appID
+		}
+		cfg.AppIDs = appIDs
 	}
 	cfg.CustomTools = append([]registry.CustomTool(nil), cfg.CustomTools...)
 	for i := range cfg.CustomTools {

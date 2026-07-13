@@ -132,15 +132,16 @@ func (w *Writer) Run(ctx context.Context, detections <-chan detector.Detection) 
 // unavailable, re-applying the current activity once it reconnects.
 func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity) {
 	var (
-		desired   *Activity
-		connected bool
-		retry     writeTimer
-		retryC    <-chan time.Time
-		write     writeTimer
-		writeC    <-chan time.Time
-		lastWrite time.Time
-		wrote     bool
-		pending   bool
+		desired      *Activity
+		connected    bool
+		currentAppID string
+		retry        writeTimer
+		retryC       <-chan time.Time
+		write        writeTimer
+		writeC       <-chan time.Time
+		lastWrite    time.Time
+		wrote        bool
+		pending      bool
 	)
 
 	stopRetry := func() {
@@ -185,6 +186,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		if connected {
 			_ = w.client.Logout()
 			connected = false
+			currentAppID = ""
 		}
 	}
 
@@ -192,18 +194,30 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		if desired == nil {
 			return
 		}
+		target := desired.AppID
+		if target == "" {
+			target = w.appID
+		}
+		if connected && currentAppID != target {
+			w.debugf("presence app switch %q -> %q", currentAppID, target)
+			_ = w.client.Logout()
+			connected = false
+			currentAppID = ""
+		}
 		if !connected {
 			w.debugf("presence connect attempt")
-			if err := w.client.Login(w.appID); err != nil {
+			if err := w.client.Login(target); err != nil {
 				w.debugf("presence connect failed: %v", err)
 				scheduleRetry()
 				return
 			}
 			connected = true
+			currentAppID = target
 		}
 		if err := w.client.SetActivity(*desired); err != nil {
 			w.debugf("presence push failed: %v", err)
 			connected = false
+			currentAppID = ""
 			scheduleRetry()
 			return
 		}
@@ -238,6 +252,8 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		stopWrite()
 		if connected {
 			_ = w.client.Logout()
+			connected = false
+			currentAppID = ""
 		}
 	}()
 

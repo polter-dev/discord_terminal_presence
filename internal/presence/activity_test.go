@@ -15,6 +15,7 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 			Tool: registry.Tool{
 				ID:          "claude-code",
 				DisplayName: "Claude Code",
+				AppID:       "tool-app-id",
 				ImageKey:    "claude-code",
 				Buttons: []registry.Button{
 					{Label: "One", URL: "https://example.com/one"},
@@ -28,6 +29,7 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 		Tool: registry.Tool{
 			ID:          "claude-code",
 			DisplayName: "Claude Code",
+			AppID:       "tool-app-id",
 			ImageKey:    "claude-code",
 			Buttons: []registry.Button{
 				{Label: "One", URL: "https://example.com/one"},
@@ -49,6 +51,9 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 	}
 	if activity.Details != "Using Claude Code" {
 		t.Fatalf("details = %q, want %q", activity.Details, "Using Claude Code")
+	}
+	if activity.AppID != "tool-app-id" {
+		t.Fatalf("app id = %q, want tool app id", activity.AppID)
 	}
 	if activity.State != "also: lazygit · Neovim" {
 		t.Fatalf("state = %q, want collection summary", activity.State)

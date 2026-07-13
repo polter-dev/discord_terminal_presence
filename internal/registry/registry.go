@@ -56,6 +56,7 @@ type ProcessInfo struct {
 type Tool struct {
 	ID          string
 	DisplayName string
+	AppID       string
 	Match       MatchSpec
 	ImageKey    string
 	ImageURL    string
@@ -77,6 +78,7 @@ type CustomMatch struct {
 type CustomTool struct {
 	ID          string
 	DisplayName string
+	AppID       string
 	Match       CustomMatch
 	ImageKey    string
 	ImageURL    string
@@ -123,6 +125,7 @@ func NewWithCustom(custom ...CustomTool) (*Registry, error) {
 		tools = append(tools, Tool{
 			ID:          customTool.ID,
 			DisplayName: customTool.DisplayName,
+			AppID:       customTool.AppID,
 			Match: MatchSpec{
 				Name:  customTool.Match.Name,
 				Regex: customTool.Match.Regex,
@@ -300,6 +303,7 @@ func builtinTools() ([]Tool, error) {
 		tools = append(tools, Tool{
 			ID:          entry.ID,
 			DisplayName: entry.DisplayName,
+			AppID:       entry.AppID,
 			Match: MatchSpec{
 				Name:  entry.Match.Name,
 				Regex: entry.Match.Regex,
@@ -319,6 +323,7 @@ func builtinTools() ([]Tool, error) {
 type catalogTool struct {
 	ID          string       `json:"id"`
 	DisplayName string       `json:"display_name"`
+	AppID       string       `json:"app_id"`
 	Match       catalogMatch `json:"match"`
 	ImageKey    string       `json:"image_key"`
 	ImageURL    string       `json:"image_url"`
