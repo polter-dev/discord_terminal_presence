@@ -322,7 +322,7 @@ func run(ctx context.Context, manager *config.Manager) error {
 	if verbose {
 		writerOptions = append(writerOptions, presence.WithDebugf(debugf))
 	}
-	writer, err := presence.NewWriter(presence.RichClient{}, presence.DefaultAppID, writerOptions...)
+	writer, err := presence.NewWriter(&presence.RichClient{}, presence.DefaultAppID, writerOptions...)
 	if err != nil {
 		return err
 	}

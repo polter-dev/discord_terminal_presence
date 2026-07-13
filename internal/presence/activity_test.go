@@ -47,6 +47,9 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
+	if activity.Name != "Claude Code" {
+		t.Fatalf("name = %q, want featured tool display name", activity.Name)
+	}
 	if activity.Details != "Using Claude Code" {
 		t.Fatalf("details = %q, want %q", activity.Details, "Using Claude Code")
 	}

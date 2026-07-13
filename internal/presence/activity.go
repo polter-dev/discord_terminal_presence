@@ -42,6 +42,7 @@ func DefaultDisplayOptions() DisplayOptions {
 
 // Activity captures the Discord Rich Presence activity fields termp uses.
 type Activity struct {
+	Name           string
 	Details        string
 	State          string
 	LargeImage     Image
@@ -74,6 +75,7 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		tool = detection.Tool
 	}
 	activity := Activity{
+		Name: tool.DisplayName,
 		LargeImage: Image{
 			Key:  tool.ImageKey,
 			URL:  tool.ImageURL,
