@@ -47,21 +47,22 @@ nfpms:
       - rpm
     bindir: /usr/bin
 
-brews:
+homebrew_casks:
   - name: termp
-    ids:
+    binaries:
       - termp
     repository:
       owner: polter-dev
       name: homebrew-tap
-    directory: Formula
+    directory: Casks
     homepage: https://github.com/polter-dev/discord_terminal_presence
     description: Discord Rich Presence daemon for terminal tools.
-    license: MIT
-    install: |
-      bin.install "termp"
-    test: |
-      assert_match "termp", shell_output("#{bin}/termp version")
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/termp"]
+          end
 
 release:
   # The polter-dev/homebrew-tap repository must exist before running goreleaser release.
