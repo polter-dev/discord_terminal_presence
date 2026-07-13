@@ -294,7 +294,7 @@ func writeJSONFrame(writer io.Writer, opcode uint32, value any) error {
 	if err != nil {
 		return fmt.Errorf("encode JSON: %w", err)
 	}
-	if len(payload) > math.MaxUint32 {
+	if uint64(len(payload)) > math.MaxUint32 {
 		return fmt.Errorf("JSON payload is too large: %d bytes", len(payload))
 	}
 
