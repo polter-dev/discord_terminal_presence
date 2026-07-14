@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 )
@@ -60,10 +61,13 @@ func TestModelTogglePinAndSave(t *testing.T) {
 
 func TestModelTextEdit(t *testing.T) {
 	model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
-	model.cursor = findRow(t, model, rowText, "scan_interval")
+	model.cursor = findRow(t, model, rowText, "Scan interval")
 
 	updated, _ := model.Update(key("enter"))
 	model = updated.(Model)
+	if !strings.Contains(model.View(), "type to edit  •  enter apply  •  esc cancel") {
+		t.Fatalf("editing key hints not shown:\n%s", model.View())
+	}
 	for _, r := range "12s" {
 		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		model = updated.(Model)
@@ -73,6 +77,55 @@ func TestModelTextEdit(t *testing.T) {
 
 	if model.Config().ScanInterval != "3s12s" {
 		t.Fatalf("scan_interval = %q, want 3s12s", model.Config().ScanInterval)
+	}
+}
+
+func TestModelNavigationSkipsSectionHeaders(t *testing.T) {
+	model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
+	model.cursor = findRow(t, model, rowText, "Scan interval")
+
+	updated, _ := model.Update(key("down"))
+	model = updated.(Model)
+
+	if got := model.rows[model.cursor]; got.kind != rowToggle || got.label != "Tool name" {
+		t.Fatalf("down from Scan interval selected %#v, want Tool name toggle", got)
+	}
+}
+
+func TestModelViewRendersAlignedFriendlyTableAndFooter(t *testing.T) {
+	model := NewSettingsModel(config.Default(), []registry.Tool{
+		{ID: "codex-cli", DisplayName: "Codex CLI"},
+	}, nil, nil, nil)
+	view := model.View()
+
+	for _, want := range []string{
+		"Setting", "State / Value",
+		"Global", "Display", "Privacy", "Headliner", "Pin",
+		"Presence enabled", "Scan interval", "Folder: name only",
+		"Activity switching", "Spotlight idle timeout", "Codex CLI",
+		"Leave feedback", "Save & quit", "Quit without saving",
+		"enter/space activate, toggle, or edit", "s save", "q/esc/ctrl+c quit",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() missing %q:\n%s", want, view)
+		}
+	}
+	for _, rawKey := range []string{"scan_interval", "directory_basename_only", "headliner_idle_timeout"} {
+		if strings.Contains(view, rawKey) {
+			t.Errorf("View() contains raw config key %q:\n%s", rawKey, view)
+		}
+	}
+	if !strings.Contains(view, "› Presence enabled") {
+		t.Errorf("View() does not mark the selected row:\n%s", view)
+	}
+
+	presenceLine := lineContaining(t, view, "Presence enabled")
+	scanLine := lineContaining(t, view, "Scan interval")
+	if got, want := visibleColumn(presenceLine, "Presence enabled"), visibleColumn(scanLine, "Scan interval"); got != want {
+		t.Errorf("setting columns are not aligned: Presence enabled at %d, Scan interval at %d", got, want)
+	}
+	if got, want := visibleColumn(presenceLine, "On"), visibleColumn(scanLine, model.Config().ScanInterval); got != want {
+		t.Errorf("value columns are not aligned: On at %d, scan interval at %d", got, want)
 	}
 }
 
@@ -216,4 +269,23 @@ func findRow(t *testing.T, model Model, kind rowKind, idOrLabel string) int {
 	}
 	t.Fatalf("row %v %q not found", kind, idOrLabel)
 	return -1
+}
+
+func lineContaining(t *testing.T, text, needle string) string {
+	t.Helper()
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	t.Fatalf("line containing %q not found", needle)
+	return ""
+}
+
+func visibleColumn(line, needle string) int {
+	index := strings.Index(line, needle)
+	if index < 0 {
+		return -1
+	}
+	return lipgloss.Width(line[:index])
 }

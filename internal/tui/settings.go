@@ -1,13 +1,13 @@
 package tui
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 )
@@ -84,7 +84,7 @@ func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []stri
 			cursor:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
 			muted:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 			error:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
-			selected: lipgloss.NewStyle().Bold(true),
+			selected: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
 		},
 	}
 }
@@ -178,41 +178,8 @@ func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.styles.title.Render("termp settings"))
 	b.WriteString("\n\n")
-	for i, row := range m.rows {
-		prefix := "  "
-		if i == m.cursor {
-			prefix = m.styles.cursor.Render("> ")
-		}
-		switch row.kind {
-		case rowLabel:
-			b.WriteString(m.styles.muted.Render(row.label))
-		case rowToggle:
-			mark := "[ ]"
-			if row.get(m.cfg) {
-				mark = "[x]"
-			}
-			b.WriteString(prefix + mark + " " + row.label)
-		case rowText:
-			value := row.text(m.cfg)
-			if m.editing == i {
-				value = m.input.View()
-			}
-			b.WriteString(fmt.Sprintf("%s%s: %s", prefix, row.label, value))
-		case rowPin:
-			mark := "( )"
-			if m.cfg.Pin == row.id {
-				mark = "(*)"
-			}
-			b.WriteString(prefix + mark + " " + row.label)
-		case rowLink, rowSave, rowQuit:
-			label := row.label
-			if i == m.cursor {
-				label = m.styles.selected.Render(label)
-			}
-			b.WriteString(prefix + label)
-		}
-		b.WriteByte('\n')
-	}
+	b.WriteString(m.settingsTable())
+	b.WriteByte('\n')
 	if m.err != nil {
 		b.WriteString("\n")
 		b.WriteString(m.styles.error.Render("save failed: " + m.err.Error()))
@@ -226,7 +193,80 @@ func (m Model) View() string {
 		b.WriteString(m.styles.muted.Render(m.status))
 		b.WriteByte('\n')
 	}
+	b.WriteString("\n")
+	if m.editing >= 0 {
+		b.WriteString(m.styles.muted.Render("type to edit  •  enter apply  •  esc cancel"))
+	} else {
+		b.WriteString(m.styles.muted.Render("↑/k ↓/j navigate  •  enter/space activate, toggle, or edit\ns save  •  q/esc/ctrl+c quit"))
+	}
+	b.WriteByte('\n')
 	return b.String()
+}
+
+func (m Model) settingsTable() string {
+	rows := make([][]string, 0, len(m.rows))
+	for i, row := range m.rows {
+		rows = append(rows, m.rowCells(i, row))
+	}
+
+	return table.New().
+		Headers("Setting", "State / Value").
+		Rows(rows...).
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(m.styles.muted).
+		BorderRow(false).
+		StyleFunc(func(rowIndex, _ int) lipgloss.Style {
+			style := lipgloss.NewStyle().Padding(0, 1)
+			switch {
+			case rowIndex == table.HeaderRow:
+				return style.Inherit(m.styles.title)
+			case m.rows[rowIndex].kind == rowLabel:
+				return style.Inherit(m.styles.title)
+			case rowIndex == m.cursor:
+				return style.Inherit(m.styles.selected)
+			default:
+				return style
+			}
+		}).
+		String()
+}
+
+func (m Model) rowCells(index int, row row) []string {
+	label := "  " + row.label
+	if index == m.cursor {
+		label = "› " + row.label
+	}
+
+	switch row.kind {
+	case rowLabel:
+		return []string{"  " + row.label, ""}
+	case rowToggle:
+		value := "Off"
+		if row.get(m.cfg) {
+			value = "On"
+		}
+		return []string{label, value}
+	case rowText:
+		value := row.text(m.cfg)
+		if m.editing == index {
+			value = m.input.View()
+		}
+		return []string{label, value}
+	case rowPin:
+		value := "—"
+		if m.cfg.Pin == row.id {
+			value = "Pinned"
+		}
+		return []string{label, value}
+	case rowLink:
+		return []string{label, "Open in browser"}
+	case rowSave:
+		return []string{label, "Write changes and exit"}
+	case rowQuit:
+		return []string{label, "Exit without saving"}
+	default:
+		return []string{label, ""}
+	}
 }
 
 func (m *Model) move(delta int) {
@@ -318,20 +358,20 @@ func (m *Model) openFeedback() {
 func settingsRows(tools []registry.Tool) []row {
 	rows := []row{
 		{kind: rowLabel, label: "Global"},
-		toggle("enabled", func(c config.Config) bool { return c.Enabled }, func(c *config.Config, v bool) { c.Enabled = v }),
-		text("scan_interval", func(c config.Config) string { return c.ScanInterval }, func(c *config.Config, v string) { c.ScanInterval = v }),
+		toggle("Presence enabled", func(c config.Config) bool { return c.Enabled }, func(c *config.Config, v bool) { c.Enabled = v }),
+		text("Scan interval", func(c config.Config) string { return c.ScanInterval }, func(c *config.Config, v string) { c.ScanInterval = v }),
 		{kind: rowLabel, label: "Display"},
-		toggle("tool_name", func(c config.Config) bool { return c.Display.ToolName }, func(c *config.Config, v bool) { c.Display.ToolName = v }),
-		toggle("elapsed_timer", func(c config.Config) bool { return c.Display.ElapsedTimer }, func(c *config.Config, v bool) { c.Display.ElapsedTimer = v }),
-		toggle("small_image", func(c config.Config) bool { return c.Display.SmallImage }, func(c *config.Config, v bool) { c.Display.SmallImage = v }),
-		toggle("buttons", func(c config.Config) bool { return c.Display.Buttons }, func(c *config.Config, v bool) { c.Display.Buttons = v }),
-		toggle("collection", func(c config.Config) bool { return c.Display.Collection }, func(c *config.Config, v bool) { c.Display.Collection = v }),
+		toggle("Tool name", func(c config.Config) bool { return c.Display.ToolName }, func(c *config.Config, v bool) { c.Display.ToolName = v }),
+		toggle("Elapsed timer", func(c config.Config) bool { return c.Display.ElapsedTimer }, func(c *config.Config, v bool) { c.Display.ElapsedTimer = v }),
+		toggle("Small image", func(c config.Config) bool { return c.Display.SmallImage }, func(c *config.Config, v bool) { c.Display.SmallImage = v }),
+		toggle("Buttons", func(c config.Config) bool { return c.Display.Buttons }, func(c *config.Config, v bool) { c.Display.Buttons = v }),
+		toggle("Collection label", func(c config.Config) bool { return c.Display.Collection }, func(c *config.Config, v bool) { c.Display.Collection = v }),
 		{kind: rowLabel, label: "Privacy"},
-		toggle("show_directory", func(c config.Config) bool { return c.Privacy.ShowDirectory }, func(c *config.Config, v bool) { c.Privacy.ShowDirectory = v }),
-		toggle("directory_basename_only", func(c config.Config) bool { return c.Privacy.DirectoryBasenameOnly }, func(c *config.Config, v bool) { c.Privacy.DirectoryBasenameOnly = v }),
+		toggle("Show folder", func(c config.Config) bool { return c.Privacy.ShowDirectory }, func(c *config.Config, v bool) { c.Privacy.ShowDirectory = v }),
+		toggle("Folder: name only", func(c config.Config) bool { return c.Privacy.DirectoryBasenameOnly }, func(c *config.Config, v bool) { c.Privacy.DirectoryBasenameOnly = v }),
 		{kind: rowLabel, label: "Headliner"},
-		toggle("activity_switching", func(c config.Config) bool { return c.ActivitySwitching }, func(c *config.Config, v bool) { c.ActivitySwitching = v }),
-		text("headliner_idle_timeout", func(c config.Config) string { return c.HeadlinerIdleTimeout }, func(c *config.Config, v string) { c.HeadlinerIdleTimeout = v }),
+		toggle("Activity switching", func(c config.Config) bool { return c.ActivitySwitching }, func(c *config.Config, v bool) { c.ActivitySwitching = v }),
+		text("Spotlight idle timeout", func(c config.Config) string { return c.HeadlinerIdleTimeout }, func(c *config.Config, v string) { c.HeadlinerIdleTimeout = v }),
 		{kind: rowLabel, label: "Pin"},
 	}
 	for _, tool := range tools {
