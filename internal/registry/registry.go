@@ -22,9 +22,8 @@ const (
 	simpleIconsURLTemplate = "https://wsrv.nl/?url=cdn.simpleicons.org/%s&output=png&w=256&h=256"
 	lobehubURLTemplate     = "https://unpkg.com/@lobehub/icons-static-png@1.91.0/dark/%s.png"
 
-	// GenericLogoURL is a raster fallback so a tool is never blank (a terminal glyph).
-	// TODO: replace with a project-owned terminal PNG asset.
-	GenericLogoURL = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f5a5.png"
+	// GenericLogoURL is termp's own raster mark, used as the fallback so a tool is never blank.
+	GenericLogoURL = "https://termp.polter.sh/discord-app-icon.png"
 )
 
 //go:embed catalog.json
