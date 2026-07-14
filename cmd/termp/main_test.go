@@ -16,6 +16,7 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 	"github.com/polter-dev/discord_terminal_presence/internal/service"
+	updatepkg "github.com/polter-dev/discord_terminal_presence/internal/update"
 )
 
 var expectedCommands = []string{
@@ -121,6 +122,57 @@ func TestFormatVersionIncludesBuildAndPlatform(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("formatVersion() = %q, want substring %q", got, want)
+		}
+	}
+}
+
+func TestUpdateNoticeHasNoANSIWithoutColorSupport(t *testing.T) {
+	result := updatepkg.Result{Current: "1.0.0", Latest: "1.1.0", Command: updatepkg.BrewCommand}
+	for _, renderer := range []*lipgloss.Renderer{nil, newInstallRenderer(os.Stdout, true, true)} {
+		got := formatUpdateNotice(result, renderer, 80)
+		if strings.Contains(got, "\x1b") {
+			t.Fatalf("plain update notice contains ANSI: %q", got)
+		}
+	}
+}
+
+func TestUpdateNoticeUsesColorWhenSupported(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	renderer := lipgloss.NewRenderer(output)
+	renderer.SetColorProfile(termenv.ANSI256)
+	result := updatepkg.Result{Current: "1.0.0", Latest: "1.1.0", Command: updatepkg.BrewCommand}
+	if got := formatUpdateNotice(result, renderer, 80); !strings.Contains(got, "\x1b") {
+		t.Fatalf("color update notice contains no ANSI: %q", got)
+	}
+}
+
+func TestUpdateNoticeLinesStayWithinOutputWidth(t *testing.T) {
+	commands := []string{updatepkg.BrewCommand, updatepkg.GoCommand, updatepkg.GenericCommand}
+	for _, width := range []int{20, 40, 80, 120} {
+		for _, command := range commands {
+			result := updatepkg.Result{Current: "1.0.0+abc123", Latest: "v12.34.56+def456", Command: command}
+			got := formatUpdateNotice(result, nil, width)
+			maxWidth := min(max(width, 20), maxInstallCTAWidth)
+			for lineNumber, line := range strings.Split(got, "\n") {
+				if lineWidth := lipgloss.Width(line); lineWidth > maxWidth {
+					t.Fatalf("width %d line %d is %d columns: %q", width, lineNumber+1, lineWidth, line)
+				}
+			}
+		}
+	}
+}
+
+func TestWrappedUpdateCommandsRemainCopyPasteable(t *testing.T) {
+	for _, command := range []string{updatepkg.BrewCommand, updatepkg.GoCommand, updatepkg.GenericCommand} {
+		for _, width := range []int{20, 40, 80} {
+			wrapped := strings.Join(wrapShellCommand(command, width), "\n")
+			if got := strings.ReplaceAll(wrapped, "\\\n", ""); got != command {
+				t.Fatalf("width %d unwrapped command = %q, want %q", width, got, command)
+			}
 		}
 	}
 }

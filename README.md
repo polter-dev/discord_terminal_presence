@@ -51,7 +51,9 @@ share — it's not a password or secret.
 - **Edit config without restarting** — change the TOML file and it takes effect
   right away. If you make a mistake, termp keeps using the last version that worked.
 - **Private by default** — no tracking, your folder name stays hidden, and
-  starting at login is opt-in.
+  starting at login is opt-in. `termp status` and `termp version` make an
+  anonymous GitHub Releases version check at most once every 24 hours; set
+  `NO_UPDATE_CHECK` or `update_check = false` to disable it.
 - **Add your own tools** — match by name or pattern and give them a custom logo.
 - **Starts at login** — works on both macOS and Linux.
 
@@ -182,6 +184,7 @@ termp config init --force  # overwrite it anyway
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | bool | `true` | The main on/off switch. Set to false to show no presence at all. |
+| `update_check` | bool | `true` | Checks GitHub Releases for a newer version in `termp status` and `termp version`. Set to false to disable it. |
 | `scan_interval` | duration | `"3s"` | How often termp checks your running tools. Bad or zero values fall back to 3s. |
 | `pin` | string | `""` | The ID of a tool you always want in the spotlight while it's running. |
 | `headliner_idle_timeout` | duration | `"60s"` | How long the spotlighted tool must sit idle before another tool can take its place. |
@@ -242,6 +245,7 @@ first, then `image_key`, then `icon_slug`.
 
 ```toml
 enabled = true
+update_check = true
 scan_interval = "3s"
 pin = "codex-cli"
 headliner_idle_timeout = "60s"
@@ -325,8 +329,14 @@ unless another is busier *and* the current one has been idle for
 
 ## Privacy
 
-termp does **no tracking**. The only thing that leaves your machine is the
-presence info handed to the Discord app on your computer.
+termp does **no tracking**. Presence information is handed only to the Discord
+app on your computer. When you run `termp status` or `termp version`, termp also
+makes an anonymous, unauthenticated request to GitHub Releases at most once every
+24 hours to check the latest version. It sends no machine or install ID, usage
+data, or config contents; its User-Agent is only `termp/<version>`.
+
+To disable the version request, set `NO_UPDATE_CHECK` (any value, including an
+empty one) or put `update_check = false` in your config. Either setting is enough.
 
 Your folder name is hidden by default. If you turn it on with
 `show_directory = true`, you can still limit which folders show with a

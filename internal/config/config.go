@@ -61,6 +61,7 @@ type ToolOverride struct {
 // Config is the loaded TOML configuration plus load metadata.
 type Config struct {
 	Enabled              bool                    `toml:"enabled"`
+	UpdateCheck          bool                    `toml:"update_check"`
 	ScanInterval         string                  `toml:"scan_interval"`
 	IdleClearTimeout     string                  `toml:"idle_clear_timeout"`
 	Pin                  string                  `toml:"pin"`
@@ -79,6 +80,7 @@ type Config struct {
 
 type fileConfig struct {
 	Enabled              bool                    `toml:"enabled"`
+	UpdateCheck          bool                    `toml:"update_check"`
 	ScanInterval         string                  `toml:"scan_interval"`
 	IdleClearTimeout     string                  `toml:"idle_clear_timeout"`
 	Pin                  string                  `toml:"pin"`
@@ -128,6 +130,7 @@ type ResolvedTool struct {
 func Default() Config {
 	return Config{
 		Enabled:              true,
+		UpdateCheck:          true,
 		ScanInterval:         "3s",
 		IdleClearTimeout:     "0",
 		HeadlinerIdleTimeout: "60s",
@@ -173,6 +176,7 @@ func AnnotatedSample() string {
 # This file is hot-reloaded by the daemon.
 
 enabled = %t                # Master switch. When false, no Discord presence is shown.
+update_check = %t           # Check GitHub Releases for updates; NO_UPDATE_CHECK also disables this.
 scan_interval = %q        # How often termp scans local processes.
 idle_clear_timeout = %q       # Clear presence after this much idle time; "0" disables idle clear.
 pin = %q                    # Prefer this tool ID as the headliner when it is running.
@@ -204,7 +208,7 @@ url = %q       # URL for the CTA button.
 # match = { name = "lazygit" } # Match by executable name; regex is also supported.
 # image_url = "https://example.com/lazygit.png" # Logo URL used by Discord.
 # priority = 10              # Higher priority wins when multiple tools match.
-`, cfg.Enabled, cfg.ScanInterval, cfg.IdleClearTimeout, cfg.Pin, cfg.HeadlinerIdleTimeout,
+`, cfg.Enabled, cfg.UpdateCheck, cfg.ScanInterval, cfg.IdleClearTimeout, cfg.Pin, cfg.HeadlinerIdleTimeout,
 		cfg.ActivitySwitching, cfg.DetailsFormat, cfg.FeedbackURL,
 		cfg.Display.ToolName, cfg.Display.ElapsedTimer, cfg.Display.SmallImage, cfg.Display.Collection, cfg.Display.Buttons,
 		cfg.Privacy.ShowDirectory, cfg.Privacy.DirectoryBasenameOnly,
@@ -279,6 +283,7 @@ func LoadPath(path string) (Config, error) {
 
 	raw := fileConfig{
 		Enabled:              cfg.Enabled,
+		UpdateCheck:          cfg.UpdateCheck,
 		ScanInterval:         cfg.ScanInterval,
 		IdleClearTimeout:     cfg.IdleClearTimeout,
 		Pin:                  cfg.Pin,
@@ -296,6 +301,7 @@ func LoadPath(path string) (Config, error) {
 		return DefaultWithPath(path), err
 	}
 	cfg.Enabled = raw.Enabled
+	cfg.UpdateCheck = raw.UpdateCheck
 	cfg.ScanInterval = raw.ScanInterval
 	cfg.IdleClearTimeout = raw.IdleClearTimeout
 	cfg.Pin = raw.Pin
@@ -481,6 +487,7 @@ func validate(cfg *Config) error {
 func saveDocument(cfg Config) map[string]any {
 	doc := map[string]any{
 		"enabled":                cfg.Enabled,
+		"update_check":           cfg.UpdateCheck,
 		"scan_interval":          cfg.ScanInterval,
 		"idle_clear_timeout":     cfg.IdleClearTimeout,
 		"pin":                    cfg.Pin,

@@ -46,7 +46,7 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.Path != path {
 		t.Fatalf("path = %q, want %q", cfg.Path, path)
 	}
-	if !cfg.Enabled || cfg.ScanInterval != "3s" {
+	if !cfg.Enabled || !cfg.UpdateCheck || cfg.ScanInterval != "3s" {
 		t.Fatalf("unexpected global defaults: %#v", cfg)
 	}
 	if cfg.IdleClearTimeout != "0" || cfg.DetailsFormat != "Using {tool}" {
@@ -84,6 +84,7 @@ func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
 	content := string(data)
 	for _, want := range []string{
 		"enabled = true",
+		"update_check = true",
 		"scan_interval = \"3s\"",
 		"idle_clear_timeout = \"0\"",
 		"headliner_idle_timeout = \"60s\"",
@@ -141,6 +142,7 @@ func TestLoadValidConfig(t *testing.T) {
 	path := withConfigHome(t)
 	writeConfig(t, path, `
 enabled = true
+update_check = false
 scan_interval = "5s"
 idle_clear_timeout = "8h"
 pin = "codex-cli"
@@ -184,7 +186,7 @@ priority = 5
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ScanInterval != "5s" || cfg.Display.ToolName {
+	if cfg.UpdateCheck || cfg.ScanInterval != "5s" || cfg.Display.ToolName {
 		t.Fatalf("unexpected loaded values: %#v", cfg)
 	}
 	if cfg.IdleClearTimeout != "8h" || cfg.DetailsFormat != "Working in {tool}" {
@@ -491,6 +493,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	path := withConfigHome(t)
 	cfg := Default()
 	cfg.Enabled = false
+	cfg.UpdateCheck = false
 	cfg.ScanInterval = "9s"
 	cfg.IdleClearTimeout = "6h"
 	cfg.Pin = "codex-cli"
@@ -531,7 +534,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Enabled || loaded.ScanInterval != "9s" || loaded.Pin != "codex-cli" {
+	if loaded.Enabled || loaded.UpdateCheck || loaded.ScanInterval != "9s" || loaded.Pin != "codex-cli" {
 		t.Fatalf("globals did not round-trip: %#v", loaded)
 	}
 	if loaded.IdleClearTimeout != "6h" || loaded.DetailsFormat != "{tool} in {dir}" {
