@@ -3,16 +3,103 @@ package main
 import (
 	"bytes"
 	"log"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 	"github.com/polter-dev/discord_terminal_presence/internal/service"
 )
+
+func TestFormatInstallSuccessShowsCTAForFreshInstall(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "termp", "config.toml")
+	got := formatInstallSuccess("/usr/local/bin/termp", configPath, nil, 80)
+
+	for _, want := range []string{"TERMP INSTALLED", "NEXT STEP - RUN THIS NOW:", "termp setup", "Nothing shows on your Discord profile until you do."} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("fresh install output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatInstallSuccessSkipsCTAWhenConfigExists(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "termp", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("enabled = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := formatInstallSuccess("/usr/local/bin/termp", configPath, nil, 80)
+	want := "installed: /usr/local/bin/termp\nruns: termp start\nundo: termp uninstall\n"
+	if got != want {
+		t.Fatalf("configured install output = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "NEXT STEP") || strings.Contains(got, "termp setup") {
+		t.Fatalf("configured install unexpectedly included CTA:\n%s", got)
+	}
+}
+
+func TestInstallCTAHasNoANSIWithoutColorSupport(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+
+	tests := []struct {
+		name     string
+		terminal bool
+		noColor  bool
+	}{
+		{name: "non-TTY stdout", terminal: false, noColor: false},
+		{name: "NO_COLOR", terminal: true, noColor: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			renderer := newInstallRenderer(output, tt.terminal, tt.noColor)
+			got := renderInstallCTA(renderer, 80)
+			if strings.Contains(got, "\x1b") {
+				t.Fatalf("output contains ANSI escape bytes: %q", got)
+			}
+		})
+	}
+}
+
+func TestInstallCTAUsesColorWhenSupported(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+
+	renderer := lipgloss.NewRenderer(output)
+	renderer.SetColorProfile(termenv.ANSI256)
+	got := renderInstallCTA(renderer, 80)
+	if !strings.Contains(got, "\x1b") {
+		t.Fatalf("color-capable output contains no ANSI styling: %q", got)
+	}
+}
+
+func TestInstallCTALinesNeverExceed80Columns(t *testing.T) {
+	for _, width := range []int{20, 40, 80, 120} {
+		got := renderInstallCTA(nil, width)
+		maxWidth := min(width, maxInstallCTAWidth)
+		for lineNumber, line := range strings.Split(got, "\n") {
+			if lineWidth := lipgloss.Width(line); lineWidth > maxWidth {
+				t.Fatalf("width %d line %d is %d columns: %q", width, lineNumber+1, lineWidth, line)
+			}
+		}
+	}
+}
 
 func TestFormatVersionIncludesBuildAndPlatform(t *testing.T) {
 	oldVersion, oldCommit, oldDate := version, commit, date
