@@ -1,11 +1,11 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 )
 
@@ -36,6 +36,8 @@ type SetupModel struct {
 	path    string
 	err     error
 	applied bool
+	width   int
+	height  int
 	styles  styles
 }
 
@@ -59,20 +61,13 @@ func NewSetupModel(save SetupSaveFunc, install SetupInstallFunc, exe SetupExeFun
 					c.Privacy.ShowDirectory = v
 				},
 			},
-			{
-				label: "Show the 'What is this?' button?",
-				value: cfg.CTA.Enabled,
-				apply: func(c *config.Config, v bool) {
-					c.CTA.Enabled = v
-				},
-			},
 		},
 		styles: styles{
 			title:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
 			cursor:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
 			muted:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 			error:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
-			selected: lipgloss.NewStyle().Bold(true),
+			selected: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
 		},
 	}
 }
@@ -98,6 +93,9 @@ func (m SetupModel) Init() tea.Cmd {
 
 func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
@@ -110,8 +108,21 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.step == 1 {
 				m.moveSetup(1)
 			}
-		case " ", "left", "right":
-			if m.step == 1 {
+		case " ":
+			switch m.step {
+			case 0:
+				m.step = 1
+			case 1:
+				if m.setupActionFocused() {
+					m.step = 2
+				} else {
+					m.choices[m.cursor].value = !m.choices[m.cursor].value
+				}
+			case 2:
+				m.applySetup()
+			}
+		case "left", "right":
+			if m.step == 1 && !m.setupActionFocused() {
 				m.choices[m.cursor].value = !m.choices[m.cursor].value
 			}
 		case "enter":
@@ -133,49 +144,145 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m SetupModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.styles.title.Render("termp setup"))
-	b.WriteString("\n\n")
+	if m.short() {
+		b.WriteByte('\n')
+	} else {
+		b.WriteString("\n\n")
+	}
 	switch m.step {
 	case 0:
 		b.WriteString("Pick the defaults you want, then apply them.\n")
-		b.WriteString("Use arrow keys to move, space to toggle, and enter to continue.\n\n")
-		b.WriteString(m.styles.selected.Render("Start"))
+		if !m.short() {
+			if m.compact() {
+				b.WriteString("Arrows move  •  space selects\nEnter continues from anywhere.\n\n")
+			} else {
+				b.WriteString("Use arrow keys to move, space to toggle or select, and enter to continue.\n\n")
+			}
+		}
+		b.WriteString(m.actionButton("Start", true))
 	case 1:
-		for i, choice := range m.choices {
-			prefix := "  "
-			if i == m.cursor {
-				prefix = m.styles.cursor.Render("> ")
+		b.WriteString(m.choicesTable(true))
+		if m.short() {
+			b.WriteByte('\n')
+		} else {
+			b.WriteString("\n\n")
+			if m.compact() {
+				b.WriteString(m.styles.muted.Render("↑/↓ move  •  space toggle/select\nenter continues from anywhere"))
+			} else {
+				b.WriteString(m.styles.muted.Render("↑/k ↓/j navigate  •  space toggle or select  •  enter continues from anywhere"))
 			}
-			mark := "[ ]"
-			if choice.value {
-				mark = "[x]"
-			}
-			b.WriteString(prefix + mark + " " + choice.label + "\n")
+			b.WriteString("\n\n")
 		}
-		b.WriteString("\n")
-		b.WriteString(m.styles.muted.Render("Enter continues to Apply."))
+		b.WriteString(m.actionButton("Continue", m.setupActionFocused()))
 	case 2:
-		b.WriteString("Apply setup with these choices:\n\n")
-		for _, choice := range m.choices {
-			value := "no"
-			if choice.value {
-				value = "yes"
-			}
-			b.WriteString(fmt.Sprintf("- %s %s\n", choice.label, value))
-		}
-		b.WriteString("\n")
-		if m.err != nil {
-			b.WriteString(m.styles.error.Render("setup failed: " + m.err.Error()))
+		b.WriteString("Apply setup with these choices:\n")
+		if !m.short() {
 			b.WriteByte('\n')
 		}
-		b.WriteString(m.styles.selected.Render("Apply"))
+		b.WriteString(m.choicesTable(false))
+		if m.short() {
+			b.WriteByte('\n')
+		} else {
+			b.WriteString("\n\n")
+		}
+		if m.err != nil {
+			b.WriteString(m.styles.error.Render("setup failed: " + m.err.Error()))
+			if m.short() {
+				b.WriteByte('\n')
+			} else {
+				b.WriteString("\n\n")
+			}
+		}
+		b.WriteString(m.actionButton("Apply", true))
 	case 3:
 		b.WriteString(m.summary())
 	}
-	return b.String()
+	view := b.String()
+	if m.width > 0 {
+		view = truncateBlock(view, m.width)
+	}
+	if m.height > 0 {
+		view = lipgloss.NewStyle().MaxHeight(m.height).Render(view)
+	}
+	return view
 }
 
 func (m *SetupModel) moveSetup(delta int) {
-	m.cursor = (m.cursor + delta + len(m.choices)) % len(m.choices)
+	itemCount := len(m.choices) + 1
+	m.cursor = (m.cursor + delta + itemCount) % itemCount
+}
+
+func (m SetupModel) setupActionFocused() bool {
+	return m.cursor == len(m.choices)
+}
+
+func (m SetupModel) compact() bool {
+	return m.width > 0 && m.width <= 40
+}
+
+func (m SetupModel) short() bool {
+	return m.height > 0 && m.height <= 12
+}
+
+func (m SetupModel) choicesTable(interactive bool) string {
+	rows := make([][]string, 0, len(m.choices))
+	for i, choice := range m.choices {
+		label := choice.label
+		if m.compact() {
+			switch i {
+			case 0:
+				label = "Start at login?"
+			case 1:
+				label = "Show working directory?"
+			}
+		}
+		if interactive && i == m.cursor {
+			label = "› " + label
+		} else {
+			label = "  " + label
+		}
+		state := "Off"
+		if choice.value {
+			state = "On"
+		}
+		rows = append(rows, []string{label, state})
+	}
+
+	return table.New().
+		Headers("Question", "State").
+		Rows(rows...).
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(m.styles.muted).
+		BorderRow(false).
+		StyleFunc(func(rowIndex, _ int) lipgloss.Style {
+			style := lipgloss.NewStyle().Padding(0, 1)
+			switch {
+			case rowIndex == table.HeaderRow:
+				return style.Inherit(m.styles.title)
+			case interactive && rowIndex == m.cursor:
+				return style.Inherit(m.styles.selected)
+			default:
+				return style
+			}
+		}).
+		String()
+}
+
+func (m SetupModel) actionButton(label string, focused bool) string {
+	buttonLabel := "  " + label
+	if focused {
+		buttonLabel = "› " + label
+	}
+	style := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("12")).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("12")).
+		Padding(0, 1)
+	if focused {
+		style = style.Foreground(lipgloss.Color("0")).Background(lipgloss.Color("12"))
+	}
+	return style.Render(buttonLabel)
 }
 
 func (m *SetupModel) applySetup() bool {

@@ -503,8 +503,17 @@ func TestSetupModelApplyDefaultsInstallsAutostart(t *testing.T) {
 
 	updated, _ := model.Update(key("enter"))
 	model = updated.(SetupModel)
+	if model.step != 1 {
+		t.Fatalf("enter on Start moved to step %d, want 1", model.step)
+	}
+	if strings.Contains(model.View(), "What is this?") {
+		t.Fatalf("setup choices still expose CTA setting:\n%s", model.View())
+	}
 	updated, _ = model.Update(key("enter"))
 	model = updated.(SetupModel)
+	if model.step != 2 {
+		t.Fatalf("enter-anywhere moved to step %d, want 2", model.step)
+	}
 	updated, _ = model.Update(key("enter"))
 	model = updated.(SetupModel)
 
@@ -548,11 +557,18 @@ func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 	model = updated.(SetupModel)
 	updated, _ = model.Update(key("down"))
 	model = updated.(SetupModel)
+	if !model.setupActionFocused() {
+		t.Fatal("Continue button should be focused after moving past both choices")
+	}
+	if !strings.Contains(model.View(), "› Continue") {
+		t.Fatalf("focused Continue button is not visibly selected:\n%s", model.View())
+	}
 	updated, _ = model.Update(key(" "))
 	model = updated.(SetupModel)
-	updated, _ = model.Update(key("enter"))
-	model = updated.(SetupModel)
-	updated, _ = model.Update(key("enter"))
+	if model.step != 2 {
+		t.Fatalf("space on Continue moved to step %d, want 2", model.step)
+	}
+	updated, _ = model.Update(key(" "))
 	model = updated.(SetupModel)
 
 	if installed {
@@ -561,8 +577,68 @@ func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 	if !saved.Privacy.ShowDirectory {
 		t.Fatal("show_directory choice should be saved")
 	}
-	if saved.CTA.Enabled {
-		t.Fatal("CTA opt-out should be saved")
+	if !saved.CTA.Enabled {
+		t.Fatal("setup should preserve the default CTA setting")
+	}
+}
+
+func TestSetupModelViewsRenderTableButtonsAndFitTerminal(t *testing.T) {
+	type viewCase struct {
+		name string
+		view string
+		want []string
+	}
+	for _, width := range []int{80, 40} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			model := NewSetupModel(nil, nil, nil)
+			updated, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 12})
+			model = updated.(SetupModel)
+
+			steps := []viewCase{
+				{name: "start", view: model.View(), want: []string{"termp setup", "Start"}},
+			}
+
+			updated, _ = model.Update(key(" "))
+			model = updated.(SetupModel)
+			choicesView := model.View()
+			startLine := lineContaining(t, choicesView, "Start")
+			directoryLine := lineContaining(t, choicesView, "directory")
+			if got, want := visibleColumn(startLine, "On"), visibleColumn(directoryLine, "Off"); got != want {
+				t.Errorf("setup state columns are not aligned: On at %d, Off at %d\n%s", got, want, choicesView)
+			}
+			steps = append(steps, viewCase{
+				name: "choices",
+				view: choicesView,
+				want: []string{"╭", "Question", "State", "›", "Continue", "╰"},
+			})
+
+			updated, _ = model.Update(key("enter"))
+			model = updated.(SetupModel)
+			steps = append(steps, viewCase{
+				name: "apply",
+				view: model.View(),
+				want: []string{"╭", "Question", "State", "Apply", "╰"},
+			})
+
+			for _, step := range steps {
+				for _, want := range step.want {
+					if !strings.Contains(step.view, want) {
+						t.Errorf("%s View() missing %q:\n%s", step.name, want, step.view)
+					}
+				}
+				if strings.Contains(step.view, "What is this?") {
+					t.Errorf("%s View() exposes removed CTA choice:\n%s", step.name, step.view)
+				}
+				for lineNumber, line := range strings.Split(step.view, "\n") {
+					if got := lipgloss.Width(line); got > width {
+						t.Errorf("%s View() line %d width = %d, want <= %d:\n%s", step.name, lineNumber+1, got, width, step.view)
+					}
+				}
+				if got := lipgloss.Height(step.view); got > 12 {
+					t.Errorf("%s View() height = %d, want <= 12:\n%s", step.name, got, step.view)
+				}
+			}
+		})
 	}
 }
 
