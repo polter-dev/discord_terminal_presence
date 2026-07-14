@@ -148,8 +148,7 @@ func Default() Config {
 		CTA: CTA{
 			Enabled: true,
 			Label:   "What is this?",
-			// TODO: replace this intentional placeholder/dead link with the real landing page when it exists.
-			URL: "https://termp.example",
+			URL:     "https://termp.polter.sh/",
 		},
 		Tools: make(map[string]ToolOverride),
 	}
