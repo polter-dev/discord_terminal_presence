@@ -176,6 +176,8 @@ func versionCommand(args []string) error {
 		return err
 	}
 	printVersion()
+	cfg, loadErr := config.Load()
+	printAvailableUpdate(cfg, loadErr)
 	return nil
 }
 
@@ -601,6 +603,7 @@ func status(args []string) error {
 	}
 
 	cfg, loadErr := config.Load()
+	defer printAvailableUpdate(cfg, loadErr)
 	pidPath := pidFilePath()
 	running := false
 	if pid, err := readPID(pidPath); err == nil {
