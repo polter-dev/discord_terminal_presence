@@ -3,6 +3,7 @@ package tui
 import (
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,24 +28,46 @@ const (
 	rowLink
 	rowSave
 	rowQuit
-	rowLabel
+	rowCategory
+	rowDrill
 )
 
 type row struct {
-	kind  rowKind
-	label string
-	id    string
-	get   func(config.Config) bool
-	set   func(*config.Config, bool)
-	text  func(config.Config) string
-	apply func(*config.Config, string)
+	kind        rowKind
+	label       string
+	id          string
+	searchTerms []string
+	columnTitle string
+	children    []row
+	get         func(config.Config) bool
+	set         func(*config.Config, bool)
+	text        func(config.Config) string
+	apply       func(*config.Config, string)
 }
+
+type columnKind int
+
+const (
+	columnMenu columnKind = iota
+	columnSettings
+	columnChoices
+)
+
+type settingsColumn struct {
+	kind    columnKind
+	title   string
+	rows    []row
+	allRows []row
+	cursor  int
+	offset  int
+}
+
+const maxPinResults = 6
 
 // Model is the testable Bubble Tea settings model.
 type Model struct {
 	cfg      config.Config
-	rows     []row
-	cursor   int
+	columns  []settingsColumn
 	input    textinput.Model
 	editing  int
 	save     SaveFunc
@@ -55,7 +78,6 @@ type Model struct {
 	quitting bool
 	width    int
 	height   int
-	offset   int
 	styles   styles
 }
 
@@ -65,6 +87,7 @@ type styles struct {
 	muted    lipgloss.Style
 	error    lipgloss.Style
 	selected lipgloss.Style
+	path     lipgloss.Style
 }
 
 // NewSettingsModel creates a settings model. Tools are ordered by rankedIDs first.
@@ -75,9 +98,12 @@ func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []stri
 	input.CharLimit = 32
 	input.Width = 24
 	return Model{
-		cfg:     cfg,
-		rows:    settingsRows(ordered),
-		cursor:  1,
+		cfg: cfg,
+		columns: []settingsColumn{{
+			kind:  columnMenu,
+			title: "Categories & actions",
+			rows:  settingsRows(ordered),
+		}},
 		editing: -1,
 		input:   input,
 		save:    save,
@@ -88,6 +114,7 @@ func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []stri
 			muted:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 			error:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
 			selected: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
+			path:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("8")),
 		},
 	}
 }
@@ -157,22 +184,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
 	}
+	if key, ok := msg.(tea.KeyMsg); ok && m.searching() {
+		switch key.String() {
+		case "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+		case "esc", "left":
+			m.closeColumn()
+			return m, nil
+		case "up":
+			m.move(-1)
+			return m, nil
+		case "down":
+			m.move(1)
+			return m, nil
+		case "enter":
+			return m.activate()
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.refreshPinSearch()
+		return m, cmd
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.ensureCursorVisible()
+		m.ensureCursorsVisible()
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q", "esc":
+		case "ctrl+c", "q":
 			m.quitting = true
 			return m, tea.Quit
+		case "esc":
+			if len(m.columns) > 1 {
+				m.closeColumn()
+				return m, nil
+			}
+			m.quitting = true
+			return m, tea.Quit
+		case "left":
+			m.closeColumn()
 		case "up", "k":
 			m.move(-1)
 		case "down", "j":
 			m.move(1)
-		case " ", "enter":
+		case " ", "enter", "right":
 			return m.activate()
 		case "s":
 			m.saveConfig()
@@ -185,8 +243,7 @@ func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.styles.title.Render("termp settings"))
 	b.WriteString("\n\n")
-	start, end := m.visibleRowRange()
-	b.WriteString(m.settingsTable(start, end))
+	b.WriteString(m.columnsView())
 	b.WriteByte('\n')
 	if m.err != nil {
 		b.WriteString("\n")
@@ -205,21 +262,84 @@ func (m Model) View() string {
 	if m.editing >= 0 {
 		b.WriteString(m.styles.muted.Render("type to edit  •  enter apply  •  esc cancel"))
 	} else {
-		b.WriteString(m.styles.muted.Render("↑/k ↓/j navigate  •  enter/space activate, toggle, or edit\ns save  •  q/esc/ctrl+c quit"))
+		b.WriteString(m.styles.muted.Render(m.keybindingFooter()))
 	}
 	b.WriteByte('\n')
-	return b.String()
+	view := b.String()
+	if m.width > 0 {
+		return truncateBlock(view, m.width)
+	}
+	return view
 }
 
-func (m Model) settingsTable(start, end int) string {
-	rows := make([][]string, 0, end-start)
+func (m Model) columnsView() string {
+	columns := make([]string, len(m.columns))
+	for i := range m.columns {
+		columns[i] = m.settingsTable(i)
+	}
+
+	start := 0
+	if m.width > 0 {
+		start = len(columns) - 1
+		used := lipgloss.Width(columns[start])
+		for i := start - 1; i >= 0; i-- {
+			candidate := lipgloss.Width(columns[i]) + 1 + used
+			if candidate > m.width {
+				break
+			}
+			start = i
+			used = candidate
+		}
+	}
+
+	visible := columns[start:]
+	if m.width > 0 && len(visible) == 1 && lipgloss.Width(visible[0]) > m.width {
+		visible[0] = truncateBlock(visible[0], m.width)
+	}
+	parts := make([]string, 0, len(visible)*2-1)
+	for i, column := range visible {
+		if i > 0 {
+			parts = append(parts, " ")
+		}
+		parts = append(parts, column)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+}
+
+func (m Model) settingsTable(columnIndex int) string {
+	column := m.columns[columnIndex]
+	start, end := m.visibleRowRange(columnIndex)
+	rows := make([][]string, 0, end-start+2)
+	if column.kind == columnChoices {
+		rows = append(rows, []string{"Search", m.input.View()})
+		if len(column.rows) == 0 {
+			message := "no tools available"
+			if query := strings.TrimSpace(m.input.Value()); query != "" {
+				message = "no tools match " + quote(query)
+			}
+			rows = append(rows, []string{message, ""})
+		}
+	}
 	for i := start; i < end; i++ {
-		row := m.rows[i]
-		rows = append(rows, m.rowCells(i, row))
+		rows = append(rows, m.rowCells(columnIndex, i, column.rows[i]))
+	}
+
+	headers := []string{"Setting", "State / Value"}
+	if column.kind == columnMenu {
+		headers = []string{column.title}
+	} else if column.kind == columnSettings {
+		headers = []string{column.title, "State / Value"}
+	} else if column.kind == columnChoices {
+		headers = []string{column.title, "State"}
+	}
+	focused := columnIndex == len(m.columns)-1
+	headerStyle := m.styles.title
+	if !focused {
+		headerStyle = m.styles.path
 	}
 
 	return table.New().
-		Headers("Setting", "State / Value").
+		Headers(headers...).
 		Rows(rows...).
 		Border(lipgloss.RoundedBorder()).
 		BorderStyle(m.styles.muted).
@@ -227,13 +347,22 @@ func (m Model) settingsTable(start, end int) string {
 		StyleFunc(func(rowIndex, _ int) lipgloss.Style {
 			style := lipgloss.NewStyle().Padding(0, 1)
 			modelRowIndex := start + rowIndex
+			if column.kind == columnChoices {
+				modelRowIndex--
+			}
 			switch {
 			case rowIndex == table.HeaderRow:
-				return style.Inherit(m.styles.title)
-			case m.rows[modelRowIndex].kind == rowLabel:
-				return style.Inherit(m.styles.title)
-			case modelRowIndex == m.cursor:
+				return style.Inherit(headerStyle)
+			case column.kind == columnChoices && rowIndex == 0:
+				return style.Inherit(m.styles.cursor)
+			case column.kind == columnChoices && len(column.rows) == 0:
+				return style.Inherit(m.styles.muted)
+			case modelRowIndex == column.cursor && focused:
 				return style.Inherit(m.styles.selected)
+			case modelRowIndex == column.cursor:
+				return style.Inherit(m.styles.path)
+			case !focused:
+				return style.Inherit(m.styles.muted)
 			default:
 				return style
 			}
@@ -241,28 +370,29 @@ func (m Model) settingsTable(start, end int) string {
 		String()
 }
 
-func (m Model) visibleRowRange() (int, int) {
-	if len(m.rows) == 0 {
+func (m Model) visibleRowRange(columnIndex int) (int, int) {
+	column := m.columns[columnIndex]
+	if len(column.rows) == 0 {
 		return 0, 0
 	}
 
 	budget := m.visibleRowBudget()
-	if budget >= len(m.rows) {
-		return 0, len(m.rows)
+	if budget >= len(column.rows) {
+		return 0, len(column.rows)
 	}
 
-	start := m.offset
+	start := column.offset
 	if start < 0 {
 		start = 0
 	}
-	maxStart := len(m.rows) - budget
+	maxStart := len(column.rows) - budget
 	if start > maxStart {
 		start = maxStart
 	}
-	if m.cursor < start {
-		start = m.cursor
-	} else if m.cursor >= start+budget {
-		start = m.cursor - budget + 1
+	if column.cursor < start {
+		start = column.cursor
+	} else if column.cursor >= start+budget {
+		start = column.cursor - budget + 1
 	}
 	if start > maxStart {
 		start = maxStart
@@ -272,7 +402,13 @@ func (m Model) visibleRowRange() (int, int) {
 
 func (m Model) visibleRowBudget() int {
 	if m.height <= 0 {
-		return len(m.rows)
+		budget := 0
+		for _, column := range m.columns {
+			if len(column.rows) > budget {
+				budget = len(column.rows)
+			}
+		}
+		return budget
 	}
 
 	// Reserve two title lines, four table chrome lines, one spacer, the
@@ -281,6 +417,9 @@ func (m Model) visibleRowBudget() int {
 	fixedHeight := 2 + 4 + 1 + 2 + 1
 	if m.editing >= 0 {
 		fixedHeight--
+	}
+	if m.searching() {
+		fixedHeight++
 	}
 	if m.err != nil || m.saved || m.status != "" {
 		fixedHeight += 2
@@ -292,20 +431,28 @@ func (m Model) visibleRowBudget() int {
 	return budget
 }
 
-func (m *Model) ensureCursorVisible() {
-	start, _ := m.visibleRowRange()
-	m.offset = start
+func (m *Model) ensureCursorsVisible() {
+	for i := range m.columns {
+		m.ensureCursorVisible(i)
+	}
 }
 
-func (m Model) rowCells(index int, row row) []string {
+func (m *Model) ensureCursorVisible(columnIndex int) {
+	start, _ := m.visibleRowRange(columnIndex)
+	m.columns[columnIndex].offset = start
+}
+
+func (m Model) rowCells(columnIndex, index int, row row) []string {
 	label := "  " + row.label
-	if index == m.cursor {
+	if index == m.columns[columnIndex].cursor {
 		label = "› " + row.label
 	}
 
+	if m.columns[columnIndex].kind == columnMenu {
+		return []string{label}
+	}
+
 	switch row.kind {
-	case rowLabel:
-		return []string{"  " + row.label, ""}
 	case rowToggle:
 		value := "Off"
 		if row.get(m.cfg) {
@@ -319,11 +466,13 @@ func (m Model) rowCells(index int, row row) []string {
 		}
 		return []string{label, value}
 	case rowPin:
-		value := "—"
+		value := ""
 		if m.cfg.Pin == row.id {
 			value = "Pinned"
 		}
 		return []string{label, value}
+	case rowDrill:
+		return []string{label, m.pinnedToolLabel()}
 	case rowLink:
 		return []string{label, "Open in browser"}
 	case rowSave:
@@ -336,28 +485,34 @@ func (m Model) rowCells(index int, row row) []string {
 }
 
 func (m *Model) move(delta int) {
-	if len(m.rows) == 0 {
+	columnIndex := len(m.columns) - 1
+	column := &m.columns[columnIndex]
+	if len(column.rows) == 0 {
 		return
 	}
-	for {
-		m.cursor = (m.cursor + delta + len(m.rows)) % len(m.rows)
-		if m.rows[m.cursor].kind != rowLabel {
-			m.ensureCursorVisible()
-			return
-		}
-	}
+	column.cursor = (column.cursor + delta + len(column.rows)) % len(column.rows)
+	m.ensureCursorVisible(columnIndex)
 }
 
 func (m Model) activate() (tea.Model, tea.Cmd) {
-	row := m.rows[m.cursor]
+	columnIndex := len(m.columns) - 1
+	column := m.columns[columnIndex]
+	if len(column.rows) == 0 {
+		return m, nil
+	}
+	row := column.rows[column.cursor]
 	switch row.kind {
+	case rowCategory:
+		m.openColumn(columnSettings, row.columnTitle, row.children)
 	case rowToggle:
 		row.set(&m.cfg, !row.get(m.cfg))
 	case rowText:
-		m.editing = m.cursor
+		m.editing = column.cursor
 		m.input.SetValue(row.text(m.cfg))
 		m.input.CursorEnd()
 		m.input.Focus()
+	case rowDrill:
+		m.openColumn(columnChoices, row.columnTitle, row.children)
 	case rowPin:
 		if m.cfg.Pin == row.id {
 			m.cfg.Pin = ""
@@ -379,10 +534,249 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) commitEdit() {
-	row := m.rows[m.editing]
+	column := m.columns[len(m.columns)-1]
+	row := column.rows[m.editing]
 	row.apply(&m.cfg, strings.TrimSpace(m.input.Value()))
 	m.editing = -1
 	m.input.Blur()
+}
+
+func (m *Model) openColumn(kind columnKind, title string, rows []row) {
+	cursor := 0
+	column := settingsColumn{kind: kind, title: title, rows: rows, cursor: cursor}
+	if kind == columnChoices {
+		m.input.SetValue("")
+		m.input.CursorEnd()
+		m.input.Focus()
+		column.allRows = rows
+		column.rows = filterPinRows(rows, "")
+	}
+	m.columns = append(m.columns, column)
+	m.ensureCursorVisible(len(m.columns) - 1)
+}
+
+func (m *Model) closeColumn() {
+	if len(m.columns) <= 1 {
+		return
+	}
+	if m.columns[len(m.columns)-1].kind == columnChoices {
+		m.input.Blur()
+	}
+	m.columns = m.columns[:len(m.columns)-1]
+}
+
+func (m Model) searching() bool {
+	return len(m.columns) > 0 && m.columns[len(m.columns)-1].kind == columnChoices
+}
+
+func (m *Model) refreshPinSearch() {
+	columnIndex := len(m.columns) - 1
+	column := &m.columns[columnIndex]
+	column.rows = filterPinRows(column.allRows, m.input.Value())
+	column.cursor = 0
+	column.offset = 0
+	m.ensureCursorVisible(columnIndex)
+}
+
+func (m Model) pinnedToolLabel() string {
+	if m.cfg.Pin == "" {
+		return "None"
+	}
+	for _, menuRow := range m.columns[0].rows {
+		if menuRow.label != "Pin Specific Tool" {
+			continue
+		}
+		for _, settingRow := range menuRow.children {
+			for _, toolRow := range settingRow.children {
+				if toolRow.id == m.cfg.Pin {
+					return toolRow.label
+				}
+			}
+		}
+	}
+	return m.cfg.Pin
+}
+
+func (m Model) keybindingFooter() string {
+	column := m.columns[len(m.columns)-1]
+	compact := m.width > 0 && m.width <= 60
+	switch column.kind {
+	case columnMenu:
+		if compact {
+			return "↑/↓ move  •  enter open\ns save  •  q/esc quit"
+		}
+		return "↑/k ↓/j navigate  •  enter/space/right open or activate\ns save  •  q/esc/ctrl+c quit"
+	case columnChoices:
+		if compact {
+			return "type to search  •  ↑/↓ results\nenter pin  •  esc back  •  ctrl+c quit"
+		}
+		return "type to search  •  ↑/↓ navigate results  •  enter pin or unpin\nesc/left back  •  ctrl+c quit"
+	default:
+		if compact {
+			return "↑/↓ move  •  enter change  •  esc back\ns save  •  q quit"
+		}
+		return "↑/k ↓/j navigate  •  enter/space/right activate, toggle, edit, or open  •  esc/left back\ns save  •  q/ctrl+c quit"
+	}
+}
+
+func truncateBlock(block string, width int) string {
+	return lipgloss.NewStyle().MaxWidth(width).Render(block)
+}
+
+func quote(value string) string {
+	return `"` + value + `"`
+}
+
+func filterPinRows(rows []row, query string) []row {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		if len(rows) > maxPinResults {
+			return append([]row(nil), rows[:maxPinResults]...)
+		}
+		return append([]row(nil), rows...)
+	}
+
+	type result struct {
+		row   row
+		score int
+	}
+	results := make([]result, 0, len(rows))
+	for _, row := range rows {
+		score, ok := pinMatchScore(query, row.searchTerms)
+		if ok {
+			results = append(results, result{row: row, score: score})
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].score < results[j].score
+	})
+	if len(results) > maxPinResults {
+		results = results[:maxPinResults]
+	}
+	out := make([]row, len(results))
+	for i, result := range results {
+		out[i] = result.row
+	}
+	return out
+}
+
+func pinMatchScore(query string, terms []string) (int, bool) {
+	queryParts := strings.Fields(query)
+	total := 0
+	for _, part := range queryParts {
+		part = normalizeSearchText(part)
+		if part == "" {
+			continue
+		}
+		best := -1
+		for _, term := range terms {
+			for _, candidate := range searchCandidates(term) {
+				if score, ok := fuzzyScore(part, candidate); ok && (best < 0 || score < best) {
+					best = score
+				}
+			}
+		}
+		if best < 0 {
+			return 0, false
+		}
+		total += best
+	}
+	return total, true
+}
+
+func searchCandidates(value string) []string {
+	candidates := []string{normalizeSearchText(value)}
+	for _, word := range strings.FieldsFunc(value, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if normalized := normalizeSearchText(word); normalized != "" {
+			candidates = append(candidates, normalized)
+		}
+	}
+	return candidates
+}
+
+func normalizeSearchText(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(value) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func fuzzyScore(query, candidate string) (int, bool) {
+	if query == "" || candidate == "" {
+		return 0, false
+	}
+	if query == candidate {
+		return 0, true
+	}
+	if strings.HasPrefix(candidate, query) {
+		return 10 + len(candidate) - len(query), true
+	}
+	if index := strings.Index(candidate, query); index >= 0 {
+		return 20 + index, true
+	}
+	if gaps, ok := subsequenceGaps(query, candidate); ok {
+		return 40 + gaps, true
+	}
+	distance := levenshteinDistance(query, candidate)
+	maxDistance := 1
+	if len(query) >= 5 {
+		maxDistance = 2
+	}
+	if len(query) >= 9 {
+		maxDistance = 3
+	}
+	if distance <= maxDistance {
+		return 30 + distance, true
+	}
+	return 0, false
+}
+
+func subsequenceGaps(query, candidate string) (int, bool) {
+	queryRunes := []rune(query)
+	candidateRunes := []rune(candidate)
+	matched := 0
+	first := -1
+	last := -1
+	for i, r := range candidateRunes {
+		if matched < len(queryRunes) && r == queryRunes[matched] {
+			if first < 0 {
+				first = i
+			}
+			last = i
+			matched++
+		}
+	}
+	if matched != len(queryRunes) {
+		return 0, false
+	}
+	return last - first + 1 - len(queryRunes), true
+}
+
+func levenshteinDistance(left, right string) int {
+	a := []rune(left)
+	b := []rune(right)
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i, ar := range a {
+		current := make([]int, len(b)+1)
+		current[0] = i + 1
+		for j, br := range b {
+			cost := 0
+			if ar != br {
+				cost = 1
+			}
+			current[j+1] = min(current[j]+1, previous[j+1]+1, previous[j]+cost)
+		}
+		previous = current
+	}
+	return previous[len(b)]
 }
 
 func (m *Model) saveConfig() bool {
@@ -423,37 +817,58 @@ func (m *Model) openFeedback() {
 }
 
 func settingsRows(tools []registry.Tool) []row {
-	rows := []row{
-		{kind: rowLabel, label: "Global"},
+	global := []row{
 		toggle("Presence enabled", func(c config.Config) bool { return c.Enabled }, func(c *config.Config, v bool) { c.Enabled = v }),
 		text("Scan interval", func(c config.Config) string { return c.ScanInterval }, func(c *config.Config, v string) { c.ScanInterval = v }),
-		{kind: rowLabel, label: "Display"},
+	}
+	display := []row{
 		toggle("Tool name", func(c config.Config) bool { return c.Display.ToolName }, func(c *config.Config, v bool) { c.Display.ToolName = v }),
 		toggle("Elapsed timer", func(c config.Config) bool { return c.Display.ElapsedTimer }, func(c *config.Config, v bool) { c.Display.ElapsedTimer = v }),
 		toggle("Small image", func(c config.Config) bool { return c.Display.SmallImage }, func(c *config.Config, v bool) { c.Display.SmallImage = v }),
 		toggle("Buttons", func(c config.Config) bool { return c.Display.Buttons }, func(c *config.Config, v bool) { c.Display.Buttons = v }),
 		toggle("Collection label", func(c config.Config) bool { return c.Display.Collection }, func(c *config.Config, v bool) { c.Display.Collection = v }),
-		{kind: rowLabel, label: "Privacy"},
+	}
+	privacy := []row{
 		toggle("Show folder", func(c config.Config) bool { return c.Privacy.ShowDirectory }, func(c *config.Config, v bool) { c.Privacy.ShowDirectory = v }),
 		toggle("Folder: name only", func(c config.Config) bool { return c.Privacy.DirectoryBasenameOnly }, func(c *config.Config, v bool) { c.Privacy.DirectoryBasenameOnly = v }),
-		{kind: rowLabel, label: "Headliner"},
+	}
+	headliner := []row{
 		toggle("Activity switching", func(c config.Config) bool { return c.ActivitySwitching }, func(c *config.Config, v bool) { c.ActivitySwitching = v }),
 		text("Spotlight idle timeout", func(c config.Config) string { return c.HeadlinerIdleTimeout }, func(c *config.Config, v string) { c.HeadlinerIdleTimeout = v }),
-		{kind: rowLabel, label: "Pin Specific Tool"},
 	}
+	pinChoices := make([]row, 0, len(tools))
 	for _, tool := range tools {
 		label := tool.DisplayName
 		if label == "" {
 			label = tool.ID
 		}
-		rows = append(rows, row{kind: rowPin, label: label, id: tool.ID})
+		pinChoices = append(pinChoices, row{
+			kind:        rowPin,
+			label:       label,
+			id:          tool.ID,
+			searchTerms: []string{label, tool.ID, tool.Match.Name},
+		})
 	}
-	rows = append(rows,
+
+	return []row{
+		category("Global", global),
+		category("Display", display),
+		category("Privacy", privacy),
+		category("Headliner", headliner),
+		category("Pin Specific Tool", []row{{
+			kind:        rowDrill,
+			label:       "Pinned tool",
+			columnTitle: "Choose a tool",
+			children:    pinChoices,
+		}}),
 		row{kind: rowLink, label: "Leave feedback"},
 		row{kind: rowSave, label: "Save & quit"},
 		row{kind: rowQuit, label: "Quit without saving"},
-	)
-	return rows
+	}
+}
+
+func category(label string, rows []row) row {
+	return row{kind: rowCategory, label: label, columnTitle: label, children: rows}
 }
 
 func toggle(label string, get func(config.Config) bool, set func(*config.Config, bool)) row {
