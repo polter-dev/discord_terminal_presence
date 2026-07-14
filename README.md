@@ -1,4 +1,8 @@
-# termp
+<p align="center">
+  <img src=".github/termp-mark.png" alt="Terminal Presence mark" width="88" height="88">
+</p>
+
+<h1 align="center">Terminal Presence (<code>termp</code>)</h1>
 
 > Show your terminal work as a Discord Rich Presence — like "Discord shows what game you're playing," but for your CLI.
 
