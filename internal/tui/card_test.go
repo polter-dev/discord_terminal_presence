@@ -35,13 +35,14 @@ func TestRenderCard(t *testing.T) {
 			want: []string{
 				"discord: connected",
 				"Neovim",
-				"[image: Neovim]",
+				"[image: nvim]",
 				"also: lazygit",
 				"Using nvim",
 				"elapsed: 12:34",
 				"small image: [image: lazygit]",
 				"buttons: Docs",
 			},
+			wantNot: []string{"[image: Neovim]"},
 		},
 		{
 			name: "idle",
@@ -65,8 +66,8 @@ func TestRenderCard(t *testing.T) {
 					StartTimestamp: ptrTime(now.Add(-(time.Hour + 2*time.Minute + 3*time.Second))),
 				},
 			},
-			want:    []string{"Codex CLI", "[image: Codex CLI]", "elapsed: 1:02:03"},
-			wantNot: []string{"https://example.test/codex.png", "also:"},
+			want:    []string{"Codex CLI", "[image: codex]", "elapsed: 1:02:03"},
+			wantNot: []string{"[image: Codex CLI]", "https://example.test/codex.png", "also:"},
 		},
 		{
 			name: "image key without display name",
@@ -94,11 +95,14 @@ func TestRenderCard(t *testing.T) {
 		{
 			name: "missing image",
 			state: CardState{
-				Now:      now,
-				Activity: &presence.Activity{Name: "No Logo"},
+				Now: now,
+				Activity: &presence.Activity{
+					Name:       "Ignored Name",
+					LargeImage: presence.Image{Text: "No Logo"},
+				},
 			},
 			want:    []string{"No Logo"},
-			wantNot: []string{"[image"},
+			wantNot: []string{"Ignored Name", "[image"},
 		},
 		{
 			name: "generic image placeholder",

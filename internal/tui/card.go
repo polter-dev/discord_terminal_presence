@@ -81,15 +81,12 @@ func RenderCard(s CardState, st CardStyles) string {
 }
 
 func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Time, st CardStyles) {
-	name := activity.Name
-	if name == "" {
-		name = activity.LargeImage.Text
-	}
+	name := activity.LargeImage.Text
 	if name == "" {
 		name = "unknown tool"
 	}
 	b.WriteString(st.Title.Render(name))
-	image := imageLabel(activity.LargeImage, activity.Name)
+	image := imageLabel(activity.LargeImage, name)
 	if image != "" {
 		b.WriteByte('\n')
 		b.WriteString(st.Muted.Render(image))
@@ -126,13 +123,17 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 	}
 }
 
-func imageLabel(image presence.Image, displayName string) string {
+func imageLabel(image presence.Image, cardTitle string) string {
 	if strings.TrimSpace(image.Key) == "" && strings.TrimSpace(image.URL) == "" {
 		return ""
 	}
 
-	for _, name := range []string{displayName, image.Text, image.Key, imageNameFromURL(image.URL)} {
-		if name = strings.TrimSpace(name); name != "" {
+	names := []string{image.Text, image.Key, imageNameFromURL(image.URL)}
+	if cardTitle != "" {
+		names = []string{image.Key, imageNameFromURL(image.URL), image.Text}
+	}
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" && name != strings.TrimSpace(cardTitle) {
 			return "[image: " + name + "]"
 		}
 	}
