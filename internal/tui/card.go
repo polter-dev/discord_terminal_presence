@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -84,7 +86,7 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 		name = "unknown tool"
 	}
 	b.WriteString(st.Title.Render(name))
-	image := imageValue(activity.LargeImage)
+	image := imageLabel(activity.LargeImage, name)
 	if image != "" {
 		b.WriteByte('\n')
 		b.WriteString(st.Muted.Render(image))
@@ -103,9 +105,9 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 			b.WriteString("elapsed: " + elapsed)
 		}
 	}
-	if activity.SmallImage.Text != "" {
+	if image := imageLabel(activity.SmallImage, ""); image != "" {
 		b.WriteByte('\n')
-		b.WriteString("small image: " + activity.SmallImage.Text)
+		b.WriteString("small image: " + image)
 	}
 	if len(activity.Buttons) > 0 {
 		labels := make([]string, 0, len(activity.Buttons))
@@ -121,11 +123,33 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 	}
 }
 
-func imageValue(image presence.Image) string {
-	if image.URL != "" {
-		return image.URL
+func imageLabel(image presence.Image, cardTitle string) string {
+	if strings.TrimSpace(image.Key) == "" && strings.TrimSpace(image.URL) == "" {
+		return ""
 	}
-	return image.Key
+
+	names := []string{image.Text, image.Key, imageNameFromURL(image.URL)}
+	if cardTitle != "" {
+		names = []string{image.Key, imageNameFromURL(image.URL), image.Text}
+	}
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" && name != strings.TrimSpace(cardTitle) {
+			return "[image: " + name + "]"
+		}
+	}
+	return "[image]"
+}
+
+func imageNameFromURL(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	name := path.Base(parsed.Path)
+	if name == "" || name == "." || name == "/" {
+		return ""
+	}
+	return strings.TrimSuffix(name, path.Ext(name))
 }
 
 func elapsedString(now, started time.Time) string {
