@@ -35,11 +35,11 @@ func TestRenderCard(t *testing.T) {
 			want: []string{
 				"discord: connected",
 				"Neovim",
-				"nvim",
+				"[image: Neovim]",
 				"also: lazygit",
 				"Using nvim",
 				"elapsed: 12:34",
-				"small image: lazygit",
+				"small image: [image: lazygit]",
 				"buttons: Docs",
 			},
 		},
@@ -65,20 +65,51 @@ func TestRenderCard(t *testing.T) {
 					StartTimestamp: ptrTime(now.Add(-(time.Hour + 2*time.Minute + 3*time.Second))),
 				},
 			},
-			want:    []string{"Codex CLI", "https://example.test/codex.png", "elapsed: 1:02:03"},
-			wantNot: []string{"also:"},
+			want:    []string{"Codex CLI", "[image: Codex CLI]", "elapsed: 1:02:03"},
+			wantNot: []string{"https://example.test/codex.png", "also:"},
 		},
 		{
-			name: "no timer without start",
+			name: "image key without display name",
 			state: CardState{
 				Now: now,
 				Activity: &presence.Activity{
 					Details:    "Using ghostty",
-					LargeImage: presence.Image{Text: "Ghostty", Key: "ghostty"},
+					LargeImage: presence.Image{Key: "ghostty"},
 				},
 			},
-			want:    []string{"Ghostty", "Using ghostty"},
+			want:    []string{"unknown tool", "[image: ghostty]", "Using ghostty"},
 			wantNot: []string{"elapsed:"},
+		},
+		{
+			name: "image name derived from url",
+			state: CardState{
+				Now: now,
+				Activity: &presence.Activity{
+					LargeImage: presence.Image{URL: "https://unpkg.com/@lobehub/icons-static-png@1.91.0/dark/claude-color.png"},
+				},
+			},
+			want:    []string{"[image: claude-color]"},
+			wantNot: []string{"https://unpkg.com"},
+		},
+		{
+			name: "missing image",
+			state: CardState{
+				Now:      now,
+				Activity: &presence.Activity{Name: "No Logo"},
+			},
+			want:    []string{"No Logo"},
+			wantNot: []string{"[image"},
+		},
+		{
+			name: "generic image placeholder",
+			state: CardState{
+				Now: now,
+				Activity: &presence.Activity{
+					LargeImage: presence.Image{URL: "https://example.test/"},
+				},
+			},
+			want:    []string{"[image]"},
+			wantNot: []string{"https://example.test"},
 		},
 		{
 			name: "recent detections",

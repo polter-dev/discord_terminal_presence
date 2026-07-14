@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -79,12 +81,15 @@ func RenderCard(s CardState, st CardStyles) string {
 }
 
 func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Time, st CardStyles) {
-	name := activity.LargeImage.Text
+	name := activity.Name
+	if name == "" {
+		name = activity.LargeImage.Text
+	}
 	if name == "" {
 		name = "unknown tool"
 	}
 	b.WriteString(st.Title.Render(name))
-	image := imageValue(activity.LargeImage)
+	image := imageLabel(activity.LargeImage, activity.Name)
 	if image != "" {
 		b.WriteByte('\n')
 		b.WriteString(st.Muted.Render(image))
@@ -103,9 +108,9 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 			b.WriteString("elapsed: " + elapsed)
 		}
 	}
-	if activity.SmallImage.Text != "" {
+	if image := imageLabel(activity.SmallImage, ""); image != "" {
 		b.WriteByte('\n')
-		b.WriteString("small image: " + activity.SmallImage.Text)
+		b.WriteString("small image: " + image)
 	}
 	if len(activity.Buttons) > 0 {
 		labels := make([]string, 0, len(activity.Buttons))
@@ -121,11 +126,29 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 	}
 }
 
-func imageValue(image presence.Image) string {
-	if image.URL != "" {
-		return image.URL
+func imageLabel(image presence.Image, displayName string) string {
+	if strings.TrimSpace(image.Key) == "" && strings.TrimSpace(image.URL) == "" {
+		return ""
 	}
-	return image.Key
+
+	for _, name := range []string{displayName, image.Text, image.Key, imageNameFromURL(image.URL)} {
+		if name = strings.TrimSpace(name); name != "" {
+			return "[image: " + name + "]"
+		}
+	}
+	return "[image]"
+}
+
+func imageNameFromURL(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	name := path.Base(parsed.Path)
+	if name == "" || name == "." || name == "/" {
+		return ""
+	}
+	return strings.TrimSuffix(name, path.Ext(name))
 }
 
 func elapsedString(now, started time.Time) string {
