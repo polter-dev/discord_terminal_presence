@@ -99,6 +99,134 @@ install_binary() {
 	fi
 }
 
+stdout_width() {
+	width=${COLUMNS:-}
+	case $width in
+	'' | *[!0-9]* | 0) width= ;;
+	esac
+
+	if [ -z "$width" ] && [ -t 1 ] && have tput && [ -n "${TERM:-}" ]; then
+		width=$(tput cols 2>/dev/null || true)
+		case $width in
+		'' | *[!0-9]* | 0) width= ;;
+		esac
+	fi
+
+	if [ -z "$width" ]; then
+		width=80
+	elif [ "$width" -gt 80 ]; then
+		width=80
+	fi
+	printf '%s\n' "$width"
+}
+
+print_setup_cta() {
+	box_width=$(stdout_width)
+	if [ "$box_width" -lt 13 ]; then
+		# A bordered 11-character command cannot fit below 13 columns.
+		printf '\n\nTERMP INSTALLED\n\nRUN THIS NOW:\ntermp setup\n\nDiscord stays blank until you do.\n\n'
+		printf 'termp start\ntermp uninstall\n'
+		return
+	fi
+
+	if [ "$box_width" -ge 40 ]; then
+		pad=3
+	elif [ "$box_width" -ge 17 ]; then
+		pad=2
+	elif [ "$box_width" -ge 15 ]; then
+		pad=1
+	else
+		pad=0
+	fi
+	inner_width=$((box_width - 2))
+	content_width=$((inner_width - (pad * 2)))
+	rule=$(printf '%*s' "$inner_width" '' | tr ' ' '-')
+
+	accent=
+	header=
+	next=
+	command_style=
+	consequence=
+	muted=
+	reset=
+	if [ -t 1 ] && [ "${NO_COLOR+x}" != x ]; then
+		esc=$(printf '\033')
+		accent="${esc}[1;95m"
+		header="${esc}[1;96m"
+		next="${esc}[1;93m"
+		command_style="${esc}[1;30;103m"
+		consequence="${esc}[1;97m"
+		muted="${esc}[2;90m"
+		reset="${esc}[0m"
+	fi
+
+	box_blank() {
+		printf '%s|%s%*s%s|%s\n' "$accent" "$reset" "$inner_width" '' "$accent" "$reset"
+	}
+
+	box_text() {
+		text_value=$1
+		text_style=$2
+		printf '%s|%s%*s%s%-*s%s%*s%s|%s\n' \
+			"$accent" "$reset" "$pad" '' "$text_style" "$content_width" "$text_value" "$reset" "$pad" '' "$accent" "$reset"
+	}
+
+	box_command() {
+		command_value='termp setup'
+		if [ "$content_width" -ge 21 ]; then
+			command_value='>>>  termp setup  <<<'
+		fi
+		command_length=${#command_value}
+		left_space=$(((content_width - command_length) / 2))
+		right_space=$((content_width - command_length - left_space))
+		printf '%s|%s%*s%s%*s%s%*s%s%*s%s|%s\n' \
+			"$accent" "$reset" "$pad" '' "$command_style" "$left_space" '' "$command_value" "$right_space" '' "$reset" "$pad" '' "$accent" "$reset"
+	}
+
+	printf '\n\n'
+	printf '%s+%s+%s\n' "$accent" "$rule" "$reset"
+	box_blank
+	if [ "$content_width" -ge 15 ]; then
+		box_text 'TERMP INSTALLED' "$header"
+	else
+		box_text 'INSTALLED' "$header"
+	fi
+	box_blank
+	if [ "$content_width" -ge 25 ]; then
+		box_text 'NEXT STEP - RUN THIS NOW:' "$next"
+	elif [ "$content_width" -ge 13 ]; then
+		box_text 'RUN THIS NOW:' "$next"
+	else
+		box_text 'RUN NOW:' "$next"
+	fi
+	box_blank
+	box_command
+	box_blank
+	if [ "$content_width" -ge 51 ]; then
+		box_text 'Nothing shows on your Discord profile until you do.' "$consequence"
+	elif [ "$content_width" -ge 29 ]; then
+		box_text 'Nothing shows on your' "$consequence"
+		box_text 'Discord profile until you do.' "$consequence"
+	elif [ "$content_width" -ge 19 ]; then
+		box_text 'Discord stays blank' "$consequence"
+		box_text 'until you do.' "$consequence"
+	else
+		box_text 'No Discord' "$consequence"
+		box_text 'until setup' "$consequence"
+	fi
+	box_blank
+	printf '%s+%s+%s\n' "$accent" "$rule" "$reset"
+	printf '\n\n'
+
+	if [ "$box_width" -ge 27 ]; then
+		printf '%soptional: termp start%s\n' "$muted" "$reset"
+		printf '%sremove:   termp uninstall%s\n' "$muted" "$reset"
+	else
+		printf '%stermp start%s\n' "$muted" "$reset"
+		printf '%stermp uninstall%s\n' "$muted" "$reset"
+	fi
+}
+
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/termp-install.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
 
@@ -138,6 +266,18 @@ fi
 install_binary "$binary_path" "$bindir"
 
 printf 'termp installed to %s/termp\n' "$bindir"
-printf 'Next steps:\n'
-printf '  termp start    # run the daemon in the foreground\n'
-printf '  termp install  # install and start the login autostart service\n'
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+	config_path="$XDG_CONFIG_HOME/termp/config.toml"
+elif [ -n "${HOME:-}" ]; then
+	config_path="$HOME/.config/termp/config.toml"
+else
+	config_path=
+fi
+
+if [ -n "$config_path" ] && [ -f "$config_path" ]; then
+	printf 'Next steps:\n'
+	printf '  termp start    # run the daemon in the foreground\n'
+	printf '  termp install  # install and start the login autostart service\n'
+else
+	print_setup_cta
+fi
