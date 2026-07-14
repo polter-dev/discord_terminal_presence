@@ -100,7 +100,7 @@ func TestModelViewRendersAlignedFriendlyTableAndFooter(t *testing.T) {
 
 	for _, want := range []string{
 		"Setting", "State / Value",
-		"Global", "Display", "Privacy", "Headliner", "Pin",
+		"Global", "Display", "Privacy", "Headliner", "Pin Specific Tool",
 		"Presence enabled", "Scan interval", "Folder: name only",
 		"Activity switching", "Spotlight idle timeout", "Codex CLI",
 		"Leave feedback", "Save & quit", "Quit without saving",
@@ -126,6 +126,44 @@ func TestModelViewRendersAlignedFriendlyTableAndFooter(t *testing.T) {
 	}
 	if got, want := visibleColumn(presenceLine, "On"), visibleColumn(scanLine, model.Config().ScanInterval); got != want {
 		t.Errorf("value columns are not aligned: On at %d, scan interval at %d", got, want)
+	}
+}
+
+func TestModelViewScrollsToKeepCursorAndFooterVisible(t *testing.T) {
+	model := NewSettingsModel(config.Default(), []registry.Tool{
+		{ID: "codex-cli", DisplayName: "Codex CLI"},
+	}, nil, nil, nil)
+
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	model = updated.(Model)
+	view := model.View()
+	for _, want := range []string{"termp settings", "› Presence enabled", "s save", "q/esc/ctrl+c quit"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("initial View() missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Quit without saving") {
+		t.Errorf("initial View() should not contain the last row in a small window:\n%s", view)
+	}
+	if got := lipgloss.Height(view); got > 12 {
+		t.Errorf("initial View() height = %d, want at most 12:\n%s", got, view)
+	}
+
+	for model.cursor != len(model.rows)-1 {
+		updated, _ = model.Update(key("down"))
+		model = updated.(Model)
+	}
+	view = model.View()
+	for _, want := range []string{"› Quit without saving", "s save", "q/esc/ctrl+c quit"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("scrolled View() missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Presence enabled") {
+		t.Errorf("scrolled View() should not contain the first selectable row:\n%s", view)
+	}
+	if got := lipgloss.Height(view); got > 12 {
+		t.Errorf("scrolled View() height = %d, want at most 12:\n%s", got, view)
 	}
 }
 

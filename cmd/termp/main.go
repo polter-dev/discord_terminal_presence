@@ -635,7 +635,7 @@ func settings(args []string) error {
 	model := tui.NewSettingsModel(cfg, reg.Tools(), usageStore.Rank(), func(next config.Config) error {
 		return config.Save(next, config.DefaultPath())
 	}, openInBrowser)
-	_, err = tea.NewProgram(model).Run()
+	_, err = tea.NewProgram(model, tea.WithAltScreen()).Run()
 	return err
 }
 

@@ -53,6 +53,9 @@ type Model struct {
 	status   string
 	saved    bool
 	quitting bool
+	width    int
+	height   int
+	offset   int
 	styles   styles
 }
 
@@ -156,6 +159,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.ensureCursorVisible()
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
@@ -178,7 +185,8 @@ func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.styles.title.Render("termp settings"))
 	b.WriteString("\n\n")
-	b.WriteString(m.settingsTable())
+	start, end := m.visibleRowRange()
+	b.WriteString(m.settingsTable(start, end))
 	b.WriteByte('\n')
 	if m.err != nil {
 		b.WriteString("\n")
@@ -203,9 +211,10 @@ func (m Model) View() string {
 	return b.String()
 }
 
-func (m Model) settingsTable() string {
-	rows := make([][]string, 0, len(m.rows))
-	for i, row := range m.rows {
+func (m Model) settingsTable(start, end int) string {
+	rows := make([][]string, 0, end-start)
+	for i := start; i < end; i++ {
+		row := m.rows[i]
 		rows = append(rows, m.rowCells(i, row))
 	}
 
@@ -217,18 +226,75 @@ func (m Model) settingsTable() string {
 		BorderRow(false).
 		StyleFunc(func(rowIndex, _ int) lipgloss.Style {
 			style := lipgloss.NewStyle().Padding(0, 1)
+			modelRowIndex := start + rowIndex
 			switch {
 			case rowIndex == table.HeaderRow:
 				return style.Inherit(m.styles.title)
-			case m.rows[rowIndex].kind == rowLabel:
+			case m.rows[modelRowIndex].kind == rowLabel:
 				return style.Inherit(m.styles.title)
-			case rowIndex == m.cursor:
+			case modelRowIndex == m.cursor:
 				return style.Inherit(m.styles.selected)
 			default:
 				return style
 			}
 		}).
 		String()
+}
+
+func (m Model) visibleRowRange() (int, int) {
+	if len(m.rows) == 0 {
+		return 0, 0
+	}
+
+	budget := m.visibleRowBudget()
+	if budget >= len(m.rows) {
+		return 0, len(m.rows)
+	}
+
+	start := m.offset
+	if start < 0 {
+		start = 0
+	}
+	maxStart := len(m.rows) - budget
+	if start > maxStart {
+		start = maxStart
+	}
+	if m.cursor < start {
+		start = m.cursor
+	} else if m.cursor >= start+budget {
+		start = m.cursor - budget + 1
+	}
+	if start > maxStart {
+		start = maxStart
+	}
+	return start, start + budget
+}
+
+func (m Model) visibleRowBudget() int {
+	if m.height <= 0 {
+		return len(m.rows)
+	}
+
+	// Reserve two title lines, four table chrome lines, one spacer, the
+	// footer, and the view's trailing line. Status messages add a blank
+	// line and their own line.
+	fixedHeight := 2 + 4 + 1 + 2 + 1
+	if m.editing >= 0 {
+		fixedHeight--
+	}
+	if m.err != nil || m.saved || m.status != "" {
+		fixedHeight += 2
+	}
+	budget := m.height - fixedHeight
+	if budget < 1 {
+		return 1
+	}
+	return budget
+}
+
+func (m *Model) ensureCursorVisible() {
+	start, _ := m.visibleRowRange()
+	m.offset = start
 }
 
 func (m Model) rowCells(index int, row row) []string {
@@ -276,6 +342,7 @@ func (m *Model) move(delta int) {
 	for {
 		m.cursor = (m.cursor + delta + len(m.rows)) % len(m.rows)
 		if m.rows[m.cursor].kind != rowLabel {
+			m.ensureCursorVisible()
 			return
 		}
 	}
@@ -372,7 +439,7 @@ func settingsRows(tools []registry.Tool) []row {
 		{kind: rowLabel, label: "Headliner"},
 		toggle("Activity switching", func(c config.Config) bool { return c.ActivitySwitching }, func(c *config.Config, v bool) { c.ActivitySwitching = v }),
 		text("Spotlight idle timeout", func(c config.Config) string { return c.HeadlinerIdleTimeout }, func(c *config.Config, v string) { c.HeadlinerIdleTimeout = v }),
-		{kind: rowLabel, label: "Pin"},
+		{kind: rowLabel, label: "Pin Specific Tool"},
 	}
 	for _, tool := range tools {
 		label := tool.DisplayName
