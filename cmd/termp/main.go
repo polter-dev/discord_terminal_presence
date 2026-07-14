@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -33,6 +34,25 @@ var (
 	verbose bool
 )
 
+var commandHelp = []struct {
+	name        string
+	description string
+}{
+	{"install", "install the login autostart service (not the binary)"},
+	{"uninstall", "remove the login autostart service (not the binary)"},
+	{"disable", "pause login autostart"},
+	{"enable", "resume login autostart"},
+	{"start", "run the presence daemon in the foreground"},
+	{"stop", "stop the running presence daemon"},
+	{"status", "show daemon, Discord, autostart, and config status"},
+	{"settings", "open the interactive settings TUI"},
+	{"watch", "preview the live Discord card (--once prints one snapshot)"},
+	{"version", "print version and build information"},
+	{"setup", "run the interactive first-run configuration wizard"},
+	{"config", "manage configuration non-interactively"},
+	{"completion", "generate a shell completion script"},
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("termp: ")
@@ -45,7 +65,11 @@ func main() {
 			}
 			return
 		}
-		usage()
+		if errors.Is(err, flag.ErrHelp) && rootHelpRequested(os.Args[1:]) {
+			usage(os.Stdout)
+			return
+		}
+		usage(os.Stderr)
 		os.Exit(2)
 	}
 	if showVersion {
@@ -81,7 +105,7 @@ func main() {
 	case "completion":
 		err = completion(args)
 	default:
-		usage()
+		usage(os.Stderr)
 		os.Exit(2)
 	}
 	if err != nil {
@@ -89,8 +113,30 @@ func main() {
 	}
 }
 
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: termp [--verbose] [--version] install|uninstall|disable|enable|start|stop|status|settings|watch|version|setup|config|completion")
+func usage(w io.Writer) {
+	fmt.Fprintln(w, "Terminal Presence (termp)")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  termp [--verbose] [--version] <command> [arguments]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	for _, command := range commandHelp {
+		fmt.Fprintf(w, "  %-10s  %s\n", command.name, command.description)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Global options:")
+	fmt.Fprintln(w, "  -v, --verbose  enable verbose logging")
+	fmt.Fprintln(w, "  --version      print version information")
+	fmt.Fprintln(w, "  -h, --help     show this help")
+}
+
+func rootHelpRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" {
+			return true
+		}
+	}
+	return false
 }
 
 func parseRoot(args []string) (command string, commandArgs []string, showVersion bool, err error) {
@@ -98,6 +144,7 @@ func parseRoot(args []string) (command string, commandArgs []string, showVersion
 	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
 	fs.BoolVar(&verbose, "v", false, "enable verbose logging")
 	fs.BoolVar(&showVersion, "version", false, "print version information")
+	fs.Usage = func() {}
 	if err := fs.Parse(args); err != nil {
 		return "", nil, false, err
 	}

@@ -18,6 +18,11 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/service"
 )
 
+var expectedCommands = []string{
+	"install", "uninstall", "disable", "enable", "start", "stop", "status",
+	"settings", "watch", "version", "setup", "config", "completion",
+}
+
 func TestFormatInstallSuccessShowsCTAForFreshInstall(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "termp", "config.toml")
 	got := formatInstallSuccess("/usr/local/bin/termp", configPath, nil, 80)
@@ -155,6 +160,34 @@ func TestParseRootVerboseFlag(t *testing.T) {
 	}
 }
 
+func TestUsageListsEveryCommandWithDescription(t *testing.T) {
+	var buf bytes.Buffer
+	usage(&buf)
+	got := buf.String()
+
+	if !strings.Contains(got, "Terminal Presence (termp)") {
+		t.Fatalf("usage missing product name:\n%s", got)
+	}
+	for _, command := range expectedCommands {
+		prefix := "  " + command + strings.Repeat(" ", 12-len(command))
+		description := ""
+		for _, line := range strings.Split(got, "\n") {
+			if strings.HasPrefix(line, prefix) {
+				description = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+				break
+			}
+		}
+		if description == "" {
+			t.Fatalf("usage missing non-empty description for %q:\n%s", command, got)
+		}
+	}
+	for lineNumber, line := range strings.Split(got, "\n") {
+		if len(line) > 80 {
+			t.Fatalf("usage line %d is %d columns: %q", lineNumber+1, len(line), line)
+		}
+	}
+}
+
 func TestDebugfEmitsOnlyWhenVerbose(t *testing.T) {
 	oldVerbose := verbose
 	oldWriter := log.Writer()
@@ -186,14 +219,13 @@ func TestDebugfEmitsOnlyWhenVerbose(t *testing.T) {
 }
 
 func TestCompletionScriptsContainCommands(t *testing.T) {
-	commands := []string{"start", "stop", "status", "install", "uninstall", "disable", "enable", "settings", "watch", "version", "setup", "config", "completion"}
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		t.Run(shell, func(t *testing.T) {
 			script, err := completionScript(shell)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, command := range commands {
+			for _, command := range expectedCommands {
 				if !strings.Contains(script, command) {
 					t.Fatalf("%s completion missing %q:\n%s", shell, command, script)
 				}
