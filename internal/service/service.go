@@ -64,6 +64,55 @@ func ResolveExecutable() (string, error) {
 	return resolved, nil
 }
 
+func ValidateInstallExecutable(exe string, force bool) (string, error) {
+	exe, err := filepath.Abs(exe)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", err
+	}
+	if force || !isUnstableExecutablePath(resolved) {
+		return resolved, nil
+	}
+	return "", fmt.Errorf(
+		"refusing to install autostart from unstable executable path %q; move the binary to a stable location such as ~/.local/bin or /usr/local/bin, then re-run `termp install` (or use --force to install this path anyway)",
+		resolved,
+	)
+}
+
+func isUnstableExecutablePath(exe string) bool {
+	for _, root := range []string{os.TempDir(), "/tmp", "/private/tmp", "/private/var/folders"} {
+		if pathWithin(exe, root) {
+			return true
+		}
+	}
+
+	for dir := filepath.Dir(exe); ; dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+	}
+}
+
+func pathWithin(path, root string) bool {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func (m Manager) Install(exe string) (State, error) {
 	switch m.GOOS {
 	case "darwin":

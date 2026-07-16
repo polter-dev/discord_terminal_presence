@@ -99,6 +99,8 @@ func (s darwinService) Status() State {
 	if out, err := s.runner.Run("launchctl", "print", "gui/"+currentUID()+"/"+Label); err == nil {
 		state.Loaded = "true"
 		_ = out
+	} else if isLaunchctlServiceNotFoundError(out) {
+		state.Loaded = "false"
 	} else {
 		state.Loaded = "unknown"
 	}
@@ -151,6 +153,15 @@ func isBenignLaunchctlUnloadError(out []byte) bool {
 		"not found",
 		"not loaded",
 		"service is not loaded",
+	)
+}
+
+func isLaunchctlServiceNotFoundError(out []byte) bool {
+	return containsAnyFold(string(out),
+		"could not find service",
+		"could not find specified service",
+		"no such service",
+		"service not found",
 	)
 }
 

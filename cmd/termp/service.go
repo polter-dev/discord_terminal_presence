@@ -18,10 +18,15 @@ const maxInstallCTAWidth = 80
 
 func install(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	force := fs.Bool("force", false, "install even when the executable path is unstable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	exe, err := service.ResolveExecutable()
+	if err != nil {
+		return err
+	}
+	exe, err = service.ValidateInstallExecutable(exe, *force)
 	if err != nil {
 		return err
 	}
