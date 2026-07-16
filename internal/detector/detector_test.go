@@ -274,6 +274,96 @@ func TestSelectorIdleClearDisabledNeverClears(t *testing.T) {
 	}
 }
 
+func TestSelectorExcludesOtherToolIdleBeyondClearTimeout(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:  20 * time.Minute,
+		ActivitySwitching: true,
+	}, clock)
+
+	selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
+	})
+	clock.Advance(time.Second)
+	selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 2},
+	})
+
+	clock.Advance(20*time.Minute + time.Second)
+	detection := selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 3},
+	})
+
+	if detection.Tool.ID != "codex-cli" {
+		t.Fatalf("featured tool = %q, want codex-cli", detection.Tool.ID)
+	}
+	if len(detection.Others) != 0 {
+		t.Fatalf("others = %#v, want idle claude-code excluded", detection.Others)
+	}
+}
+
+func TestSelectorKeepsOtherToolWithActivityInsideClearWindow(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:  20 * time.Minute,
+		ActivitySwitching: true,
+	}, clock)
+
+	selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
+	})
+	clock.Advance(time.Second)
+	selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 2},
+	})
+
+	clock.Advance(19 * time.Minute)
+	detection := selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 2},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 3},
+	})
+
+	if detection.Tool.ID != "codex-cli" {
+		t.Fatalf("featured tool = %q, want codex-cli", detection.Tool.ID)
+	}
+	if len(detection.Others) != 1 || detection.Others[0].ID != "claude-code" {
+		t.Fatalf("others = %#v, want active claude-code listed", detection.Others)
+	}
+}
+
+func TestSelectorIdleClearDisabledKeepsIdleOtherTool(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:  0,
+		ActivitySwitching: true,
+	}, clock)
+
+	selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
+	})
+	clock.Advance(24 * time.Hour)
+	detection := selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 2},
+	})
+
+	if detection.Tool.ID != "codex-cli" {
+		t.Fatalf("featured tool = %q, want codex-cli", detection.Tool.ID)
+	}
+	if len(detection.Others) != 1 || detection.Others[0].ID != "claude-code" {
+		t.Fatalf("others = %#v, want idle claude-code listed while idle clear is disabled", detection.Others)
+	}
+}
+
 func TestSelectorOrdersOthersByActivityThenPriority(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
