@@ -56,6 +56,7 @@ type Tool struct {
 	ID          string
 	DisplayName string
 	Match       MatchSpec
+	Exclude     string
 	ImageKey    string
 	ImageURL    string
 	IconSlug    string
@@ -63,7 +64,8 @@ type Tool struct {
 	Priority    int
 	Buttons     []Button
 
-	order int
+	compiledExclude *regexp.Regexp
+	order           int
 }
 
 // CustomMatch is the config-facing match shape for future TOML loading.
@@ -77,6 +79,7 @@ type CustomTool struct {
 	ID          string
 	DisplayName string
 	Match       CustomMatch
+	Exclude     string
 	ImageKey    string
 	ImageURL    string
 	IconSlug    string
@@ -126,6 +129,7 @@ func NewWithCustom(custom ...CustomTool) (*Registry, error) {
 				Name:  customTool.Match.Name,
 				Regex: customTool.Match.Regex,
 			},
+			Exclude:    customTool.Exclude,
 			ImageKey:   customTool.ImageKey,
 			ImageURL:   customTool.ImageURL,
 			IconSlug:   customTool.IconSlug,
@@ -179,14 +183,20 @@ func newFromTools(tools []Tool) (*Registry, error) {
 		}
 		compiled[i].Buttons = append([]Button(nil), compiled[i].Buttons...)
 		resolveIcon(&compiled[i])
-		if compiled[i].Match.Regex == "" {
-			continue
+		if compiled[i].Match.Regex != "" {
+			re, err := regexp.Compile("(?i:" + compiled[i].Match.Regex + ")")
+			if err != nil {
+				return nil, err
+			}
+			compiled[i].Match.compiled = re
 		}
-		re, err := regexp.Compile("(?i:" + compiled[i].Match.Regex + ")")
-		if err != nil {
-			return nil, err
+		if compiled[i].Exclude != "" {
+			re, err := regexp.Compile("(?i:" + compiled[i].Exclude + ")")
+			if err != nil {
+				return nil, err
+			}
+			compiled[i].compiledExclude = re
 		}
-		compiled[i].Match.compiled = re
 	}
 
 	sort.SliceStable(compiled, func(i, j int) bool {
@@ -197,6 +207,14 @@ func newFromTools(tools []Tool) (*Registry, error) {
 }
 
 func (t Tool) matchesProcess(process ProcessInfo) bool {
+	haystack := process.Exe + " " + process.Cmdline
+	if strings.TrimSpace(haystack) == "" {
+		haystack = process.Name
+	}
+	if t.compiledExclude != nil && t.compiledExclude.MatchString(haystack) {
+		return false
+	}
+
 	if t.Match.Name != "" {
 		matchName := normalizeName(t.Match.Name)
 		for _, candidate := range []string{process.Name, process.Argv0, process.Exe} {
@@ -213,10 +231,6 @@ func (t Tool) matchesProcess(process ProcessInfo) bool {
 	}
 
 	if t.Match.compiled != nil {
-		haystack := process.Exe + " " + process.Cmdline
-		if strings.TrimSpace(haystack) == "" {
-			haystack = process.Name
-		}
 		if t.Match.compiled.MatchString(haystack) {
 			return true
 		}
@@ -234,6 +248,7 @@ func compareTools(left, right Tool) int {
 func (t Tool) withoutPrivateFields() Tool {
 	t.order = 0
 	t.Match.compiled = nil
+	t.compiledExclude = nil
 	t.Buttons = append([]Button(nil), t.Buttons...)
 	return t
 }
@@ -303,6 +318,7 @@ func builtinTools() ([]Tool, error) {
 				Name:  entry.Match.Name,
 				Regex: entry.Match.Regex,
 			},
+			Exclude:    entry.Exclude,
 			ImageKey:   entry.ImageKey,
 			ImageURL:   entry.ImageURL,
 			IconSlug:   entry.IconSlug,
@@ -319,6 +335,7 @@ type catalogTool struct {
 	ID          string       `json:"id"`
 	DisplayName string       `json:"display_name"`
 	Match       catalogMatch `json:"match"`
+	Exclude     string       `json:"exclude"`
 	ImageKey    string       `json:"image_key"`
 	ImageURL    string       `json:"image_url"`
 	IconSlug    string       `json:"icon_slug"`
