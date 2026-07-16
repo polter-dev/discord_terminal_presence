@@ -201,11 +201,11 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 	}
 }
 
-func TestSelectorIdleClearAfterAllToolsIdleAndRestoresOnActivity(t *testing.T) {
+func TestSelectorIdleClearAfterTwentyMinutesIdleAndActivityResetsWindow(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{
-		IdleClearTimeout:  30 * time.Second,
+		IdleClearTimeout:  20 * time.Minute,
 		ActivitySwitching: true,
 	}, clock)
 
@@ -218,7 +218,23 @@ func TestSelectorIdleClearAfterAllToolsIdleAndRestoresOnActivity(t *testing.T) {
 		t.Fatal("first idle sample should still display before idle_clear_timeout")
 	}
 
-	clock.Advance(31 * time.Second)
+	clock.Advance(19 * time.Minute)
+	active := selector.Select([]Process{
+		{Name: "claude", CreateTime: base, CPUTime: 0},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
+	})
+	if active.None {
+		t.Fatal("activity inside idle_clear_timeout should keep detection")
+	}
+
+	clock.Advance(time.Second)
+	processes[1].CPUTime = 1
+	stillDisplayed := selector.Select(processes)
+	if stillDisplayed.None {
+		t.Fatal("first idle sample after activity should still display")
+	}
+
+	clock.Advance(20*time.Minute + time.Second)
 	cleared := selector.Select(processes)
 	if !cleared.None {
 		t.Fatalf("expected idle clear none detection, got %#v", cleared)
@@ -227,7 +243,7 @@ func TestSelectorIdleClearAfterAllToolsIdleAndRestoresOnActivity(t *testing.T) {
 	clock.Advance(time.Second)
 	resumed := selector.Select([]Process{
 		{Name: "claude", CreateTime: base, CPUTime: 0},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 2},
 	})
 	if resumed.None {
 		t.Fatal("expected activity to restore detection")
