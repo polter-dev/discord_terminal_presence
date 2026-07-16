@@ -75,6 +75,44 @@ func TestRegistryMatchProcessClaudeVersionBinaryByExeRegex(t *testing.T) {
 	}
 }
 
+func TestRegistryMatchProcessClaudeExcludesHelpers(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, cmdline := range []string{
+		"claude bg-spare --bg-spare /tmp/cc-daemon-501/spare.sock",
+		"claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/pty.sock",
+		"claude daemon run --json-path /tmp/cc-daemon-501/daemon.json",
+	} {
+		t.Run(cmdline, func(t *testing.T) {
+			if tool, ok := reg.MatchProcess(ProcessInfo{Name: "2.1.211", Cmdline: cmdline}); ok {
+				t.Fatalf("MatchProcess(%q) = %q, want no match", cmdline, tool.ID)
+			}
+		})
+	}
+}
+
+func TestRegistryMatchProcessClaudeInteractiveSessionIsNotExcluded(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tool, ok := reg.MatchProcess(ProcessInfo{
+		Name:    "2.1.211",
+		Exe:     "/Users/test/.local/share/claude/versions/2.1.211",
+		Cmdline: "claude -c --dangerously-skip-permissions",
+	})
+	if !ok {
+		t.Fatal("expected interactive Claude session to match")
+	}
+	if tool.ID != "claude-code" {
+		t.Fatalf("tool ID = %q, want claude-code", tool.ID)
+	}
+}
+
 func TestRegistryPriorityBreaksMatchTie(t *testing.T) {
 	reg, err := New(
 		Tool{

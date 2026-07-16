@@ -348,6 +348,40 @@ func TestActiveDetectionMatchesClaudeVersionBinaryAndDedupes(t *testing.T) {
 	}
 }
 
+func TestSelectorClaudeHelpersDoNotChurnFeaturedInstance(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, &fakeClock{now: base})
+	real := Process{
+		Pid:        94948,
+		Name:       "2.1.211",
+		Exe:        "/Users/test/.local/share/claude/versions/2.1.211",
+		Cmdline:    "claude -c --dangerously-skip-permissions",
+		CreateTime: base,
+		Cwd:        "/real-session",
+	}
+
+	first := selector.Select([]Process{
+		real,
+		{Pid: 94887, Name: "2.1.211", Cmdline: "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/pty", CreateTime: base.Add(time.Minute), Cwd: "/helper"},
+		{Pid: 94892, Name: "2.1.211", Cmdline: "claude bg-spare --bg-spare /tmp/cc-daemon-501/spare", CreateTime: base.Add(time.Minute), Cwd: "/helper"},
+		{Pid: 95000, Name: "2.1.211", Cmdline: "claude daemon run --json-path /tmp/daemon.json", CreateTime: base.Add(2 * time.Minute), Cwd: "/helper"},
+	})
+	second := selector.Select([]Process{
+		real,
+		{Pid: 95009, Name: "2.1.211", Cmdline: "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/pty", CreateTime: base.Add(3 * time.Minute), Cwd: "/respawned-helper"},
+		{Pid: 95014, Name: "2.1.211", Cmdline: "claude bg-spare --bg-spare /tmp/cc-daemon-501/spare", CreateTime: base.Add(3 * time.Minute), Cwd: "/respawned-helper"},
+	})
+
+	for _, detection := range []Detection{first, second} {
+		if detection.None {
+			t.Fatal("expected interactive Claude session to remain detected")
+		}
+		if detection.Tool.ID != "claude-code" || detection.Cwd != real.Cwd || !detection.StartedAt.Equal(real.CreateTime) {
+			t.Fatalf("featured = %#v, want real session cwd=%q started=%s", detection.Featured, real.Cwd, real.CreateTime)
+		}
+	}
+}
+
 func TestSelectWithEnricherMatchesFullSnapshotResults(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	full := []Process{

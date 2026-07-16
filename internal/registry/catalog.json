@@ -6,6 +6,7 @@
       "name": "claude",
       "regex": "(^|\\s|/)(claude|claude\\.exe|claude\\.js)(\\s|$)|(^|/)@anthropic-ai/claude-code/|(^|/)claude/versions/"
     },
+    "exclude": "(^|\\s)(bg-spare|bg-pty-host|daemon run)(\\s|$)",
     "image_url": "https://unpkg.com/@lobehub/icons-static-png@1.91.0/dark/claude-color.png",
     "icon_slug": "claude-color",
     "icon_source": "lobehub",
