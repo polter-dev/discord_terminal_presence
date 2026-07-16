@@ -645,12 +645,17 @@ func status(args []string) error {
 	if err != nil {
 		return err
 	}
-	processes, err := detector.GopsutilLister{}.List()
+	detection, err := detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
+		ScanInterval:         cfg.ScanIntervalDuration(),
+		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
+		Pin:                  cfg.Pin,
+		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
+		ActivitySwitching:    cfg.ActivitySwitching,
+	})
 	if err != nil {
 		fmt.Printf("detected_tool: unknown (%v)\n", err)
 		return nil
 	}
-	detection := detector.ActiveDetection(reg, processes)
 	if detection.None {
 		fmt.Println("detected_tool: none")
 		return nil
@@ -762,11 +767,17 @@ func watchSnapshot(now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	processes, err := detector.GopsutilLister{}.List()
+	detection, err := detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
+		ScanInterval:         cfg.ScanIntervalDuration(),
+		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
+		Pin:                  cfg.Pin,
+		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
+		ActivitySwitching:    cfg.ActivitySwitching,
+	})
 	if err != nil {
 		debugf("watch snapshot scan skipped: %v", err)
+		detection = detector.Detection{None: true}
 	}
-	detection := detector.ActiveDetection(reg, processes)
 	connected := presence.Probe(presence.DefaultAppID) == nil
 	activity := buildActivity(cfg, detection)
 	recent := []tui.RecentDetection(nil)

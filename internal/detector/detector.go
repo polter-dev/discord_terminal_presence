@@ -27,6 +27,26 @@ type Process struct {
 	Cwd        string
 	CreateTime time.Time
 	CPUTime    float64
+	TTY        TTYInfo
+}
+
+// TTYState distinguishes a definitive lack of a controlling tty from an
+// inspection failure. Unknown always fails open.
+type TTYState uint8
+
+const (
+	TTYUnknown TTYState = iota
+	TTYResolved
+	TTYNone
+)
+
+// TTYInfo is the per-scan controlling-terminal presence snapshot for a process.
+type TTYInfo struct {
+	State        TTYState
+	Path         string
+	Atime        time.Time
+	AtimeKnown   bool
+	DetachedTmux bool
 }
 
 // ProcessLister abstracts process inspection so tests do not scan the real OS.
@@ -42,6 +62,12 @@ type ProcessIdentityLister interface {
 // ProcessEnricher fills expensive fields for a process that already matched a known tool.
 type ProcessEnricher interface {
 	Enrich(Process) Process
+}
+
+// ScanProcessEnricherFactory builds an enricher whose expensive snapshots are
+// shared by all matched processes in one scan.
+type ScanProcessEnricherFactory interface {
+	NewScanProcessEnricher() ProcessEnricher
 }
 
 // FeaturedTool is the headliner tool selected for the primary Discord activity.
@@ -74,9 +100,10 @@ type Config struct {
 
 // Detector owns the process scan loop.
 type Detector struct {
-	registry *registry.Registry
-	lister   ProcessLister
-	config   Config
+	registry          *registry.Registry
+	lister            ProcessLister
+	config            Config
+	presenceStatePath string
 }
 
 // New creates a detector with explicit dependencies.
@@ -99,7 +126,7 @@ func New(reg *registry.Registry, lister ProcessLister, config Config) (*Detector
 	if config.HeadlinerIdleTimeout <= 0 {
 		config.HeadlinerIdleTimeout = DefaultHeadlinerIdleTimeout
 	}
-	return &Detector{registry: reg, lister: lister, config: config}, nil
+	return &Detector{registry: reg, lister: lister, config: config, presenceStatePath: EpisodeStatePath()}, nil
 }
 
 // Run starts one goroutine that scans until ctx is cancelled.
@@ -117,6 +144,22 @@ func (d *Detector) ActiveDetection(processes []Process) Detection {
 // ActiveDetection returns the best detection from a process snapshot.
 func ActiveDetection(reg *registry.Registry, processes []Process) Detection {
 	return NewSelector(reg, Config{ActivitySwitching: true}, systemClock{}).Select(processes)
+}
+
+// ActiveDetectionWithPresence scans once with the same presence eligibility and
+// episode anchors as the daemon. The loaded episode store is never saved.
+func ActiveDetectionWithPresence(reg *registry.Registry, lister ProcessLister, config Config) (Detection, error) {
+	detector, err := New(reg, lister, config)
+	if err != nil {
+		return Detection{}, err
+	}
+	processes, err := listProcesses(lister)
+	if err != nil {
+		return Detection{}, err
+	}
+	episodes, _ := LoadEpisodeStore(EpisodeStatePath())
+	selector := newSelectorWithEpisodes(detector.registry, detector.config, systemClock{}, episodes, nil)
+	return selector.SelectWithEnricher(processes, processEnricher(lister)), nil
 }
 
 // Clock supplies time to Selector so headliner hysteresis is deterministic in tests.
@@ -139,6 +182,8 @@ type Selector struct {
 	previousFeatured string
 	previousCPU      map[string]float64
 	idleSince        map[string]time.Time
+	episodes         *EpisodeStore
+	saveEpisodes     func(*EpisodeStore)
 }
 
 // NewSelector creates a stateful selector for repeated snapshots.
@@ -152,12 +197,21 @@ func NewSelector(reg *registry.Registry, config Config, clock Clock) *Selector {
 	if clock == nil {
 		clock = systemClock{}
 	}
+	return newSelectorWithEpisodes(reg, config, clock, NewEpisodeStore(), nil)
+}
+
+func newSelectorWithEpisodes(reg *registry.Registry, config Config, clock Clock, episodes *EpisodeStore, save func(*EpisodeStore)) *Selector {
+	if episodes == nil {
+		episodes = NewEpisodeStore()
+	}
 	return &Selector{
-		registry:    reg,
-		config:      config,
-		clock:       clock,
-		previousCPU: make(map[string]float64),
-		idleSince:   make(map[string]time.Time),
+		registry:     reg,
+		config:       config,
+		clock:        clock,
+		previousCPU:  make(map[string]float64),
+		idleSince:    make(map[string]time.Time),
+		episodes:     episodes,
+		saveEpisodes: save,
 	}
 }
 
@@ -170,6 +224,8 @@ func (s *Selector) Select(processes []Process) Detection {
 func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnricher) Detection {
 	candidates := make(map[string]toolCandidate)
 	cpuTotals := make(map[string]float64)
+	now := s.clock.Now()
+	eligibleEpisodes := make(map[string]struct{})
 	for _, proc := range processes {
 		tool, ok := s.registry.MatchProcess(registry.ProcessInfo{
 			Name:    proc.Name,
@@ -183,20 +239,34 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		if enricher != nil {
 			proc = enricher.Enrich(proc)
 		}
+		if !s.presenceEligible(proc, now) {
+			continue
+		}
+
+		episodeKey := EpisodeKey(tool.ID, proc.Pid, proc.CreateTime)
+		startedAt, changed := s.episodes.Observe(episodeKey, proc.TTY, now, s.config.IdleClearTimeout)
+		eligibleEpisodes[episodeKey] = struct{}{}
+		if changed && s.saveEpisodes != nil {
+			s.saveEpisodes(s.episodes)
+		}
 
 		cpuTotals[tool.ID] += proc.CPUTime
 		candidate := toolCandidate{
 			FeaturedTool: FeaturedTool{
 				Tool:      tool,
 				Cwd:       proc.Cwd,
-				StartedAt: proc.CreateTime,
+				StartedAt: startedAt,
 			},
+			CreateTime: proc.CreateTime,
 		}
 
 		current, exists := candidates[tool.ID]
-		if !exists || isBetterInstance(candidate.FeaturedTool, current.FeaturedTool) {
+		if !exists || isBetterInstance(candidate, current) {
 			candidates[tool.ID] = candidate
 		}
+	}
+	if s.episodes.EndAbsent(eligibleEpisodes) && s.saveEpisodes != nil {
+		s.saveEpisodes(s.episodes)
 	}
 
 	if len(candidates) == 0 {
@@ -206,7 +276,6 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		return Detection{None: true}
 	}
 
-	now := s.clock.Now()
 	for id, candidate := range candidates {
 		activity := cpuTotals[id] - s.previousCPU[id]
 		if activity < 0 {
@@ -227,27 +296,22 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		}
 	}
 
-	// Idle clear is opt-in because CPU deltas can miss quiet interactive work
-	// such as editing text without invoking CPU-heavy operations.
-	if s.config.IdleClearTimeout > 0 && s.allRunningToolsIdle(candidates, now) {
-		return Detection{None: true}
-	}
-
 	featured := s.selectFeatured(candidates, now)
 	s.previousFeatured = featured.Tool.ID
 
-	others := s.sortedOthers(candidates, featured.Tool.ID, now)
+	others := s.sortedOthers(candidates, featured.Tool.ID)
 	return detectionFromFeatured(featured, others)
 }
 
-func (s *Selector) allRunningToolsIdle(candidates map[string]toolCandidate, now time.Time) bool {
-	for id := range candidates {
-		idleSince, idle := s.idleSince[id]
-		if !idle || now.Sub(idleSince) < s.config.IdleClearTimeout {
-			return false
-		}
+func (s *Selector) presenceEligible(proc Process, now time.Time) bool {
+	if proc.TTY.State == TTYNone || proc.TTY.DetachedTmux {
+		return false
 	}
-	return true
+	if proc.TTY.State != TTYResolved || s.config.IdleClearTimeout <= 0 || !proc.TTY.AtimeKnown {
+		return true
+	}
+	age := now.Sub(proc.TTY.Atime)
+	return age < 0 || age < s.config.IdleClearTimeout
 }
 
 func (s *Selector) selectFeatured(candidates map[string]toolCandidate, now time.Time) FeaturedTool {
@@ -277,7 +341,7 @@ func (s *Selector) selectFeatured(candidates map[string]toolCandidate, now time.
 		ok   bool
 	)
 	for _, candidate := range candidates {
-		if !ok || isBetterActiveTool(candidate.FeaturedTool, best.FeaturedTool) {
+		if !ok || isBetterActiveCandidate(candidate, best) {
 			best = candidate
 			ok = true
 		}
@@ -285,9 +349,23 @@ func (s *Selector) selectFeatured(candidates map[string]toolCandidate, now time.
 	return best.FeaturedTool
 }
 
+func isBetterActiveCandidate(left, right toolCandidate) bool {
+	if !left.StartedAt.Equal(right.StartedAt) {
+		return left.StartedAt.After(right.StartedAt)
+	}
+	if left.Tool.Priority != right.Tool.Priority {
+		return left.Tool.Priority > right.Tool.Priority
+	}
+	if !left.CreateTime.Equal(right.CreateTime) {
+		return left.CreateTime.After(right.CreateTime)
+	}
+	return left.Tool.ID < right.Tool.ID
+}
+
 type toolCandidate struct {
 	FeaturedTool
-	Activity float64
+	Activity   float64
+	CreateTime time.Time
 }
 
 func mostActive(candidates map[string]toolCandidate, excludeID string) (toolCandidate, bool) {
@@ -307,17 +385,11 @@ func mostActive(candidates map[string]toolCandidate, excludeID string) (toolCand
 	return best, ok
 }
 
-func (s *Selector) sortedOthers(candidates map[string]toolCandidate, featuredID string, now time.Time) []registry.Tool {
+func (s *Selector) sortedOthers(candidates map[string]toolCandidate, featuredID string) []registry.Tool {
 	others := make([]toolCandidate, 0, len(candidates)-1)
 	for id, candidate := range candidates {
 		if id == featuredID {
 			continue
-		}
-		if s.config.IdleClearTimeout > 0 {
-			idleSince, idle := s.idleSince[id]
-			if idle && now.Sub(idleSince) >= s.config.IdleClearTimeout {
-				continue
-			}
 		}
 		others = append(others, candidate)
 	}
@@ -364,7 +436,11 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 		candidateSet bool
 		streak       int
 	)
-	selector := NewSelector(d.registry, d.config, systemClock{})
+	statePath := d.presenceStatePath
+	episodes, _ := LoadEpisodeStore(statePath)
+	saveEpisodes := func(store *EpisodeStore) { _ = SaveEpisodeStore(statePath, store) }
+	selector := newSelectorWithEpisodes(d.registry, d.config, systemClock{}, episodes, saveEpisodes)
+	defer saveEpisodes(episodes)
 
 	scan := func() bool {
 		processes, err := listProcesses(d.lister)
@@ -425,13 +501,16 @@ func listProcesses(lister ProcessLister) ([]Process, error) {
 }
 
 func processEnricher(lister ProcessLister) ProcessEnricher {
+	if factory, ok := lister.(ScanProcessEnricherFactory); ok {
+		return factory.NewScanProcessEnricher()
+	}
 	enricher, _ := lister.(ProcessEnricher)
 	return enricher
 }
 
-func isBetterInstance(left, right FeaturedTool) bool {
-	if !left.StartedAt.Equal(right.StartedAt) {
-		return left.StartedAt.After(right.StartedAt)
+func isBetterInstance(left, right toolCandidate) bool {
+	if !left.CreateTime.Equal(right.CreateTime) {
+		return left.CreateTime.After(right.CreateTime)
 	}
 	return left.Tool.Priority > right.Tool.Priority
 }
