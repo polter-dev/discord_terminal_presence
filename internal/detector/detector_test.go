@@ -28,6 +28,19 @@ func (f *fakeLister) List() ([]Process, error) {
 	return f.snapshots[idx], nil
 }
 
+type fakePresenceLister struct {
+	processes []Process
+	enricher  ProcessEnricher
+}
+
+func (f *fakePresenceLister) List() ([]Process, error) {
+	return append([]Process(nil), f.processes...), nil
+}
+
+func (f *fakePresenceLister) NewScanProcessEnricher() ProcessEnricher {
+	return f.enricher
+}
+
 type fakeEnricher struct {
 	processes map[int32]Process
 	enriched  []int32
@@ -153,6 +166,83 @@ func TestActiveDetectionPicksMostRecentlyStarted(t *testing.T) {
 	}
 	if detection.Cwd != "/new" {
 		t.Fatalf("cwd = %q, want /new", detection.Cwd)
+	}
+}
+
+func TestActiveDetectionWithPresenceUsesScanEnricherEligibility(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	now := time.Now()
+	lister := &fakePresenceLister{
+		processes: []Process{
+			{Pid: 1, Name: "claude", CreateTime: now.Add(-4 * time.Minute)},
+			{Pid: 2, Name: "codex", CreateTime: now.Add(-3 * time.Minute)},
+			{Pid: 3, Name: "tie-high", CreateTime: now.Add(-2 * time.Minute)},
+			{Pid: 4, Name: "tie-low", CreateTime: now.Add(-time.Minute)},
+		},
+		enricher: newFakeEnricher([]Process{
+			{Pid: 1, Name: "claude", CreateTime: now.Add(-4 * time.Minute), TTY: TTYInfo{State: TTYResolved, Path: "/dev/ttys001", Atime: now.Add(-21 * time.Minute), AtimeKnown: true}},
+			{Pid: 2, Name: "codex", CreateTime: now.Add(-3 * time.Minute), TTY: TTYInfo{State: TTYResolved, Path: "/dev/ttys002", Atime: now, AtimeKnown: true, DetachedTmux: true}},
+			{Pid: 3, Name: "tie-high", CreateTime: now.Add(-2 * time.Minute), TTY: TTYInfo{State: TTYUnknown}},
+			{Pid: 4, Name: "tie-low", CreateTime: now.Add(-time.Minute), TTY: TTYInfo{State: TTYResolved, Path: "/dev/ttys004", Atime: now, AtimeKnown: true}},
+		}),
+	}
+
+	detection, err := ActiveDetectionWithPresence(testRegistry(t), lister, Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detection.None || detection.Tool.ID != "tie-high" {
+		t.Fatalf("detection = %#v, want unknown-tty tie-high featured", detection)
+	}
+	if len(detection.Others) != 1 || detection.Others[0].ID != "tie-low" {
+		t.Fatalf("others = %#v, want only fresh tie-low", detection.Others)
+	}
+}
+
+func TestActiveDetectionWithPresenceLoadsEpisodesReadOnly(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateDir)
+	now := time.Now().Truncate(time.Second)
+	created := now.Add(-time.Hour)
+	anchor := now.Add(-30 * time.Minute)
+	tty := "/dev/ttys007"
+	store := NewEpisodeStore()
+	store.Episodes[EpisodeKey("tie-high", 7, created)] = Episode{
+		PresentSince: anchor,
+		TTY:          tty,
+		LastAtime:    now.Add(-time.Minute),
+	}
+	statePath := EpisodeStatePath()
+	if err := SaveEpisodeStore(statePath, store); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lister := &fakePresenceLister{
+		processes: []Process{{Pid: 7, Name: "tie-high", CreateTime: created}},
+		enricher: newFakeEnricher([]Process{{
+			Pid:        7,
+			Name:       "tie-high",
+			CreateTime: created,
+			TTY:        TTYInfo{State: TTYResolved, Path: tty, Atime: now, AtimeKnown: true},
+		}}),
+	}
+	detection, err := ActiveDetectionWithPresence(testRegistry(t), lister, Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detection.StartedAt.Equal(anchor) {
+		t.Fatalf("started at = %s, want loaded anchor %s", detection.StartedAt, anchor)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("one-shot detection mutated the episode store")
 	}
 }
 

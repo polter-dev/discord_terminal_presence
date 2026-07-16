@@ -146,6 +146,22 @@ func ActiveDetection(reg *registry.Registry, processes []Process) Detection {
 	return NewSelector(reg, Config{ActivitySwitching: true}, systemClock{}).Select(processes)
 }
 
+// ActiveDetectionWithPresence scans once with the same presence eligibility and
+// episode anchors as the daemon. The loaded episode store is never saved.
+func ActiveDetectionWithPresence(reg *registry.Registry, lister ProcessLister, config Config) (Detection, error) {
+	detector, err := New(reg, lister, config)
+	if err != nil {
+		return Detection{}, err
+	}
+	processes, err := listProcesses(lister)
+	if err != nil {
+		return Detection{}, err
+	}
+	episodes, _ := LoadEpisodeStore(EpisodeStatePath())
+	selector := newSelectorWithEpisodes(detector.registry, detector.config, systemClock{}, episodes, nil)
+	return selector.SelectWithEnricher(processes, processEnricher(lister)), nil
+}
+
 // Clock supplies time to Selector so headliner hysteresis is deterministic in tests.
 type Clock interface {
 	Now() time.Time
