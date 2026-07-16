@@ -236,7 +236,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	featured := s.selectFeatured(candidates, now)
 	s.previousFeatured = featured.Tool.ID
 
-	others := sortedOthers(candidates, featured.Tool.ID)
+	others := s.sortedOthers(candidates, featured.Tool.ID, now)
 	return detectionFromFeatured(featured, others)
 }
 
@@ -307,12 +307,19 @@ func mostActive(candidates map[string]toolCandidate, excludeID string) (toolCand
 	return best, ok
 }
 
-func sortedOthers(candidates map[string]toolCandidate, featuredID string) []registry.Tool {
+func (s *Selector) sortedOthers(candidates map[string]toolCandidate, featuredID string, now time.Time) []registry.Tool {
 	others := make([]toolCandidate, 0, len(candidates)-1)
 	for id, candidate := range candidates {
-		if id != featuredID {
-			others = append(others, candidate)
+		if id == featuredID {
+			continue
 		}
+		if s.config.IdleClearTimeout > 0 {
+			idleSince, idle := s.idleSince[id]
+			if idle && now.Sub(idleSince) >= s.config.IdleClearTimeout {
+				continue
+			}
+		}
+		others = append(others, candidate)
 	}
 	sort.SliceStable(others, func(i, j int) bool {
 		return compareActivity(others[i], others[j])
