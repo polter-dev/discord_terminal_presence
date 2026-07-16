@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 package detector
 
@@ -18,6 +18,10 @@ func (unknownTTYResolver) Resolve(int32) (TTYResolution, error) {
 }
 
 type systemTTYAtimeSource struct{}
+
+func newSystemTTYAtimeSource() TTYAtimeSource {
+	return systemTTYAtimeSource{}
+}
 
 func (systemTTYAtimeSource) Atime(string) (time.Time, error) {
 	return time.Time{}, errors.New("tty atime unsupported")

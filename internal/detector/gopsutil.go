@@ -59,7 +59,7 @@ func (GopsutilLister) Enrich(process Process) Process {
 
 // NewScanProcessEnricher shares tty and tmux snapshots across matched processes.
 func (l GopsutilLister) NewScanProcessEnricher() ProcessEnricher {
-	return newPresenceProcessEnricher(l, newSystemTTYResolver(), queryTmuxPanes(), systemTTYAtimeSource{})
+	return newPresenceProcessEnricher(l, newSystemTTYResolver(), queryTmuxPanes(), newSystemTTYAtimeSource())
 }
 
 func processIdentity(proc *psprocess.Process) Process {
