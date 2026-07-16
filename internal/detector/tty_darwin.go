@@ -51,6 +51,10 @@ func (r *darwinTTYResolver) Resolve(pid int32) (TTYResolution, error) {
 
 type systemTTYAtimeSource struct{}
 
+func newSystemTTYAtimeSource() TTYAtimeSource {
+	return systemTTYAtimeSource{}
+}
+
 func (systemTTYAtimeSource) Atime(path string) (time.Time, error) {
 	var stat unix.Stat_t
 	if err := unix.Stat(path, &stat); err != nil {
