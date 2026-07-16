@@ -186,6 +186,7 @@ termp config init --force  # overwrite it anyway
 | `enabled` | bool | `true` | The main on/off switch. Set to false to show no presence at all. |
 | `update_check` | bool | `true` | Checks GitHub Releases for a newer version in `termp status` and `termp version`. Set to false to disable it. |
 | `scan_interval` | duration | `"3s"` | How often termp checks your running tools. Bad or zero values fall back to 3s. |
+| `idle_clear_timeout` | duration | `"20m"` | Clears presence after every matched tool has shown no CPU activity for this long. Quiet work can appear idle; set to `"0"` to disable clearing. |
 | `pin` | string | `""` | The ID of a tool you always want in the spotlight while it's running. |
 | `headliner_idle_timeout` | duration | `"60s"` | How long the spotlighted tool must sit idle before another tool can take its place. |
 | `activity_switching` | bool | `true` | Lets a busier tool take the spotlight once the current one has been idle. |
@@ -247,6 +248,7 @@ first, then `image_key`, then `icon_slug`.
 enabled = true
 update_check = true
 scan_interval = "3s"
+idle_clear_timeout = "20m"
 pin = "codex-cli"
 headliner_idle_timeout = "60s"
 activity_switching = true

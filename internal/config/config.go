@@ -132,7 +132,7 @@ func Default() Config {
 		Enabled:              true,
 		UpdateCheck:          true,
 		ScanInterval:         "3s",
-		IdleClearTimeout:     "0",
+		IdleClearTimeout:     "20m",
 		HeadlinerIdleTimeout: "60s",
 		ActivitySwitching:    true,
 		DetailsFormat:        "Using {tool}",
@@ -178,7 +178,7 @@ func AnnotatedSample() string {
 enabled = %t                # Master switch. When false, no Discord presence is shown.
 update_check = %t           # Check GitHub Releases for updates; NO_UPDATE_CHECK also disables this.
 scan_interval = %q        # How often termp scans local processes.
-idle_clear_timeout = %q       # Clear presence after this much idle time; "0" disables idle clear.
+idle_clear_timeout = %q       # Clear presence after this much CPU-idle time; "0" disables idle clear.
 pin = %q                    # Prefer this tool ID as the headliner when it is running.
 headliner_idle_timeout = %q # How long the current headliner must be idle before switching.
 activity_switching = %t     # Let recent activity switch the headliner after the idle timeout.

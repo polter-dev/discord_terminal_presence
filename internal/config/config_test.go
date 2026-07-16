@@ -49,7 +49,7 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if !cfg.Enabled || !cfg.UpdateCheck || cfg.ScanInterval != "3s" {
 		t.Fatalf("unexpected global defaults: %#v", cfg)
 	}
-	if cfg.IdleClearTimeout != "0" || cfg.DetailsFormat != "Using {tool}" {
+	if cfg.IdleClearTimeout != "20m" || cfg.DetailsFormat != "Using {tool}" {
 		t.Fatalf("unexpected polish defaults: %#v", cfg)
 	}
 	if cfg.FeedbackURL != DefaultFeedbackURL {
@@ -86,7 +86,8 @@ func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
 		"enabled = true",
 		"update_check = true",
 		"scan_interval = \"3s\"",
-		"idle_clear_timeout = \"0\"",
+		"idle_clear_timeout = \"20m\"",
+		"Clear presence after this much CPU-idle time",
 		"headliner_idle_timeout = \"60s\"",
 		"activity_switching = true",
 		"details_format = \"Using {tool}\"",
@@ -280,8 +281,8 @@ func TestDurationFallbacks(t *testing.T) {
 	if got := cfg.ScanIntervalDuration(); got != 3*time.Second {
 		t.Fatalf("scan interval duration = %v, want 3s", got)
 	}
-	if got := cfg.IdleClearTimeoutDuration(); got != 0 {
-		t.Fatalf("idle clear timeout = %v, want disabled", got)
+	if got := cfg.IdleClearTimeoutDuration(); got != 20*time.Minute {
+		t.Fatalf("idle clear timeout = %v, want 20m", got)
 	}
 	if got := cfg.HeadlinerIdleTimeoutDuration(); got != time.Minute {
 		t.Fatalf("headliner idle timeout = %v, want 1m", got)
@@ -290,6 +291,11 @@ func TestDurationFallbacks(t *testing.T) {
 	cfg.IdleClearTimeout = "10m"
 	if got := cfg.IdleClearTimeoutDuration(); got != 10*time.Minute {
 		t.Fatalf("idle clear timeout = %v, want 10m", got)
+	}
+
+	cfg.IdleClearTimeout = "0"
+	if got := cfg.IdleClearTimeoutDuration(); got != 0 {
+		t.Fatalf("idle clear timeout = %v, want disabled", got)
 	}
 }
 
