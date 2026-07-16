@@ -64,6 +64,77 @@ func TestSystemdUnitPathUsesHome(t *testing.T) {
 	}
 }
 
+func TestUnstableExecutablePath(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "git worktree", path: filepath.Join(repo, "build", "termp"), want: true},
+		{name: "os temp", path: filepath.Join(os.TempDir(), "termp"), want: true},
+		{name: "tmp", path: "/tmp/build/termp", want: true},
+		{name: "private tmp", path: "/private/tmp/build/termp", want: true},
+		{name: "private var folders", path: "/private/var/folders/ab/cache/termp", want: true},
+		{name: "usr local", path: "/usr/local/bin/termp", want: false},
+		{name: "local bin", path: filepath.Join(string(filepath.Separator), "Users", "alice", ".local", "bin", "termp"), want: false},
+		{name: "similar tmp prefix", path: "/tmp-stable/termp", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUnstableExecutablePath(tt.path); got != tt.want {
+				t.Fatalf("isUnstableExecutablePath(%q) = %t, want %t", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateInstallExecutableResolvesNestedSymlinkAndHonorsForce(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "termp-real")
+	if err := os.WriteFile(target, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link1 := filepath.Join(dir, "termp-link-1")
+	link2 := filepath.Join(dir, "termp-link-2")
+	if err := os.Symlink(target, link1); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(link1, link2); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ValidateInstallExecutable(link2, false); err == nil {
+		t.Fatal("ValidateInstallExecutable() error = nil for unstable resolved path")
+	} else {
+		for _, want := range []string{"unstable executable path", "~/.local/bin", "/usr/local/bin", "--force"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("ValidateInstallExecutable() error missing %q: %v", want, err)
+			}
+		}
+	}
+
+	got, err := ValidateInstallExecutable(link2, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ValidateInstallExecutable(force) = %q, want resolved target %q", got, want)
+	}
+}
+
 func TestBuildLaunchAgentPlist(t *testing.T) {
 	content, err := BuildLaunchAgentPlist("/opt/Term Presence/termp", "/tmp/termp.log")
 	if err != nil {
@@ -238,6 +309,48 @@ func TestDarwinDisableEnableMissingPlistReturnStatusWithoutLaunchctl(t *testing.
 		if strings.Contains(call, "bootout") || strings.Contains(call, "bootstrap") || strings.Contains(call, "load") || strings.Contains(call, "unload") {
 			t.Fatalf("unexpected launchctl toggle call for missing plist: %#v", runner.calls)
 		}
+	}
+}
+
+func TestDarwinStatusMapsLaunchctlErrors(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := "launchctl print gui/" + userID() + "/" + Label
+
+	tests := []struct {
+		name       string
+		output     string
+		wantLoaded string
+	}{
+		{
+			name:       "service not found",
+			output:     "Could not find service \"" + Label + "\" in domain for user gui: " + userID() + "\n",
+			wantLoaded: "false",
+		},
+		{
+			name:       "execution error",
+			output:     "Operation not permitted\n",
+			wantLoaded: "unknown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingRunner{
+				fail: map[string]error{call: errors.New("exit status 1")},
+				out:  map[string]string{call: tt.output},
+			}
+			state := (Manager{GOOS: "darwin", Runner: runner}).Status()
+			if !state.Installed || state.Loaded != tt.wantLoaded || state.Enabled != "n/a" {
+				t.Fatalf("Status() = %+v, want installed=true loaded=%q enabled=n/a", state, tt.wantLoaded)
+			}
+		})
 	}
 }
 
