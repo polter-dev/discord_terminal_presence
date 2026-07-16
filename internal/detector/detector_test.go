@@ -2,6 +2,9 @@ package detector
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -94,6 +97,37 @@ func testRegistry(t testing.TB) *registry.Registry {
 
 type fakeClock struct {
 	now time.Time
+}
+
+type fakeTTYResolver struct {
+	resolutions map[int32]TTYResolution
+	errors      map[int32]error
+}
+
+func (f fakeTTYResolver) Resolve(pid int32) (TTYResolution, error) {
+	return f.resolutions[pid], f.errors[pid]
+}
+
+type fakeTmuxSnapshot struct {
+	detached map[string]bool
+	known    map[string]bool
+}
+
+func (f fakeTmuxSnapshot) Detached(tty string) (bool, bool) {
+	return f.detached[tty], f.known[tty]
+}
+
+type fakeAtimeSource struct {
+	atimes map[string]time.Time
+	errors map[string]error
+}
+
+func (f fakeAtimeSource) Atime(tty string) (time.Time, error) {
+	return f.atimes[tty], f.errors[tty]
+}
+
+func presenceEnricher(resolver TTYResolver, tmux TmuxPaneSnapshot, atime TTYAtimeSource) ProcessEnricher {
+	return newPresenceProcessEnricher(nil, resolver, tmux, atime)
 }
 
 func (f *fakeClock) Now() time.Time {
@@ -201,55 +235,27 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 	}
 }
 
-func TestSelectorIdleClearAfterTwentyMinutesIdleAndActivityResetsWindow(t *testing.T) {
+func TestSelectorStaleAtimeExcludedFromCandidatesAndOthers(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{
 		IdleClearTimeout:  20 * time.Minute,
 		ActivitySwitching: true,
 	}, clock)
-
-	processes := []Process{
-		{Name: "claude", CreateTime: base, CPUTime: 0},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 0},
+	enricher := presenceEnricher(
+		fakeTTYResolver{resolutions: map[int32]TTYResolution{1: {Path: "/dev/ttys001"}, 2: {Path: "/dev/ttys002"}}},
+		fakeTmuxSnapshot{},
+		fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys001": base.Add(-21 * time.Minute), "/dev/ttys002": base}},
+	)
+	detection := selector.SelectWithEnricher([]Process{
+		{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)},
+		{Pid: 2, Name: "codex", CreateTime: base.Add(-time.Minute)},
+	}, enricher)
+	if detection.None || detection.Tool.ID != "codex-cli" || len(detection.Others) != 0 {
+		t.Fatalf("detection = %#v, want only fresh codex", detection)
 	}
-	first := selector.Select(processes)
-	if first.None {
-		t.Fatal("first idle sample should still display before idle_clear_timeout")
-	}
-
-	clock.Advance(19 * time.Minute)
-	active := selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 0},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
-	})
-	if active.None {
-		t.Fatal("activity inside idle_clear_timeout should keep detection")
-	}
-
-	clock.Advance(time.Second)
-	processes[1].CPUTime = 1
-	stillDisplayed := selector.Select(processes)
-	if stillDisplayed.None {
-		t.Fatal("first idle sample after activity should still display")
-	}
-
-	clock.Advance(20*time.Minute + time.Second)
-	cleared := selector.Select(processes)
-	if !cleared.None {
-		t.Fatalf("expected idle clear none detection, got %#v", cleared)
-	}
-
-	clock.Advance(time.Second)
-	resumed := selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 0},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 2},
-	})
-	if resumed.None {
-		t.Fatal("expected activity to restore detection")
-	}
-	if resumed.Tool.ID != "codex-cli" {
-		t.Fatalf("restored tool = %q, want codex-cli", resumed.Tool.ID)
+	if staleOnly := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)}}, enricher); !staleOnly.None {
+		t.Fatalf("stale-only detection = %#v, want none", staleOnly)
 	}
 }
 
@@ -274,93 +280,179 @@ func TestSelectorIdleClearDisabledNeverClears(t *testing.T) {
 	}
 }
 
-func TestSelectorExcludesOtherToolIdleBeyondClearTimeout(t *testing.T) {
+func TestSelectorFreshAndFutureAtimeArePresent(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{
 		IdleClearTimeout:  20 * time.Minute,
 		ActivitySwitching: true,
 	}, clock)
-
-	selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 1},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
-	})
-	clock.Advance(time.Second)
-	selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 1},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 2},
-	})
-
-	clock.Advance(20*time.Minute + time.Second)
-	detection := selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 1},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 3},
-	})
-
-	if detection.Tool.ID != "codex-cli" {
-		t.Fatalf("featured tool = %q, want codex-cli", detection.Tool.ID)
-	}
-	if len(detection.Others) != 0 {
-		t.Fatalf("others = %#v, want idle claude-code excluded", detection.Others)
+	for name, atime := range map[string]time.Time{"fresh": base.Add(-time.Minute), "future": base.Add(time.Hour)} {
+		t.Run(name, func(t *testing.T) {
+			enricher := presenceEnricher(fakeTTYResolver{resolutions: map[int32]TTYResolution{1: {Path: "/dev/ttys001"}}}, fakeTmuxSnapshot{}, fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys001": atime}})
+			if detection := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)}}, enricher); detection.None {
+				t.Fatalf("%s atime should remain present", name)
+			}
+		})
 	}
 }
 
-func TestSelectorKeepsOtherToolWithActivityInsideClearWindow(t *testing.T) {
+func TestSelectorDetachedTmuxExcludedImmediately(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	clock := &fakeClock{now: base}
-	selector := NewSelector(testRegistry(t), Config{
-		IdleClearTimeout:  20 * time.Minute,
-		ActivitySwitching: true,
-	}, clock)
-
-	selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 1},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
-	})
-	clock.Advance(time.Second)
-	selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 1},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 2},
-	})
-
-	clock.Advance(19 * time.Minute)
-	detection := selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 2},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 3},
-	})
-
-	if detection.Tool.ID != "codex-cli" {
-		t.Fatalf("featured tool = %q, want codex-cli", detection.Tool.ID)
-	}
-	if len(detection.Others) != 1 || detection.Others[0].ID != "claude-code" {
-		t.Fatalf("others = %#v, want active claude-code listed", detection.Others)
+	selector := NewSelector(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base})
+	enricher := presenceEnricher(fakeTTYResolver{resolutions: map[int32]TTYResolution{1: {Path: "/dev/ttys001"}}}, fakeTmuxSnapshot{detached: map[string]bool{"/dev/ttys001": true}, known: map[string]bool{"/dev/ttys001": true}}, fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys001": base}})
+	if detection := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base}}, enricher); !detection.None {
+		t.Fatalf("detached tmux detection = %#v, want none", detection)
 	}
 }
 
-func TestSelectorIdleClearDisabledKeepsIdleOtherTool(t *testing.T) {
+func TestSelectorTmuxUnknownFallsThroughToAtime(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, name := range []string{"query error", "missing tmux", "unmatched tty"} {
+		t.Run(name, func(t *testing.T) {
+			selector := NewSelector(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base})
+			enricher := presenceEnricher(fakeTTYResolver{resolutions: map[int32]TTYResolution{1: {Path: "/dev/ttys001"}}}, fakeTmuxSnapshot{}, fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys001": base}})
+			if detection := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base}}, enricher); detection.None {
+				t.Fatal("unknown tmux state must fall through to fresh atime")
+			}
+		})
+	}
+}
+
+func TestSelectorTTYResolutionFailureKeepsAndDefinitiveNoTTYExcludes(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	selector := NewSelector(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base})
+	resolver := fakeTTYResolver{
+		resolutions: map[int32]TTYResolution{2: {NoTTY: true}},
+		errors:      map[int32]error{1: errors.New("sysctl denied")},
+	}
+	enricher := presenceEnricher(resolver, fakeTmuxSnapshot{}, fakeAtimeSource{})
+	kept := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base}}, enricher)
+	if kept.None {
+		t.Fatal("tty resolution failure must fail open")
+	}
+	excluded := selector.SelectWithEnricher([]Process{{Pid: 2, Name: "claude", CreateTime: base}}, enricher)
+	if !excluded.None {
+		t.Fatalf("definitive no-tty detection = %#v, want none", excluded)
+	}
+}
+
+func TestSelectorAtimeStatFailureKeeps(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	selector := NewSelector(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base})
+	enricher := presenceEnricher(
+		fakeTTYResolver{resolutions: map[int32]TTYResolution{1: {Path: "/dev/ttys001"}}},
+		fakeTmuxSnapshot{},
+		fakeAtimeSource{errors: map[string]error{"/dev/ttys001": errors.New("stat denied")}},
+	)
+	if detection := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base}}, enricher); detection.None {
+		t.Fatal("atime stat failure must fail open")
+	}
+}
+
+func TestTmuxPaneSnapshotRequiresEveryOwningSessionDetached(t *testing.T) {
+	panes, err := parseTmuxPanes("/dev/ttys001\t0\n/dev/ttys001\t1\n/dev/ttys002\t0\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detached, matched := panes.Detached("/dev/ttys001"); !matched || detached {
+		t.Fatal("a pane linked into an attached session must be kept")
+	}
+	if detached, matched := panes.Detached("/dev/ttys002"); !matched || !detached {
+		t.Fatal("a pane owned only by detached sessions must be excluded")
+	}
+	if _, err := parseTmuxPanes("malformed"); err == nil {
+		t.Fatal("malformed tmux output must produce an unknown snapshot")
+	}
+}
+
+func TestSelectorPresenceEpisodeAnchorsAndPIDReuse(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
-	selector := NewSelector(testRegistry(t), Config{
-		IdleClearTimeout:  0,
-		ActivitySwitching: true,
-	}, clock)
+	selector := NewSelector(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, clock)
+	resolver := fakeTTYResolver{resolutions: map[int32]TTYResolution{7: {Path: "/dev/ttys007"}}}
+	atimes := fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys007": base}}
+	enricher := presenceEnricher(resolver, fakeTmuxSnapshot{}, atimes)
+	process := Process{Pid: 7, Name: "claude", CreateTime: base.Add(-time.Hour)}
 
-	selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 1},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
-	})
-	clock.Advance(24 * time.Hour)
-	detection := selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 1},
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 2},
-	})
-
-	if detection.Tool.ID != "codex-cli" {
-		t.Fatalf("featured tool = %q, want codex-cli", detection.Tool.ID)
+	first := selector.SelectWithEnricher([]Process{process}, enricher)
+	if !first.StartedAt.Equal(base) {
+		t.Fatalf("first anchor = %s, want %s", first.StartedAt, base)
 	}
-	if len(detection.Others) != 1 || detection.Others[0].ID != "claude-code" {
-		t.Fatalf("others = %#v, want idle claude-code listed while idle clear is disabled", detection.Others)
+	clock.Advance(5 * time.Minute)
+	continuous := selector.SelectWithEnricher([]Process{process}, enricher)
+	if !continuous.StartedAt.Equal(base) {
+		t.Fatalf("continuous anchor = %s, want %s", continuous.StartedAt, base)
+	}
+
+	selector.Select(nil)
+	clock.Advance(time.Minute)
+	afterAbsence := selector.SelectWithEnricher([]Process{process}, enricher)
+	if !afterAbsence.StartedAt.Equal(clock.Now()) {
+		t.Fatalf("post-absence anchor = %s, want %s", afterAbsence.StartedAt, clock.Now())
+	}
+
+	clock.Advance(time.Minute)
+	reused := process
+	reused.CreateTime = process.CreateTime.Add(30 * time.Minute)
+	pidReuse := selector.SelectWithEnricher([]Process{reused}, enricher)
+	if !pidReuse.StartedAt.Equal(clock.Now()) {
+		t.Fatalf("PID-reuse anchor = %s, want %s", pidReuse.StartedAt, clock.Now())
+	}
+}
+
+func TestEpisodePersistenceRoundTripAndCorruptFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "presence.json")
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	store := NewEpisodeStore()
+	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))
+	tty := TTYInfo{State: TTYResolved, Path: "/dev/ttys007", Atime: base, AtimeKnown: true}
+	anchor, _ := store.Observe(key, tty, base, 20*time.Minute)
+	if err := SaveEpisodeStore(path, store); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadEpisodeStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, _ := loaded.Observe(key, tty, base.Add(time.Minute), 20*time.Minute)
+	if !resumed.Equal(anchor) {
+		t.Fatalf("round-trip anchor = %s, want %s", resumed, anchor)
+	}
+
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corrupt, err := LoadEpisodeStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := corrupt.Observe(key, tty, base.Add(2*time.Minute), 20*time.Minute); !got.Equal(base.Add(2 * time.Minute)) {
+		t.Fatalf("corrupt state anchor = %s, want a safe new episode", got)
+	}
+	selector := newSelectorWithEpisodes(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base.Add(2 * time.Minute)}, corrupt, nil)
+	if detection := selector.Select([]Process{{Pid: 7, Name: "claude", CreateTime: base.Add(-time.Hour)}}); detection.None {
+		t.Fatal("corrupt state must not exclude an otherwise uncertain process")
+	}
+}
+
+func TestEpisodeRestartAfterAtimeGapStartsNewAnchor(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))
+	store := NewEpisodeStore()
+	oldTTY := TTYInfo{State: TTYResolved, Path: "/dev/ttys007", Atime: base, AtimeKnown: true}
+	store.Observe(key, oldTTY, base, 20*time.Minute)
+	path := filepath.Join(t.TempDir(), "presence.json")
+	if err := SaveEpisodeStore(path, store); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _ := LoadEpisodeStore(path)
+	now := base.Add(time.Hour)
+	newTTY := oldTTY
+	newTTY.Atime = base.Add(21 * time.Minute)
+	anchor, _ := loaded.Observe(key, newTTY, now, 20*time.Minute)
+	if !anchor.Equal(now) {
+		t.Fatalf("anchor after atime gap = %s, want %s", anchor, now)
 	}
 }
 
@@ -482,8 +574,8 @@ func TestSelectorClaudeHelpersDoNotChurnFeaturedInstance(t *testing.T) {
 		if detection.None {
 			t.Fatal("expected interactive Claude session to remain detected")
 		}
-		if detection.Tool.ID != "claude-code" || detection.Cwd != real.Cwd || !detection.StartedAt.Equal(real.CreateTime) {
-			t.Fatalf("featured = %#v, want real session cwd=%q started=%s", detection.Featured, real.Cwd, real.CreateTime)
+		if detection.Tool.ID != "claude-code" || detection.Cwd != real.Cwd || !detection.StartedAt.Equal(base) {
+			t.Fatalf("featured = %#v, want real session cwd=%q episode=%s", detection.Featured, real.Cwd, base)
 		}
 	}
 }
@@ -510,9 +602,10 @@ func TestSelectWithEnricherMatchesFullSnapshotResults(t *testing.T) {
 	}
 
 	reg := testRegistry(t)
-	fullDetection := NewSelector(reg, Config{ActivitySwitching: true}, systemClock{}).Select(full)
+	clock := &fakeClock{now: base.Add(time.Hour)}
+	fullDetection := NewSelector(reg, Config{ActivitySwitching: true}, clock).Select(full)
 	enricher := newFakeEnricher(full)
-	lazyDetection := NewSelector(reg, Config{ActivitySwitching: true}, systemClock{}).
+	lazyDetection := NewSelector(reg, Config{ActivitySwitching: true}, clock).
 		SelectWithEnricher(identities, enricher)
 
 	if !sameDetection(fullDetection, lazyDetection) {
@@ -552,9 +645,9 @@ func TestRunDebouncesBeforeEmitting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	det.presenceStatePath = filepath.Join(t.TempDir(), "presence.json")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	ch := det.Run(ctx)
 
@@ -565,6 +658,9 @@ func TestRunDebouncesBeforeEmitting(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for debounced detection")
+	}
+	cancel()
+	for range ch {
 	}
 }
 
@@ -580,9 +676,9 @@ func TestRunEmitsNoneAfterDebounce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	det.presenceStatePath = filepath.Join(t.TempDir(), "presence.json")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	ch := det.Run(ctx)
 
@@ -593,6 +689,9 @@ func TestRunEmitsNoneAfterDebounce(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for none detection")
+	}
+	cancel()
+	for range ch {
 	}
 }
 
@@ -615,6 +714,7 @@ func TestRunEmitsDebouncedSequenceAndClosesOnCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	det.presenceStatePath = filepath.Join(t.TempDir(), "presence.json")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := det.Run(ctx)
