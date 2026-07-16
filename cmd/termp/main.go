@@ -337,7 +337,7 @@ func start(args []string) error {
 	}
 
 	if err := config.EnsureConfigDir(cfg.Path); err == nil {
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 		defer cancel()
 		if err := manager.Watch(ctx); err != nil {
 			log.Printf("config watch disabled: %v", err)
@@ -345,7 +345,7 @@ func start(args []string) error {
 		return run(ctx, manager)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 	return run(ctx, manager)
 }
@@ -709,7 +709,7 @@ func watch(args []string) error {
 		return errors.New("watch requires a TTY")
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 
 	manager := config.NewManager()
