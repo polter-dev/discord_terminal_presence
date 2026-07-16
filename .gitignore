@@ -8,10 +8,15 @@
 /CLAUDE.md
 /ROADMAP.md
 /.claude/
+/HANDOFF-*.md
+/.obsidian/
+# landing_page belongs to the separate termp-web repo; never commit here
+/landing_page/
 
 # ── Go build artifacts ───────────────────────────────────────
 # Compiled binary (single-binary project) and Go tooling output
 /termpresence
+/termp
 /dist/
 *.exe
 *.exe~
