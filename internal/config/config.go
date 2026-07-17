@@ -17,8 +17,8 @@ const (
 	defaultConfigDir  = ".config"
 	defaultConfigFile = "config.toml"
 	appConfigDir      = "termp"
-	// DefaultFeedbackURL is an intentional dead-link placeholder pending issue #16.
-	DefaultFeedbackURL = "https://termp.example/feedback"
+	// DefaultFeedbackURL deep-links to the live feedback form via the page's only stable anchor, the Turnstile container.
+	DefaultFeedbackURL = "https://termp.polter.sh/#feedback-turnstile"
 )
 
 // Display controls which activity fields are shown by default.
