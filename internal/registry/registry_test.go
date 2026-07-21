@@ -280,6 +280,36 @@ func TestEmbeddedCatalogLoadsBroadCoverage(t *testing.T) {
 	}
 }
 
+func TestEmbeddedCatalogFlagshipLogosAreSelfHosted(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantURLs := map[string]string{
+		"claude-code": "https://termp.polter.sh/logos/claude-code.png",
+		"gemini-cli":  "https://termp.polter.sh/logos/gemini-cli.png",
+		"codex-cli":   "https://termp.polter.sh/logos/codex-cli.png",
+		"aider":       "https://termp.polter.sh/logos/aider.png",
+		"ollama":      "https://termp.polter.sh/logos/ollama.png",
+	}
+
+	for _, tool := range reg.Tools() {
+		want, ok := wantURLs[tool.ID]
+		if !ok {
+			continue
+		}
+		if tool.ImageURL != want {
+			t.Errorf("tool %q ImageURL = %q, want %q", tool.ID, tool.ImageURL, want)
+		}
+		delete(wantURLs, tool.ID)
+	}
+
+	for id := range wantURLs {
+		t.Errorf("flagship tool %q not found in embedded catalog", id)
+	}
+}
+
 func TestEmbeddedCatalogSampleMatches(t *testing.T) {
 	reg, err := New()
 	if err != nil {

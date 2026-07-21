@@ -7,7 +7,7 @@
       "regex": "(^|\\s|/)(claude|claude\\.exe|claude\\.js)(\\s|$)|(^|/)@anthropic-ai/claude-code/|(^|/)claude/versions/"
     },
     "exclude": "(^|\\s)(bg-spare|bg-pty-host|daemon run)(\\s|$)",
-    "image_url": "https://unpkg.com/@lobehub/icons-static-png@1.91.0/dark/claude-color.png",
+    "image_url": "https://termp.polter.sh/logos/claude-code.png",
     "icon_slug": "claude-color",
     "icon_source": "lobehub",
     "priority": 100
@@ -19,6 +19,7 @@
       "name": "gemini",
       "regex": "(^|\\s|/)(gemini|gemini\\.js)(\\s|$)|(^|/)@google/gemini-cli/"
     },
+    "image_url": "https://termp.polter.sh/logos/gemini-cli.png",
     "icon_slug": "gemini-color",
     "icon_source": "lobehub",
     "priority": 100
@@ -30,6 +31,7 @@
       "name": "codex",
       "regex": "(^|\\s|/)(codex|codex\\.js)(\\s|$)|(^|/)@openai/codex/"
     },
+    "image_url": "https://termp.polter.sh/logos/codex-cli.png",
     "icon_slug": "openai",
     "icon_source": "lobehub",
     "priority": 100
@@ -41,6 +43,7 @@
       "name": "aider",
       "regex": "(^|\\s|/)(aider|aider\\.py)(\\s|$)"
     },
+    "image_url": "https://termp.polter.sh/logos/aider.png",
     "icon_slug": "openai",
     "icon_source": "lobehub",
     "priority": 95
@@ -51,6 +54,7 @@
     "match": {
       "name": "ollama"
     },
+    "image_url": "https://termp.polter.sh/logos/ollama.png",
     "icon_slug": "ollama",
     "icon_source": "lobehub",
     "priority": 95
