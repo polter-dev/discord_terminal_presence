@@ -81,7 +81,7 @@ func main() {
 		os.Exit(2)
 	}
 	if showVersion {
-		printVersion()
+		printCompactVersion()
 		return
 	}
 
@@ -203,19 +203,47 @@ func versionCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	printVersion()
+	fmt.Print(formatVersion(currentVersionInfo()))
 	cfg, loadErr := config.Load()
 	printAvailableUpdate(cfg, loadErr)
 	return nil
 }
 
-func printVersion() {
-	fmt.Print(formatVersion())
+type versionInfo struct {
+	version   string
+	commit    string
+	built     string
+	goVersion string
+	platform  string
 }
 
-func formatVersion() string {
-	return fmt.Sprintf("termp %s (%s, %s)\ngo %s\n%s/%s\n",
-		version, commit, date, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+func currentVersionInfo() versionInfo {
+	return versionInfo{
+		version:   version,
+		commit:    commit,
+		built:     date,
+		goVersion: runtime.Version(),
+		platform:  runtime.GOOS + "/" + runtime.GOARCH,
+	}
+}
+
+func printCompactVersion() {
+	fmt.Print(formatCompactVersion(currentVersionInfo()))
+}
+
+func formatCompactVersion(info versionInfo) string {
+	return fmt.Sprintf("termp %s (%s, %s)\ngo %s\n%s\n",
+		info.version, info.commit, info.built, info.goVersion, info.platform)
+}
+
+func formatVersion(info versionInfo) string {
+	return formatSections("termp", outputSection{fields: []outputField{
+		{label: "Version", value: info.version},
+		{label: "Commit", value: info.commit},
+		{label: "Built", value: info.built},
+		{label: "Go", value: info.goVersion},
+		{label: "Platform", value: info.platform},
+	}})
 }
 
 func configCommand(args []string) error {
@@ -800,41 +828,35 @@ func status(args []string) error {
 		running = processAlive(pid) && processLooksLikeTermp(pid)
 	}
 
-	fmt.Printf("running: %t\n", running)
+	discord := "connected"
 	if err := presence.Probe(presence.DefaultAppID); err != nil {
-		fmt.Println("discord: not running (start Discord to show presence)")
-	} else {
-		fmt.Println("discord: connected")
+		discord = "not running (start Discord to show presence)"
 	}
 	serviceState := service.NewManager().Status()
-	fmt.Printf("service_supported: %t\n", serviceState.Supported)
-	if serviceState.Path != "" {
-		fmt.Printf("service_path: %s\n", serviceState.Path)
-	}
-	fmt.Printf("service_installed: %t\n", serviceState.Installed)
-	if serviceState.Loaded != "" {
-		fmt.Printf("service_loaded: %s\n", serviceState.Loaded)
-	}
-	if serviceState.Enabled != "" {
-		fmt.Printf("service_enabled: %s\n", serviceState.Enabled)
-	}
-	if serviceState.Message != "" {
-		fmt.Printf("service_message: %s\n", serviceState.Message)
-	}
-	fmt.Printf("config_path: %s\n", cfg.Path)
-	if loadErr != nil {
-		fmt.Printf("config_ok: false\nconfig_error: %v\n", loadErr)
-	} else {
-		fmt.Println("config_ok: true")
-		for _, warning := range cfg.Warnings {
-			fmt.Printf("config_warning: %s\n", warning)
-		}
+	homeDir, _ := os.UserHomeDir()
+	info := statusInfo{
+		running:          running,
+		discord:          discord,
+		detectedTool:     "unknown",
+		serviceSupported: serviceState.Supported,
+		serviceInstalled: serviceState.Installed,
+		serviceLoaded:    serviceState.Loaded,
+		serviceEnabled:   serviceState.Enabled,
+		servicePath:      serviceState.Path,
+		serviceMessage:   serviceState.Message,
+		configPath:       cfg.Path,
+		configOK:         loadErr == nil,
+		configError:      loadErr,
+		configWarnings:   cfg.Warnings,
+		homeDir:          homeDir,
 	}
 
 	reg, err := registry.NewWithCustom(cfg.CustomTools...)
 	if err != nil {
+		fmt.Print(formatStatus(info))
 		return err
 	}
+	detectedTool := "none"
 	detection, err := detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
 		ScanInterval:         cfg.ScanIntervalDuration(),
 		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
@@ -843,15 +865,82 @@ func status(args []string) error {
 		ActivitySwitching:    cfg.ActivitySwitching,
 	})
 	if err != nil {
-		fmt.Printf("detected_tool: unknown (%v)\n", err)
-		return nil
+		detectedTool = fmt.Sprintf("unknown (%v)", err)
+	} else if !detection.None {
+		detectedTool = detection.Tool.ID
 	}
-	if detection.None {
-		fmt.Println("detected_tool: none")
-		return nil
-	}
-	fmt.Printf("detected_tool: %s\n", detection.Tool.ID)
+
+	info.detectedTool = detectedTool
+	fmt.Print(formatStatus(info))
 	return nil
+}
+
+type statusInfo struct {
+	running          bool
+	discord          string
+	detectedTool     string
+	serviceSupported bool
+	serviceInstalled bool
+	serviceLoaded    string
+	serviceEnabled   string
+	servicePath      string
+	serviceMessage   string
+	configPath       string
+	configOK         bool
+	configError      error
+	configWarnings   []string
+	homeDir          string
+}
+
+func formatStatus(info statusInfo) string {
+	autostart := []outputField{
+		{label: "Supported", value: yesNo(info.serviceSupported)},
+		{label: "Installed", value: yesNo(info.serviceInstalled)},
+		{label: "Loaded", value: humanizeState(info.serviceLoaded)},
+		{label: "Enabled", value: humanizeState(info.serviceEnabled)},
+	}
+	if info.servicePath != "" {
+		autostart = append(autostart, outputField{label: "Path", value: abbreviateHome(info.servicePath, info.homeDir)})
+	}
+	if info.serviceMessage != "" {
+		autostart = append(autostart, outputField{label: "Message", value: info.serviceMessage})
+	}
+
+	configFields := []outputField{
+		{label: "Path", value: abbreviateHome(info.configPath, info.homeDir)},
+		{label: "Valid", value: yesNo(info.configOK)},
+	}
+	if info.configError != nil {
+		configFields = append(configFields, outputField{label: "Error", value: info.configError.Error()})
+	}
+	for _, warning := range info.configWarnings {
+		configFields = append(configFields, outputField{label: "Warning", value: warning})
+	}
+
+	return formatSections("termp status",
+		outputSection{header: "Daemon", fields: []outputField{
+			{label: "Running", value: yesNo(info.running)},
+			{label: "Discord", value: info.discord},
+			{label: "Detected tool", value: info.detectedTool},
+		}},
+		outputSection{header: "Autostart", fields: autostart},
+		outputSection{header: "Config", fields: configFields},
+	)
+}
+
+func abbreviateHome(path, homeDir string) string {
+	if homeDir == "" || path == "" {
+		return path
+	}
+	cleanPath := filepath.Clean(path)
+	cleanHome := filepath.Clean(homeDir)
+	if cleanPath == cleanHome {
+		return "~"
+	}
+	if strings.HasPrefix(cleanPath, cleanHome+string(filepath.Separator)) {
+		return "~" + strings.TrimPrefix(cleanPath, cleanHome)
+	}
+	return path
 }
 
 func settings(args []string) error {

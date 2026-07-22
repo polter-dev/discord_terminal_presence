@@ -309,9 +309,9 @@ func TestStopDaemonTimeoutKeepsPIDFile(t *testing.T) {
 
 func TestFormatInstallSuccessShowsCTAForFreshInstall(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "termp", "config.toml")
-	got := formatInstallSuccess("/usr/local/bin/termp", configPath, nil, 80)
+	got := formatInstallSuccess("/usr/local/bin/termp", configPath)
 
-	for _, want := range []string{"TERMP INSTALLED", "NEXT STEP - RUN THIS NOW:", "termp setup", "Nothing shows on your Discord profile until you do."} {
+	for _, want := range []string{"termp install", "Autostart", "Config", "Next step", "termp setup", "Nothing shows on your Discord profile until you do."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("fresh install output missing %q:\n%s", want, got)
 		}
@@ -327,8 +327,11 @@ func TestFormatInstallSuccessSkipsCTAWhenConfigExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := formatInstallSuccess("/usr/local/bin/termp", configPath, nil, 80)
-	want := "installed: /usr/local/bin/termp\nruns: termp start\nundo: termp uninstall\n"
+	got := formatInstallSuccess("/usr/local/bin/termp", configPath)
+	want := "termp install\n\nAutostart\n" +
+		"  Installed  /usr/local/bin/termp\n" +
+		"  Runs       termp start\n" +
+		"  Remove     termp uninstall\n"
 	if got != want {
 		t.Fatalf("configured install output = %q, want %q", got, want)
 	}
@@ -337,75 +340,73 @@ func TestFormatInstallSuccessSkipsCTAWhenConfigExists(t *testing.T) {
 	}
 }
 
-func TestInstallCTAHasNoANSIWithoutColorSupport(t *testing.T) {
-	output, err := os.CreateTemp(t.TempDir(), "output")
-	if err != nil {
-		t.Fatal(err)
+func TestFormatVersionGroupedAndAligned(t *testing.T) {
+	info := versionInfo{
+		version:   "1.2.3",
+		commit:    "abc123",
+		built:     "2026-07-05",
+		goVersion: "go1.26.1",
+		platform:  "darwin/arm64",
 	}
-	defer output.Close()
-
-	tests := []struct {
-		name     string
-		terminal bool
-		noColor  bool
-	}{
-		{name: "non-TTY stdout", terminal: false, noColor: false},
-		{name: "NO_COLOR", terminal: true, noColor: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			renderer := newInstallRenderer(output, tt.terminal, tt.noColor)
-			got := renderInstallCTA(renderer, 80)
-			if strings.Contains(got, "\x1b") {
-				t.Fatalf("output contains ANSI escape bytes: %q", got)
-			}
-		})
+	want := "termp\n" +
+		"  Version   1.2.3\n" +
+		"  Commit    abc123\n" +
+		"  Built     2026-07-05\n" +
+		"  Go        go1.26.1\n" +
+		"  Platform  darwin/arm64\n"
+	if got := formatVersion(info); got != want {
+		t.Fatalf("formatVersion() =\n%q\nwant:\n%q", got, want)
 	}
 }
 
-func TestInstallCTAUsesColorWhenSupported(t *testing.T) {
-	output, err := os.CreateTemp(t.TempDir(), "output")
-	if err != nil {
-		t.Fatal(err)
+func TestCompactVersionKeepsParseableFirstToken(t *testing.T) {
+	info := versionInfo{
+		version:   "1.2.3",
+		commit:    "abc123",
+		built:     "2026-07-05",
+		goVersion: runtime.Version(),
+		platform:  runtime.GOOS + "/" + runtime.GOARCH,
 	}
-	defer output.Close()
-
-	renderer := lipgloss.NewRenderer(output)
-	renderer.SetColorProfile(termenv.ANSI256)
-	got := renderInstallCTA(renderer, 80)
-	if !strings.Contains(got, "\x1b") {
-		t.Fatalf("color-capable output contains no ANSI styling: %q", got)
-	}
-}
-
-func TestInstallCTALinesNeverExceed80Columns(t *testing.T) {
-	for _, width := range []int{20, 40, 80, 120} {
-		got := renderInstallCTA(nil, width)
-		maxWidth := min(width, maxInstallCTAWidth)
-		for lineNumber, line := range strings.Split(got, "\n") {
-			if lineWidth := lipgloss.Width(line); lineWidth > maxWidth {
-				t.Fatalf("width %d line %d is %d columns: %q", width, lineNumber+1, lineWidth, line)
-			}
-		}
+	want := "termp 1.2.3 (abc123, 2026-07-05)\ngo " + runtime.Version() + "\n" + runtime.GOOS + "/" + runtime.GOARCH + "\n"
+	if got := formatCompactVersion(info); got != want {
+		t.Fatalf("formatCompactVersion() = %q, want %q", got, want)
 	}
 }
 
-func TestFormatVersionIncludesBuildAndPlatform(t *testing.T) {
-	oldVersion, oldCommit, oldDate := version, commit, date
-	t.Cleanup(func() {
-		version, commit, date = oldVersion, oldCommit, oldDate
-	})
-	version, commit, date = "1.2.3", "abc123", "2026-07-05"
-
-	got := formatVersion()
-	for _, want := range []string{
-		"termp 1.2.3 (abc123, 2026-07-05)",
-		"go " + runtime.Version(),
-		runtime.GOOS + "/" + runtime.GOARCH,
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("formatVersion() = %q, want substring %q", got, want)
-		}
+func TestFormatStatusGroupedAlignedAndComplete(t *testing.T) {
+	info := statusInfo{
+		running:          false,
+		discord:          "connected",
+		detectedTool:     "claude-code",
+		serviceSupported: true,
+		serviceInstalled: true,
+		serviceLoaded:    "false",
+		serviceEnabled:   "n/a",
+		servicePath:      "/Users/test/Library/LaunchAgents/dev.termp.plist",
+		serviceMessage:   "ready",
+		configPath:       "/Users/test/.config/termp/config.toml",
+		configOK:         true,
+		configWarnings:   []string{"unknown key ignored"},
+		homeDir:          "/Users/test",
+	}
+	want := "termp status\n\n" +
+		"Daemon\n" +
+		"  Running        no\n" +
+		"  Discord        connected\n" +
+		"  Detected tool  claude-code\n\n" +
+		"Autostart\n" +
+		"  Supported  yes\n" +
+		"  Installed  yes\n" +
+		"  Loaded     no\n" +
+		"  Enabled    —\n" +
+		"  Path       ~/Library/LaunchAgents/dev.termp.plist\n" +
+		"  Message    ready\n\n" +
+		"Config\n" +
+		"  Path     ~/.config/termp/config.toml\n" +
+		"  Valid    yes\n" +
+		"  Warning  unknown key ignored\n"
+	if got := formatStatus(info); got != want {
+		t.Fatalf("formatStatus() =\n%q\nwant:\n%q", got, want)
 	}
 }
 
