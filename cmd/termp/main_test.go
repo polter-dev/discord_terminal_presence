@@ -198,7 +198,7 @@ func TestUpdateNoticeUsesColorWhenSupported(t *testing.T) {
 }
 
 func TestUpdateNoticeLinesStayWithinOutputWidth(t *testing.T) {
-	commands := []string{updatepkg.BrewCommand, updatepkg.GoCommand, updatepkg.GenericCommand}
+	commands := []string{updatepkg.BrewCommand, updatepkg.GoCommand, updatepkg.GenericCommand("v12.34.56")}
 	for _, width := range []int{20, 40, 80, 120} {
 		for _, command := range commands {
 			result := updatepkg.Result{Current: "1.0.0+abc123", Latest: "v12.34.56+def456", Command: command}
@@ -214,7 +214,7 @@ func TestUpdateNoticeLinesStayWithinOutputWidth(t *testing.T) {
 }
 
 func TestWrappedUpdateCommandsRemainCopyPasteable(t *testing.T) {
-	for _, command := range []string{updatepkg.BrewCommand, updatepkg.GoCommand, updatepkg.GenericCommand} {
+	for _, command := range []string{updatepkg.BrewCommand, updatepkg.GoCommand, updatepkg.GenericCommand("v1.1.0")} {
 		for _, width := range []int{20, 40, 80} {
 			wrapped := strings.Join(wrapShellCommand(command, width), "\n")
 			if got := strings.ReplaceAll(wrapped, "\\\n", ""); got != command {
@@ -336,7 +336,7 @@ func TestAutomaticUpdateRunsInstallAwareUpdater(t *testing.T) {
 		method updatepkg.InstallMethod
 		want   updatepkg.Command
 	}{
-		{name: "generic", method: updatepkg.InstallGeneric, want: updatepkg.Command{Name: "sh", Args: []string{"-c", updatepkg.GenericCommand}}},
+		{name: "generic", method: updatepkg.InstallGeneric, want: updatepkg.Command{Name: "sh", Args: []string{"-c", updatepkg.GenericCommand("v1.1.0")}}},
 		{name: "homebrew", method: updatepkg.InstallHomebrew, want: updatepkg.Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -397,7 +397,7 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 	}{
 		{method: updatepkg.InstallHomebrew, want: updatepkg.Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}},
 		{method: updatepkg.InstallGo, want: updatepkg.Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"}}},
-		{method: updatepkg.InstallGeneric, want: updatepkg.Command{Name: "sh", Args: []string{"-c", updatepkg.GenericCommand}}},
+		{method: updatepkg.InstallGeneric, want: updatepkg.Command{Name: "sh", Args: []string{"-c", updatepkg.GenericCommand("v1.1.0")}}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.method), func(t *testing.T) {

@@ -59,9 +59,21 @@ verify_checksum() {
 	archive=$2
 	archive_name=$3
 
-	expected=$(awk -v file="$archive_name" '$2 == file { print $1 }' "$checksums" | head -n 1)
+	match_count=$(awk -v file="$archive_name" '$2 == file { count++ } END { print count+0 }' "$checksums")
+	if [ "$match_count" -ne 1 ]; then
+		err "expected exactly one checksum for $archive_name, found $match_count"
+	fi
+	expected=$(awk -v file="$archive_name" '$2 == file { print $1 }' "$checksums")
 	if [ -z "$expected" ]; then
 		err "checksum for $archive_name not found"
+	fi
+	case $expected in
+	*[!0-9a-fA-F]*)
+		err "invalid SHA-256 checksum for $archive_name"
+		;;
+	esac
+	if [ "${#expected}" -ne 64 ]; then
+		err "invalid SHA-256 checksum for $archive_name"
 	fi
 
 	if have sha256sum; then
@@ -239,6 +251,11 @@ if [ "${VERSION:-}" ]; then
 else
 	tag=$(fetch_latest_tag "$tmpdir/latest.json")
 fi
+case $tag in
+'' | *[!0-9A-Za-z.+-]*) err "invalid release tag: $tag" ;;
+v[0-9]*.[0-9]*.[0-9]* | [0-9]*.[0-9]*.[0-9]*) ;;
+*) err "invalid release tag: $tag" ;;
+esac
 version=${tag#v}
 
 archive_name="termp_${version}_${os}_${arch}.tar.gz"
@@ -250,6 +267,9 @@ extract_dir="$tmpdir/extract"
 printf 'Downloading termp %s for %s/%s...\n' "$tag" "$os" "$arch"
 download "$base_url/$archive_name" "$archive_path"
 download "$base_url/checksums.txt" "$checksums_path"
+# These checksums protect archive integrity, but their authenticity ultimately
+# depends on GitHub release integrity. TODO(issue #84 follow-up): verify a
+# cosign/Sigstore signature or a signature made by a dedicated project key.
 verify_checksum "$checksums_path" "$archive_path" "$archive_name"
 
 mkdir -p "$extract_dir"
