@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -47,5 +48,28 @@ func TestWindowsLiveAndStaleProcessLookup(t *testing.T) {
 	}
 	if processAlive(99999999) || processLooksLikeTermp(99999999) {
 		t.Fatal("stale PID was accepted")
+	}
+}
+
+func TestProcessImagePathTriesMaximumBuffer(t *testing.T) {
+	var sizes []uint32
+	path, err := processImagePathWithQuery(func(buffer *uint16, length *uint32) error {
+		sizes = append(sizes, *length)
+		if *length < 20000 {
+			return windows.ERROR_INSUFFICIENT_BUFFER
+		}
+		encoded, encodeErr := windows.UTF16FromString(`C:\very-long\termp.exe`)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		copy(unsafe.Slice(buffer, *length), encoded[:len(encoded)-1])
+		*length = uint32(len(encoded) - 1)
+		return nil
+	})
+	if err != nil || path != `C:\very-long\termp.exe` {
+		t.Fatalf("processImagePathWithQuery() = %q, %v", path, err)
+	}
+	if got := sizes[len(sizes)-1]; got != 32768 {
+		t.Fatalf("largest queried buffer = %d, want 32768 (all sizes: %v)", got, sizes)
 	}
 }

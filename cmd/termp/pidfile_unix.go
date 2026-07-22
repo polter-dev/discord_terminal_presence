@@ -13,6 +13,16 @@ func createPIDFile(path string) (*os.File, error) {
 	return os.OpenFile(path, flags, 0o600)
 }
 
+func publishPIDFile(pendingPath, path string) error {
+	if err := os.Link(pendingPath, path); err != nil {
+		return err
+	}
+	// The authoritative name is now published. Failure to remove the private
+	// alias must not make the caller mistake successful publication for failure.
+	_ = os.Remove(pendingPath)
+	return nil
+}
+
 func openPIDFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 }

@@ -106,15 +106,25 @@ func processUserSID(handle windows.Handle) (*windows.SID, error) {
 }
 
 func processImagePath(handle windows.Handle) (string, error) {
-	for size := uint32(260); size <= 32768; size *= 2 {
+	return processImagePathWithQuery(func(buffer *uint16, length *uint32) error {
+		return windows.QueryFullProcessImageName(handle, 0, buffer, length)
+	})
+}
+
+func processImagePathWithQuery(query func(*uint16, *uint32) error) (string, error) {
+	const maxSize = uint32(32768)
+	for size := uint32(260); ; size = min(size*2, maxSize) {
 		buffer := make([]uint16, size)
 		length := size
-		err := windows.QueryFullProcessImageName(handle, 0, &buffer[0], &length)
+		err := query(&buffer[0], &length)
 		if err == nil {
 			return windows.UTF16ToString(buffer[:length]), nil
 		}
 		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
 			return "", err
+		}
+		if size == maxSize {
+			break
 		}
 	}
 	return "", windows.ERROR_INSUFFICIENT_BUFFER
