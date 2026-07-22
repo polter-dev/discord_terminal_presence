@@ -2,19 +2,112 @@
 
 package main
 
-import "os"
+import (
+	"errors"
+	"fmt"
+	"os"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
 
 func createPIDFile(path string) (*os.File, error) {
-	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC | os.O_EXCL
-	return os.OpenFile(path, flags, 0o600)
+	return openWindowsPIDFile(path, windows.GENERIC_WRITE, windows.CREATE_NEW)
 }
 
 func openPIDFile(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDONLY, 0)
+	return openWindowsPIDFile(path, windows.GENERIC_READ, windows.OPEN_EXISTING)
+}
+
+func openWindowsPIDFile(path string, access, disposition uint32) (*os.File, error) {
+	pathp, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := windows.CreateFile(
+		pathp,
+		access,
+		windows.FILE_SHARE_READ,
+		nil,
+		disposition,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(handle), path), nil
+}
+
+type fileAttributeTagInfo struct {
+	attributes uint32
+	reparseTag uint32
+}
+
+func validatePIDFileHandle(file *os.File, path string) error {
+	handle := windows.Handle(file.Fd())
+	var attributes fileAttributeTagInfo
+	if err := windows.GetFileInformationByHandleEx(
+		handle,
+		windows.FileAttributeTagInfo,
+		(*byte)(unsafe.Pointer(&attributes)),
+		uint32(unsafe.Sizeof(attributes)),
+	); err != nil {
+		return fmt.Errorf("cannot determine PID file attributes: %w", err)
+	}
+	if !pidFileAttributesSafe(attributes.attributes) {
+		return fmt.Errorf("PID file %q is a reparse point", path)
+	}
+	owner, err := windowsHandleOwnerSID(handle)
+	if err != nil {
+		return fmt.Errorf("cannot determine PID file owner: %w", err)
+	}
+	current, err := currentUserSID()
+	if err != nil {
+		return fmt.Errorf("cannot determine current user SID: %w", err)
+	}
+	if !pidFileOwnerMatches(owner, current) {
+		return errors.New("PID file owner SID does not match current user SID")
+	}
+	return nil
+}
+
+func pidFileAttributesSafe(attributes uint32) bool {
+	return attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
+func pidFileOwnerMatches(owner, current *windows.SID) bool {
+	return sameSID(owner, current)
+}
+
+func windowsHandleOwnerSID(handle windows.Handle) (*windows.SID, error) {
+	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return nil, err
+	}
+	owner, _, err := descriptor.Owner()
+	return owner, err
+}
+
+func currentUserSID() (*windows.SID, error) {
+	token, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return nil, err
+	}
+	defer token.Close()
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	return user.User.Sid.Copy()
+}
+
+func sameSID(left, right *windows.SID) bool {
+	return left != nil && right != nil && left.Equals(right)
 }
 
 func requireCurrentUserOwner(_ os.FileInfo, _ string) error {
-	// Windows identifies owners with SIDs rather than Unix UIDs. The shared
-	// validation still requires PID files to be regular files; skip UID equality.
+	// PID-file SID ownership is validated against the opened handle. Directory
+	// ownership has no os.FileInfo SID representation on Windows.
 	return nil
 }

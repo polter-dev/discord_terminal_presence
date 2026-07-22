@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -175,9 +174,10 @@ func TestReadPIDRequiresRegularFileOwnedByCurrentUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	foreignUID := uint32(os.Geteuid() + 1)
-	foreignInfo := fileInfoWithSys{FileInfo: info, sys: &syscall.Stat_t{Uid: foreignUID}}
-	if err := validatePIDFileInfo(foreignInfo, path); err == nil || !strings.Contains(err.Error(), "not current uid") {
-		t.Fatalf("foreign owner check error = %v, want owner rejection", err)
+	if foreignInfo, ok := foreignOwnerFileInfo(info, foreignUID); ok {
+		if err := validatePIDFileInfo(foreignInfo, path); err == nil || !strings.Contains(err.Error(), "not current uid") {
+			t.Fatalf("foreign owner check error = %v, want owner rejection", err)
+		}
 	}
 }
 

@@ -17,6 +17,10 @@ func openPIDFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 }
 
+func validatePIDFileHandle(_ *os.File, _ string) error {
+	return nil
+}
+
 func requireCurrentUserOwner(info os.FileInfo, label string) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
