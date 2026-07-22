@@ -264,7 +264,7 @@ func TestModelPinDrillDownAccumulatesAndBackClosesColumns(t *testing.T) {
 		t.Fatalf("columns after pin drill-down = %d, want 3", got)
 	}
 	view = model.View()
-	for _, want := range []string{"Categories & actions", "› Pin Specific Tool", "› Pinned tool", "Choose a tool", "Search", "› Codex CLI"} {
+	for _, want := range []string{"Categories & actions", "› Pin Specific Tool", "› Pinned tool", "Choose a tool", "Search", "type to search tools…", "› Codex CLI"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("three-column pin View() missing %q:\n%s", want, view)
 		}
