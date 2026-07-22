@@ -2,6 +2,7 @@ package detector
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -204,5 +205,27 @@ func TestLinuxAtimeKnownGateMatrix(t *testing.T) {
 				t.Fatalf("AtimeKnown = %v, want %v", process.TTY.AtimeKnown, test.wantKnown)
 			}
 		})
+	}
+}
+
+func TestLinuxMountParsingEscapesAndLongestCoveringMount(t *testing.T) {
+	mounts, err := parseLinuxMounts([]byte("devpts /dev/pts devpts rw,strictatime 0 0\ndevpts /dev/pts/special\\040pane devpts rw,strictatime 0 0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := coveringDevptsMount("/dev/pts/special pane/7", mounts)
+	if !ok || got.path != "/dev/pts/special pane" {
+		t.Fatalf("coveringDevptsMount() = %#v, %t", got, ok)
+	}
+	for _, value := range []string{`bad\`, `bad\xyz`} {
+		if _, err := unescapeLinuxMountField(value); err == nil {
+			t.Fatalf("unescapeLinuxMountField(%q) succeeded", value)
+		}
+	}
+	if pathWithinMount("/dev/pts-other/1", "/dev/pts") {
+		t.Fatal("similar mount prefix counted as within mount")
+	}
+	if !pathWithinMount("/anything", string(filepath.Separator)) {
+		t.Fatal("root mount did not cover absolute path")
 	}
 }

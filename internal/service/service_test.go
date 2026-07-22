@@ -559,9 +559,80 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 }
 
 func TestUnsupportedOS(t *testing.T) {
-	_, err := (Manager{GOOS: "plan9", Runner: &recordingRunner{}}).Install("/bin/termp")
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("Install unsupported error = %v, want ErrUnsupported", err)
+	manager := Manager{GOOS: "plan9", Runner: &recordingRunner{}}
+	tests := []struct {
+		name string
+		call func() (State, error)
+	}{
+		{name: "install", call: func() (State, error) { return manager.Install("/bin/termp") }},
+		{name: "uninstall", call: manager.Uninstall},
+		{name: "disable", call: manager.Disable},
+		{name: "enable", call: manager.Enable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, err := tt.call()
+			if !errors.Is(err, ErrUnsupported) || state.Supported || !strings.Contains(state.Message, "plan9") {
+				t.Fatalf("state, error = %+v, %v; want unsupported plan9", state, err)
+			}
+		})
+	}
+	state := manager.Status()
+	if state.Supported || !strings.Contains(state.Message, "plan9") {
+		t.Fatalf("Status() = %+v, want unsupported plan9", state)
+	}
+}
+
+func TestServiceUnitEscapingEdges(t *testing.T) {
+	plist, err := BuildLaunchAgentPlist(`/opt/a&b/<termp>`, `/tmp/a&b.log`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(plist)
+	for _, escaped := range []string{`/opt/a&amp;b/&lt;termp&gt;`, `/tmp/a&amp;b.log`} {
+		if !strings.Contains(text, escaped) {
+			t.Fatalf("plist missing escaped value %q:\n%s", escaped, text)
+		}
+	}
+
+	tests := []struct {
+		arg  string
+		want string
+	}{
+		{arg: "", want: `""`},
+		{arg: "/usr/local/bin/termp", want: "/usr/local/bin/termp"},
+		{arg: `/opt/a b/termp`, want: `"/opt/a b/termp"`},
+		{arg: `C:\Program Files\"termp"`, want: `"C:\\Program Files\\\"termp\""`},
+	}
+	for _, tt := range tests {
+		if got := systemdEscapeExecArg(tt.arg); got != tt.want {
+			t.Errorf("systemdEscapeExecArg(%q) = %q, want %q", tt.arg, got, tt.want)
+		}
+	}
+}
+
+func TestLinuxUninstallIsIdempotent(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
+	manager := Manager{GOOS: "linux", Runner: runner}
+	for i := 0; i < 2; i++ {
+		state, err := manager.Uninstall()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Installed {
+			t.Fatalf("uninstall %d state = %+v", i+1, state)
+		}
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unit still exists: %v", err)
 	}
 }
 
