@@ -138,8 +138,8 @@ func TestConfigCommandInitAndForce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(out) != path {
-		t.Fatalf("output = %q, want path %q", out, path)
+	if want := "Wrote default config: " + path + "\n"; out != want {
+		t.Fatalf("output = %q, want %q", out, want)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("config was not created: %v", err)
@@ -147,8 +147,17 @@ func TestConfigCommandInitAndForce(t *testing.T) {
 	if err := configCommand([]string{"init"}); err == nil {
 		t.Fatal("second init succeeded without --force")
 	}
-	if _, err := captureStdout(t, func() error { return configCommand([]string{"init", "--force"}) }); err != nil {
+	out, err = captureStdout(t, func() error { return configCommand([]string{"init", "--force"}) })
+	if err != nil {
 		t.Fatalf("forced init: %v", err)
+	}
+	for _, want := range []string{
+		"Reset config to defaults: " + path,
+		"Run \"termp setup\" to configure interactively.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("forced init output missing %q: %q", want, out)
+		}
 	}
 	// Bare `config` (no action) is a help request; an unknown action is a real
 	// usage error, not flag.ErrHelp.

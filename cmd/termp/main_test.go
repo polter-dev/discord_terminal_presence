@@ -937,6 +937,46 @@ func TestServiceWillRelaunch(t *testing.T) {
 	}
 }
 
+func TestPrintStopSuccessAutostartHint(t *testing.T) {
+	tests := []struct {
+		name     string
+		state    service.State
+		wantHint bool
+	}{
+		{
+			name:     "autostart enabled",
+			state:    service.State{Installed: true, Loaded: "active"},
+			wantHint: true,
+		},
+		{
+			name:  "autostart not enabled",
+			state: service.State{Installed: true, Loaded: "inactive"},
+		},
+	}
+
+	const hint = "Autostart is on — run \"termp disable\" to stop it launching at login (or \"termp uninstall\" to remove it)."
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := captureStdout(t, func() error {
+				printStopSuccess(1234, tt.state)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, "stopped (pid 1234)") {
+				t.Fatalf("stop output missing PID: %q", out)
+			}
+			if got := strings.Contains(out, hint); got != tt.wantHint {
+				t.Fatalf("stop output hint present = %t, want %t: %q", got, tt.wantHint, out)
+			}
+			if !tt.wantHint && (strings.Contains(out, "termp disable") || strings.Contains(out, "termp uninstall")) {
+				t.Fatalf("stop output unexpectedly contains autostart commands: %q", out)
+			}
+		})
+	}
+}
+
 func detectionWithButtons(buttons []registry.Button) detector.Detection {
 	return detector.Detection{
 		Tool: registry.Tool{
