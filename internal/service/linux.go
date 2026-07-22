@@ -115,15 +115,19 @@ func (s linuxService) Status() State {
 	} else if os.IsNotExist(err) {
 		state.Installed = false
 	}
-	if out, err := s.runner.Run("systemctl", "--user", "is-enabled", ServiceName); err == nil {
-		state.Enabled = strings.TrimSpace(string(out))
-	} else {
-		state.Enabled = "unknown"
-	}
-	if out, err := s.runner.Run("systemctl", "--user", "is-active", ServiceName); err == nil {
-		state.Loaded = strings.TrimSpace(string(out))
-	} else {
-		state.Loaded = "unknown"
-	}
+	out, _ := s.runner.Run("systemctl", "--user", "is-enabled", ServiceName)
+	state.Enabled = systemctlState(out, "enabled", "disabled", "static", "masked", "linked")
+	out, _ = s.runner.Run("systemctl", "--user", "is-active", ServiceName)
+	state.Loaded = systemctlState(out, "active", "inactive", "failed", "activating", "deactivating")
 	return state
+}
+
+func systemctlState(out []byte, documented ...string) string {
+	state := strings.TrimSpace(string(out))
+	for _, candidate := range documented {
+		if state == candidate {
+			return state
+		}
+	}
+	return "unknown"
 }
