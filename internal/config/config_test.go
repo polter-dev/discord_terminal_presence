@@ -420,6 +420,58 @@ func TestManagerKeepsLastGoodOnMalformedReload(t *testing.T) {
 	}
 }
 
+func TestManagerChangesDeliversSingleReload(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `scan_interval = "7s"`)
+	manager := NewManagerPath(path)
+
+	writeConfig(t, path, `scan_interval = "8s"`)
+	if err := manager.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case cfg := <-manager.Changes():
+		if cfg.ScanInterval != "8s" {
+			t.Fatalf("notified scan interval = %q, want 8s", cfg.ScanInterval)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for config reload notification")
+	}
+}
+
+func TestManagerChangesCoalescesBurstyReloadsToNewest(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `scan_interval = "7s"`)
+	manager := NewManagerPath(path)
+
+	writeConfig(t, path, `scan_interval = "8s"`)
+	if err := manager.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, path, `scan_interval = "9s"`)
+	if err := manager.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case cfg := <-manager.Changes():
+		if cfg.ScanInterval != "9s" {
+			t.Fatalf("notified scan interval = %q, want newest value 9s", cfg.ScanInterval)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for coalesced config reload notification")
+	}
+
+	current, err := manager.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.ScanInterval != "9s" {
+		t.Fatalf("current scan interval = %q, want 9s", current.ScanInterval)
+	}
+}
+
 func TestManagerConcurrentCurrentDuringReloadKeepsLastGood(t *testing.T) {
 	path := withConfigHome(t)
 	writeConfig(t, path, `scan_interval = "7s"`)

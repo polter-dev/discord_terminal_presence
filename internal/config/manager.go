@@ -52,7 +52,8 @@ func (m *Manager) LastError() error {
 	return m.lastErr
 }
 
-// Changes emits a config copy after each successful reload.
+// Changes emits the latest config copy after one or more successful reloads.
+// Bursty reloads may be coalesced when the consumer has not caught up.
 func (m *Manager) Changes() <-chan Config {
 	return m.changes
 }
@@ -68,9 +69,18 @@ func (m *Manager) Reload() error {
 	}
 	m.current = cfg
 	m.lastErr = nil
+	next := cloneConfig(cfg)
 	select {
-	case m.changes <- cloneConfig(cfg):
+	case m.changes <- next:
 	default:
+		// Reloads are serialized by mu. Replace a queued stale config with the
+		// newest one. If a consumer drains it first, the channel is already
+		// empty; either way, the buffered send below cannot block.
+		select {
+		case <-m.changes:
+		default:
+		}
+		m.changes <- next
 	}
 	return nil
 }
