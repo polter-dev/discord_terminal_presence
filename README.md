@@ -77,6 +77,26 @@ Global flags:
 | `--verbose`, `-v` | Prints extra log detail, for example `termp --verbose start`. |
 | `--version` | Prints the version and exits. |
 
+## Shell completion
+
+Generate and install tab completion for your shell:
+
+```sh
+# bash
+termp completion bash > ~/.local/share/bash-completion/completions/termp
+
+# zsh
+termp completion zsh > ${fpath[1]}/_termp
+
+# fish
+termp completion fish > ~/.config/fish/completions/termp.fish
+```
+
+To enable completion only for the current session, use
+`source <(termp completion bash)` in bash, `source <(termp completion zsh)` in
+zsh, or `termp completion fish | source` in fish. Each generated script starts
+with these instructions as comments, so it remains safe to redirect to a file.
+
 ## Start automatically
 
 Start-at-login is optional and works on macOS and Linux:

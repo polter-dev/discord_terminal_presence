@@ -321,30 +321,123 @@ func completionScript(shell string) (string, error) {
 	commands := "start stop status install uninstall disable enable settings watch version update setup config completion"
 	switch shell {
 	case "bash":
-		return `_termp_complete() {
+		return `# termp bash completion.
+# Enable in the current session: source <(termp completion bash)
+# Or install permanently: termp completion bash > ~/.local/share/bash-completion/completions/termp
+_termp_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
-  if [[ ${COMP_CWORD} -eq 1 ]]; then
-    COMPREPLY=( $(compgen -W "--verbose -v --version ` + commands + `" -- "$cur") )
+  local command=""
+  local i
+
+  for ((i = 1; i < COMP_CWORD; i++)); do
+    case "${COMP_WORDS[i]}" in
+      -*) ;;
+      *) command="${COMP_WORDS[i]}"; break ;;
+    esac
+  done
+
+  if [[ -z "$command" ]]; then
+    COMPREPLY=( $(compgen -W "--verbose -v --version --help -h ` + commands + `" -- "$cur") )
+    return
   fi
+
+  case "$command" in
+    config)
+      if [[ " ${COMP_WORDS[*]} " == *" init "* ]]; then
+        COMPREPLY=( $(compgen -W "--force --verbose -v --help -h" -- "$cur") )
+      else
+        COMPREPLY=( $(compgen -W "init --help -h" -- "$cur") )
+      fi
+      ;;
+    completion)
+      COMPREPLY=( $(compgen -W "bash zsh fish --verbose -v --help -h" -- "$cur") )
+      ;;
+    install)
+      COMPREPLY=( $(compgen -W "--force --help -h" -- "$cur") )
+      ;;
+    watch)
+      COMPREPLY=( $(compgen -W "--once --verbose -v --help -h" -- "$cur") )
+      ;;
+    start|stop|status|settings|version|update|setup)
+      COMPREPLY=( $(compgen -W "--verbose -v --help -h" -- "$cur") )
+      ;;
+    *)
+      COMPREPLY=( $(compgen -W "--help -h" -- "$cur") )
+      ;;
+  esac
 }
 complete -F _termp_complete termp
 `, nil
 	case "zsh":
 		return `#compdef termp
-_arguments \
-  '(-v --verbose)'{-v,--verbose}'[enable verbose logging]' \
-  '--version[print version information]' \
-  '1:command:(` + commands + `)' \
-  '*::arg:->args'
+# termp zsh completion.
+# Enable in the current session: source <(termp completion zsh)
+# Or install permanently: termp completion zsh > ${fpath[1]}/_termp
+_termp() {
+  local command word
+  for word in $words[2,-1]; do
+    case $word in
+      ` + strings.ReplaceAll(commands, " ", "|") + `) command=$word; break ;;
+    esac
+  done
+
+  if [[ -n $command ]]; then
+    case $command in
+      config)
+        if [[ " ${words[*]} " == *" init "* ]]; then
+          compadd -- --force --verbose -v --help -h
+        else
+          compadd -- init --help -h
+        fi
+        ;;
+      completion)
+        compadd -- bash zsh fish --verbose -v --help -h
+        ;;
+      install)
+        compadd -- --force --help -h
+        ;;
+      watch)
+        compadd -- --once --verbose -v --help -h
+        ;;
+      start|stop|status|settings|version|update|setup)
+        compadd -- --verbose -v --help -h
+        ;;
+      *)
+        compadd -- --help -h
+        ;;
+    esac
+    return
+  fi
+
+  _arguments \
+    '(-v --verbose)'{-v,--verbose}'[enable verbose logging]' \
+    '--version[print version information]' \
+    '(-h --help)'{-h,--help}'[show help]' \
+    '1:command:(` + commands + `)'
+}
+compdef _termp termp
 `, nil
 	case "fish":
 		var b strings.Builder
+		b.WriteString("# termp fish completion.\n")
+		b.WriteString("# Enable in the current session: termp completion fish | source\n")
+		b.WriteString("# Or install permanently: termp completion fish > ~/.config/fish/completions/termp.fish\n")
 		b.WriteString("complete -c termp -f\n")
-		b.WriteString("complete -c termp -s v -l verbose -d 'enable verbose logging'\n")
-		b.WriteString("complete -c termp -l version -d 'print version information'\n")
+		commandCondition := "not __fish_seen_subcommand_from " + commands
+		b.WriteString(fmt.Sprintf("complete -c termp -n '%s' -s v -l verbose -d 'enable verbose logging'\n", commandCondition))
+		b.WriteString(fmt.Sprintf("complete -c termp -n '%s' -l version -d 'print version information'\n", commandCondition))
+		b.WriteString(fmt.Sprintf("complete -c termp -n '%s' -s h -l help -d 'show help'\n", commandCondition))
 		for _, command := range strings.Fields(commands) {
-			b.WriteString(fmt.Sprintf("complete -c termp -n '__fish_use_subcommand' -a %s\n", command))
+			b.WriteString(fmt.Sprintf("complete -c termp -n '%s' -a %s\n", commandCondition, command))
 		}
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from init' -a init\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from init' -l force -d 'overwrite an existing config'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from install' -l force -d 'install even when the executable path is unstable'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from watch' -l once -d 'render one preview snapshot and exit'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start stop status settings watch version update setup completion' -s v -l verbose -d 'enable verbose logging'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from init' -s v -l verbose -d 'enable verbose logging'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from " + commands + "' -s h -l help -d 'show help'\n")
 		return b.String(), nil
 	default:
 		return "", fmt.Errorf("unsupported shell %q (want bash, zsh, or fish)", shell)
