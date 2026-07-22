@@ -445,7 +445,7 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 	scan := func() bool {
 		processes, err := listProcesses(d.lister)
 		if err != nil {
-			processes = nil
+			return true
 		}
 		current := selector.SelectWithEnricher(processes, processEnricher(d.lister))
 

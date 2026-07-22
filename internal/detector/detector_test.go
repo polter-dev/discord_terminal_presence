@@ -28,6 +28,29 @@ func (f *fakeLister) List() ([]Process, error) {
 	return f.snapshots[idx], nil
 }
 
+type processListResult struct {
+	processes []Process
+	err       error
+}
+
+type controlledLister struct {
+	calls   chan struct{}
+	results chan processListResult
+}
+
+func newControlledLister() *controlledLister {
+	return &controlledLister{
+		calls:   make(chan struct{}),
+		results: make(chan processListResult),
+	}
+}
+
+func (f *controlledLister) List() ([]Process, error) {
+	f.calls <- struct{}{}
+	result := <-f.results
+	return append([]Process(nil), result.processes...), result.err
+}
+
 type fakePresenceLister struct {
 	processes []Process
 	enricher  ProcessEnricher
@@ -782,6 +805,115 @@ func TestRunEmitsNoneAfterDebounce(t *testing.T) {
 	}
 	cancel()
 	for range ch {
+	}
+}
+
+func TestRunScanErrorsRetainPresenceUntilSuccessfulEmptyDebounce(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	process := Process{Pid: 7, Name: "claude", CreateTime: base, Cwd: "/project"}
+	lister := newControlledLister()
+	det, err := New(testRegistry(t), lister, Config{
+		ScanInterval:   time.Nanosecond,
+		DebounceCycles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	det.presenceStatePath = filepath.Join(t.TempDir(), "presence.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := det.Run(ctx)
+	waitForCall := func() {
+		t.Helper()
+		select {
+		case <-lister.calls:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for process scan")
+		}
+	}
+	completeScan := func(result processListResult) {
+		t.Helper()
+		lister.results <- result
+		waitForCall()
+	}
+	assertNoDetection := func(stage string) {
+		t.Helper()
+		select {
+		case detection := <-ch:
+			t.Fatalf("%s emitted unexpected detection: %#v", stage, detection)
+		default:
+		}
+	}
+	assertEpisodePresent := func(stage string) {
+		t.Helper()
+		store, loadErr := LoadEpisodeStore(det.presenceStatePath)
+		if loadErr != nil {
+			t.Fatalf("%s load episode store: %v", stage, loadErr)
+		}
+		key := EpisodeKey("claude-code", process.Pid, process.CreateTime)
+		if _, ok := store.Episodes[key]; !ok {
+			t.Fatalf("%s removed active episode %q", stage, key)
+		}
+	}
+
+	waitForCall()
+	completeScan(processListResult{processes: []Process{process}})
+	assertNoDetection("first active scan")
+	completeScan(processListResult{processes: []Process{process}})
+	select {
+	case detection := <-ch:
+		if detection.None || detection.Tool.ID != "claude-code" {
+			t.Fatalf("initial detection = %#v, want active claude-code", detection)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial detection")
+	}
+	assertEpisodePresent("initial detection")
+
+	for scan := 1; scan <= 3; scan++ {
+		completeScan(processListResult{err: errors.New("transient process scan failure")})
+		assertNoDetection("failed scan")
+		assertEpisodePresent("failed scan")
+	}
+
+	completeScan(processListResult{processes: []Process{process}})
+	assertNoDetection("recovery scan")
+	assertEpisodePresent("recovery scan")
+
+	completeScan(processListResult{processes: []Process{}})
+	assertNoDetection("first successful empty scan")
+	store, loadErr := LoadEpisodeStore(det.presenceStatePath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(store.Episodes) != 0 {
+		t.Fatalf("successful empty scan retained episodes: %#v", store.Episodes)
+	}
+
+	completeScan(processListResult{processes: []Process{}})
+	select {
+	case detection := <-ch:
+		if !detection.None {
+			t.Fatalf("post-recovery empty detection = %#v, want none", detection)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for none after successful empty scans")
+	}
+
+	cancel()
+	lister.results <- processListResult{processes: []Process{}}
+	for {
+		select {
+		case _, ok := <-ch:
+			if ok {
+				t.Fatal("detection channel remained open after cancellation")
+			}
+			return
+		case <-lister.calls:
+			lister.results <- processListResult{processes: []Process{}}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for detector shutdown")
+		}
 	}
 }
 
