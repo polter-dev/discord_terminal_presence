@@ -733,9 +733,11 @@ func TestWindowsDisableAndEnableToggleTaskWithoutRealSchtasks(t *testing.T) {
 func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 	runner := &recordingRunner{
 		fail: map[string]error{
-			"schtasks /Query /TN " + TaskName + " /FO LIST /V": errors.New("task not found"),
+			"schtasks /Query /TN " + TaskName + " /FO LIST /V": errors.New("exit status 1"),
 		},
-		out: map[string]string{},
+		out: map[string]string{
+			"schtasks /Query /TN " + TaskName + " /FO LIST /V": "ERROR: The system cannot find the file specified.\n",
+		},
 	}
 	manager := Manager{GOOS: "windows", Runner: runner}
 	state, err := manager.Uninstall()
@@ -768,6 +770,7 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 		wantInstalled bool
 		wantLoaded    string
 		wantEnabled   string
+		wantMessage   bool
 	}{
 		{
 			name:          "ready task is enabled",
@@ -785,10 +788,20 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 		},
 		{
 			name:          "absent task is not installed",
-			queryErr:      errors.New("task not found"),
+			queryOut:      "ERROR: The specified task name does not exist in the system.\n",
+			queryErr:      errors.New("exit status 1"),
 			wantInstalled: false,
 			wantLoaded:    "false",
 			wantEnabled:   "false",
+		},
+		{
+			name:          "query failure is not clean absence",
+			queryOut:      "ERROR: Access is denied.\n",
+			queryErr:      errors.New("exit status 1"),
+			wantInstalled: true,
+			wantLoaded:    "unknown",
+			wantEnabled:   "unknown",
+			wantMessage:   true,
 		},
 	}
 
@@ -806,6 +819,42 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 			state := (Manager{GOOS: "windows", Runner: runner}).Status()
 			if state.Installed != tt.wantInstalled || state.Loaded != tt.wantLoaded || state.Enabled != tt.wantEnabled {
 				t.Fatalf("Status() = %+v, want installed=%t loaded=%q enabled=%q", state, tt.wantInstalled, tt.wantLoaded, tt.wantEnabled)
+			}
+			if (state.Message != "") != tt.wantMessage {
+				t.Fatalf("Status().Message = %q, wantMessage=%t", state.Message, tt.wantMessage)
+			}
+			if tt.wantMessage && !strings.Contains(state.Message, "Access is denied") {
+				t.Fatalf("Status().Message = %q, want schtasks output", state.Message)
+			}
+		})
+	}
+}
+
+func TestWindowsDisableAndEnableReturnQueryFailures(t *testing.T) {
+	query := "schtasks /Query /TN " + TaskName + " /FO LIST /V"
+	tests := []struct {
+		name string
+		run  func(Manager) (State, error)
+	}{
+		{name: "disable", run: Manager.Disable},
+		{name: "enable", run: Manager.Enable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingRunner{
+				fail: map[string]error{query: errors.New("exit status 1")},
+				out:  map[string]string{query: "ERROR: Access is denied.\n"},
+			}
+			state, err := tt.run(Manager{GOOS: "windows", Runner: runner})
+			if err == nil || !strings.Contains(err.Error(), "Access is denied") {
+				t.Fatalf("%s() error = %v, want query failure", tt.name, err)
+			}
+			if state.Message == "" || state.Loaded != "unknown" || state.Enabled != "unknown" {
+				t.Fatalf("%s() state = %+v, want visible ambiguous query state", tt.name, state)
+			}
+			if len(runner.calls) != 1 || runner.calls[0] != query {
+				t.Fatalf("%s() calls = %#v, want only query", tt.name, runner.calls)
 			}
 		})
 	}

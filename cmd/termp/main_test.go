@@ -535,7 +535,7 @@ func TestUpdateNoticeUsesColorWhenSupported(t *testing.T) {
 }
 
 func TestUpdateNoticeLinesStayWithinOutputWidth(t *testing.T) {
-	commands := []string{updatepkg.BrewCommand, updatepkg.GoCommand, updatepkg.GenericCommand("v12.34.56")}
+	commands := []string{updatepkg.BrewCommand, updatepkg.GoCommand("v12.34.56"), updatepkg.GenericCommand("v12.34.56")}
 	for _, width := range []int{20, 40, 80, 120} {
 		for _, command := range commands {
 			result := updatepkg.Result{Current: "1.0.0+abc123", Latest: "v12.34.56+def456", Command: command}
@@ -551,7 +551,7 @@ func TestUpdateNoticeLinesStayWithinOutputWidth(t *testing.T) {
 }
 
 func TestWrappedUpdateCommandsRemainCopyPasteable(t *testing.T) {
-	for _, command := range []string{updatepkg.BrewCommand, updatepkg.GoCommand, updatepkg.GenericCommand("v1.1.0")} {
+	for _, command := range []string{updatepkg.BrewCommand, updatepkg.GoCommand("v1.1.0"), updatepkg.GenericCommand("v1.1.0")} {
 		for _, width := range []int{20, 40, 80} {
 			wrapped := strings.Join(wrapShellCommand(command, width), "\n")
 			if got := strings.ReplaceAll(wrapped, "\\\n", ""); got != command {
@@ -733,7 +733,7 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 		want   updatepkg.Command
 	}{
 		{method: updatepkg.InstallHomebrew, want: updatepkg.Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}},
-		{method: updatepkg.InstallGo, want: updatepkg.Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"}}},
+		{method: updatepkg.InstallGo, want: updatepkg.Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@v1.1.0"}}},
 		{method: updatepkg.InstallGeneric, want: updatepkg.Command{Name: "sh", Args: []string{"-c", updatepkg.GenericCommand("v1.1.0")}}},
 	}
 	for _, tt := range tests {

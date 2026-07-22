@@ -88,6 +88,19 @@ func TestGenericCommandPinsInstallerAndVersionToReleaseTag(t *testing.T) {
 	}
 }
 
+func TestGoCommandPinsReleaseTag(t *testing.T) {
+	const tag = "v1.2.3"
+	want := "go install github.com/polter-dev/discord_terminal_presence/cmd/termp@" + tag
+	if got := GoCommand(tag); got != want {
+		t.Fatalf("GoCommand(%q) = %q, want %q", tag, got, want)
+	}
+	for _, invalid := range []string{"", "latest", "v1.2.3; id"} {
+		if got := GoCommand(invalid); got != "" {
+			t.Fatalf("GoCommand(%q) = %q, want empty command", invalid, got)
+		}
+	}
+}
+
 func TestGenericUpdateRejectsUnsafeReleaseTagsWithoutRunning(t *testing.T) {
 	for _, tag := range []string{"", "latest", "v1.2.3; id", "../v1.2.3", "v1.2.3\nmain"} {
 		t.Run(strings.ReplaceAll(tag, "/", "_"), func(t *testing.T) {
@@ -111,6 +124,32 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	want := Command{Name: "sh", Args: []string{"-c", GenericCommand("v2.3.4")}}
 	if runner.calls != 1 || runner.command.Name != want.Name || strings.Join(runner.command.Args, "\x00") != strings.Join(want.Args, "\x00") {
 		t.Fatalf("runner = (%d, %#v), want (1, %#v)", runner.calls, runner.command, want)
+	}
+}
+
+func TestPerformGoUpdateUsesResolvedReleaseTag(t *testing.T) {
+	runner := &recordingRunner{}
+	if err := PerformUpdate(context.Background(), InstallGo, "v2.3.4", runner, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@v2.3.4"}}
+	if runner.calls != 1 || runner.command.Name != want.Name || strings.Join(runner.command.Args, "\x00") != strings.Join(want.Args, "\x00") {
+		t.Fatalf("runner = (%d, %#v), want (1, %#v)", runner.calls, runner.command, want)
+	}
+}
+
+func TestGoUpdateRejectsInvalidReleaseTagsWithoutRunning(t *testing.T) {
+	for _, tag := range []string{"", "latest", "v1.2.3; id"} {
+		t.Run(tag, func(t *testing.T) {
+			runner := &recordingRunner{}
+			err := PerformUpdate(context.Background(), InstallGo, tag, runner, nil, io.Discard, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), "invalid release tag") {
+				t.Fatalf("PerformUpdate() error = %v, want invalid release tag", err)
+			}
+			if runner.calls != 0 {
+				t.Fatalf("PerformUpdate() ran command for invalid release tag %q", tag)
+			}
+		})
 	}
 }
 
@@ -180,7 +219,7 @@ func TestCheckerUsesFreshCache(t *testing.T) {
 	checker.DetectInstall = func() InstallMethod { return InstallGo }
 
 	result, ok := checker.Check(context.Background(), "1.0.0+sha", true)
-	if !ok || result.Latest != "v1.2.0" || result.Command != GoCommand {
+	if !ok || result.Latest != "v1.2.0" || result.Command != GoCommand("v1.2.0") {
 		t.Fatalf("cached result = (%#v, %t)", result, ok)
 	}
 	if source.callCount() != 0 {
