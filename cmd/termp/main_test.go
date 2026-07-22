@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -69,6 +70,115 @@ var expectedCommands = []string{
 	"install", "uninstall", "disable", "enable", "start", "stop", "status",
 	"settings", "watch", "version", "setup", "config", "completion",
 	"update",
+}
+
+type fileInfoWithSys struct {
+	os.FileInfo
+	sys any
+}
+
+func (i fileInfoWithSys) Sys() any { return i.sys }
+
+func TestPIDFilePathUsesPrivateUserCacheDirectory(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(cacheDir, "termp", "run", "termp.pid")
+	if got := pidFilePath(); got != want {
+		t.Fatalf("pidFilePath() = %q, want %q", got, want)
+	}
+	if want == filepath.Join(os.TempDir(), "termp.pid") {
+		t.Fatal("PID path still uses the shared temporary file")
+	}
+	if err := writePID(want, 99999999); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Dir(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("PID directory mode = %o, want 700", got)
+	}
+}
+
+func TestWritePIDUses0600AndRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "termp.pid")
+	if err := writePID(path, 99999998); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("PID file mode = %o, want 600", got)
+	}
+	if err := writePID(path, 99999997); err != nil {
+		t.Fatalf("replace stale PID file: %v", err)
+	}
+	if pid, err := readPID(path); err != nil || pid != 99999997 {
+		t.Fatalf("replaced readPID() = %d, %v; want 99999997, nil", pid, err)
+	}
+
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePID(path, 1234); err == nil {
+		t.Fatal("writePID followed or replaced a symlink")
+	}
+	data, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != "unchanged" {
+		t.Fatalf("symlink target was modified: %q", got)
+	}
+	if _, err := readPID(path); err == nil {
+		t.Fatal("readPID followed a symlink")
+	}
+}
+
+func TestReadPIDRequiresRegularFileOwnedByCurrentUser(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "termp.pid")
+	if err := os.WriteFile(path, []byte("1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if pid, err := readPID(path); err != nil || pid != 1234 {
+		t.Fatalf("readPID() = %d, %v; want 1234, nil", pid, err)
+	}
+
+	directoryPath := filepath.Join(dir, "directory.pid")
+	if err := os.Mkdir(directoryPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPID(directoryPath); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("readPID(directory) error = %v, want regular-file rejection", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignUID := uint32(os.Geteuid() + 1)
+	foreignInfo := fileInfoWithSys{FileInfo: info, sys: &syscall.Stat_t{Uid: foreignUID}}
+	if err := validatePIDFileInfo(foreignInfo, path); err == nil || !strings.Contains(err.Error(), "not current uid") {
+		t.Fatalf("foreign owner check error = %v, want owner rejection", err)
+	}
 }
 
 func TestFormatInstallSuccessShowsCTAForFreshInstall(t *testing.T) {
