@@ -40,12 +40,36 @@ func (s linuxService) Uninstall() (State, error) {
 	if err != nil {
 		return State{Supported: true}, err
 	}
-	_, _ = s.runner.Run("systemctl", "--user", "disable", "--now", ServiceName)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return s.Status(), nil
+	} else if err != nil {
+		return State{Supported: true, Path: path}, err
+	}
+	if out, err := s.runner.Run("systemctl", "--user", "disable", "--now", ServiceName); err != nil && !isBenignSystemctlDisableError(out) {
+		return State{Supported: true, Installed: true, Path: path}, fmt.Errorf("systemctl disable failed; service definition kept at %s so uninstall can be retried: %w: %s", path, err, strings.TrimSpace(string(out)))
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return State{Supported: true, Path: path}, err
 	}
-	_, _ = s.runner.Run("systemctl", "--user", "daemon-reload")
+	if out, err := s.runner.Run("systemctl", "--user", "daemon-reload"); err != nil {
+		return State{Supported: true, Path: path}, fmt.Errorf("systemctl daemon-reload failed after removing %s; retry `systemctl --user daemon-reload`: %w: %s", path, err, strings.TrimSpace(string(out)))
+	}
 	return s.Status(), nil
+}
+
+func isBenignSystemctlDisableError(out []byte) bool {
+	text := string(out)
+	if containsAnyFold(text, "failed to connect to bus") {
+		return false
+	}
+	return containsAnyFold(text,
+		"unit "+ServiceName+" not loaded",
+		"unit "+ServiceName+" not found",
+		"unit "+ServiceName+" could not be found",
+		"unit "+ServiceName+" does not exist",
+		"unit file "+ServiceName+" does not exist",
+		"no such process",
+	)
 }
 
 func (s linuxService) Disable() (State, error) {
