@@ -265,6 +265,10 @@ func setup(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
 	save := func(cfg config.Config) (string, error) {
 		path := config.DefaultPath()
 		return path, config.Save(cfg, path)
@@ -274,7 +278,7 @@ func setup(args []string) error {
 		return err
 	}
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
-		path, err := save(config.Default())
+		path, err := save(cfg)
 		if err != nil {
 			return err
 		}
@@ -282,7 +286,7 @@ func setup(args []string) error {
 		fmt.Println("Non-interactive setup skipped autostart. Run `termp install` to enable autostart, then `termp start` to run now.")
 		return nil
 	}
-	model := tui.NewSetupModel(save, installAutostart, service.ResolveExecutable)
+	model := tui.NewSetupModel(cfg, save, installAutostart, service.ResolveExecutable)
 	finalModel, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
 	if err != nil {
 		return err
