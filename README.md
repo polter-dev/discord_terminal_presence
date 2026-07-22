@@ -4,245 +4,206 @@
 
 <h1 align="center">Terminal Presence (<code>termp</code>)</h1>
 
-> Show your terminal work as a Discord Rich Presence — like "Discord shows what game you're playing," but for your CLI.
+> Let friends see what you are building, right from your Discord profile.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](go.mod)
-[![Release](https://img.shields.io/github/v/release/polter-dev/discord_terminal_presence?display_name=tag&sort=semver)](https://github.com/polter-dev/discord_terminal_presence/releases)
 
-termp watches your terminal and puts whatever command-line tool you're using on
-your Discord profile — so friends see "Using Neovim" or "Using Claude Code"
-instead of nothing at all.
+`termp` shows the terminal tool you are using—Claude Code, Vim, lazygit, and
+dozens more—as Discord Rich Presence. It runs quietly on your computer and
+needs no Discord bot or token.
 
-Discord Rich Presence is the little status that shows up on your profile, like
-"Playing…" when you launch a game. termp does the same thing for terminal tools.
-It notices which CLI you're running — Claude Code, Gemini CLI, Codex CLI, and 48
-other built-in tools — and shows it with the tool's logo, a running timer, an
-optional folder name, a small "also running" icon, and buttons.
+## See it in about 30 seconds
 
-You don't need a Discord bot or any token to use it. termp ships with a Discord
-Application ID (`1523168764793847918`) baked in. That ID is public and safe to
-share — it's not a password or secret.
-
-## Table of Contents
-
-- [Features](#features)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Commands](#commands)
-- [Autostart](#autostart)
-- [Configuration](#configuration)
-- [Supported Tools](#supported-tools)
-- [How It Works](#how-it-works)
-- [Privacy](#privacy)
-- [Contributing](#contributing)
-- [License](#license)
-
-## Features
-
-- **Spots your tools on its own** — checks what's running and matches it against
-  a built-in list of 48 tools.
-- **Real logos** — AI CLIs use LobeHub icons, dev tools use Simple Icons, and
-  anything it doesn't recognize gets a generic terminal icon.
-- **Handles several tools at once** — puts one tool in the spotlight and lists up
-  to three more as `also: ...`.
-- **Preview in your terminal** — `termp watch` shows the presence card live,
-  right in the terminal.
-- **Edit config without restarting** — change the TOML file and it takes effect
-  right away. If you make a mistake, termp keeps using the last version that worked.
-- **Private by default** — no tracking, your folder name stays hidden, and
-  starting at login is opt-in. `termp status` and `termp version` make an
-  anonymous GitHub Releases version check at most once every 24 hours; set
-  `NO_UPDATE_CHECK` or `update_check = false` to disable it.
-- **Add your own tools** — match by name or pattern and give them a custom logo.
-- **Starts at login** — works on both macOS and Linux.
-
-## Installation
-
-### Homebrew (macOS & Linux)
+There is not a published release yet, so for now you will need Go 1.24 or newer:
 
 ```sh
-brew install --cask polter-dev/tap/termp
+go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
+termp setup
+termp start
 ```
 
-This grabs a ready-to-run build from GitHub Releases.
+Keep `termp start` running, open a supported tool such as `nvim`, `claude`, or
+`lazygit`, and check your Discord profile. Discord's desktop app needs to be
+running. To preview the card in your terminal instead, run `termp watch`.
 
-### Shell installer
+The setup wizard creates your config, asks before enabling start-at-login, and
+keeps folder names hidden unless you choose otherwise.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/main/install.sh | sh
-```
+## Install
 
-This downloads the latest release, checks it against `checksums.txt` to make sure
-it wasn't tampered with, and installs `termp` to `/usr/local/bin`. To install
-somewhere else, set `BINDIR`. To install a specific version, set `VERSION`.
-
-### Linux packages
-
-Grab the `.deb` or `.rpm` that matches your system from the
-[Releases](https://github.com/polter-dev/discord_terminal_presence/releases)
-page, then install it:
-
-```sh
-sudo dpkg -i ./termp_*.deb   # Debian / Ubuntu
-sudo rpm -i ./termp_*.rpm    # Fedora / RHEL
-```
-
-### From source (Go)
+### From source — available now
 
 ```sh
 go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
 ```
 
-This builds `termp` and puts it in your Go bin directory.
+This builds `termp` and puts it in your Go bin directory. If your shell cannot
+find the command, make sure that directory is on your `PATH`.
 
-## Quick Start
+### Packaged installs — coming at launch
 
-Run the setup wizard once:
+There is no published GitHub release or Homebrew tap yet. Once the first release
+is live, the project plans to offer Homebrew, a shell installer, and `.deb` and
+`.rpm` packages. Until then, please use the source install above.
 
-```sh
-termp setup
-```
+## Everyday commands
 
-The wizard creates your config file. It asks before turning on start-at-login,
-and it leaves folder names hidden unless you say otherwise. To start termp right
-now:
-
-```sh
-termp start
-```
-
-Then open a tool termp knows about (like `nvim` or `claude`) and look at your
-Discord profile. Want to see the card without opening Discord? Run `termp watch`.
-
-## Commands
-
-```sh
-termp <command> [flags]
-```
-
-If you just type `termp` on its own in a terminal, it opens the live `watch`
-view.
+Running `termp` by itself in a terminal opens the live `watch` view.
 
 | Command | What it does |
 |---|---|
-| `termp start` | Starts termp and keeps it running until you stop it. It records its process ID, watches your running tools, reloads your config on changes, and updates your Discord profile. |
-| `termp stop` | Stops the running termp and cleans up its process-ID file. |
-| `termp status` | Shows whether termp is running, whether it can reach Discord, whether start-at-login is on, where your config is and if it's valid, any warnings, and the tool it currently sees. |
-| `termp watch` | Shows a live preview of the card in your terminal. Needs a real terminal window. Add `--once` to print one snapshot and quit. |
-| `termp install` | Sets up start-at-login and starts termp (macOS LaunchAgent or Linux systemd user service). |
-| `termp uninstall` | Turns off start-at-login. |
+| `termp start` | Runs the presence service in the foreground, reloads config changes, and updates Discord. |
+| `termp stop` | Stops the running service and cleans up its process-ID file. |
+| `termp status` | Checks the service, Discord connection, start-at-login, config, warnings, and detected tool. |
+| `termp watch` | Opens a live terminal preview. Use `--once` for one snapshot. |
+| `termp install` | Enables start-at-login and starts termp using a macOS LaunchAgent or Linux systemd user service. |
+| `termp uninstall` | Removes start-at-login. It does not remove the binary. |
 | `termp enable` / `termp disable` | Resumes or pauses start-at-login without removing it. |
-| `termp settings` | Opens a menu to change settings. Needs a real terminal window. |
-| `termp setup` | Runs the set-it-and-forget-it setup wizard. If there's no interactive terminal, it just writes the default config and prints what to do next. |
-| `termp config init` | Writes a sample config, fully commented, to the default location. Add `--force` to replace an existing one. |
+| `termp settings` | Opens the interactive settings menu. |
+| `termp setup` | Runs first-time setup; without an interactive terminal, writes the default config and prints the next steps. |
+| `termp config init` | Writes a commented sample config. Add `--force` to replace an existing config. |
 | `termp completion <bash\|zsh\|fish>` | Prints a tab-completion script for your shell. |
-| `termp version` | Prints the version, commit, build date, Go version, and your OS and architecture. |
+| `termp version` | Prints the version, commit, build date, Go version, OS, and architecture. |
 
-**Global flags:**
+`termp watch`, `termp settings`, and the interactive setup wizard need a real
+terminal window.
+
+Global flags:
 
 | Flag | What it does |
 |---|---|
-| `--verbose`, `-v` | Prints extra log detail (e.g. `termp --verbose start`). |
+| `--verbose`, `-v` | Prints extra log detail, for example `termp --verbose start`. |
 | `--version` | Prints the version and exits. |
 
-## Autostart
+## Start automatically
+
+Start-at-login is optional and works on macOS and Linux:
 
 ```sh
-termp install     # install + start at login
-termp disable     # pause without removing
-termp enable      # resume
-termp uninstall   # remove entirely
+termp install     # install the login service and start it
+termp disable     # pause it without removing it
+termp enable      # resume it
+termp uninstall   # remove the login service
 ```
 
-Start-at-login works on **macOS** and **Linux**.
+On macOS, this creates
+`~/Library/LaunchAgents/dev.termp.daemon.plist`, restarts termp after a crash,
+and writes logs to `~/Library/Logs/termp.log`. On Linux, it creates
+`~/.config/systemd/user/termp.service` and enables the systemd user service.
 
-- **macOS** — adds a LaunchAgent at `~/Library/LaunchAgents/dev.termp.daemon.plist`
-  that runs `termp start`, restarts it if it crashes, and writes logs to
-  `~/Library/Logs/termp.log`.
-- **Linux** — adds a systemd user service at `~/.config/systemd/user/termp.service`,
-  then runs `systemctl --user daemon-reload` and
-  `systemctl --user enable --now termp.service`.
+## Your privacy
+
+`termp` has no telemetry and does no tracking. Presence details go only to the
+Discord desktop app on your computer. There is no bot token: the built-in
+Discord Application ID (`1523168764793847918`) is public, safe to share, and is
+not a password or secret.
+
+Your directory is hidden by default. If you opt in with
+`show_directory = true`, you can restrict what appears with
+`directory_allowlist`; `directory_basename_only = true` shows only the folder
+name rather than its full path.
+
+By default, `termp status` and `termp version` make an anonymous,
+unauthenticated request to GitHub Releases at most once every 24 hours to look
+for a newer version. The request contains no machine or install ID, usage data,
+or config contents; its User-Agent is only `termp/<version>`.
+
+To turn that check off, set the `NO_UPDATE_CHECK` environment variable (any
+value, including an empty one) or add `update_check = false` to your config.
+Either setting is enough.
+
+## Updates
+
+Today, source installs update with the same Go command used to install:
+
+```sh
+go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
+```
+
+The release update experience is still coming: `termp update` and optional
+automatic updates are planned for launch. Automatic updates will be opt-in; the
+current source build does not silently update itself.
 
 ## Configuration
 
-Your config lives at `~/.config/termp/config.toml` (or
-`$XDG_CONFIG_HOME/termp/config.toml` if you've set that variable). termp creates
-the folder when it starts and reloads the file whenever you change it. If a change
-has an error, termp keeps using the last good version. Unknown settings show up as
+Your config lives at `~/.config/termp/config.toml`, or at
+`$XDG_CONFIG_HOME/termp/config.toml` when `XDG_CONFIG_HOME` is set. `termp`
+creates the directory when it starts and reloads changes automatically. If an
+edit is invalid, it keeps the last good config; unknown settings appear as
 warnings in `termp status`.
 
-Create a starter config with comments explaining every option:
+Create a fully commented starter config with:
 
 ```sh
-termp config init          # won't overwrite a config you already have
-termp config init --force  # overwrite it anyway
+termp config init          # keep an existing config
+termp config init --force  # replace an existing config
 ```
 
 ### Global options
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | bool | `true` | The main on/off switch. Set to false to show no presence at all. |
-| `update_check` | bool | `true` | Checks GitHub Releases for a newer version in `termp status` and `termp version`. Set to false to disable it. |
-| `scan_interval` | duration | `"3s"` | How often termp checks your running tools. Bad or zero values fall back to 3s. |
-| `idle_clear_timeout` | duration | `"20m"` | Clears presence after every matched tool has shown no CPU activity for this long. Quiet work can appear idle; set to `"0"` to disable clearing. |
-| `pin` | string | `""` | The ID of a tool you always want in the spotlight while it's running. |
-| `headliner_idle_timeout` | duration | `"60s"` | How long the spotlighted tool must sit idle before another tool can take its place. |
-| `activity_switching` | bool | `true` | Lets a busier tool take the spotlight once the current one has been idle. |
+| `enabled` | bool | `true` | Main on/off switch. When false, no presence is shown. |
+| `update_check` | bool | `true` | Checks GitHub Releases in `termp status` and `termp version`; set false to disable. |
+| `scan_interval` | duration | `"3s"` | How often termp scans running tools. Invalid or zero values fall back to 3 seconds. |
+| `idle_clear_timeout` | duration | `"20m"` | Clears presence after all matched tools show no CPU activity for this long. Set `"0"` to disable; quiet work can appear idle. |
+| `pin` | string | `""` | ID of a running tool that should always take the spotlight. |
+| `headliner_idle_timeout` | duration | `"60s"` | How long the spotlighted tool must be idle before another can replace it. |
+| `activity_switching` | bool | `true` | Allows a busier tool to take the spotlight after the current tool becomes idle. |
 
-### `[display]`
+### Display options (`[display]`)
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `tool_name` | bool | `true` | Shows `Using <tool name>` on the detail line. |
 | `elapsed_timer` | bool | `true` | Shows how long the tool has been running. |
-| `small_image` | bool | `true` | Uses your top "also running" tool as the small icon. |
-| `collection` | bool | `true` | Lists your other running tools as `also: ...` when no folder is shown. |
-| `buttons` | bool | `true` | Shows buttons on your presence (Discord allows two at most). |
+| `small_image` | bool | `true` | Uses the top “also running” tool as the small icon. |
+| `collection` | bool | `true` | Lists other running tools as `also: ...` when no folder is shown. |
+| `buttons` | bool | `true` | Shows buttons on the presence; Discord allows at most two. |
 
-### `[privacy]`
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `show_directory` | bool | `false` | Shows your folder, but only when this is on and the folder is allowed. |
-| `directory_allowlist` | string[] | `[]` | Which folders are allowed to show, by path prefix (`~` works). Empty means any folder. |
-| `directory_basename_only` | bool | `true` | Shows just the folder's name, not the whole path. |
-
-### `[cta]`
+### Privacy options (`[privacy]`)
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | bool | `true` | Adds a termp button when there's room (fewer than two tool buttons already showing). |
-| `label` | string | `"What is this?"` | The text on the button. |
-| `url` | string | `"https://termp.polter.sh/"` | The link the button opens (the termp landing page). |
+| `show_directory` | bool | `false` | Shows the folder only when enabled and allowed. |
+| `directory_allowlist` | string[] | `[]` | Allowed folders by path prefix (`~` works). Empty allows any folder. |
+| `directory_basename_only` | bool | `true` | Shows the folder name instead of its full path. |
 
-### Per-tool overrides — `[tools.<id>]`
+### Button options (`[cta]`)
 
-Change the settings for one specific tool by its ID. You can set: `enabled`,
-`tool_name`, `elapsed_timer`, `small_image`, `show_directory`,
-`directory_allowlist`, `directory_basename_only`, and `buttons` (a list of
-`{ label, url }` pairs that replace that tool's default buttons).
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `true` | Adds a termp button when fewer than two tool buttons are already visible. |
+| `label` | string | `"What is this?"` | Text on the button. |
+| `url` | string | `"https://termp.polter.sh/"` | Link opened by the button. |
 
-### Custom tools — `[[custom_tools]]`
+### Per-tool overrides (`[tools.<id>]`)
+
+For a specific tool ID, you can override `enabled`, `tool_name`,
+`elapsed_timer`, `small_image`, `show_directory`, `directory_allowlist`,
+`directory_basename_only`, and `buttons`. Buttons are a list of `{ label, url }`
+pairs that replace that tool's defaults.
+
+### Custom tools (`[[custom_tools]]`)
 
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `id` | string | yes | An ID for the tool. Reusing a built-in ID overrides that tool. |
-| `display_name` | string | yes | The name shown in Discord. |
-| `match.name` | string | one match | Matches the program's exact name (ignores upper/lowercase). |
-| `match.regex` | string | one match | A pattern matched against the program's path and command line (ignores upper/lowercase). |
-| `image_url` | string | one image | A link to an image to use. |
-| `image_key` | string | one image | The key of an image you uploaded to Discord. |
-| `icon_slug` | string | one image | A logo name that termp looks up automatically. |
-| `icon_source` | string | no | Where to look up the logo: `simpleicons` (default) or `lobehub`. |
-| `priority` | int | no | Which tool wins when more than one matches — higher wins. |
-| `buttons` | array | no | Default buttons for this tool (only two reach Discord). |
+| `id` | string | yes | Tool ID. Reusing a built-in ID overrides it. |
+| `display_name` | string | yes | Name shown in Discord. |
+| `match.name` | string | one match | Exact program name, ignoring case. |
+| `match.regex` | string | one match | Pattern matched against the program path and command line, ignoring case. |
+| `image_url` | string | one image | URL of an image to use. |
+| `image_key` | string | one image | Key of an image uploaded to Discord. |
+| `icon_slug` | string | one image | Logo name that termp looks up automatically. |
+| `icon_source` | string | no | Logo source: `simpleicons` (default) or `lobehub`. |
+| `priority` | int | no | Higher values win when several tools match. |
+| `buttons` | array | no | Default buttons; only two reach Discord. |
 
-Pick one way to set the image. If you set more than one, termp uses `image_url`
-first, then `image_key`, then `icon_slug`.
+Choose one image setting. If several are present, termp prefers `image_url`,
+then `image_key`, then `icon_slug`.
 
-### Example
+### Example config
 
 ```toml
 enabled = true
@@ -283,9 +244,9 @@ icon_slug = "lazygit"
 icon_source = "simpleicons"
 ```
 
-## Supported Tools
+## Supported tools
 
-termp recognizes 48 tools right out of the box:
+`termp` recognizes 48 tools out of the box:
 
 | Category | Tools |
 |---|---|
@@ -300,55 +261,18 @@ termp recognizes 48 tools right out of the box:
 | Messaging & media | NeoMutt, WeeChat, Irssi, cmus, ncmpcpp, spotify-tui, spotify_player |
 | Network & utilities | gping, bandwhich, dust |
 
-Using something that's not on the list? Add it yourself with `[[custom_tools]]`.
+Need another one? Add it with `[[custom_tools]]`.
 
-## How It Works
+## How it works
 
-```text
-terminal processes
-        |
-        | process scan
-        v
-   detector  ---- active tool + cwd + other tools ----> presence writer
-        |                                                |
-        | uses                                           | Discord IPC
-        v                                                v
-   tool registry <---- config.toml ---- hot reload ---- Discord desktop app
-   (built-in + custom)                                  |
-                                                        v
-                                                   your profile
-```
+`termp start` scans the processes running on your computer, matches them against
+its built-in and custom tool list, and sends the chosen activity to the Discord
+desktop app over Discord IPC. Nothing is sent to a termp server.
 
-`termp start` runs a small background program. It looks at what's running on your
-computer, matches it against its list of tools (built-in plus any you added),
-picks one tool to spotlight, and hands the result to the Discord app on your
-computer. There's no bot, no token, and nothing leaves your machine.
-
-When several known tools are running, termp spotlights one and lists up to three
-more as `also: ...`. The spotlight stays put: it keeps showing the current tool
-unless another is busier *and* the current one has been idle for
-`headliner_idle_timeout`. To always spotlight a favorite, set `pin = "<tool-id>"`.
-
-## Privacy
-
-termp does **no tracking**. Presence information is handed only to the Discord
-app on your computer. When you run `termp status` or `termp version`, termp also
-makes an anonymous, unauthenticated request to GitHub Releases at most once every
-24 hours to check the latest version. It sends no machine or install ID, usage
-data, or config contents; its User-Agent is only `termp/<version>`.
-
-To disable the version request, set `NO_UPDATE_CHECK` (any value, including an
-empty one) or put `update_check = false` in your config. Either setting is enough.
-
-Your folder name is hidden by default. If you turn it on with
-`show_directory = true`, you can still limit which folders show with a
-`directory_allowlist`, and `directory_basename_only = true` shows only the
-folder's name instead of the full path.
-
-## Contributing
-
-Contributions are welcome. See [AGENTS.md](AGENTS.md) for how the project is built
-and how changes are proposed and reviewed.
+When several known tools are running, one takes the spotlight and up to three
+more appear as `also: ...`. A busier tool can take over after the current one has
+been idle for `headliner_idle_timeout`; set `pin = "<tool-id>"` to keep a
+favorite in the spotlight whenever it is running.
 
 ## License
 
