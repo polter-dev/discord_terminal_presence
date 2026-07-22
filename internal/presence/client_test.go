@@ -14,6 +14,18 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 )
 
+type clearDeadlineAfterPeerCloseConn struct {
+	net.Conn
+	peerClosed <-chan struct{}
+}
+
+func (c clearDeadlineAfterPeerCloseConn) SetReadDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		<-c.peerClosed
+	}
+	return c.Conn.SetReadDeadline(deadline)
+}
+
 func TestSetActivityPayloadIncludesFeaturedToolName(t *testing.T) {
 	detection := detector.Detection{
 		Featured: detector.FeaturedTool{
@@ -77,12 +89,16 @@ func TestSetActivityPayloadOmitsEmptyLargeImage(t *testing.T) {
 
 func TestSetActivitySurfacesDiscordErrorResponse(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	client := &RichClient{conn: clientConn}
+	peerClosed := make(chan struct{})
+	client := &RichClient{conn: clearDeadlineAfterPeerCloseConn{Conn: clientConn, peerClosed: peerClosed}}
 	defer client.Logout()
 
 	serverErr := make(chan error, 1)
 	go func() {
-		defer serverConn.Close()
+		defer func() {
+			serverConn.Close()
+			close(peerClosed)
+		}()
 		frame, err := readFrame(serverConn)
 		if err != nil {
 			serverErr <- err

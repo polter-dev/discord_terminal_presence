@@ -150,10 +150,13 @@ func TestConfigCommandInitAndForce(t *testing.T) {
 	if _, err := captureStdout(t, func() error { return configCommand([]string{"init", "--force"}) }); err != nil {
 		t.Fatalf("forced init: %v", err)
 	}
-	for _, args := range [][]string{nil, {"unknown"}} {
-		if err := configCommand(args); !errors.Is(err, flag.ErrHelp) {
-			t.Fatalf("configCommand(%q) error = %v, want flag.ErrHelp", args, err)
-		}
+	// Bare `config` (no action) is a help request; an unknown action is a real
+	// usage error, not flag.ErrHelp.
+	if err := configCommand(nil); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("configCommand(nil) error = %v, want flag.ErrHelp", err)
+	}
+	if err := configCommand([]string{"unknown"}); err == nil || errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("configCommand([unknown]) error = %v, want a non-help usage error", err)
 	}
 }
 

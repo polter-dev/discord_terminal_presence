@@ -243,7 +243,10 @@ func BuildLaunchAgentPlist(exe, logPath string) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-func BuildSystemdUnit(exe string) []byte {
+func BuildSystemdUnit(exe string) ([]byte, error) {
+	if strings.ContainsAny(exe, "\r\n") {
+		return nil, errors.New("systemd executable path contains a line break")
+	}
 	return []byte(fmt.Sprintf(`[Unit]
 Description=termp Discord Rich Presence daemon
 
@@ -253,10 +256,11 @@ Restart=on-failure
 
 [Install]
 WantedBy=default.target
-`, systemdEscapeExecArg(exe)))
+`, systemdEscapeExecArg(exe))), nil
 }
 
 func systemdEscapeExecArg(arg string) string {
+	arg = strings.ReplaceAll(arg, "%", "%%")
 	if arg == "" {
 		return `""`
 	}

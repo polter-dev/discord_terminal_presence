@@ -585,6 +585,57 @@ func TestParseRootVerboseFlag(t *testing.T) {
 	}
 }
 
+func TestSubcommandHelpReturnsSuccess(t *testing.T) {
+	tests := make([]struct {
+		name    string
+		command string
+		args    []string
+	}, 0, len(commandHelp)+1)
+	for _, command := range commandHelp {
+		tests = append(tests, struct {
+			name    string
+			command string
+			args    []string
+		}{name: command.name, command: command.name, args: []string{"--help"}})
+	}
+	tests = append(tests, struct {
+		name    string
+		command string
+		args    []string
+	}{name: "config init", command: "config", args: []string{"init", "--help"}})
+
+	oldStderr := os.Stderr
+	stderr, err := os.CreateTemp(t.TempDir(), "help-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = stderr
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		stderr.Close()
+	})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := dispatchCommand(tt.command, tt.args); err != nil {
+				t.Fatalf("dispatchCommand(%q, %q) = %v, want successful help", tt.command, tt.args, err)
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		command string
+		args    []string
+	}{
+		{command: "watch", args: []string{"--unknown"}},
+		{command: "config", args: []string{"unknown"}},
+	} {
+		if err := dispatchCommand(tt.command, tt.args); err == nil {
+			t.Fatalf("dispatchCommand(%q, %q) accepted invalid arguments", tt.command, tt.args)
+		}
+	}
+}
+
 func TestUsageListsEveryCommandWithDescription(t *testing.T) {
 	var buf bytes.Buffer
 	usage(&buf)

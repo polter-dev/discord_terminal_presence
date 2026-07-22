@@ -165,9 +165,7 @@ func (c *RichClient) readFrame(conn net.Conn) (ipcFrame, error) {
 	if err != nil {
 		return ipcFrame{}, err
 	}
-	if err := conn.SetReadDeadline(time.Time{}); err != nil {
-		return ipcFrame{}, fmt.Errorf("clear read deadline: %w", err)
-	}
+	_ = conn.SetReadDeadline(time.Time{})
 	return frame, nil
 }
 

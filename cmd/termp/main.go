@@ -83,6 +83,20 @@ func main() {
 	interactive := isTerminal(os.Stdin) && isTerminal(os.Stdout)
 	printCommandUpdateAlert(command, args, interactive, cfg, loadErr, os.Stderr)
 
+	err = dispatchCommand(command, args)
+	if errors.Is(err, errUnknownCommand) {
+		usage(os.Stderr)
+		os.Exit(2)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+var errUnknownCommand = errors.New("unknown command")
+
+func dispatchCommand(command string, args []string) error {
+	var err error
 	switch command {
 	case "install":
 		err = install(args)
@@ -113,12 +127,12 @@ func main() {
 	case "completion":
 		err = completion(args)
 	default:
-		usage(os.Stderr)
-		os.Exit(2)
+		return errUnknownCommand
 	}
-	if err != nil {
-		log.Fatal(err)
+	if errors.Is(err, flag.ErrHelp) && rootHelpRequested(args) {
+		return nil
 	}
+	return err
 }
 
 func usage(w io.Writer) {
@@ -200,16 +214,23 @@ func formatVersion() string {
 
 func configCommand(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: termp config init [--force]")
+		configUsage()
 		return flag.ErrHelp
 	}
 	switch args[0] {
+	case "-h", "--help":
+		configUsage()
+		return flag.ErrHelp
 	case "init":
 		return configInit(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: termp config init [--force]")
-		return flag.ErrHelp
+		configUsage()
+		return fmt.Errorf("unknown config action %q", args[0])
 	}
+}
+
+func configUsage() {
+	fmt.Fprintln(os.Stderr, "usage: termp config init [--force]")
 }
 
 func configInit(args []string) error {
