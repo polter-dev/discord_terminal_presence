@@ -12,6 +12,8 @@ import (
 )
 
 // Windows uses go-winio to dial named pipes at \\.\pipe\discord-ipc-0..9 for Discord IPC.
+// Windows pipe ACL/server-token validation is not exposed by go-winio's net.Conn;
+// the shared client I/O deadlines still prevent an unresponsive server from hanging us.
 func dialDiscordIPC() (net.Conn, error) {
 	var failures strings.Builder
 	for i := 0; i <= 9; i++ {

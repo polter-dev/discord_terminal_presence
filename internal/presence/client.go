@@ -11,12 +11,14 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 )
 
 const (
-	opcodeHandshake uint32 = 0
-	opcodeFrame     uint32 = 1
-	maxPayload             = 16 << 20
+	opcodeHandshake  uint32 = 0
+	opcodeFrame      uint32 = 1
+	maxPayload              = 16 << 20
+	defaultIOTimeout        = 5 * time.Second
 )
 
 // Client is the Discord IPC boundary. Tests should inject a fake implementation.
@@ -29,8 +31,9 @@ type Client interface {
 // RichClient sends Rich Presence activities over Discord's local IPC transport.
 // Its zero value is ready to use.
 type RichClient struct {
-	mu   sync.Mutex
-	conn net.Conn
+	mu        sync.Mutex
+	conn      net.Conn
+	ioTimeout time.Duration
 }
 
 var _ Client = (*RichClient)(nil)
@@ -64,11 +67,11 @@ func (c *RichClient) Login(appID string) error {
 		Version:  1,
 		ClientID: appID,
 	}
-	if err := writeJSONFrame(conn, opcodeHandshake, handshake); err != nil {
+	if err := c.writeFrame(conn, opcodeHandshake, handshake); err != nil {
 		return fmt.Errorf("presence: send Discord IPC handshake: %w", err)
 	}
 
-	frame, err := readFrame(conn)
+	frame, err := c.readFrame(conn)
 	if err != nil {
 		return fmt.Errorf("presence: read Discord IPC handshake: %w", err)
 	}
@@ -112,11 +115,11 @@ func (c *RichClient) SetActivity(activity Activity) error {
 		return fmt.Errorf("presence: generate SET_ACTIVITY nonce: %w", err)
 	}
 	payload := newSetActivityPayload(activity, os.Getpid(), nonce)
-	if err := writeJSONFrame(c.conn, opcodeFrame, payload); err != nil {
+	if err := c.writeFrame(c.conn, opcodeFrame, payload); err != nil {
 		return fmt.Errorf("presence: send SET_ACTIVITY: %w", err)
 	}
 
-	frame, err := readFrame(c.conn)
+	frame, err := c.readFrame(c.conn)
 	if err != nil {
 		return fmt.Errorf("presence: read SET_ACTIVITY response: %w", err)
 	}
@@ -132,6 +135,40 @@ func (c *RichClient) SetActivity(activity Activity) error {
 	}
 	successful = true
 	return nil
+}
+
+func (c *RichClient) timeout() time.Duration {
+	if c.ioTimeout > 0 {
+		return c.ioTimeout
+	}
+	return defaultIOTimeout
+}
+
+func (c *RichClient) writeFrame(conn net.Conn, opcode uint32, value any) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(c.timeout())); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
+	}
+	if err := writeJSONFrame(conn, opcode, value); err != nil {
+		return err
+	}
+	if err := conn.SetWriteDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear write deadline: %w", err)
+	}
+	return nil
+}
+
+func (c *RichClient) readFrame(conn net.Conn) (ipcFrame, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(c.timeout())); err != nil {
+		return ipcFrame{}, fmt.Errorf("set read deadline: %w", err)
+	}
+	frame, err := readFrame(conn)
+	if err != nil {
+		return ipcFrame{}, err
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return ipcFrame{}, fmt.Errorf("clear read deadline: %w", err)
+	}
+	return frame, nil
 }
 
 // Logout closes the Discord IPC connection. It is safe when not connected.
