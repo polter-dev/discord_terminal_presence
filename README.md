@@ -148,7 +148,9 @@ Your config lives at `~/.config/termp/config.toml`, or at
 `$XDG_CONFIG_HOME/termp/config.toml` when `XDG_CONFIG_HOME` is set. `termp`
 creates the directory when it starts and reloads changes automatically. If an
 edit is invalid, it keeps the last good config; unknown settings appear as
-warnings in `termp status`.
+warnings in `termp status`. When several valid saves happen before the daemon
+handles a reload notification, they are coalesced so the newest config is
+applied.
 
 Presence and display settings hot-reload without restarting the daemon. This
 includes `scan_interval`, `idle_clear_timeout`, `pin`,
