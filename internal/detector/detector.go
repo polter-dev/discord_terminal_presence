@@ -104,6 +104,13 @@ type Detector struct {
 	lister            ProcessLister
 	config            Config
 	presenceStatePath string
+	reconfigure       chan reconfigureRequest
+}
+
+type reconfigureRequest struct {
+	registry *registry.Registry
+	config   Config
+	done     chan struct{}
 }
 
 // New creates a detector with explicit dependencies.
@@ -114,6 +121,42 @@ func New(reg *registry.Registry, lister ProcessLister, config Config) (*Detector
 	if lister == nil {
 		return nil, errors.New("detector: process lister is required")
 	}
+	config = normalizeConfig(config)
+	return &Detector{
+		registry:          reg,
+		lister:            lister,
+		config:            config,
+		presenceStatePath: EpisodeStatePath(),
+		reconfigure:       make(chan reconfigureRequest),
+	}, nil
+}
+
+// Reconfigure applies a new registry and detector config to a running detector.
+// Selector history and presence episodes are preserved; the next scan is
+// immediate and is emitted even when the selected tool IDs did not change.
+func (d *Detector) Reconfigure(ctx context.Context, reg *registry.Registry, config Config) error {
+	if reg == nil {
+		return errors.New("detector: registry is required")
+	}
+	request := reconfigureRequest{
+		registry: reg,
+		config:   normalizeConfig(config),
+		done:     make(chan struct{}),
+	}
+	select {
+	case d.reconfigure <- request:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-request.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func normalizeConfig(config Config) Config {
 	if config.ScanInterval <= 0 {
 		config.ScanInterval = DefaultScanInterval
 	}
@@ -126,7 +169,7 @@ func New(reg *registry.Registry, lister ProcessLister, config Config) (*Detector
 	if config.HeadlinerIdleTimeout <= 0 {
 		config.HeadlinerIdleTimeout = DefaultHeadlinerIdleTimeout
 	}
-	return &Detector{registry: reg, lister: lister, config: config, presenceStatePath: EpisodeStatePath()}, nil
+	return config
 }
 
 // Run starts one goroutine that scans until ctx is cancelled.
@@ -188,16 +231,21 @@ type Selector struct {
 
 // NewSelector creates a stateful selector for repeated snapshots.
 func NewSelector(reg *registry.Registry, config Config, clock Clock) *Selector {
-	if !config.ActivitySwitching && config.Pin == "" && config.HeadlinerIdleTimeout <= 0 {
-		config.ActivitySwitching = true
-	}
-	if config.HeadlinerIdleTimeout <= 0 {
-		config.HeadlinerIdleTimeout = DefaultHeadlinerIdleTimeout
-	}
+	config = normalizeConfig(config)
 	if clock == nil {
 		clock = systemClock{}
 	}
 	return newSelectorWithEpisodes(reg, config, clock, NewEpisodeStore(), nil)
+}
+
+// Reconfigure changes matching and selection settings without discarding
+// headliner hysteresis, CPU history, idle timers, or presence episodes.
+func (s *Selector) Reconfigure(reg *registry.Registry, config Config) {
+	if reg == nil {
+		return
+	}
+	s.registry = reg
+	s.config = normalizeConfig(config)
 }
 
 func newSelectorWithEpisodes(reg *registry.Registry, config Config, clock Clock, episodes *EpisodeStore, save func(*EpisodeStore)) *Selector {
@@ -442,7 +490,7 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 	selector := newSelectorWithEpisodes(d.registry, d.config, systemClock{}, episodes, saveEpisodes)
 	defer saveEpisodes(episodes)
 
-	scan := func() bool {
+	scan := func(forceEmit bool) bool {
 		processes, err := listProcesses(d.lister)
 		if err != nil {
 			return true
@@ -457,10 +505,10 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 			streak++
 		}
 
-		if streak < d.config.DebounceCycles {
+		if !forceEmit && streak < d.config.DebounceCycles {
 			return true
 		}
-		if hasEmitted && sameDetection(candidate, emitted) {
+		if !forceEmit && hasEmitted && sameDetection(candidate, emitted) {
 			return true
 		}
 
@@ -474,7 +522,7 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 		}
 	}
 
-	if !scan() {
+	if !scan(false) {
 		return
 	}
 
@@ -484,7 +532,23 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 	for {
 		select {
 		case <-ticker.C:
-			if !scan() {
+			if !scan(false) {
+				return
+			}
+		case request := <-d.reconfigure:
+			intervalChanged := request.config.ScanInterval != d.config.ScanInterval
+			d.registry = request.registry
+			d.config = request.config
+			selector.Reconfigure(request.registry, request.config)
+			if intervalChanged {
+				ticker.Reset(request.config.ScanInterval)
+			}
+			// Registry metadata and selection settings can change the rendered
+			// activity even when the selected IDs stay the same.
+			hasEmitted = false
+			candidateSet = false
+			close(request.done)
+			if !scan(true) {
 				return
 			}
 		case <-ctx.Done():

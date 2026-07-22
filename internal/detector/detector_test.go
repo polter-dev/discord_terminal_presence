@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +15,15 @@ import (
 type fakeLister struct {
 	snapshots [][]Process
 	index     int
+}
+
+type countingLister struct {
+	calls atomic.Int32
+}
+
+func (l *countingLister) List() ([]Process, error) {
+	l.calls.Add(1)
+	return []Process{{Name: "bash"}}, nil
 }
 
 func (f *fakeLister) List() ([]Process, error) {
@@ -971,5 +981,120 @@ func TestRunEmitsDebouncedSequenceAndClosesOnCancel(t *testing.T) {
 	}
 	if !got[2].None {
 		t.Fatalf("third detection = %#v, want none", got[2])
+	}
+}
+
+func TestReconfigureResetsTickerCadence(t *testing.T) {
+	lister := &countingLister{}
+	det, err := New(testRegistry(t), lister, Config{
+		ScanInterval:   time.Hour,
+		DebounceCycles: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	det.presenceStatePath = filepath.Join(t.TempDir(), "presence.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := det.Run(ctx)
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial scan")
+	}
+
+	if err := det.Reconfigure(ctx, testRegistry(t), Config{
+		ScanInterval:   5 * time.Millisecond,
+		DebounceCycles: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for lister.calls.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := lister.calls.Load(); got < 3 {
+		t.Fatalf("scan calls = %d, want immediate reload scan plus reset ticker scan", got)
+	}
+
+	cancel()
+	for range ch {
+	}
+}
+
+func TestReconfigureAppliesPinOnImmediateScan(t *testing.T) {
+	base := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	lister := &fakeLister{snapshots: [][]Process{{
+		{Pid: 1, Name: "claude", CreateTime: base},
+		{Pid: 2, Name: "codex", CreateTime: base.Add(time.Minute)},
+	}}}
+	reg := testRegistry(t)
+	det, err := New(reg, lister, Config{
+		ScanInterval:      time.Hour,
+		DebounceCycles:    1,
+		ActivitySwitching: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	det.presenceStatePath = filepath.Join(t.TempDir(), "presence.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := det.Run(ctx)
+	select {
+	case initial := <-ch:
+		if initial.None || initial.Tool.ID != "codex-cli" {
+			t.Fatalf("initial selection = %#v, want codex-cli", initial)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial scan")
+	}
+
+	if err := det.Reconfigure(ctx, reg, Config{
+		ScanInterval:      time.Hour,
+		DebounceCycles:    1,
+		Pin:               "claude-code",
+		ActivitySwitching: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case reloaded := <-ch:
+		if reloaded.None || reloaded.Tool.ID != "claude-code" {
+			t.Fatalf("reloaded selection = %#v, want claude-code", reloaded)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pin reload waited for the old ticker")
+	}
+
+	cancel()
+	for range ch {
+	}
+}
+
+func TestSelectorReconfigurePreservesEpisodeAnchor(t *testing.T) {
+	base := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	reg := testRegistry(t)
+	selector := NewSelector(reg, Config{
+		IdleClearTimeout:  20 * time.Minute,
+		ActivitySwitching: true,
+	}, clock)
+	process := Process{Pid: 42, Name: "claude", CreateTime: base.Add(-time.Hour)}
+	first := selector.Select([]Process{process})
+	if first.None {
+		t.Fatal("initial selection was none")
+	}
+
+	clock.Advance(5 * time.Minute)
+	selector.Reconfigure(reg, Config{
+		Pin:                  "claude-code",
+		IdleClearTimeout:     10 * time.Minute,
+		ActivitySwitching:    false,
+		HeadlinerIdleTimeout: 30 * time.Second,
+	})
+	next := selector.Select([]Process{process})
+	if next.None || !next.StartedAt.Equal(first.StartedAt) {
+		t.Fatalf("episode anchor after reload = %s, want %s", next.StartedAt, first.StartedAt)
 	}
 }

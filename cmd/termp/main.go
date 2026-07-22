@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -391,17 +392,11 @@ func start(args []string) error {
 
 func run(ctx context.Context, manager *config.Manager) error {
 	cfg, _ := manager.Current()
-	reg, err := registry.NewWithCustom(cfg.CustomTools...)
+	applied, err := newDetectionRuntime(cfg)
 	if err != nil {
 		return err
 	}
-	det, err := detector.New(reg, detector.GopsutilLister{}, detector.Config{
-		ScanInterval:         cfg.ScanIntervalDuration(),
-		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
-		Pin:                  cfg.Pin,
-		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
-		ActivitySwitching:    cfg.ActivitySwitching,
-	})
+	det, err := detector.New(applied.registry, detector.GopsutilLister{}, applied.detectorConfig)
 	if err != nil {
 		return err
 	}
@@ -437,9 +432,9 @@ func run(ctx context.Context, manager *config.Manager) error {
 		lastUsageSave = now
 	}
 
-	// Translate detector events into config-resolved activities. A config reload
-	// re-applies the current detection so toggles take effect without waiting for
-	// the active tool to change.
+	// Translate detector events into config-resolved activities. Display-only
+	// reloads re-apply the current detection immediately; detector reloads scan
+	// again with the new matching and selection settings.
 	activities := make(chan *presence.Activity)
 	go func() {
 		defer close(activities)
@@ -462,7 +457,6 @@ func run(ctx context.Context, manager *config.Manager) error {
 					return
 				}
 				last, haveLast = detection, true
-				cfg, _ := manager.Current()
 				if detection.None {
 					debugf("scan result: none")
 				} else {
@@ -470,14 +464,27 @@ func run(ctx context.Context, manager *config.Manager) error {
 					recordUsage(usageStore, detection, time.Now())
 					saveUsage(false)
 				}
-				if !send(buildActivity(cfg, detection)) {
+				if !send(buildActivity(applied.config, detection)) {
 					return
 				}
-			case <-manager.Changes():
+			case nextCfg := <-manager.Changes():
+				next, change, err := applyConfigChange(applied, nextCfg)
+				if err != nil {
+					log.Printf("config reload rejected, keeping last-good behavior: %v", err)
+					continue
+				}
+				if change.detector {
+					if err := det.Reconfigure(ctx, next.registry, next.detectorConfig); err != nil {
+						if ctx.Err() == nil {
+							log.Printf("config reload rejected, keeping last-good behavior: %v", err)
+						}
+						continue
+					}
+				}
+				applied = next
 				debugf("config reloaded")
-				if haveLast {
-					cfg, _ := manager.Current()
-					if !send(buildActivity(cfg, last)) {
+				if haveLast && !change.detector {
+					if !send(buildActivity(applied.config, last)) {
 						return
 					}
 				}
@@ -490,6 +497,63 @@ func run(ctx context.Context, manager *config.Manager) error {
 	writer.RunActivities(ctx, activities)
 	saveUsage(true)
 	return nil
+}
+
+type detectionRuntime struct {
+	config         config.Config
+	registry       *registry.Registry
+	detectorConfig detector.Config
+}
+
+type configChange struct {
+	detector bool
+	timing   bool
+	registry bool
+}
+
+func newDetectionRuntime(cfg config.Config) (detectionRuntime, error) {
+	reg, err := registry.NewWithCustom(cfg.CustomTools...)
+	if err != nil {
+		return detectionRuntime{}, err
+	}
+	return detectionRuntime{
+		config:         cfg,
+		registry:       reg,
+		detectorConfig: detectorConfig(cfg),
+	}, nil
+}
+
+// applyConfigChange prepares a reload transaction without mutating the current
+// runtime. A registry compile failure therefore leaves all last-good behavior
+// intact. Display/privacy-only changes reuse the existing detector and registry.
+func applyConfigChange(current detectionRuntime, nextCfg config.Config) (detectionRuntime, configChange, error) {
+	change := configChange{}
+	next := detectionRuntime{
+		config:         nextCfg,
+		registry:       current.registry,
+		detectorConfig: detectorConfig(nextCfg),
+	}
+	change.registry = !reflect.DeepEqual(current.config.CustomTools, nextCfg.CustomTools)
+	if change.registry {
+		reg, err := registry.NewWithCustom(nextCfg.CustomTools...)
+		if err != nil {
+			return current, configChange{}, err
+		}
+		next.registry = reg
+	}
+	change.timing = current.detectorConfig.ScanInterval != next.detectorConfig.ScanInterval
+	change.detector = change.registry || current.detectorConfig != next.detectorConfig
+	return next, change, nil
+}
+
+func detectorConfig(cfg config.Config) detector.Config {
+	return detector.Config{
+		ScanInterval:         cfg.ScanIntervalDuration(),
+		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
+		Pin:                  cfg.Pin,
+		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
+		ActivitySwitching:    cfg.ActivitySwitching,
+	}
 }
 
 func recordUsage(store *usagepkg.Store, detection detector.Detection, now time.Time) {
