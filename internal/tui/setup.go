@@ -52,7 +52,10 @@ func NewSetupModel(save SetupSaveFunc, install SetupInstallFunc, exe SetupExeFun
 		choices: []setupChoice{
 			{
 				label: "Start termp automatically at login? (recommended)",
-				value: true,
+				value: cfg.StartAtLogin,
+				apply: func(c *config.Config, v bool) {
+					c.StartAtLogin = v
+				},
 			},
 			{
 				label: "Show your working directory on Discord?",

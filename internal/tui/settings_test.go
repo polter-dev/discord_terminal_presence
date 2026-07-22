@@ -582,6 +582,80 @@ func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 	}
 }
 
+func TestSetupModelApplyPersistsEveryToggleCombination(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		startAtLogin  bool
+		showDirectory bool
+	}{
+		{name: "on_on", startAtLogin: true, showDirectory: true},
+		{name: "off_off", startAtLogin: false, showDirectory: false},
+		{name: "on_off", startAtLogin: true, showDirectory: false},
+		{name: "off_on", startAtLogin: false, showDirectory: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var saved config.Config
+			saveCalls := 0
+			model := NewSetupModel(func(cfg config.Config) (string, error) {
+				saveCalls++
+				saved = cfg
+				return "/tmp/config.toml", nil
+			}, func(string) error { return nil }, func() (string, error) { return "/usr/local/bin/termp", nil })
+
+			updated, _ := model.Update(key("enter"))
+			model = updated.(SetupModel)
+			if model.choices[0].value != tt.startAtLogin {
+				updated, _ = model.Update(key(" "))
+				model = updated.(SetupModel)
+			}
+			updated, _ = model.Update(key("down"))
+			model = updated.(SetupModel)
+			if model.choices[1].value != tt.showDirectory {
+				updated, _ = model.Update(key(" "))
+				model = updated.(SetupModel)
+			}
+			updated, _ = model.Update(key("enter"))
+			model = updated.(SetupModel)
+			updated, _ = model.Update(key("enter"))
+			model = updated.(SetupModel)
+
+			if saveCalls != 1 {
+				t.Fatalf("save calls = %d, want 1", saveCalls)
+			}
+			if saved.StartAtLogin != tt.startAtLogin || saved.Privacy.ShowDirectory != tt.showDirectory {
+				t.Fatalf("saved toggles = start_at_login:%t show_directory:%t, want start_at_login:%t show_directory:%t",
+					saved.StartAtLogin, saved.Privacy.ShowDirectory, tt.startAtLogin, tt.showDirectory)
+			}
+		})
+	}
+}
+
+func TestSetupModelQuitDoesNotSave(t *testing.T) {
+	for _, quitKey := range []string{"q", "esc", "ctrl+c"} {
+		t.Run(quitKey, func(t *testing.T) {
+			saveCalls := 0
+			model := NewSetupModel(func(config.Config) (string, error) {
+				saveCalls++
+				return "/tmp/config.toml", nil
+			}, nil, nil)
+
+			updated, _ := model.Update(key("enter"))
+			model = updated.(SetupModel)
+			updated, _ = model.Update(key(" "))
+			model = updated.(SetupModel)
+			updated, _ = model.Update(key(quitKey))
+			model = updated.(SetupModel)
+
+			if saveCalls != 0 {
+				t.Fatalf("save calls = %d, want 0", saveCalls)
+			}
+			if model.Applied() {
+				t.Fatal("quit should not apply setup")
+			}
+		})
+	}
+}
+
 func TestSetupModelViewsRenderTableButtonsAndFitTerminal(t *testing.T) {
 	type viewCase struct {
 		name string
