@@ -547,6 +547,7 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 		row.set(&m.cfg, !row.get(m.cfg))
 	case rowText:
 		m.editing = column.cursor
+		m.input.Placeholder = ""
 		m.input.SetValue(row.text(m.cfg))
 		m.input.CursorEnd()
 		m.input.Focus()
@@ -584,6 +585,8 @@ func (m *Model) openColumn(kind columnKind, title string, rows []row) {
 	cursor := 0
 	column := settingsColumn{kind: kind, title: title, rows: rows, cursor: cursor}
 	if kind == columnChoices {
+		m.input.Placeholder = "type to search tools…"
+		m.input.PlaceholderStyle = m.styles.muted
 		m.input.SetValue("")
 		m.input.CursorEnd()
 		m.input.Focus()
