@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -111,6 +112,30 @@ type Result struct {
 	Command string
 }
 
+// Command describes an update process without requiring callers to parse a
+// shell command string. Shell is used only for the generic curl pipeline.
+type Command struct {
+	Name string
+	Args []string
+}
+
+// CommandRunner runs an update process with the caller's standard streams.
+// It is injectable so automatic updates can reuse PerformUpdate safely.
+type CommandRunner interface {
+	Run(context.Context, Command, io.Reader, io.Writer, io.Writer) error
+}
+
+// ExecRunner executes update commands on the local machine.
+type ExecRunner struct{}
+
+func (ExecRunner) Run(ctx context.Context, command Command, stdin io.Reader, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
 // Checker limits release lookups to one per process and one per cacheLifetime.
 // Errors intentionally collapse to "no update" so callers can fail silently.
 type Checker struct {
@@ -163,6 +188,56 @@ func (c *Checker) Check(ctx context.Context, current string, configEnabled bool)
 		c.result, c.available = c.check(ctx, current)
 	})
 	return c.result, c.available
+}
+
+// CachedCheck reports an update using only a fresh cache entry. It never calls
+// the release source, making it suitable for latency-sensitive command alerts.
+func (c *Checker) CachedCheck(current string, configEnabled bool) (Result, bool) {
+	if !configEnabled || updateCheckDisabledByEnv() || isDevVersion(current) {
+		return Result{}, false
+	}
+	if _, ok := parseVersion(current); !ok {
+		return Result{}, false
+	}
+	now := time.Now()
+	if c.Now != nil {
+		now = c.Now()
+	}
+	cached, ok := readFreshCache(c.CachePath, now)
+	if !ok || cached.Latest == "" {
+		return Result{}, false
+	}
+	return c.resultFor(current, cached.Latest)
+}
+
+// Latest fetches the latest release and returns errors to an explicit caller.
+// Successful results refresh the same cache used by passive checks and alerts.
+func (c *Checker) Latest(ctx context.Context, current string) (Result, error) {
+	if _, ok := parseVersion(current); !ok {
+		return Result{}, fmt.Errorf("cannot update unversioned build %q", current)
+	}
+	latest, err := c.Source.Latest(ctx, current)
+	if err != nil {
+		return Result{}, fmt.Errorf("check latest release: %w", err)
+	}
+	if _, ok := parseVersion(latest); !ok {
+		return Result{}, fmt.Errorf("latest release has invalid version %q", latest)
+	}
+	now := time.Now()
+	if c.Now != nil {
+		now = c.Now()
+	}
+	_ = writeCache(c.CachePath, cacheEntry{CheckedAt: now, Latest: latest})
+	method := InstallGeneric
+	if c.DetectInstall != nil {
+		method = c.DetectInstall()
+	}
+	return Result{
+		Current: current,
+		Latest:  latest,
+		Method:  method,
+		Command: CommandForMethod(method),
+	}, nil
 }
 
 func (c *Checker) check(ctx context.Context, current string) (Result, bool) {
@@ -319,6 +394,33 @@ func CommandForMethod(method InstallMethod) string {
 	default:
 		return GenericCommand
 	}
+}
+
+// UpdateCommandForMethod centralizes executable construction for updates.
+// The generic command retains the existing installer pipeline trust model;
+// issue #84 will harden that path separately.
+func UpdateCommandForMethod(method InstallMethod) Command {
+	switch method {
+	case InstallHomebrew:
+		return Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}
+	case InstallGo:
+		return Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"}}
+	default:
+		return Command{Name: "sh", Args: []string{"-c", GenericCommand}}
+	}
+}
+
+// PerformUpdate executes the install-aware updater with streamed I/O. It is
+// intentionally separate from release checking for reuse by opt-in automation.
+func PerformUpdate(ctx context.Context, method InstallMethod, runner CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {
+	if runner == nil {
+		runner = ExecRunner{}
+	}
+	command := UpdateCommandForMethod(method)
+	if err := runner.Run(ctx, command, stdin, stdout, stderr); err != nil {
+		return fmt.Errorf("run %s: %w", CommandForMethod(method), err)
+	}
+	return nil
 }
 
 // DetectInstallMethod resolves the running executable before examining its

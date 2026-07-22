@@ -48,6 +48,7 @@ var commandHelp = []struct {
 	{"settings", "open the interactive settings TUI"},
 	{"watch", "preview the live Discord card (--once prints one snapshot)"},
 	{"version", "print version and build information"},
+	{"update", "update termp using its detected install method"},
 	{"setup", "run the interactive first-run configuration wizard"},
 	{"config", "manage configuration non-interactively"},
 	{"completion", "generate a shell completion script"},
@@ -77,6 +78,10 @@ func main() {
 		return
 	}
 
+	cfg, loadErr := config.Load()
+	interactive := isTerminal(os.Stdin) && isTerminal(os.Stdout)
+	printCommandUpdateAlert(command, args, interactive, cfg, loadErr, os.Stderr)
+
 	switch command {
 	case "install":
 		err = install(args)
@@ -98,6 +103,8 @@ func main() {
 		err = watch(args)
 	case "version":
 		err = versionCommand(args)
+	case "update":
+		err = updateCommand(args)
 	case "setup":
 		err = setup(args)
 	case "config":
@@ -278,7 +285,7 @@ func completion(args []string) error {
 }
 
 func completionScript(shell string) (string, error) {
-	commands := "start stop status install uninstall disable enable settings watch version setup config completion"
+	commands := "start stop status install uninstall disable enable settings watch version update setup config completion"
 	switch shell {
 	case "bash":
 		return `_termp_complete() {
