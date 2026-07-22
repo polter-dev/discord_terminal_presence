@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,12 +159,16 @@ func TestBuildLaunchAgentPlist(t *testing.T) {
 }
 
 func TestBuildSystemdUnit(t *testing.T) {
-	text := string(BuildSystemdUnit("/opt/Term Presence/termp"))
+	unit, err := BuildSystemdUnit("/opt/%u Term Presence/termp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(unit)
 	for _, want := range []string{
 		"[Unit]",
 		"Description=termp Discord Rich Presence daemon",
 		"[Service]",
-		`ExecStart="/opt/Term Presence/termp" start`,
+		`ExecStart="/opt/%%u Term Presence/termp" start`,
 		"Restart=on-failure",
 		"[Install]",
 		"WantedBy=default.target",
@@ -171,6 +176,16 @@ func TestBuildSystemdUnit(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("unit missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestBuildSystemdUnitRejectsLineBreaks(t *testing.T) {
+	for _, lineBreak := range []string{"\r", "\n"} {
+		t.Run(fmt.Sprintf("%q", lineBreak), func(t *testing.T) {
+			if _, err := BuildSystemdUnit("/opt/termp" + lineBreak + "injected"); err == nil {
+				t.Fatalf("BuildSystemdUnit accepted executable path containing %q", lineBreak)
+			}
+		})
 	}
 }
 

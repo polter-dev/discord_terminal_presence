@@ -19,7 +19,11 @@ func (s linuxService) Install(exe string) (State, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return State{Supported: true, Path: path}, err
 	}
-	if err := os.WriteFile(path, BuildSystemdUnit(exe), 0o644); err != nil {
+	unit, err := BuildSystemdUnit(exe)
+	if err != nil {
+		return State{Supported: true, Path: path}, err
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		return State{Supported: true, Path: path}, err
 	}
 	if out, err := s.runner.Run("systemctl", "--user", "daemon-reload"); err != nil {
