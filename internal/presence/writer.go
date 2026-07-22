@@ -16,7 +16,10 @@ var defaultRetryDelays = []time.Duration{
 	30 * time.Second,
 }
 
-const defaultMinWriteInterval = 15 * time.Second
+const (
+	defaultMinWriteInterval = 15 * time.Second
+	defaultReapplyInterval  = 15 * time.Second
+)
 
 // Writer consumes activities and owns all Discord IPC client calls.
 type Writer struct {
@@ -26,6 +29,7 @@ type Writer struct {
 	options          DisplayOptions
 	retryDelay       retryDelay
 	minWriteInterval time.Duration
+	reapplyInterval  time.Duration
 	clock            writeClock
 	debugf           func(string, ...any)
 }
@@ -71,6 +75,12 @@ func withWriteClock(clock writeClock) WriterOption {
 	}
 }
 
+func withReapplyInterval(interval time.Duration) WriterOption {
+	return func(writer *Writer) {
+		writer.reapplyInterval = interval
+	}
+}
+
 // NewWriter creates a presence writer. An empty appID uses DefaultAppID.
 func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, error) {
 	if client == nil {
@@ -86,6 +96,7 @@ func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, e
 		options:          DefaultDisplayOptions(),
 		retryDelay:       newRetryDelay(defaultRetryDelays),
 		minWriteInterval: defaultMinWriteInterval,
+		reapplyInterval:  defaultReapplyInterval,
 		clock:            realWriteClock{},
 		debugf:           func(string, ...any) {},
 	}
@@ -138,6 +149,8 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		retryC    <-chan time.Time
 		write     writeTimer
 		writeC    <-chan time.Time
+		reapply   writeTimer
+		reapplyC  <-chan time.Time
 		lastWrite time.Time
 		wrote     bool
 		pending   bool
@@ -152,8 +165,27 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		retryC = nil
 	}
 
+	stopReapply := func() {
+		if reapply == nil {
+			return
+		}
+		reapply.Stop()
+		reapply = nil
+		reapplyC = nil
+	}
+
+	scheduleReapply := func() {
+		stopReapply()
+		if w.reapplyInterval <= 0 || desired == nil {
+			return
+		}
+		reapply = w.clock.NewTimer(w.reapplyInterval)
+		reapplyC = reapply.C()
+	}
+
 	scheduleRetry := func() {
 		stopRetry()
+		stopReapply()
 		delay := w.retryDelay.Next()
 		w.debugf("presence reconnect scheduled in %s", delay)
 		retry = w.clock.NewTimer(delay)
@@ -181,6 +213,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		pending = false
 		stopWrite()
 		stopRetry()
+		stopReapply()
 		w.retryDelay.Reset()
 		if connected {
 			_ = w.client.Logout()
@@ -203,7 +236,10 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		}
 		if err := w.client.SetActivity(*desired); err != nil {
 			w.debugf("presence push failed: %v", err)
-			connected = false
+			if connected {
+				_ = w.client.Logout()
+				connected = false
+			}
 			scheduleRetry()
 			return
 		}
@@ -214,6 +250,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		stopWrite()
 		stopRetry()
 		w.retryDelay.Reset()
+		scheduleReapply()
 	}
 
 	requestApply := func() {
@@ -236,6 +273,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 	defer func() {
 		stopRetry()
 		stopWrite()
+		stopReapply()
 		if connected {
 			_ = w.client.Logout()
 		}
@@ -263,6 +301,10 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 			if pending {
 				applyDesired()
 			}
+		case <-reapplyC:
+			reapply = nil
+			reapplyC = nil
+			applyDesired()
 		case <-ctx.Done():
 			return
 		}
