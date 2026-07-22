@@ -369,6 +369,86 @@ func TestDarwinStatusMapsLaunchctlErrors(t *testing.T) {
 	}
 }
 
+func TestDarwinUninstallKeepsPlistOnUnloadFailure(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootout := "launchctl bootout gui/" + userID() + " " + path
+	unload := "launchctl unload -w " + path
+	runner := &recordingRunner{
+		fail: map[string]error{
+			bootout: errors.New("exit status 1"),
+			unload:  errors.New("exit status 1"),
+		},
+		out: map[string]string{
+			bootout: "Boot-out failed: Operation not permitted\n",
+			unload:  "Unload failed: Operation not permitted\n",
+		},
+	}
+
+	state, err := (Manager{GOOS: "darwin", Runner: runner}).Uninstall()
+	if err == nil || !strings.Contains(err.Error(), "Operation not permitted") {
+		t.Fatalf("Uninstall() error = %v, want permission failure", err)
+	}
+	if !state.Installed || state.Path != path {
+		t.Fatalf("Uninstall() state = %+v, want installed definition at %q", state, path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("plist removed after unload failure: %v", err)
+	}
+}
+
+func TestDarwinUninstallRemovesPlistWhenAlreadyUnloaded(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootout := "launchctl bootout gui/" + userID() + " " + path
+	runner := &recordingRunner{
+		fail: map[string]error{bootout: errors.New("exit status 3")},
+		out:  map[string]string{bootout: "Boot-out failed: 3: No such process\n"},
+	}
+
+	state, err := (Manager{GOOS: "darwin", Runner: runner}).Uninstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Installed {
+		t.Fatalf("Uninstall() state = %+v, want not installed", state)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("plist still exists after benign unload failure: %v", err)
+	}
+	if hasCall(runner.calls, "launchctl unload -w "+path) {
+		t.Fatalf("legacy unload called after bootout proved service absent: %#v", runner.calls)
+	}
+}
+
+func TestDarwinUninstallAbsentIsNoOp(t *testing.T) {
+	fakeHome(t)
+	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
+
+	state, err := (Manager{GOOS: "darwin", Runner: runner}).Uninstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Installed {
+		t.Fatalf("Uninstall() state = %+v, want not installed", state)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("Uninstall() calls = %#v, want no launchctl calls", runner.calls)
+	}
+}
+
 func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 	home := fakeHome(t)
 	runner := &recordingRunner{
@@ -648,6 +728,116 @@ func TestLinuxUninstallIsIdempotent(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unit still exists: %v", err)
+	}
+}
+
+func TestLinuxUninstallKeepsUnitOnDisableFailure(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	disable := "systemctl --user disable --now " + ServiceName
+	runner := &recordingRunner{
+		fail: map[string]error{disable: errors.New("exit status 1")},
+		out:  map[string]string{disable: "Failed to connect to bus: No such process\n"},
+	}
+
+	state, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall()
+	if err == nil || !strings.Contains(err.Error(), "Failed to connect to bus") {
+		t.Fatalf("Uninstall() error = %v, want bus failure", err)
+	}
+	if !state.Installed || state.Path != path {
+		t.Fatalf("Uninstall() state = %+v, want installed definition at %q", state, path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("unit removed after disable failure: %v", err)
+	}
+	if hasCall(runner.calls, "systemctl --user daemon-reload") {
+		t.Fatalf("daemon-reload called after disable failure: %#v", runner.calls)
+	}
+}
+
+func TestLinuxUninstallRemovesUnitWhenAlreadyDisabled(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	disable := "systemctl --user disable --now " + ServiceName
+	runner := &recordingRunner{
+		fail: map[string]error{disable: errors.New("exit status 1")},
+		out:  map[string]string{disable: "Failed to disable unit: Unit file " + ServiceName + " does not exist.\n"},
+	}
+
+	state, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Installed {
+		t.Fatalf("Uninstall() state = %+v, want not installed", state)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unit still exists after benign disable failure: %v", err)
+	}
+	if !hasCall(runner.calls, "systemctl --user daemon-reload") {
+		t.Fatalf("Uninstall() calls = %#v, want daemon-reload", runner.calls)
+	}
+}
+
+func TestLinuxUninstallReportsDaemonReloadFailure(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reload := "systemctl --user daemon-reload"
+	runner := &recordingRunner{
+		fail: map[string]error{reload: errors.New("exit status 1")},
+		out:  map[string]string{reload: "Failed to connect to bus: Permission denied\n"},
+	}
+
+	_, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall()
+	if err == nil {
+		t.Fatal("Uninstall() error = nil, want daemon-reload failure")
+	}
+	for _, want := range []string{"daemon-reload", "Permission denied", "retry"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Uninstall() error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestLinuxUninstallAbsentIsNoOp(t *testing.T) {
+	fakeHome(t)
+	disable := "systemctl --user disable --now " + ServiceName
+	reload := "systemctl --user daemon-reload"
+	runner := &recordingRunner{
+		fail: map[string]error{
+			disable: errors.New("must not run"),
+			reload:  errors.New("must not run"),
+		},
+		out: map[string]string{},
+	}
+
+	state, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Installed {
+		t.Fatalf("Uninstall() state = %+v, want not installed", state)
+	}
+	if hasCall(runner.calls, disable) || hasCall(runner.calls, reload) {
+		t.Fatalf("Uninstall() calls = %#v, want no disable or reload", runner.calls)
 	}
 }
 

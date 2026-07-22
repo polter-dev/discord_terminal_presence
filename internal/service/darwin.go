@@ -45,7 +45,14 @@ func (s darwinService) Uninstall() (State, error) {
 	if err != nil {
 		return State{Supported: true}, err
 	}
-	_ = s.unload(path)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return s.Status(), nil
+	} else if err != nil {
+		return State{Supported: true, Path: path}, err
+	}
+	if err := s.unload(path); err != nil {
+		return State{Supported: true, Installed: true, Path: path}, fmt.Errorf("%w; service definition kept at %s so uninstall can be retried", err, path)
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return State{Supported: true, Path: path}, err
 	}
@@ -125,8 +132,8 @@ func (s darwinService) load(path string) error {
 
 func (s darwinService) unload(path string) error {
 	domain := "gui/" + currentUID()
-	if out, err := s.runner.Run("launchctl", "bootout", domain, path); err == nil {
-		_ = out
+	bootoutOut, bootoutErr := s.runner.Run("launchctl", "bootout", domain, path)
+	if bootoutErr == nil || isBenignLaunchctlUnloadError(bootoutOut) {
 		return nil
 	}
 	out, err := s.runner.Run("launchctl", "unload", "-w", path)
@@ -134,7 +141,13 @@ func (s darwinService) unload(path string) error {
 		if isBenignLaunchctlUnloadError(out) {
 			return nil
 		}
-		return fmt.Errorf("launchctl unload failed: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf(
+			"launchctl bootout failed: %v: %s; launchctl unload failed: %w: %s",
+			bootoutErr,
+			strings.TrimSpace(string(bootoutOut)),
+			err,
+			strings.TrimSpace(string(out)),
+		)
 	}
 	return nil
 }
