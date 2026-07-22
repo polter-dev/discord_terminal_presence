@@ -166,6 +166,45 @@ func TestCustomToolOverridesBuiltInByID(t *testing.T) {
 	}
 }
 
+func TestToolsReturnsDeepPublicCopies(t *testing.T) {
+	reg, err := New(Tool{
+		ID:          "copy-test",
+		DisplayName: "Copy Test",
+		Match:       MatchSpec{Regex: `copy-test`},
+		Exclude:     `--helper`,
+		ImageKey:    "copy-test",
+		Buttons:     []Button{{Label: "Original", URL: "https://example.test/original"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var returned *Tool
+	tools := reg.Tools()
+	for i := range tools {
+		if tools[i].ID == "copy-test" {
+			returned = &tools[i]
+			break
+		}
+	}
+	if returned == nil {
+		t.Fatal("copy-test tool not returned")
+	}
+	if returned.Match.compiled != nil || returned.compiledExclude != nil || returned.order != 0 {
+		t.Fatalf("Tools returned private fields: %#v", *returned)
+	}
+	returned.Buttons[0].Label = "Mutated"
+	returned.Buttons[0].URL = "https://example.test/mutated"
+
+	matched, ok := reg.Match("copy-test")
+	if !ok {
+		t.Fatal("copy-test did not match")
+	}
+	if got := matched.Buttons[0]; got.Label != "Original" || got.URL != "https://example.test/original" {
+		t.Fatalf("registry button mutated through Tools result: %#v", got)
+	}
+}
+
 func TestResolverBuildsIconURLs(t *testing.T) {
 	tests := []struct {
 		name     string

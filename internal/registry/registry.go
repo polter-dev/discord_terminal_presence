@@ -144,7 +144,9 @@ func NewWithCustom(custom ...CustomTool) (*Registry, error) {
 // Tools returns a copy of the registry entries.
 func (r *Registry) Tools() []Tool {
 	tools := make([]Tool, len(r.tools))
-	copy(tools, r.tools)
+	for i, tool := range r.tools {
+		tools[i] = tool.withoutPrivateFields()
+	}
 	return tools
 }
 

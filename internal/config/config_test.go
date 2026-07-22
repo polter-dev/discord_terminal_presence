@@ -637,3 +637,49 @@ func TestSaveRoundTrip(t *testing.T) {
 		t.Fatalf("custom tool slug fields did not round-trip: %#v", loaded.CustomTools[0])
 	}
 }
+
+func TestCustomToolExcludeLoadSaveLoadRoundTripAndMatch(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "input.toml")
+	savedPath := filepath.Join(dir, "saved.toml")
+	input := `
+[[custom_tools]]
+id = "mine"
+display_name = "Mine"
+match = { regex = "mine" }
+exclude = "--helper"
+image_url = "https://example.test/mine.png"
+`
+	if err := os.WriteFile(inputPath, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPath(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.CustomTools) != 1 || loaded.CustomTools[0].Exclude != "--helper" {
+		t.Fatalf("loaded custom tool exclude = %#v", loaded.CustomTools)
+	}
+	if err := Save(loaded, savedPath); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := LoadPath(savedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.CustomTools) != 1 || reloaded.CustomTools[0].Exclude != "--helper" {
+		t.Fatalf("reloaded custom tool exclude = %#v", reloaded.CustomTools)
+	}
+
+	reg, err := registry.NewWithCustom(reloaded.CustomTools...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.MatchProcess(registry.ProcessInfo{Name: "mine", Cmdline: "mine --helper"}); ok {
+		t.Fatal("custom exclude did not reject helper process")
+	}
+	if tool, ok := reg.MatchProcess(registry.ProcessInfo{Name: "mine", Cmdline: "mine --interactive"}); !ok || tool.ID != "mine" {
+		t.Fatalf("interactive process match = (%#v, %t), want custom tool", tool, ok)
+	}
+}

@@ -274,6 +274,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	cpuTotals := make(map[string]float64)
 	now := s.clock.Now()
 	eligibleEpisodes := make(map[string]struct{})
+	episodesChanged := false
 	for _, proc := range processes {
 		tool, ok := s.registry.MatchProcess(registry.ProcessInfo{
 			Name:    proc.Name,
@@ -294,9 +295,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		episodeKey := EpisodeKey(tool.ID, proc.Pid, proc.CreateTime)
 		startedAt, changed := s.episodes.Observe(episodeKey, proc.TTY, now, s.config.IdleClearTimeout)
 		eligibleEpisodes[episodeKey] = struct{}{}
-		if changed && s.saveEpisodes != nil {
-			s.saveEpisodes(s.episodes)
-		}
+		episodesChanged = episodesChanged || changed
 
 		cpuTotals[tool.ID] += proc.CPUTime
 		candidate := toolCandidate{
@@ -313,7 +312,8 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			candidates[tool.ID] = candidate
 		}
 	}
-	if s.episodes.EndAbsent(eligibleEpisodes) && s.saveEpisodes != nil {
+	episodesChanged = s.episodes.EndAbsent(eligibleEpisodes) || episodesChanged
+	if episodesChanged && s.saveEpisodes != nil {
 		s.saveEpisodes(s.episodes)
 	}
 
