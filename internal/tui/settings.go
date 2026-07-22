@@ -75,12 +75,25 @@ type Model struct {
 	err           error
 	status        string
 	saved         bool
+	saving        bool
+	openingURL    bool
 	quitting      bool
 	confirm       *ConfirmDialog
 	confirmAction rowKind
 	width         int
 	height        int
 	styles        styles
+}
+
+type settingsSaveResultMsg struct {
+	err  error
+	quit bool
+}
+
+type settingsOpenURLResultMsg struct {
+	url    string
+	err    error
+	opened bool
 }
 
 // NewSettingsModel creates a settings model. Tools are ordered by rankedIDs first.
@@ -156,6 +169,34 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case settingsSaveResultMsg:
+		m.saving = false
+		if msg.err != nil {
+			m.err = msg.err
+			m.saved = false
+			m.status = ""
+			return m, nil
+		}
+		m.err = nil
+		m.saved = true
+		m.status = ""
+		if msg.quit {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		return m, nil
+	case settingsOpenURLResultMsg:
+		m.openingURL = false
+		m.err = nil
+		m.saved = false
+		if msg.err != nil || !msg.opened {
+			m.status = "Feedback: " + msg.url
+		} else {
+			m.status = "Opened feedback in your browser"
+		}
+		return m, nil
+	}
 	if key, ok := msg.(tea.KeyMsg); ok && m.confirm != nil {
 		if key.String() == "ctrl+c" {
 			m.quitting = true
@@ -173,10 +214,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if dialog.Highlighted() == ConfirmYes {
 				switch action {
 				case rowSave:
-					if m.saveConfig() {
-						m.quitting = true
-						return m, tea.Quit
-					}
+					return m.startSave(true)
 				case rowQuit:
 					m.quitting = true
 					return m, tea.Quit
@@ -248,7 +286,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case " ", "enter", "right":
 			return m.activate()
 		case "s":
-			m.saveConfig()
+			return m.startSave(false)
 		}
 	}
 	return m, nil
@@ -476,6 +514,18 @@ func (m Model) rowCells(columnIndex, index int, row row) []string {
 	}
 
 	if m.columns[columnIndex].kind == columnMenu {
+		if row.kind == rowSave && m.saving {
+			label = "  Saving…"
+			if index == m.columns[columnIndex].cursor {
+				label = "› Saving…"
+			}
+		}
+		if row.kind == rowLink && m.openingURL {
+			label = "  Opening…"
+			if index == m.columns[columnIndex].cursor {
+				label = "› Opening…"
+			}
+		}
 		return []string{label}
 	}
 
@@ -501,8 +551,14 @@ func (m Model) rowCells(columnIndex, index int, row row) []string {
 	case rowDrill:
 		return []string{label, m.pinnedToolLabel()}
 	case rowLink:
+		if m.openingURL {
+			return []string{label, "Opening…"}
+		}
 		return []string{label, "Open in browser"}
 	case rowSave:
+		if m.saving {
+			return []string{label, "Saving…"}
+		}
 		return []string{label, "Write changes and exit"}
 	case rowQuit:
 		return []string{label, "Exit without saving"}
@@ -559,8 +615,11 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 			m.cfg.Pin = row.id
 		}
 	case rowLink:
-		m.openFeedback()
+		return m.startOpenFeedback()
 	case rowSave:
+		if m.saving {
+			return m, nil
+		}
 		dialog := NewConfirmDialog("Save changes and quit?", ConfirmYes)
 		m.confirm = &dialog
 		m.confirmAction = rowSave
@@ -820,41 +879,44 @@ func levenshteinDistance(left, right string) int {
 	return previous[len(b)]
 }
 
-func (m *Model) saveConfig() bool {
-	if m.save == nil {
-		m.saved = true
-		m.err = nil
-		m.status = ""
-		return true
+func (m Model) startSave(quit bool) (tea.Model, tea.Cmd) {
+	if m.saving {
+		return m, nil
 	}
-	if err := m.save(m.cfg); err != nil {
-		m.err = err
-		m.saved = false
-		m.status = ""
-		return false
-	}
+	m.saving = true
 	m.err = nil
-	m.saved = true
+	m.saved = false
 	m.status = ""
-	return true
+	cfg := m.cfg
+	save := m.save
+	return m, func() tea.Msg {
+		var err error
+		if save != nil {
+			err = save(cfg)
+		}
+		return settingsSaveResultMsg{err: err, quit: quit}
+	}
 }
 
-func (m *Model) openFeedback() {
+func (m Model) startOpenFeedback() (tea.Model, tea.Cmd) {
+	if m.openingURL {
+		return m, nil
+	}
 	url := strings.TrimSpace(m.cfg.FeedbackURL)
 	if url == "" {
 		url = config.DefaultFeedbackURL
 	}
 	m.err = nil
 	m.saved = false
-	if m.openURL == nil {
-		m.status = "Feedback: " + url
-		return
+	m.openingURL = true
+	openURL := m.openURL
+	return m, func() tea.Msg {
+		if openURL == nil {
+			return settingsOpenURLResultMsg{url: url}
+		}
+		err := openURL(url)
+		return settingsOpenURLResultMsg{url: url, err: err, opened: err == nil}
 	}
-	if err := m.openURL(url); err != nil {
-		m.status = "Feedback: " + url
-		return
-	}
-	m.status = "Opened feedback in your browser"
 }
 
 func settingsRows(tools []registry.Tool) []row {

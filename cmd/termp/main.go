@@ -302,10 +302,6 @@ func setup(args []string) error {
 		path := config.DefaultPath()
 		return path, config.Save(cfg, path)
 	}
-	installAutostart := func(exe string) error {
-		_, err := service.NewManager().Install(exe)
-		return err
-	}
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 		path, err := save(cfg)
 		if err != nil {
@@ -315,7 +311,7 @@ func setup(args []string) error {
 		fmt.Println("Non-interactive setup skipped autostart. Run `termp install` to enable autostart, then `termp start` to run now.")
 		return nil
 	}
-	model := tui.NewSetupModel(cfg, save, installAutostart, service.ResolveExecutable)
+	model := newSetupModel(cfg, save, service.NewManager(), service.ResolveExecutable)
 	finalModel, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
 	if err != nil {
 		return err
@@ -324,6 +320,23 @@ func setup(args []string) error {
 		return setupModel.Err()
 	}
 	return nil
+}
+
+type setupServiceManager interface {
+	Install(string) (service.State, error)
+	Uninstall() (service.State, error)
+}
+
+func newSetupModel(cfg config.Config, save tui.SetupSaveFunc, manager setupServiceManager, exe tui.SetupExeFunc) tui.SetupModel {
+	installAutostart := func(path string) error {
+		_, err := manager.Install(path)
+		return err
+	}
+	uninstallAutostart := func() error {
+		_, err := manager.Uninstall()
+		return err
+	}
+	return tui.NewSetupModel(cfg, save, installAutostart, uninstallAutostart, exe)
 }
 
 func completion(args []string) error {

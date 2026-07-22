@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +16,9 @@ type SetupSaveFunc func(config.Config) (string, error)
 
 // SetupInstallFunc installs autostart for exe.
 type SetupInstallFunc func(exe string) error
+
+// SetupUninstallFunc removes autostart.
+type SetupUninstallFunc func() error
 
 // SetupExeFunc resolves the executable path used for autostart.
 type SetupExeFunc func() (string, error)
@@ -31,11 +36,14 @@ type SetupModel struct {
 	step         int
 	save         SetupSaveFunc
 	install      SetupInstallFunc
+	uninstall    SetupUninstallFunc
 	exe          SetupExeFunc
 	cfg          config.Config
 	path         string
 	err          error
 	applied      bool
+	applying     bool
+	autostart    string
 	width        int
 	height       int
 	styles       styles
@@ -43,13 +51,21 @@ type SetupModel struct {
 	exitConfirm  *ConfirmDialog
 }
 
+type setupApplyResultMsg struct {
+	cfg       config.Config
+	path      string
+	autostart string
+	err       error
+}
+
 // NewSetupModel creates the onboarding wizard seeded from cfg.
-func NewSetupModel(cfg config.Config, save SetupSaveFunc, install SetupInstallFunc, exe SetupExeFunc) SetupModel {
+func NewSetupModel(cfg config.Config, save SetupSaveFunc, install SetupInstallFunc, uninstall SetupUninstallFunc, exe SetupExeFunc) SetupModel {
 	return SetupModel{
-		cfg:     cfg,
-		save:    save,
-		install: install,
-		exe:     exe,
+		cfg:       cfg,
+		save:      save,
+		install:   install,
+		uninstall: uninstall,
+		exe:       exe,
 		choices: []setupChoice{
 			{
 				label: "Start termp automatically at login? (recommended)",
@@ -99,12 +115,30 @@ func (m SetupModel) Init() tea.Cmd {
 
 func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case setupApplyResultMsg:
+		m.applying = false
+		if msg.err != nil {
+			m.err = msg.err
+			m.applied = false
+			m.step = 0
+			return m, nil
+		}
+		m.cfg = msg.cfg
+		m.path = msg.path
+		m.autostart = msg.autostart
+		m.err = nil
+		m.applied = true
+		m.step = 2
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
+		}
+		if m.applying {
+			return m, nil
 		}
 		if m.exitConfirm != nil {
 			if msg.String() == "backspace" {
@@ -131,9 +165,8 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyConfirm = dialog
 			if selected {
 				if dialog.Highlighted() == ConfirmYes {
-					if !m.applySetup() {
-						m.step = 0
-					}
+					m.step = 0
+					return m.startApply()
 				} else {
 					m.step = 0
 				}
@@ -198,7 +231,11 @@ func (m SetupModel) View() string {
 			b.WriteString(m.styles.muted.Render("↑/↓ move · space toggle · enter to apply · q quit"))
 			b.WriteString("\n\n")
 		}
-		b.WriteString(m.actionButton("Apply", m.setupActionFocused()))
+		label := "Apply"
+		if m.applying {
+			label = "Applying…"
+		}
+		b.WriteString(m.actionButton(label, m.setupActionFocused()))
 		if m.err != nil {
 			b.WriteString("\n\n")
 			b.WriteString(m.styles.error.Render("setup failed: " + m.err.Error()))
@@ -296,43 +333,73 @@ func (m SetupModel) actionButton(label string, focused bool) string {
 	return accentButtonStyle(focused).Render(buttonLabel)
 }
 
-func (m *SetupModel) applySetup() bool {
+func (m SetupModel) startApply() (tea.Model, tea.Cmd) {
+	if m.applying {
+		return m, nil
+	}
 	cfg := m.cfg
 	for _, choice := range m.choices {
 		if choice.apply != nil {
 			choice.apply(&cfg, choice.value)
 		}
 	}
-	path := ""
-	if m.save != nil {
-		var err error
-		path, err = m.save(cfg)
-		if err != nil {
-			m.err = err
-			return false
-		}
-	}
-	if m.choices[0].value && m.install != nil {
-		exe := ""
-		if m.exe != nil {
-			resolved, err := m.exe()
-			if err != nil {
-				m.err = err
-				return false
-			}
-			exe = resolved
-		}
-		if err := m.install(exe); err != nil {
-			m.err = err
-			return false
-		}
-	}
-	m.cfg = cfg
-	m.path = path
+	m.applying = true
 	m.err = nil
-	m.applied = true
-	m.step = 2
-	return true
+	m.applied = false
+	original := m.cfg
+	return m, func() tea.Msg {
+		return applySetup(original, cfg, m.save, m.install, m.uninstall, m.exe)
+	}
+}
+
+func applySetup(original, desired config.Config, save SetupSaveFunc, install SetupInstallFunc, uninstall SetupUninstallFunc, exe SetupExeFunc) setupApplyResultMsg {
+	resolvedExe := ""
+	changed := original.StartAtLogin != desired.StartAtLogin
+	if changed && desired.StartAtLogin && exe != nil {
+		var err error
+		resolvedExe, err = exe()
+		if err != nil {
+			return setupApplyResultMsg{err: err}
+		}
+	}
+
+	path := ""
+	if save != nil {
+		var err error
+		path, err = save(desired)
+		if err != nil {
+			return setupApplyResultMsg{err: err}
+		}
+	}
+
+	autostart := "unchanged (disabled)"
+	if desired.StartAtLogin {
+		autostart = "unchanged (enabled)"
+	}
+	var reconcileErr error
+	if changed && desired.StartAtLogin {
+		autostart = "installed"
+		if install != nil {
+			reconcileErr = install(resolvedExe)
+		}
+	} else if changed {
+		autostart = "removed"
+		if uninstall != nil {
+			reconcileErr = uninstall()
+		}
+	}
+	if reconcileErr == nil {
+		return setupApplyResultMsg{cfg: desired, path: path, autostart: autostart}
+	}
+
+	if save == nil {
+		return setupApplyResultMsg{err: reconcileErr}
+	}
+	_, rollbackErr := save(original)
+	if rollbackErr != nil {
+		return setupApplyResultMsg{err: errors.Join(reconcileErr, fmt.Errorf("restore previous config: %w", rollbackErr))}
+	}
+	return setupApplyResultMsg{err: reconcileErr}
 }
 
 func (m SetupModel) summary() string {
@@ -342,11 +409,7 @@ func (m SetupModel) summary() string {
 	if m.path != "" {
 		b.WriteString("Config: " + m.path + "\n")
 	}
-	if m.choices[0].value {
-		b.WriteString("Autostart: installed\n")
-	} else {
-		b.WriteString("Autostart: skipped\n")
-	}
+	b.WriteString("Autostart: " + m.autostart + "\n")
 	b.WriteString("Run now: termp start\n\n")
 	b.WriteString("You can disable autostart later with `termp uninstall`; re-run setup or edit config to change these choices.\n")
 	return b.String()

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -61,7 +62,12 @@ func TestModelTogglePinAndSave(t *testing.T) {
 
 	updated, _ = model.Update(key("esc"))
 	model = updated.(Model)
-	updated, _ = model.Update(key("s"))
+	updated, cmd := model.Update(key("s"))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("save shortcut should return a command")
+	}
+	updated, _ = model.Update(cmd())
 	model = updated.(Model)
 	if !model.Saved() {
 		t.Fatal("model should report saved")
@@ -415,8 +421,13 @@ func TestModelMenuSaveAndQuitActions(t *testing.T) {
 
 		updated, cmd = model.Update(key("enter"))
 		model = updated.(Model)
-		if cmd == nil || !model.quitting || saveCalls != 1 || !model.Saved() {
-			t.Fatal("confirming save should save and quit")
+		if cmd == nil || model.quitting || saveCalls != 0 || model.Saved() {
+			t.Fatal("confirming save should start an asynchronous save")
+		}
+		updated, quitCmd := model.Update(cmd())
+		model = updated.(Model)
+		if quitCmd == nil || !model.quitting || saveCalls != 1 || !model.Saved() {
+			t.Fatal("successful save result should mark saved and quit")
 		}
 	})
 
@@ -457,8 +468,13 @@ func TestModelMenuSaveAndQuitActions(t *testing.T) {
 		model = updated.(Model)
 		updated, cmd := model.Update(key("enter"))
 		model = updated.(Model)
-		if cmd != nil || model.quitting {
-			t.Fatal("failed save should not quit")
+		if cmd == nil || model.quitting {
+			t.Fatal("confirmed save should return a command without quitting yet")
+		}
+		updated, quitCmd := model.Update(cmd())
+		model = updated.(Model)
+		if quitCmd != nil || model.quitting {
+			t.Fatal("failed save result should not quit")
 		}
 		if model.Err() == nil || !strings.Contains(model.View(), "save failed: disk full") {
 			t.Fatalf("failed save did not remain visible:\n%s", model.View())
@@ -565,7 +581,12 @@ func TestModelLeaveFeedbackOpensConfiguredURL(t *testing.T) {
 	})
 	model.columns[0].cursor = findColumnRow(t, model, 0, rowLink, "Leave feedback")
 
-	updated, _ := model.Update(key("enter"))
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("feedback action should return a command")
+	}
+	updated, _ = model.Update(cmd())
 	model = updated.(Model)
 
 	if opened != cfg.FeedbackURL {
@@ -584,7 +605,12 @@ func TestModelLeaveFeedbackFailureShowsURL(t *testing.T) {
 	})
 	model.columns[0].cursor = findColumnRow(t, model, 0, rowLink, "Leave feedback")
 
-	updated, _ := model.Update(key("enter"))
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("feedback action should return a command")
+	}
+	updated, _ = model.Update(cmd())
 	model = updated.(Model)
 
 	want := "Feedback: " + config.DefaultFeedbackURL
@@ -593,16 +619,96 @@ func TestModelLeaveFeedbackFailureShowsURL(t *testing.T) {
 	}
 }
 
-func TestSetupModelApplyDefaultsInstallsAutostart(t *testing.T) {
+func TestModelSlowCallbacksRunInCommandsAndResultsDriveState(t *testing.T) {
+	t.Run("save", func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		model := NewSettingsModel(config.Default(), nil, nil, func(config.Config) error {
+			close(started)
+			<-release
+			return nil
+		}, nil)
+
+		before := time.Now()
+		updated, cmd := model.Update(key("s"))
+		model = updated.(Model)
+		if cmd == nil || time.Since(before) > time.Second {
+			t.Fatal("save Update blocked instead of returning a command")
+		}
+		select {
+		case <-started:
+			t.Fatal("save callback ran during Update")
+		default:
+		}
+		if !model.saving || !strings.Contains(model.View(), "Saving…") {
+			t.Fatalf("save in-flight state not rendered:\n%s", model.View())
+		}
+		if _, duplicate := model.Update(key("s")); duplicate != nil {
+			t.Fatal("duplicate save should be disabled while saving")
+		}
+
+		result := make(chan tea.Msg, 1)
+		go func() { result <- cmd() }()
+		<-started
+		close(release)
+		updated, _ = model.Update(<-result)
+		model = updated.(Model)
+		if model.saving || !model.Saved() || model.Err() != nil {
+			t.Fatalf("save result state = saving:%t saved:%t err:%v", model.saving, model.Saved(), model.Err())
+		}
+	})
+
+	t.Run("open URL", func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		model := NewSettingsModel(config.Default(), nil, nil, nil, func(string) error {
+			close(started)
+			<-release
+			return nil
+		})
+		model.columns[0].cursor = findColumnRow(t, model, 0, rowLink, "Leave feedback")
+
+		updated, cmd := model.Update(key("enter"))
+		model = updated.(Model)
+		if cmd == nil {
+			t.Fatal("open URL Update did not return a command")
+		}
+		select {
+		case <-started:
+			t.Fatal("open URL callback ran during Update")
+		default:
+		}
+		if !model.openingURL || !strings.Contains(model.View(), "Opening…") {
+			t.Fatalf("open URL in-flight state not rendered:\n%s", model.View())
+		}
+		if _, duplicate := model.Update(key("enter")); duplicate != nil {
+			t.Fatal("duplicate open URL should be disabled while opening")
+		}
+
+		result := make(chan tea.Msg, 1)
+		go func() { result <- cmd() }()
+		<-started
+		close(release)
+		updated, _ = model.Update(<-result)
+		model = updated.(Model)
+		if model.openingURL || !strings.Contains(model.View(), "Opened feedback in your browser") {
+			t.Fatalf("open URL result not reflected:\n%s", model.View())
+		}
+	})
+}
+
+func TestSetupModelEnablingAutostartInstalls(t *testing.T) {
 	var saved config.Config
 	var installedExe string
-	model := NewSetupModel(config.Default(), func(cfg config.Config) (string, error) {
+	cfg := config.Default()
+	cfg.StartAtLogin = false
+	model := NewSetupModel(cfg, func(cfg config.Config) (string, error) {
 		saved = cfg
 		return "/tmp/config.toml", nil
 	}, func(exe string) error {
 		installedExe = exe
 		return nil
-	}, func() (string, error) {
+	}, nil, func() (string, error) {
 		return "/usr/local/bin/termp", nil
 	})
 
@@ -612,12 +718,19 @@ func TestSetupModelApplyDefaultsInstallsAutostart(t *testing.T) {
 	if strings.Contains(model.View(), "What is this?") {
 		t.Fatalf("setup choices still expose CTA setting:\n%s", model.View())
 	}
-	updated, _ := model.Update(key("enter"))
+	updated, _ := model.Update(key(" "))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("enter"))
 	model = updated.(SetupModel)
 	if model.step != 1 || model.Applied() {
 		t.Fatalf("enter should open confirmation without applying: step=%d applied=%t", model.step, model.Applied())
 	}
-	updated, _ = model.Update(key("enter"))
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	if cmd == nil {
+		t.Fatal("confirmed setup should return a command")
+	}
+	updated, _ = model.Update(cmd())
 	model = updated.(SetupModel)
 
 	if !model.Applied() {
@@ -649,7 +762,7 @@ func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 	}, func(exe string) error {
 		installed = true
 		return nil
-	}, func() (string, error) {
+	}, nil, func() (string, error) {
 		return "/usr/local/bin/termp", nil
 	})
 
@@ -674,7 +787,12 @@ func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 	if model.step != 1 {
 		t.Fatalf("space on Apply moved to step %d, want 1", model.step)
 	}
-	updated, _ = model.Update(key("enter"))
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	if cmd == nil {
+		t.Fatal("confirmed setup should return a command")
+	}
+	updated, _ = model.Update(cmd())
 	model = updated.(SetupModel)
 
 	if installed {
@@ -685,6 +803,127 @@ func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 	}
 	if !saved.CTA.Enabled {
 		t.Fatal("setup should preserve the default CTA setting")
+	}
+}
+
+func TestSetupModelDisablingExistingAutostartUninstallsAndReportsResult(t *testing.T) {
+	cfg := config.Default()
+	cfg.StartAtLogin = true
+	installCalls := 0
+	uninstallCalls := 0
+	var saved config.Config
+	model := NewSetupModel(cfg, func(next config.Config) (string, error) {
+		saved = next
+		return "/tmp/config.toml", nil
+	}, func(string) error {
+		installCalls++
+		return nil
+	}, func() error {
+		uninstallCalls++
+		return nil
+	}, func() (string, error) {
+		t.Fatal("executable resolution should not run when disabling autostart")
+		return "", nil
+	})
+
+	updated, _ := model.Update(key(" "))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("enter"))
+	model = updated.(SetupModel)
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	if cmd == nil || installCalls != 0 || uninstallCalls != 0 {
+		t.Fatal("confirmed setup should return a command without reconciling inline")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(SetupModel)
+
+	if installCalls != 0 || uninstallCalls != 1 {
+		t.Fatalf("reconcile calls = install:%d uninstall:%d, want 0/1", installCalls, uninstallCalls)
+	}
+	if saved.StartAtLogin || model.SetupConfig().StartAtLogin || !model.Applied() {
+		t.Fatalf("applied config = saved:%t model:%t applied:%t", saved.StartAtLogin, model.SetupConfig().StartAtLogin, model.Applied())
+	}
+	if !strings.Contains(model.View(), "Autostart: removed") {
+		t.Fatalf("summary did not report removal:\n%s", model.View())
+	}
+}
+
+func TestSetupModelFailedInstallRollsBackPersistedConfig(t *testing.T) {
+	original := config.Default()
+	original.StartAtLogin = false
+	persisted := original
+	saveCalls := 0
+	model := NewSetupModel(original, func(next config.Config) (string, error) {
+		saveCalls++
+		persisted = next
+		return "/tmp/config.toml", nil
+	}, func(string) error {
+		return errors.New("install failed")
+	}, nil, func() (string, error) {
+		return "/usr/local/bin/termp", nil
+	})
+
+	updated, _ := model.Update(key(" "))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("enter"))
+	model = updated.(SetupModel)
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	if cmd == nil {
+		t.Fatal("confirmed setup should return a command")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(SetupModel)
+
+	if saveCalls != 2 {
+		t.Fatalf("save calls = %d, want desired save plus rollback", saveCalls)
+	}
+	if persisted.StartAtLogin || model.SetupConfig().StartAtLogin {
+		t.Fatalf("failed install left inconsistent config = persisted:%t model:%t", persisted.StartAtLogin, model.SetupConfig().StartAtLogin)
+	}
+	if model.Applied() || model.Err() == nil || !strings.Contains(model.View(), "install failed") {
+		t.Fatalf("failed install not surfaced correctly: applied:%t err:%v\n%s", model.Applied(), model.Err(), model.View())
+	}
+}
+
+func TestSetupModelSlowApplyRunsInCommand(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	model := NewSetupModel(config.Default(), func(config.Config) (string, error) {
+		close(started)
+		<-release
+		return "/tmp/config.toml", nil
+	}, nil, nil, nil)
+
+	updated, _ := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	before := time.Now()
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	if cmd == nil || time.Since(before) > time.Second {
+		t.Fatal("setup Update blocked instead of returning a command")
+	}
+	select {
+	case <-started:
+		t.Fatal("setup callback ran during Update")
+	default:
+	}
+	if !model.applying || !strings.Contains(model.View(), "Applying…") {
+		t.Fatalf("setup in-flight state not rendered:\n%s", model.View())
+	}
+	if _, duplicate := model.Update(key("enter")); duplicate != nil {
+		t.Fatal("duplicate apply should be disabled while applying")
+	}
+
+	result := make(chan tea.Msg, 1)
+	go func() { result <- cmd() }()
+	<-started
+	close(release)
+	updated, _ = model.Update(<-result)
+	model = updated.(SetupModel)
+	if model.applying || !model.Applied() || model.Err() != nil {
+		t.Fatalf("apply result state = applying:%t applied:%t err:%v", model.applying, model.Applied(), model.Err())
 	}
 }
 
@@ -707,7 +946,7 @@ func TestSetupModelApplyPersistsEveryToggleCombination(t *testing.T) {
 				saveCalls++
 				saved = cfg
 				return "/tmp/config.toml", nil
-			}, func(string) error { return nil }, func() (string, error) { return "/usr/local/bin/termp", nil })
+			}, func(string) error { return nil }, nil, func() (string, error) { return "/usr/local/bin/termp", nil })
 
 			if model.choices[0].value != tt.startAtLogin {
 				updated, _ = model.Update(key(" "))
@@ -727,7 +966,12 @@ func TestSetupModelApplyPersistsEveryToggleCombination(t *testing.T) {
 			}
 			updated, _ = model.Update(key("enter"))
 			model = updated.(SetupModel)
-			updated, _ = model.Update(key("enter"))
+			updated, cmd := model.Update(key("enter"))
+			model = updated.(SetupModel)
+			if cmd == nil {
+				t.Fatal("confirmed setup should return a command")
+			}
+			updated, _ = model.Update(cmd())
 			model = updated.(SetupModel)
 
 			if saveCalls != 1 {
@@ -746,7 +990,7 @@ func TestSetupModelSeedsChoicesFromExistingConfig(t *testing.T) {
 	cfg.StartAtLogin = false
 	cfg.AutoUpdate = true
 	cfg.Privacy.ShowDirectory = true
-	model := NewSetupModel(cfg, nil, nil, nil)
+	model := NewSetupModel(cfg, nil, nil, nil, nil)
 
 	want := []bool{false, true, true}
 	for i, choice := range model.choices {
@@ -782,12 +1026,17 @@ func TestSetupModelApplyPreservesUnexposedConfig(t *testing.T) {
 	model := NewSetupModel(cfg, func(got config.Config) (string, error) {
 		saved = got
 		return "/tmp/config.toml", nil
-	}, nil, nil)
+	}, nil, nil, nil)
 
-	for _, press := range []string{"enter", "enter"} {
-		updated, _ := model.Update(key(press))
-		model = updated.(SetupModel)
+	updated, _ := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	if cmd == nil {
+		t.Fatal("confirmed setup should return a command")
 	}
+	updated, _ = model.Update(cmd())
+	model = updated.(SetupModel)
 	if !model.Applied() {
 		t.Fatal("setup was not applied")
 	}
@@ -808,7 +1057,7 @@ func TestSetupModelQuitDoesNotSave(t *testing.T) {
 			model := NewSetupModel(config.Default(), func(config.Config) (string, error) {
 				saveCalls++
 				return "/tmp/config.toml", nil
-			}, nil, nil)
+			}, nil, nil, nil)
 
 			updated, _ := model.Update(key(" "))
 			model = updated.(SetupModel)
@@ -839,7 +1088,7 @@ func TestSetupModelViewsRenderTableButtonsAndFitTerminal(t *testing.T) {
 	}
 	for _, width := range []int{80, 40} {
 		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
-			model := NewSetupModel(config.Default(), nil, nil, nil)
+			model := NewSetupModel(config.Default(), nil, nil, nil, nil)
 			updated, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 12})
 			model = updated.(SetupModel)
 
@@ -889,7 +1138,7 @@ func TestSetupModelViewsRenderTableButtonsAndFitTerminal(t *testing.T) {
 }
 
 func TestSetupModelShowsExplicitKeyHints(t *testing.T) {
-	model := NewSetupModel(config.Default(), nil, nil, nil)
+	model := NewSetupModel(config.Default(), nil, nil, nil, nil)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
 	view := updated.(SetupModel).View()
 	if want := "↑/↓ move · space toggle · enter to apply · q quit"; !strings.Contains(view, want) {
