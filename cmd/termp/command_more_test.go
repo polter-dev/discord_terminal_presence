@@ -197,6 +197,66 @@ func TestCompletionScriptRejectsUnknownShell(t *testing.T) {
 	}
 }
 
+func TestCompletionScriptsExplainInstallationAndCoverCLI(t *testing.T) {
+	tests := []struct {
+		shell  string
+		header string
+		marker string
+		flags  []string
+	}{
+		{
+			shell: "bash",
+			header: "# termp bash completion.\n" +
+				"# Enable in the current session: source <(termp completion bash)\n" +
+				"# Or install permanently: termp completion bash > ~/.local/share/bash-completion/completions/termp\n",
+			marker: "_termp_complete()",
+			flags:  []string{"--verbose", "--version", "--help", "--force", "--once"},
+		},
+		{
+			shell: "zsh",
+			header: "#compdef termp\n" +
+				"# termp zsh completion.\n" +
+				"# Enable in the current session: source <(termp completion zsh)\n" +
+				"# Or install permanently: termp completion zsh > ${fpath[1]}/_termp\n",
+			marker: "_termp()",
+			flags:  []string{"--verbose", "--version", "--help", "--force", "--once"},
+		},
+		{
+			shell: "fish",
+			header: "# termp fish completion.\n" +
+				"# Enable in the current session: termp completion fish | source\n" +
+				"# Or install permanently: termp completion fish > ~/.config/fish/completions/termp.fish\n",
+			marker: "complete -c termp",
+			flags:  []string{"-l verbose", "-l version", "-l help", "-l force", "-l once"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.shell, func(t *testing.T) {
+			script, err := completionScript(tt.shell)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(script, tt.header) {
+				t.Fatalf("completion header = %q, want prefix %q", script[:min(len(script), len(tt.header))], tt.header)
+			}
+			if !strings.Contains(script, tt.marker) {
+				t.Fatalf("completion script missing function marker %q", tt.marker)
+			}
+			for _, command := range expectedCommands {
+				if !strings.Contains(script, command) {
+					t.Errorf("completion script missing command %q", command)
+				}
+			}
+			for _, want := range append(tt.flags, "init", "bash", "zsh", "fish") {
+				if !strings.Contains(script, want) {
+					t.Errorf("completion script missing %q", want)
+				}
+			}
+		})
+	}
+}
+
 func TestPIDHelpersRejectInvalidContentAndUnsafeDirectory(t *testing.T) {
 	for _, content := range []string{"", "abc", "0", "-1"} {
 		t.Run("content_"+strings.ReplaceAll(content, "-", "negative"), func(t *testing.T) {
