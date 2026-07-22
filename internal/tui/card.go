@@ -27,19 +27,24 @@ type RecentDetection struct {
 
 // CardStyles contains the small style surface used by RenderCard.
 type CardStyles struct {
-	Title  lipgloss.Style
-	Muted  lipgloss.Style
-	Accent lipgloss.Style
-	Card   lipgloss.Style
+	Title   lipgloss.Style
+	Muted   lipgloss.Style
+	Accent  lipgloss.Style
+	Success lipgloss.Style
+	Card    lipgloss.Style
 }
 
 // DefaultCardStyles returns the shared preview styles.
 func DefaultCardStyles() CardStyles {
 	return CardStyles{
-		Title:  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-		Muted:  lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-		Accent: lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
-		Card:   lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2),
+		Title:   lipgloss.NewStyle().Bold(true).Foreground(tuiPalette.accent),
+		Muted:   lipgloss.NewStyle().Foreground(tuiPalette.muted),
+		Accent:  lipgloss.NewStyle().Bold(true).Foreground(tuiPalette.accent),
+		Success: lipgloss.NewStyle().Foreground(tuiPalette.success),
+		Card: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(tuiPalette.accent).
+			Padding(1, 2),
 	}
 }
 
@@ -51,11 +56,11 @@ func RenderCard(s CardState, st CardStyles) string {
 	}
 
 	var body strings.Builder
-	status := "not running"
+	status := st.Muted.Render("○ discord: not running")
 	if s.Connected {
-		status = "connected"
+		status = st.Success.Render("● discord: connected")
 	}
-	body.WriteString(st.Muted.Render("discord: " + status))
+	body.WriteString(status)
 	body.WriteByte('\n')
 	body.WriteByte('\n')
 
@@ -67,7 +72,7 @@ func RenderCard(s CardState, st CardStyles) string {
 
 	if len(s.Recent) > 0 {
 		body.WriteString("\n\n")
-		body.WriteString(st.Muted.Render("recent detections"))
+		body.WriteString(st.Accent.Render("recent detections"))
 		for _, recent := range s.Recent {
 			if recent.Name == "" {
 				continue
@@ -102,7 +107,7 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 	if activity.StartTimestamp != nil {
 		if elapsed := elapsedString(now, *activity.StartTimestamp); elapsed != "" {
 			b.WriteByte('\n')
-			b.WriteString("elapsed: " + elapsed)
+			b.WriteString(st.Success.Render("elapsed: " + elapsed))
 		}
 	}
 	if image := imageLabel(activity.SmallImage, ""); image != "" {

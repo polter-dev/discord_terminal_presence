@@ -83,15 +83,6 @@ type Model struct {
 	styles        styles
 }
 
-type styles struct {
-	title    lipgloss.Style
-	cursor   lipgloss.Style
-	muted    lipgloss.Style
-	error    lipgloss.Style
-	selected lipgloss.Style
-	path     lipgloss.Style
-}
-
 // NewSettingsModel creates a settings model. Tools are ordered by rankedIDs first.
 func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []string, save SaveFunc, openURL OpenURLFunc) Model {
 	ordered := OrderToolsByUsage(tools, rankedIDs)
@@ -110,14 +101,7 @@ func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []stri
 		input:   input,
 		save:    save,
 		openURL: openURL,
-		styles: styles{
-			title:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-			cursor:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
-			muted:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-			error:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
-			selected: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-			path:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("8")),
-		},
+		styles:  defaultStyles(),
 	}
 }
 
@@ -290,7 +274,7 @@ func (m Model) View() string {
 		b.WriteByte('\n')
 	} else if m.saved {
 		b.WriteString("\n")
-		b.WriteString(m.styles.muted.Render("saved"))
+		b.WriteString(m.styles.success.Render("saved"))
 		b.WriteByte('\n')
 	} else if m.status != "" {
 		b.WriteString("\n")
@@ -373,17 +357,19 @@ func (m Model) settingsTable(columnIndex int) string {
 	}
 	focused := columnIndex == len(m.columns)-1
 	headerStyle := m.styles.title
+	borderStyle := m.styles.focusedBorder
 	if !focused {
 		headerStyle = m.styles.path
+		borderStyle = m.styles.mutedBorder
 	}
 
 	return table.New().
 		Headers(headers...).
 		Rows(rows...).
 		Border(lipgloss.RoundedBorder()).
-		BorderStyle(m.styles.muted).
+		BorderStyle(borderStyle).
 		BorderRow(false).
-		StyleFunc(func(rowIndex, _ int) lipgloss.Style {
+		StyleFunc(func(rowIndex, cellColumnIndex int) lipgloss.Style {
 			style := lipgloss.NewStyle().Padding(0, 1)
 			modelRowIndex := start + rowIndex
 			if column.kind == columnChoices {
@@ -396,6 +382,8 @@ func (m Model) settingsTable(columnIndex int) string {
 				return style.Inherit(m.styles.cursor)
 			case column.kind == columnChoices && len(column.rows) == 0:
 				return style.Inherit(m.styles.muted)
+			case modelRowIndex >= 0 && modelRowIndex < len(column.rows) && cellColumnIndex == 1 && rowIsPositive(column.rows[modelRowIndex], m.cfg):
+				return style.Inherit(m.styles.success)
 			case modelRowIndex == column.cursor && focused:
 				return style.Inherit(m.styles.selected)
 			case modelRowIndex == column.cursor:
@@ -493,9 +481,9 @@ func (m Model) rowCells(columnIndex, index int, row row) []string {
 
 	switch row.kind {
 	case rowToggle:
-		value := "Off"
+		value := "○ Off"
 		if row.get(m.cfg) {
-			value = "On"
+			value = "● On"
 		}
 		return []string{label, value}
 	case rowText:
@@ -507,7 +495,7 @@ func (m Model) rowCells(columnIndex, index int, row row) []string {
 	case rowPin:
 		value := ""
 		if m.cfg.Pin == row.id {
-			value = "Pinned"
+			value = "● Pinned"
 		}
 		return []string{label, value}
 	case rowDrill:
@@ -520,6 +508,17 @@ func (m Model) rowCells(columnIndex, index int, row row) []string {
 		return []string{label, "Exit without saving"}
 	default:
 		return []string{label, ""}
+	}
+}
+
+func rowIsPositive(row row, cfg config.Config) bool {
+	switch row.kind {
+	case rowToggle:
+		return row.get(cfg)
+	case rowPin:
+		return cfg.Pin == row.id
+	default:
+		return false
 	}
 }
 

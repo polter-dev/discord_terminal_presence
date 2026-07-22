@@ -33,7 +33,7 @@ func TestRenderCard(t *testing.T) {
 				},
 			},
 			want: []string{
-				"discord: connected",
+				"● discord: connected",
 				"Neovim",
 				"[image: nvim]",
 				"also: lazygit",
@@ -51,7 +51,7 @@ func TestRenderCard(t *testing.T) {
 				Now:       now,
 			},
 			want: []string{
-				"discord: not running",
+				"○ discord: not running",
 				"idle - no tool detected",
 			},
 			wantNot: []string{"elapsed:"},

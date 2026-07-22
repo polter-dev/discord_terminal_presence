@@ -67,13 +67,7 @@ func NewSetupModel(save SetupSaveFunc, install SetupInstallFunc, exe SetupExeFun
 				},
 			},
 		},
-		styles: styles{
-			title:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-			cursor:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
-			muted:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-			error:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
-			selected: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-		},
+		styles:       defaultStyles(),
 		applyConfirm: NewConfirmDialog("Apply these settings?", ConfirmYes),
 	}
 }
@@ -299,9 +293,9 @@ func (m SetupModel) choicesTable(interactive bool) string {
 		} else {
 			label = "  " + label
 		}
-		state := "Off"
+		state := "○ Off"
 		if choice.value {
-			state = "On"
+			state = "● On"
 		}
 		rows = append(rows, []string{label, state})
 	}
@@ -310,13 +304,17 @@ func (m SetupModel) choicesTable(interactive bool) string {
 		Headers("Question", "State").
 		Rows(rows...).
 		Border(lipgloss.RoundedBorder()).
-		BorderStyle(m.styles.muted).
+		BorderStyle(m.styles.focusedBorder).
 		BorderRow(false).
-		StyleFunc(func(rowIndex, _ int) lipgloss.Style {
+		StyleFunc(func(rowIndex, columnIndex int) lipgloss.Style {
 			style := lipgloss.NewStyle().Padding(0, 1)
 			switch {
 			case rowIndex == table.HeaderRow:
 				return style.Inherit(m.styles.title)
+			case columnIndex == 1 && m.choices[rowIndex].value:
+				return style.Inherit(m.styles.success)
+			case columnIndex == 1:
+				return style.Inherit(m.styles.muted)
 			case interactive && rowIndex == m.cursor:
 				return style.Inherit(m.styles.selected)
 			default:
@@ -331,16 +329,7 @@ func (m SetupModel) actionButton(label string, focused bool) string {
 	if focused {
 		buttonLabel = "› " + label
 	}
-	style := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("12")).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("12")).
-		Padding(0, 1)
-	if focused {
-		style = style.Foreground(lipgloss.Color("0")).Background(lipgloss.Color("12"))
-	}
-	return style.Render(buttonLabel)
+	return accentButtonStyle(focused).Render(buttonLabel)
 }
 
 func (m *SetupModel) applySetup() bool {
@@ -384,7 +373,8 @@ func (m *SetupModel) applySetup() bool {
 
 func (m SetupModel) summary() string {
 	var b strings.Builder
-	b.WriteString("Setup applied.\n\n")
+	b.WriteString(m.styles.success.Render("Setup applied."))
+	b.WriteString("\n\n")
 	if m.path != "" {
 		b.WriteString("Config: " + m.path + "\n")
 	}

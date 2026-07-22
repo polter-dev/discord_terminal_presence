@@ -31,8 +31,8 @@ func NewConfirmDialog(prompt string, defaultOption ConfirmOption) ConfirmDialog 
 	return ConfirmDialog{
 		prompt:      prompt,
 		highlighted: defaultOption,
-		accent:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
-		muted:       lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		accent:      lipgloss.NewStyle().Bold(true).Foreground(tuiPalette.accent),
+		muted:       lipgloss.NewStyle().Foreground(tuiPalette.muted),
 	}
 }
 
@@ -56,7 +56,7 @@ func (d ConfirmDialog) Update(msg tea.KeyMsg) (ConfirmDialog, bool) {
 
 // View renders the prompt and horizontally arranged Yes/No choices.
 func (d ConfirmDialog) View() string {
-	return d.prompt + "\n\n" + lipgloss.JoinHorizontal(
+	return d.accent.Render(d.prompt) + "\n\n" + lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		d.button("YES", ConfirmYes),
 		"  ",
@@ -65,12 +65,9 @@ func (d ConfirmDialog) View() string {
 }
 
 func (d ConfirmDialog) button(label string, option ConfirmOption) string {
-	style := d.accent.Copy().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("12")).
-		Padding(0, 1)
+	style := accentButtonStyle(false).Inherit(d.accent)
 	if d.highlighted == option {
-		style = style.Foreground(lipgloss.Color("0")).Background(lipgloss.Color("12"))
+		style = accentButtonStyle(true)
 		label = "› " + label
 	} else {
 		label = "  " + label
