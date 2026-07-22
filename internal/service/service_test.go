@@ -219,6 +219,82 @@ func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 	}
 }
 
+func TestDarwinInstallDoesNotOverwritePlistOnUnloadFailure(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("old launch agent")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootout := "launchctl bootout gui/" + userID() + " " + path
+	unload := "launchctl unload -w " + path
+	runner := &recordingRunner{
+		fail: map[string]error{
+			bootout: errors.New("exit status 1"),
+			unload:  errors.New("exit status 1"),
+		},
+		out: map[string]string{
+			bootout: "Boot-out failed: Operation not permitted\n",
+			unload:  "Unload failed: Operation not permitted\n",
+		},
+	}
+
+	state, err := (Manager{GOOS: "darwin", Runner: runner}).Install("/new/termp")
+	if err == nil || !strings.Contains(err.Error(), "Operation not permitted") {
+		t.Fatalf("Install() error = %v, want unload permission failure", err)
+	}
+	if !state.Supported || state.Path != path {
+		t.Fatalf("Install() state = %+v, want supported service path %q", state, path)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("plist overwritten after unload failure: got %q, want %q", got, original)
+	}
+	if hasCall(runner.calls, "launchctl bootstrap gui/"+userID()+" "+path) || hasCall(runner.calls, "launchctl load -w "+path) {
+		t.Fatalf("load attempted after unload failure: %#v", runner.calls)
+	}
+}
+
+func TestDarwinInstallReplacesPlistWhenAlreadyUnloaded(t *testing.T) {
+	home := fakeHome(t)
+	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old launch agent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootout := "launchctl bootout gui/" + userID() + " " + path
+	runner := &recordingRunner{
+		fail: map[string]error{bootout: errors.New("exit status 3")},
+		out:  map[string]string{bootout: "Boot-out failed: 3: No such process\n"},
+	}
+
+	state, err := (Manager{GOOS: "darwin", Runner: runner}).Install("/new/termp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Installed {
+		t.Fatalf("Install() state = %+v, want installed", state)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(got), "<string>/new/termp</string>") {
+		t.Fatalf("plist was not replaced after benign absent result:\n%s", got)
+	}
+	if hasCall(runner.calls, "launchctl unload -w "+path) {
+		t.Fatalf("legacy unload called after bootout proved service absent: %#v", runner.calls)
+	}
+}
+
 func TestDarwinDisableAndEnableToggleLaunchAgentWithoutRemovingPlist(t *testing.T) {
 	home := fakeHome(t)
 	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
@@ -508,6 +584,88 @@ func TestLinuxDisableAndEnableToggleUserService(t *testing.T) {
 	}
 	if !hasCall(runner.calls, "systemctl --user enable --now "+ServiceName) {
 		t.Fatalf("Enable calls = %#v, want systemctl enable --now", runner.calls)
+	}
+}
+
+func TestLinuxStatusParsesDocumentedStatesDespiteNonzeroExit(t *testing.T) {
+	fakeHome(t)
+	enabledCall := "systemctl --user is-enabled " + ServiceName
+	activeCall := "systemctl --user is-active " + ServiceName
+
+	tests := []struct {
+		name        string
+		enabledOut  string
+		activeOut   string
+		wantEnabled string
+		wantLoaded  string
+	}{
+		{
+			name:        "disabled and inactive",
+			enabledOut:  "disabled\n",
+			activeOut:   "inactive\n",
+			wantEnabled: "disabled",
+			wantLoaded:  "inactive",
+		},
+		{
+			name:        "masked and failed",
+			enabledOut:  "masked\n",
+			activeOut:   "failed\n",
+			wantEnabled: "masked",
+			wantLoaded:  "failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingRunner{
+				fail: map[string]error{
+					enabledCall: errors.New("exit status 1"),
+					activeCall:  errors.New("exit status 3"),
+				},
+				out: map[string]string{
+					enabledCall: tt.enabledOut,
+					activeCall:  tt.activeOut,
+				},
+			}
+			state := (Manager{GOOS: "linux", Runner: runner}).Status()
+			if state.Enabled != tt.wantEnabled || state.Loaded != tt.wantLoaded {
+				t.Fatalf("Status() = %+v, want enabled=%q loaded=%q", state, tt.wantEnabled, tt.wantLoaded)
+			}
+		})
+	}
+}
+
+func TestLinuxStatusUsesUnknownForMissingOrUnrecognizedOutput(t *testing.T) {
+	fakeHome(t)
+	enabledCall := "systemctl --user is-enabled " + ServiceName
+	activeCall := "systemctl --user is-active " + ServiceName
+
+	tests := []struct {
+		name       string
+		enabledOut string
+		activeOut  string
+	}{
+		{name: "transport failure", enabledOut: "", activeOut: ""},
+		{name: "unrecognized output", enabledOut: "enabled-runtime\n", activeOut: "mystery\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingRunner{
+				fail: map[string]error{
+					enabledCall: errors.New("command failed"),
+					activeCall:  errors.New("command failed"),
+				},
+				out: map[string]string{
+					enabledCall: tt.enabledOut,
+					activeCall:  tt.activeOut,
+				},
+			}
+			state := (Manager{GOOS: "linux", Runner: runner}).Status()
+			if state.Enabled != "unknown" || state.Loaded != "unknown" {
+				t.Fatalf("Status() = %+v, want unknown states", state)
+			}
+		})
 	}
 }
 
