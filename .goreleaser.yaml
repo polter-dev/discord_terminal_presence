@@ -54,6 +54,7 @@ homebrew_casks:
     repository:
       owner: polter-dev
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Casks
     homepage: https://github.com/polter-dev/discord_terminal_presence
     description: Discord Rich Presence daemon for terminal tools.
