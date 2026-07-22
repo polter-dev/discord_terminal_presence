@@ -66,19 +66,21 @@ const maxPinResults = 6
 
 // Model is the testable Bubble Tea settings model.
 type Model struct {
-	cfg      config.Config
-	columns  []settingsColumn
-	input    textinput.Model
-	editing  int
-	save     SaveFunc
-	openURL  OpenURLFunc
-	err      error
-	status   string
-	saved    bool
-	quitting bool
-	width    int
-	height   int
-	styles   styles
+	cfg           config.Config
+	columns       []settingsColumn
+	input         textinput.Model
+	editing       int
+	save          SaveFunc
+	openURL       OpenURLFunc
+	err           error
+	status        string
+	saved         bool
+	quitting      bool
+	confirm       *ConfirmDialog
+	confirmAction rowKind
+	width         int
+	height        int
+	styles        styles
 }
 
 type styles struct {
@@ -170,6 +172,35 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok && m.confirm != nil {
+		if key.String() == "ctrl+c" {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		if key.String() == "backspace" || key.String() == "esc" {
+			m.confirm = nil
+			return m, nil
+		}
+		dialog, selected := m.confirm.Update(key)
+		m.confirm = &dialog
+		if selected {
+			action := m.confirmAction
+			m.confirm = nil
+			if dialog.Highlighted() == ConfirmYes {
+				switch action {
+				case rowSave:
+					if m.saveConfig() {
+						m.quitting = true
+						return m, tea.Quit
+					}
+				case rowQuit:
+					m.quitting = true
+					return m, tea.Quit
+				}
+			}
+		}
+		return m, nil
+	}
 	if key, ok := msg.(tea.KeyMsg); ok && m.editing >= 0 {
 		switch key.String() {
 		case "enter":
@@ -243,6 +274,14 @@ func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.styles.title.Render("termp settings"))
 	b.WriteString("\n\n")
+	if m.confirm != nil {
+		b.WriteString(m.confirm.View())
+		view := b.String()
+		if m.width > 0 {
+			return truncateBlock(view, m.width)
+		}
+		return view
+	}
 	b.WriteString(m.columnsView())
 	b.WriteByte('\n')
 	if m.err != nil {
@@ -522,13 +561,13 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 	case rowLink:
 		m.openFeedback()
 	case rowSave:
-		if m.saveConfig() {
-			m.quitting = true
-			return m, tea.Quit
-		}
+		dialog := NewConfirmDialog("Save changes and quit?", ConfirmYes)
+		m.confirm = &dialog
+		m.confirmAction = rowSave
 	case rowQuit:
-		m.quitting = true
-		return m, tea.Quit
+		dialog := NewConfirmDialog("Discard changes and quit?", ConfirmNo)
+		m.confirm = &dialog
+		m.confirmAction = rowQuit
 	}
 	return m, nil
 }
