@@ -29,6 +29,8 @@
 /coverage.*
 
 # ── Local dev / runtime ──────────────────────────────────────
+# Personal manual-test scratchpad + feedback — never pushed.
+/forDev/
 *.pid
 *.log
 *.local
