@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -33,6 +34,16 @@ func (s *failingReleaseSource) Latest(context.Context, string) (string, error) {
 	return "", errors.New("network must not be used")
 }
 
+type staticReleaseSource struct {
+	latest string
+	calls  int
+}
+
+func (s *staticReleaseSource) Latest(context.Context, string) (string, error) {
+	s.calls++
+	return s.latest, nil
+}
+
 type stubLatestChecker struct {
 	result updatepkg.Result
 	err    error
@@ -45,12 +56,13 @@ func (c stubLatestChecker) Latest(context.Context, string) (updatepkg.Result, er
 type recordingUpdateRunner struct {
 	command updatepkg.Command
 	calls   int
+	err     error
 }
 
 func (r *recordingUpdateRunner) Run(_ context.Context, command updatepkg.Command, _ io.Reader, _, _ io.Writer) error {
 	r.command = command
 	r.calls++
-	return nil
+	return r.err
 }
 
 var expectedCommands = []string{
@@ -283,6 +295,7 @@ func TestCommandUpdateAlertSuppressed(t *testing.T) {
 		{name: "config", command: "config", enabled: true, current: "1.0.0"},
 		{name: "watch once", command: "watch", args: []string{"--once"}, enabled: true, current: "1.0.0"},
 		{name: "disabled config", command: "start", enabled: false, current: "1.0.0"},
+		{name: "automatic updates", command: "start", enabled: true, current: "1.0.0"},
 		{name: "environment", command: "start", enabled: true, current: "1.0.0", envSet: true},
 		{name: "dev build", command: "start", enabled: true, current: "dev"},
 		{name: "config error", command: "start", enabled: true, current: "1.0.0", loadErr: errors.New("bad config")},
@@ -297,10 +310,73 @@ func TestCommandUpdateAlertSuppressed(t *testing.T) {
 			version = tt.current
 			cfg := config.Default()
 			cfg.UpdateCheck = tt.enabled
+			cfg.AutoUpdate = tt.name == "automatic updates"
 			var stderr bytes.Buffer
 			printCommandUpdateAlert(tt.command, tt.args, true, cfg, tt.loadErr, &stderr)
 			if got := stderr.String(); got != "" {
 				t.Fatalf("suppressed alert = %q", got)
+			}
+		})
+	}
+}
+
+func TestAutomaticUpdateDisabledDoesNothing(t *testing.T) {
+	source := &failingReleaseSource{}
+	checker := updatepkg.NewChecker(source, filepath.Join(t.TempDir(), "update-check.json"))
+	runner := &recordingUpdateRunner{}
+	runAutomaticUpdate(context.Background(), config.Default(), "1.0.0", checker, runner)
+	if source.calls != 0 || runner.calls != 0 {
+		t.Fatalf("disabled automatic update used source %d times and runner %d times", source.calls, runner.calls)
+	}
+}
+
+func TestAutomaticUpdateRunsInstallAwareUpdater(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		method updatepkg.InstallMethod
+		want   updatepkg.Command
+	}{
+		{name: "generic", method: updatepkg.InstallGeneric, want: updatepkg.Command{Name: "sh", Args: []string{"-c", updatepkg.GenericCommand}}},
+		{name: "homebrew", method: updatepkg.InstallHomebrew, want: updatepkg.Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = os.Unsetenv("NO_UPDATE_CHECK")
+			source := &staticReleaseSource{latest: "v1.1.0"}
+			checker := updatepkg.NewChecker(source, filepath.Join(t.TempDir(), "update-check.json"))
+			checker.DetectInstall = func() updatepkg.InstallMethod { return tt.method }
+			runner := &recordingUpdateRunner{}
+			cfg := config.Default()
+			cfg.AutoUpdate = true
+			runAutomaticUpdate(context.Background(), cfg, "1.0.0", checker, runner)
+			if source.calls != 1 || runner.calls != 1 || !reflect.DeepEqual(runner.command, tt.want) {
+				t.Fatalf("source calls = %d, runner = (%d, %#v), want (1, %#v)", source.calls, runner.calls, runner.command, tt.want)
+			}
+		})
+	}
+}
+
+func TestAutomaticUpdateFailuresDoNotEscape(t *testing.T) {
+	tests := []struct {
+		name   string
+		source updatepkg.ReleaseSource
+		runner *recordingUpdateRunner
+	}{
+		{name: "check", source: &failingReleaseSource{}, runner: &recordingUpdateRunner{}},
+		{name: "update", source: &staticReleaseSource{latest: "1.1.0"}, runner: &recordingUpdateRunner{err: errors.New("exec failed")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = os.Unsetenv("NO_UPDATE_CHECK")
+			checker := updatepkg.NewChecker(tt.source, filepath.Join(t.TempDir(), "update-check.json"))
+			checker.DetectInstall = func() updatepkg.InstallMethod { return updatepkg.InstallGeneric }
+			cfg := config.Default()
+			cfg.AutoUpdate = true
+			runAutomaticUpdate(context.Background(), cfg, "1.0.0", checker, tt.runner)
+			if tt.name == "check" && tt.runner.calls != 0 {
+				t.Fatal("failed check ran updater")
+			}
+			if tt.name == "update" && tt.runner.calls != 1 {
+				t.Fatal("failed updater was not invoked")
 			}
 		})
 	}

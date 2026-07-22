@@ -861,6 +861,7 @@ func settingsRows(tools []registry.Tool) []row {
 	global := []row{
 		toggle("Presence enabled", func(c config.Config) bool { return c.Enabled }, func(c *config.Config, v bool) { c.Enabled = v }),
 		text("Scan interval", func(c config.Config) string { return c.ScanInterval }, func(c *config.Config, v string) { c.ScanInterval = v }),
+		toggle("Automatic updates", func(c config.Config) bool { return c.AutoUpdate }, func(c *config.Config, v bool) { c.AutoUpdate = v }),
 	}
 	display := []row{
 		toggle("Tool name", func(c config.Config) bool { return c.Display.ToolName }, func(c *config.Config, v bool) { c.Display.ToolName = v }),

@@ -71,6 +71,20 @@ func TestModelTogglePinAndSave(t *testing.T) {
 	}
 }
 
+func TestModelAutomaticUpdateDefaultsOffAndTogglesOn(t *testing.T) {
+	model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
+	if model.Config().AutoUpdate {
+		t.Fatal("automatic updates should default off")
+	}
+	model = openCategory(t, model, "Global")
+	model.columns[1].cursor = findColumnRow(t, model, 1, rowToggle, "Automatic updates")
+	updated, _ := model.Update(key(" "))
+	model = updated.(Model)
+	if !model.Config().AutoUpdate {
+		t.Fatal("automatic updates should toggle on")
+	}
+}
+
 func TestModelTextEdit(t *testing.T) {
 	model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
 	model = openCategory(t, model, "Global")
@@ -139,7 +153,7 @@ func TestModelViewRendersMasterDetailColumnsAndFriendlyLabels(t *testing.T) {
 
 	model = openCategory(t, model, "Global")
 	view := model.View()
-	for _, want := range []string{"Global", "State / Value", "Presence enabled", "Scan interval", "› Presence enabled", "esc/left back"} {
+	for _, want := range []string{"Global", "State / Value", "Presence enabled", "Automatic updates", "Scan interval", "› Presence enabled", "esc/left back"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("Global detail View() missing %q:\n%s", want, view)
 		}

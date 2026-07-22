@@ -63,6 +63,7 @@ type Config struct {
 	Enabled              bool                    `toml:"enabled"`
 	StartAtLogin         bool                    `toml:"start_at_login"`
 	UpdateCheck          bool                    `toml:"update_check"`
+	AutoUpdate           bool                    `toml:"auto_update"`
 	ScanInterval         string                  `toml:"scan_interval"`
 	IdleClearTimeout     string                  `toml:"idle_clear_timeout"`
 	Pin                  string                  `toml:"pin"`
@@ -83,6 +84,7 @@ type fileConfig struct {
 	Enabled              bool                    `toml:"enabled"`
 	StartAtLogin         bool                    `toml:"start_at_login"`
 	UpdateCheck          bool                    `toml:"update_check"`
+	AutoUpdate           bool                    `toml:"auto_update"`
 	ScanInterval         string                  `toml:"scan_interval"`
 	IdleClearTimeout     string                  `toml:"idle_clear_timeout"`
 	Pin                  string                  `toml:"pin"`
@@ -134,6 +136,7 @@ func Default() Config {
 		Enabled:              true,
 		StartAtLogin:         true,
 		UpdateCheck:          true,
+		AutoUpdate:           false,
 		ScanInterval:         "3s",
 		IdleClearTimeout:     "20m",
 		HeadlinerIdleTimeout: "60s",
@@ -181,6 +184,7 @@ func AnnotatedSample() string {
 enabled = %t                # Master switch. When false, no Discord presence is shown.
 start_at_login = %t         # Start termp automatically when you log in.
 update_check = %t           # Check GitHub Releases for updates; NO_UPDATE_CHECK also disables this.
+auto_update = %t            # Silently install newer releases on daemon start. Off by default.
 scan_interval = %q        # How often termp scans local processes.
 idle_clear_timeout = %q       # Clear presence after this much CPU-idle time; "0" disables idle clear.
 pin = %q                    # Prefer this tool ID as the headliner when it is running.
@@ -212,7 +216,7 @@ url = %q       # URL for the CTA button.
 # match = { name = "lazygit" } # Match by executable name; regex is also supported.
 # image_url = "https://example.com/lazygit.png" # Logo URL used by Discord.
 # priority = 10              # Higher priority wins when multiple tools match.
-`, cfg.Enabled, cfg.StartAtLogin, cfg.UpdateCheck, cfg.ScanInterval, cfg.IdleClearTimeout, cfg.Pin, cfg.HeadlinerIdleTimeout,
+`, cfg.Enabled, cfg.StartAtLogin, cfg.UpdateCheck, cfg.AutoUpdate, cfg.ScanInterval, cfg.IdleClearTimeout, cfg.Pin, cfg.HeadlinerIdleTimeout,
 		cfg.ActivitySwitching, cfg.DetailsFormat, cfg.FeedbackURL,
 		cfg.Display.ToolName, cfg.Display.ElapsedTimer, cfg.Display.SmallImage, cfg.Display.Collection, cfg.Display.Buttons,
 		cfg.Privacy.ShowDirectory, cfg.Privacy.DirectoryBasenameOnly,
@@ -289,6 +293,7 @@ func LoadPath(path string) (Config, error) {
 		Enabled:              cfg.Enabled,
 		StartAtLogin:         cfg.StartAtLogin,
 		UpdateCheck:          cfg.UpdateCheck,
+		AutoUpdate:           cfg.AutoUpdate,
 		ScanInterval:         cfg.ScanInterval,
 		IdleClearTimeout:     cfg.IdleClearTimeout,
 		Pin:                  cfg.Pin,
@@ -308,6 +313,7 @@ func LoadPath(path string) (Config, error) {
 	cfg.Enabled = raw.Enabled
 	cfg.StartAtLogin = raw.StartAtLogin
 	cfg.UpdateCheck = raw.UpdateCheck
+	cfg.AutoUpdate = raw.AutoUpdate
 	cfg.ScanInterval = raw.ScanInterval
 	cfg.IdleClearTimeout = raw.IdleClearTimeout
 	cfg.Pin = raw.Pin
@@ -495,6 +501,7 @@ func saveDocument(cfg Config) map[string]any {
 		"enabled":                cfg.Enabled,
 		"start_at_login":         cfg.StartAtLogin,
 		"update_check":           cfg.UpdateCheck,
+		"auto_update":            cfg.AutoUpdate,
 		"scan_interval":          cfg.ScanInterval,
 		"idle_clear_timeout":     cfg.IdleClearTimeout,
 		"pin":                    cfg.Pin,
