@@ -130,6 +130,15 @@ creates the directory when it starts and reloads changes automatically. If an
 edit is invalid, it keeps the last good config; unknown settings appear as
 warnings in `termp status`.
 
+Presence and display settings hot-reload without restarting the daemon. This
+includes `scan_interval`, `idle_clear_timeout`, `pin`,
+`headliner_idle_timeout`, `activity_switching`, `custom_tools`, display and
+privacy settings, CTA settings, and per-tool overrides. A changed scan interval
+takes effect on the running scan ticker immediately. Reloading detector settings
+preserves continuous process episodes (identified by tool, PID, and process
+creation time), so elapsed timers do not restart for processes that remain
+present.
+
 Create a fully commented starter config with:
 
 ```sh
