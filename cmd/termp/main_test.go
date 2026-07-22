@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
@@ -22,11 +23,60 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 	"github.com/polter-dev/discord_terminal_presence/internal/service"
+	"github.com/polter-dev/discord_terminal_presence/internal/tui"
 	updatepkg "github.com/polter-dev/discord_terminal_presence/internal/update"
 )
 
 type failingReleaseSource struct {
 	calls int
+}
+
+type fakeSetupServiceManager struct {
+	installedExe   string
+	uninstallCalls int
+}
+
+func (m *fakeSetupServiceManager) Install(exe string) (service.State, error) {
+	m.installedExe = exe
+	return service.State{Supported: true, Installed: true}, nil
+}
+
+func (m *fakeSetupServiceManager) Uninstall() (service.State, error) {
+	m.uninstallCalls++
+	return service.State{Supported: true}, nil
+}
+
+func TestNewSetupModelWiresServiceUninstall(t *testing.T) {
+	cfg := config.Default()
+	cfg.StartAtLogin = true
+	manager := &fakeSetupServiceManager{}
+	var saved config.Config
+	model := newSetupModel(cfg, func(next config.Config) (string, error) {
+		saved = next
+		return "/tmp/config.toml", nil
+	}, manager, func() (string, error) {
+		t.Fatal("executable resolution should not run while disabling autostart")
+		return "", nil
+	})
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model = updated.(tui.SetupModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(tui.SetupModel)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(tui.SetupModel)
+	if cmd == nil || manager.uninstallCalls != 0 {
+		t.Fatal("setup confirmation should return a command without uninstalling inline")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(tui.SetupModel)
+
+	if manager.uninstallCalls != 1 || manager.installedExe != "" {
+		t.Fatalf("service calls = uninstall:%d install:%q, want 1/empty", manager.uninstallCalls, manager.installedExe)
+	}
+	if saved.StartAtLogin || model.SetupConfig().StartAtLogin || !model.Applied() {
+		t.Fatalf("setup result = saved:%t model:%t applied:%t", saved.StartAtLogin, model.SetupConfig().StartAtLogin, model.Applied())
+	}
 }
 
 func (s *failingReleaseSource) Latest(context.Context, string) (string, error) {

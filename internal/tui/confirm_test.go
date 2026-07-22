@@ -56,7 +56,7 @@ func TestConfirmDialogLeftRightAndEnter(t *testing.T) {
 func TestSetupLeftAndBackspaceDoNotNavigateBack(t *testing.T) {
 	for _, backKey := range []tea.KeyMsg{key("left"), {Type: tea.KeyBackspace}} {
 		t.Run(backKey.String(), func(t *testing.T) {
-			model := NewSetupModel(config.Default(), nil, nil, nil)
+			model := NewSetupModel(config.Default(), nil, nil, nil, nil)
 			updated, _ := model.Update(backKey)
 			model = updated.(SetupModel)
 			if model.step != 0 {
@@ -79,14 +79,19 @@ func TestSetupContinueConfirmApplyHappyPath(t *testing.T) {
 	model := NewSetupModel(config.Default(), func(config.Config) (string, error) {
 		saveCalls++
 		return "/tmp/config.toml", nil
-	}, func(string) error { return nil }, func() (string, error) { return "/usr/local/bin/termp", nil })
+	}, func(string) error { return nil }, nil, func() (string, error) { return "/usr/local/bin/termp", nil })
 
 	updated, _ := model.Update(key("enter"))
 	model = updated.(SetupModel)
 	if model.step != 1 || saveCalls != 0 || !strings.Contains(model.View(), "Apply these settings?") {
 		t.Fatalf("Apply should open confirmation without saving: step=%d saves=%d\n%s", model.step, saveCalls, model.View())
 	}
-	updated, _ = model.Update(key("enter"))
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(SetupModel)
+	if cmd == nil {
+		t.Fatal("confirmed Apply should return a command")
+	}
+	updated, _ = model.Update(cmd())
 	model = updated.(SetupModel)
 	if model.step != 2 || !model.Applied() || saveCalls != 1 {
 		t.Fatalf("confirmed Apply = step:%d applied:%t saves:%d, want 2/true/1", model.step, model.Applied(), saveCalls)
@@ -94,7 +99,7 @@ func TestSetupContinueConfirmApplyHappyPath(t *testing.T) {
 }
 
 func TestSetupApplyConfirmationNoReturnsToChoices(t *testing.T) {
-	model := NewSetupModel(config.Default(), nil, nil, nil)
+	model := NewSetupModel(config.Default(), nil, nil, nil, nil)
 	for _, press := range []string{"enter", "right", "enter"} {
 		updated, _ := model.Update(key(press))
 		model = updated.(SetupModel)
@@ -105,7 +110,7 @@ func TestSetupApplyConfirmationNoReturnsToChoices(t *testing.T) {
 }
 
 func TestSetupEscapeRequiresYesToQuit(t *testing.T) {
-	model := NewSetupModel(config.Default(), nil, nil, nil)
+	model := NewSetupModel(config.Default(), nil, nil, nil, nil)
 	updated, cmd := model.Update(key("esc"))
 	model = updated.(SetupModel)
 	if cmd != nil || model.exitConfirm == nil || model.exitConfirm.Highlighted() != ConfirmYes {
@@ -125,7 +130,7 @@ func TestSetupEscapeRequiresYesToQuit(t *testing.T) {
 	_, cmd = model.Update(key("enter"))
 	assertQuitCmd(t, cmd)
 
-	_, cmd = NewSetupModel(config.Default(), nil, nil, nil).Update(key("ctrl+c"))
+	_, cmd = NewSetupModel(config.Default(), nil, nil, nil, nil).Update(key("ctrl+c"))
 	assertQuitCmd(t, cmd)
 }
 

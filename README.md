@@ -68,7 +68,9 @@ Running `termp` by itself in a terminal opens the live `watch` view.
 | `termp update` | Checks for a newer release and updates using Homebrew, Go, or the shell installer as appropriate. |
 
 `termp watch`, `termp settings`, and the interactive setup wizard need a real
-terminal window.
+terminal window. Applying setup reconciles start-at-login in both directions: enabling it
+installs autostart, disabling an existing setting removes autostart, and leaving it unchanged
+does not run a service-manager operation.
 
 Global flags:
 
