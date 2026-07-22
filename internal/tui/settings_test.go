@@ -379,12 +379,68 @@ func TestModelViewNeverExceedsNarrowTerminalWidth(t *testing.T) {
 }
 
 func TestModelMenuSaveAndQuitActions(t *testing.T) {
-	t.Run("save failure remains open", func(t *testing.T) {
+	t.Run("save opens yes-defaulted confirmation and yes saves and quits", func(t *testing.T) {
+		saveCalls := 0
+		model := NewSettingsModel(config.Default(), nil, nil, func(config.Config) error {
+			saveCalls++
+			return nil
+		}, nil)
+		model.columns[0].cursor = findColumnRow(t, model, 0, rowSave, "Save & quit")
+
+		updated, cmd := model.Update(key("enter"))
+		model = updated.(Model)
+		if cmd != nil || model.quitting || saveCalls != 0 {
+			t.Fatal("selecting save should open confirmation without acting")
+		}
+		if model.confirm == nil || model.confirm.Highlighted() != ConfirmYes {
+			t.Fatal("save confirmation should default to YES")
+		}
+		if !strings.Contains(model.View(), "Save changes and quit?") {
+			t.Fatalf("save confirmation not rendered:\n%s", model.View())
+		}
+
+		updated, cmd = model.Update(key("enter"))
+		model = updated.(Model)
+		if cmd == nil || !model.quitting || saveCalls != 1 || !model.Saved() {
+			t.Fatal("confirming save should save and quit")
+		}
+	})
+
+	t.Run("save no and back return without saving", func(t *testing.T) {
+		for _, dismiss := range []string{"no", "backspace", "esc"} {
+			t.Run(dismiss, func(t *testing.T) {
+				saveCalls := 0
+				model := NewSettingsModel(config.Default(), nil, nil, func(config.Config) error {
+					saveCalls++
+					return nil
+				}, nil)
+				model.columns[0].cursor = findColumnRow(t, model, 0, rowSave, "Save & quit")
+				updated, _ := model.Update(key("enter"))
+				model = updated.(Model)
+
+				if dismiss == "no" {
+					updated, _ = model.Update(key("right"))
+					model = updated.(Model)
+					updated, _ = model.Update(key("enter"))
+				} else {
+					updated, _ = model.Update(key("backspace"))
+				}
+				model = updated.(Model)
+				if model.confirm != nil || model.quitting || saveCalls != 0 {
+					t.Fatal("dismissing save confirmation should return without acting")
+				}
+			})
+		}
+	})
+
+	t.Run("save failure remains open after confirmation", func(t *testing.T) {
 		model := NewSettingsModel(config.Default(), nil, nil, func(config.Config) error {
 			return errors.New("disk full")
 		}, nil)
 		model.columns[0].cursor = findColumnRow(t, model, 0, rowSave, "Save & quit")
 
+		updated, _ := model.Update(key("enter"))
+		model = updated.(Model)
 		updated, cmd := model.Update(key("enter"))
 		model = updated.(Model)
 		if cmd != nil || model.quitting {
@@ -395,7 +451,7 @@ func TestModelMenuSaveAndQuitActions(t *testing.T) {
 		}
 	})
 
-	t.Run("quit does not save", func(t *testing.T) {
+	t.Run("discard opens no-defaulted confirmation and yes quits without saving", func(t *testing.T) {
 		saved := false
 		model := NewSettingsModel(config.Default(), nil, nil, func(config.Config) error {
 			saved = true
@@ -405,11 +461,46 @@ func TestModelMenuSaveAndQuitActions(t *testing.T) {
 
 		updated, cmd := model.Update(key("enter"))
 		model = updated.(Model)
+		if cmd != nil || model.quitting || saved {
+			t.Fatal("selecting discard should open confirmation without acting")
+		}
+		if model.confirm == nil || model.confirm.Highlighted() != ConfirmNo {
+			t.Fatal("discard confirmation should default to NO")
+		}
+		if !strings.Contains(model.View(), "Discard changes and quit?") {
+			t.Fatalf("discard confirmation not rendered:\n%s", model.View())
+		}
+
+		updated, _ = model.Update(key("left"))
+		model = updated.(Model)
+		updated, cmd = model.Update(key("enter"))
+		model = updated.(Model)
 		if cmd == nil || !model.quitting {
-			t.Fatal("quit without saving should quit")
+			t.Fatal("confirming discard should quit")
 		}
 		if saved {
 			t.Fatal("quit without saving called save")
+		}
+	})
+
+	t.Run("discard no and back return without quitting", func(t *testing.T) {
+		for _, dismiss := range []string{"no", "backspace", "esc"} {
+			t.Run(dismiss, func(t *testing.T) {
+				model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
+				model.columns[0].cursor = findColumnRow(t, model, 0, rowQuit, "Quit without saving")
+				updated, _ := model.Update(key("enter"))
+				model = updated.(Model)
+
+				if dismiss == "no" {
+					updated, _ = model.Update(key("enter"))
+				} else {
+					updated, _ = model.Update(key("backspace"))
+				}
+				model = updated.(Model)
+				if model.confirm != nil || model.quitting {
+					t.Fatal("dismissing discard confirmation should return without quitting")
+				}
+			})
 		}
 	})
 }
@@ -754,6 +845,8 @@ func key(value string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyLeft}
 	case "right":
 		return tea.KeyMsg{Type: tea.KeyRight}
+	case "backspace":
+		return tea.KeyMsg{Type: tea.KeyBackspace}
 	case "esc":
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	default:
