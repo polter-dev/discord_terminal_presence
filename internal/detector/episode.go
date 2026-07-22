@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const episodeStateFile = "presence.json"
+const (
+	episodeStateFile       = "presence.json"
+	episodeAtimeSavePeriod = time.Minute
+)
 
 // Episode records one continuous process-presence interval.
 type Episode struct {
@@ -21,9 +24,10 @@ type Episode struct {
 
 // EpisodeStore holds active presence episodes keyed by tool, PID, and create time.
 type EpisodeStore struct {
-	mu       sync.RWMutex
-	Episodes map[string]Episode `json:"episodes"`
-	observed map[string]bool
+	mu        sync.RWMutex
+	Episodes  map[string]Episode `json:"episodes"`
+	observed  map[string]bool
+	persisted map[string]Episode
 }
 
 type diskEpisodes struct {
@@ -46,11 +50,16 @@ func EpisodeKey(toolID string, pid int32, createTime time.Time) string {
 }
 
 func NewEpisodeStore() *EpisodeStore {
-	return &EpisodeStore{Episodes: make(map[string]Episode), observed: make(map[string]bool)}
+	return &EpisodeStore{
+		Episodes:  make(map[string]Episode),
+		observed:  make(map[string]bool),
+		persisted: make(map[string]Episode),
+	}
 }
 
-// Observe returns the episode anchor for an eligible process. A loaded episode
-// is preserved only when its tty identity and atime history make continuity clear.
+// Observe returns the episode anchor and whether the store should be persisted.
+// A loaded episode is preserved only when its tty identity and atime history make
+// continuity clear. Atime-only saves are throttled against the last saved snapshot.
 func (s *EpisodeStore) Observe(key string, tty TTYInfo, now time.Time, timeout time.Duration) (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -60,13 +69,20 @@ func (s *EpisodeStore) Observe(key string, tty TTYInfo, now time.Time, timeout t
 	if s.observed == nil {
 		s.observed = make(map[string]bool)
 	}
+	if s.persisted == nil {
+		s.persisted = make(map[string]Episode)
+	}
 	if episode, ok := s.Episodes[key]; ok && s.observed[key] {
+		changed := false
 		if tty.State == TTYResolved && tty.AtimeKnown {
 			episode.TTY = tty.Path
 			episode.LastAtime = tty.Atime
 			s.Episodes[key] = episode
+			persisted := s.persisted[key]
+			changed = episode.TTY != persisted.TTY || persisted.LastAtime.IsZero() ||
+				episode.LastAtime.Sub(persisted.LastAtime) >= episodeAtimeSavePeriod
 		}
-		return episode.PresentSince, false
+		return episode.PresentSince, changed
 	}
 
 	anchor := now
@@ -100,6 +116,7 @@ func (s *EpisodeStore) EndAbsent(eligible map[string]struct{}) bool {
 		if _, ok := eligible[key]; !ok {
 			delete(s.Episodes, key)
 			delete(s.observed, key)
+			delete(s.persisted, key)
 			changed = true
 		}
 	}
@@ -121,6 +138,7 @@ func LoadEpisodeStore(path string) (*EpisodeStore, error) {
 	store := NewEpisodeStore()
 	for key, episode := range disk.Episodes {
 		store.Episodes[key] = episode
+		store.persisted[key] = episode
 	}
 	return store, nil
 }
@@ -160,5 +178,18 @@ func SaveEpisodeStore(path string, store *EpisodeStore) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	store.markPersisted(snapshot)
+	return nil
+}
+
+func (s *EpisodeStore) markPersisted(snapshot diskEpisodes) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persisted = make(map[string]Episode, len(snapshot.Episodes))
+	for key, episode := range snapshot.Episodes {
+		s.persisted[key] = episode
+	}
 }

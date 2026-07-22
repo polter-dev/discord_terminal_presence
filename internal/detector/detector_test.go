@@ -559,6 +559,65 @@ func TestEpisodePersistenceRoundTripAndCorruptFile(t *testing.T) {
 	}
 }
 
+func TestEpisodeAtimeUpdatesArePersistedAtMostOncePerMinute(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "presence.json")
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))
+	store := NewEpisodeStore()
+	tty := TTYInfo{State: TTYResolved, Path: "/dev/ttys007", Atime: base, AtimeKnown: true}
+
+	if _, changed := store.Observe(key, tty, base, 20*time.Minute); !changed {
+		t.Fatal("new episode was not dirty")
+	}
+	if err := SaveEpisodeStore(path, store); err != nil {
+		t.Fatal(err)
+	}
+
+	tty.Atime = base.Add(30 * time.Second)
+	if _, changed := store.Observe(key, tty, tty.Atime, 20*time.Minute); changed {
+		t.Fatal("sub-minute atime advance should be throttled")
+	}
+	tty.Atime = base.Add(time.Minute)
+	if _, changed := store.Observe(key, tty, tty.Atime, 20*time.Minute); !changed {
+		t.Fatal("minute atime advance was not marked dirty")
+	}
+	if err := SaveEpisodeStore(path, store); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadEpisodeStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Episodes[key].LastAtime; !got.Equal(tty.Atime) {
+		t.Fatalf("saved LastAtime = %s, want %s", got, tty.Atime)
+	}
+	crashRecoveryAtime := tty.Atime.Add(20 * time.Minute)
+	crashTTY := tty
+	crashTTY.Atime = crashRecoveryAtime
+	anchor, _ := loaded.Observe(key, crashTTY, crashRecoveryAtime, 20*time.Minute)
+	if !anchor.Equal(base) {
+		t.Fatalf("crash recovery anchor = %s, want %s", anchor, base)
+	}
+}
+
+func TestEpisodeTTYChangeIsImmediatelyDirty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "presence.json")
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))
+	store := NewEpisodeStore()
+	tty := TTYInfo{State: TTYResolved, Path: "/dev/ttys007", Atime: base, AtimeKnown: true}
+	store.Observe(key, tty, base, 20*time.Minute)
+	if err := SaveEpisodeStore(path, store); err != nil {
+		t.Fatal(err)
+	}
+
+	tty.Path = "/dev/ttys008"
+	if _, changed := store.Observe(key, tty, base, 20*time.Minute); !changed {
+		t.Fatal("TTY identity change was not marked dirty")
+	}
+}
+
 func TestEpisodeRestartAfterAtimeGapStartsNewAnchor(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))

@@ -222,6 +222,7 @@ pairs that replace that tool's defaults.
 | `display_name` | string | yes | Name shown in Discord. |
 | `match.name` | string | one match | Exact program name, ignoring case. |
 | `match.regex` | string | one match | Pattern matched against the program path and command line, ignoring case. |
+| `exclude` | string | no | Pattern that rejects matching process paths or command lines, ignoring case. |
 | `image_url` | string | one image | URL of an image to use. |
 | `image_key` | string | one image | Key of an image uploaded to Discord. |
 | `icon_slug` | string | one image | Logo name that termp looks up automatically. |

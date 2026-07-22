@@ -103,6 +103,7 @@ type customTool struct {
 	ID          string      `toml:"id"`
 	DisplayName string      `toml:"display_name"`
 	Match       customMatch `toml:"match"`
+	Exclude     string      `toml:"exclude"`
 	ImageKey    string      `toml:"image_key"`
 	ImageURL    string      `toml:"image_url"`
 	IconSlug    string      `toml:"icon_slug"`
@@ -214,6 +215,7 @@ url = %q       # URL for the CTA button.
 # id = "lazygit"            # Stable tool ID.
 # display_name = "lazygit"  # Name shown in Discord.
 # match = { name = "lazygit" } # Match by executable name; regex is also supported.
+# exclude = "--helper"       # Optional regex rejecting helper processes by path or command line.
 # image_url = "https://example.com/lazygit.png" # Logo URL used by Discord.
 # priority = 10              # Higher priority wins when multiple tools match.
 `, cfg.Enabled, cfg.StartAtLogin, cfg.UpdateCheck, cfg.AutoUpdate, cfg.ScanInterval, cfg.IdleClearTimeout, cfg.Pin, cfg.HeadlinerIdleTimeout,
@@ -348,6 +350,7 @@ func convertCustomTools(raw []customTool) []registry.CustomTool {
 				Name:  tool.Match.Name,
 				Regex: tool.Match.Regex,
 			},
+			Exclude:    tool.Exclude,
 			ImageKey:   tool.ImageKey,
 			ImageURL:   tool.ImageURL,
 			IconSlug:   tool.IconSlug,
@@ -587,6 +590,7 @@ func saveCustomTools(tools []registry.CustomTool) []map[string]any {
 				"name":  tool.Match.Name,
 				"regex": tool.Match.Regex,
 			},
+			"exclude":     tool.Exclude,
 			"image_key":   tool.ImageKey,
 			"image_url":   tool.ImageURL,
 			"icon_slug":   tool.IconSlug,
