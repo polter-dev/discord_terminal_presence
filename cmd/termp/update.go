@@ -77,7 +77,7 @@ func runAutomaticUpdate(ctx context.Context, cfg config.Config, current string, 
 	defer cancelUpdate()
 	// Homebrew owns Homebrew-installed binaries, so PerformUpdate delegates to
 	// `brew upgrade --cask` instead of replacing the executable directly.
-	if err := updatepkg.PerformUpdate(updateCtx, result.Method, runner, nil, io.Discard, io.Discard); err != nil {
+	if err := updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, nil, io.Discard, io.Discard); err != nil {
 		debugf("automatic update skipped: %v", err)
 		return
 	}
@@ -131,7 +131,7 @@ func runUpdate(checkCtx, updateCtx context.Context, current string, checker late
 		return nil
 	}
 	fmt.Fprintf(stdout, "Updating termp from %s to %s...\n", current, result.Latest)
-	return updatepkg.PerformUpdate(updateCtx, result.Method, runner, stdin, stdout, stderr)
+	return updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, stdin, stdout, stderr)
 }
 
 func formatUpdateNotice(result updatepkg.Result, renderer *lipgloss.Renderer, width int) string {

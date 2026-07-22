@@ -20,6 +20,17 @@ type fakeSource struct {
 	calls  int
 }
 
+type recordingRunner struct {
+	command Command
+	calls   int
+}
+
+func (r *recordingRunner) Run(_ context.Context, command Command, _ io.Reader, _, _ io.Writer) error {
+	r.calls++
+	r.command = command
+	return nil
+}
+
 func (s *fakeSource) Latest(context.Context, string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -60,6 +71,46 @@ func TestIsNewerSemver(t *testing.T) {
 				t.Fatalf("IsNewer(%q, %q) = %t, want %t", tt.current, tt.latest, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGenericCommandPinsInstallerAndVersionToReleaseTag(t *testing.T) {
+	const tag = "v1.2.3"
+	command := GenericCommand(tag)
+	if strings.Contains(command, "/main/") {
+		t.Fatalf("generic command uses mutable main branch: %q", command)
+	}
+	if want := "raw.githubusercontent.com/polter-dev/discord_terminal_presence/" + tag + "/install.sh"; !strings.Contains(command, want) {
+		t.Fatalf("generic command = %q, want tagged installer URL containing %q", command, want)
+	}
+	if !strings.Contains(command, "VERSION="+tag+" sh") {
+		t.Fatalf("generic command = %q, want installer version pinned to %q", command, tag)
+	}
+}
+
+func TestGenericUpdateRejectsUnsafeReleaseTagsWithoutRunning(t *testing.T) {
+	for _, tag := range []string{"", "latest", "v1.2.3; id", "../v1.2.3", "v1.2.3\nmain"} {
+		t.Run(strings.ReplaceAll(tag, "/", "_"), func(t *testing.T) {
+			runner := &recordingRunner{}
+			err := PerformUpdate(context.Background(), InstallGeneric, tag, runner, nil, io.Discard, io.Discard)
+			if err == nil {
+				t.Fatalf("PerformUpdate() accepted unsafe release tag %q", tag)
+			}
+			if runner.calls != 0 {
+				t.Fatalf("PerformUpdate() ran command for unsafe release tag %q", tag)
+			}
+		})
+	}
+}
+
+func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
+	runner := &recordingRunner{}
+	if err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", runner, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want := Command{Name: "sh", Args: []string{"-c", GenericCommand("v2.3.4")}}
+	if runner.calls != 1 || runner.command.Name != want.Name || strings.Join(runner.command.Args, "\x00") != strings.Join(want.Args, "\x00") {
+		t.Fatalf("runner = (%d, %#v), want (1, %#v)", runner.calls, runner.command, want)
 	}
 }
 
@@ -199,8 +250,12 @@ func TestCheckerChecksAtMostOncePerProcess(t *testing.T) {
 	checker := NewChecker(source, filepath.Join(t.TempDir(), "update.json"))
 	checker.DetectInstall = func() InstallMethod { return InstallGeneric }
 	for range 2 {
-		if _, ok := checker.Check(context.Background(), "1.0.0", true); !ok {
+		result, ok := checker.Check(context.Background(), "1.0.0", true)
+		if !ok {
 			t.Fatal("expected update")
+		}
+		if result.Command != GenericCommand("v2.0.0") {
+			t.Fatalf("generic update command = %q, want %q", result.Command, GenericCommand("v2.0.0"))
 		}
 	}
 	if source.callCount() != 1 {

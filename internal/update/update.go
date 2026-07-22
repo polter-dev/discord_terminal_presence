@@ -22,9 +22,9 @@ const (
 	cacheLifetime    = 24 * time.Hour
 	maxReleaseBody   = 1 << 20
 
-	BrewCommand    = "brew upgrade --cask polter-dev/tap/termp"
-	GoCommand      = "go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"
-	GenericCommand = "curl -fsSL https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/main/install.sh | sh"
+	BrewCommand         = "brew upgrade --cask polter-dev/tap/termp"
+	GoCommand           = "go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"
+	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
 )
 
 // InstallMethod identifies how the running binary was installed.
@@ -236,7 +236,7 @@ func (c *Checker) Latest(ctx context.Context, current string) (Result, error) {
 		Current: current,
 		Latest:  latest,
 		Method:  method,
-		Command: CommandForMethod(method),
+		Command: CommandForMethod(method, latest),
 	}, nil
 }
 
@@ -316,7 +316,7 @@ func (c *Checker) resultFor(current, latest string) (Result, bool) {
 		Current: current,
 		Latest:  latest,
 		Method:  method,
-		Command: CommandForMethod(method),
+		Command: CommandForMethod(method, latest),
 	}, true
 }
 
@@ -384,41 +384,64 @@ func writeCache(path string, entry cacheEntry) error {
 	return os.Rename(tmpPath, path)
 }
 
+// GenericCommand returns a command that fetches the installer from the exact
+// release tag being installed. Release tags have already been validated as
+// semantic versions, so they cannot add shell syntax to this command.
+func GenericCommand(tag string) string {
+	if !validReleaseTag(tag) {
+		return ""
+	}
+	return fmt.Sprintf("curl -fsSL "+genericInstallerURL+" | VERSION=%s sh", tag, tag)
+}
+
+func validReleaseTag(tag string) bool {
+	if tag == "" || tag != strings.TrimSpace(tag) {
+		return false
+	}
+	_, ok := parseVersion(tag)
+	return ok
+}
+
 // CommandForMethod returns the supported update command for an install method.
-func CommandForMethod(method InstallMethod) string {
+func CommandForMethod(method InstallMethod, tag string) string {
 	switch method {
 	case InstallHomebrew:
 		return BrewCommand
 	case InstallGo:
 		return GoCommand
 	default:
-		return GenericCommand
+		return GenericCommand(tag)
 	}
 }
 
 // UpdateCommandForMethod centralizes executable construction for updates.
-// The generic command retains the existing installer pipeline trust model;
-// issue #84 will harden that path separately.
-func UpdateCommandForMethod(method InstallMethod) Command {
+func UpdateCommandForMethod(method InstallMethod, tag string) (Command, error) {
 	switch method {
 	case InstallHomebrew:
-		return Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}
+		return Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}, nil
 	case InstallGo:
-		return Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"}}
+		return Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"}}, nil
 	default:
-		return Command{Name: "sh", Args: []string{"-c", GenericCommand}}
+		command := GenericCommand(tag)
+		if command == "" {
+			return Command{}, fmt.Errorf("invalid release tag %q", tag)
+		}
+		return Command{Name: "sh", Args: []string{"-c", command}}, nil
 	}
 }
 
 // PerformUpdate executes the install-aware updater with streamed I/O. It is
 // intentionally separate from release checking for reuse by opt-in automation.
-func PerformUpdate(ctx context.Context, method InstallMethod, runner CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {
+func PerformUpdate(ctx context.Context, method InstallMethod, tag string, runner CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
-	command := UpdateCommandForMethod(method)
+	command, err := UpdateCommandForMethod(method, tag)
+	if err != nil {
+		return err
+	}
 	if err := runner.Run(ctx, command, stdin, stdout, stderr); err != nil {
-		return fmt.Errorf("run %s: %w", CommandForMethod(method), err)
+		return fmt.Errorf("run %s: %w", CommandForMethod(method, tag), err)
 	}
 	return nil
 }
