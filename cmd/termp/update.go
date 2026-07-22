@@ -16,11 +16,16 @@ import (
 )
 
 const updateCheckTimeout = 2 * time.Second
+const automaticUpdateTimeout = 5 * time.Minute
 
 var releaseChecker = updatepkg.NewChecker(nil, updatepkg.DefaultCachePath())
 
 type latestChecker interface {
 	Latest(context.Context, string) (updatepkg.Result, error)
+}
+
+type automaticUpdateChecker interface {
+	Check(context.Context, string, bool) (updatepkg.Result, bool)
 }
 
 func printAvailableUpdate(cfg config.Config, loadErr error) {
@@ -43,7 +48,7 @@ func printAvailableUpdate(cfg config.Config, loadErr error) {
 }
 
 func printCommandUpdateAlert(command string, args []string, interactive bool, cfg config.Config, loadErr error, stderr io.Writer) {
-	if loadErr != nil || !eligibleForUpdateAlert(command, args, interactive) {
+	if loadErr != nil || cfg.AutoUpdate || !eligibleForUpdateAlert(command, args, interactive) {
 		return
 	}
 	result, ok := releaseChecker.CachedCheck(version, cfg.UpdateCheck)
@@ -51,6 +56,32 @@ func printCommandUpdateAlert(command string, args []string, interactive bool, cf
 		return
 	}
 	fmt.Fprintf(stderr, "A new version (%s) is available — run `termp update`\n", result.Latest)
+}
+
+// runAutomaticUpdate is fail-open: startup callers never receive an update
+// error. They run it asynchronously so even a slow package manager cannot
+// delay the daemon. The installed release is used on the next daemon start.
+func runAutomaticUpdate(ctx context.Context, cfg config.Config, current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner) {
+	if !cfg.AutoUpdate || !cfg.UpdateCheck || checker == nil {
+		return
+	}
+	checkCtx, cancelCheck := context.WithTimeout(ctx, updateCheckTimeout)
+	result, ok := checker.Check(checkCtx, current, cfg.UpdateCheck)
+	cancelCheck()
+	if !ok {
+		debugf("automatic update check skipped or found no newer release")
+		return
+	}
+
+	updateCtx, cancelUpdate := context.WithTimeout(ctx, automaticUpdateTimeout)
+	defer cancelUpdate()
+	// Homebrew owns Homebrew-installed binaries, so PerformUpdate delegates to
+	// `brew upgrade --cask` instead of replacing the executable directly.
+	if err := updatepkg.PerformUpdate(updateCtx, result.Method, runner, nil, io.Discard, io.Discard); err != nil {
+		debugf("automatic update skipped: %v", err)
+		return
+	}
+	debugf("automatic update installed %s; it will take effect on next start", result.Latest)
 }
 
 func eligibleForUpdateAlert(command string, args []string, interactive bool) bool {

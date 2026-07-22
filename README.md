@@ -119,7 +119,8 @@ Either setting is enough.
 Run `termp update` to check for a newer release and update using the detected
 install method. Homebrew installs use `brew upgrade`, source installs use
 `go install ...@latest`, and shell/binary installs reuse the install script.
-termp does not silently update itself.
+Automatic updates are opt-in with `auto_update = true`; they run silently when
+`termp start` launches, never delay daemon startup, and take effect next start.
 
 ## Configuration
 
@@ -142,6 +143,7 @@ termp config init --force  # replace an existing config
 |---|---|---|---|
 | `enabled` | bool | `true` | Main on/off switch. When false, no presence is shown. |
 | `update_check` | bool | `true` | Checks GitHub Releases in `termp status` and `termp version`; set false to disable. |
+| `auto_update` | bool | `false` | Silently installs newer releases when `termp start` launches; the update takes effect next start. |
 | `scan_interval` | duration | `"3s"` | How often termp scans running tools. Invalid or zero values fall back to 3 seconds. |
 | `idle_clear_timeout` | duration | `"20m"` | Clears presence after all matched tools show no CPU activity for this long. Set `"0"` to disable; quiet work can appear idle. |
 | `pin` | string | `""` | ID of a running tool that should always take the spotlight. |
@@ -204,6 +206,7 @@ then `image_key`, then `icon_slug`.
 ```toml
 enabled = true
 update_check = true
+auto_update = false
 scan_interval = "3s"
 idle_clear_timeout = "20m"
 pin = "codex-cli"

@@ -46,7 +46,7 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.Path != path {
 		t.Fatalf("path = %q, want %q", cfg.Path, path)
 	}
-	if !cfg.Enabled || !cfg.StartAtLogin || !cfg.UpdateCheck || cfg.ScanInterval != "3s" {
+	if !cfg.Enabled || !cfg.StartAtLogin || !cfg.UpdateCheck || cfg.AutoUpdate || cfg.ScanInterval != "3s" {
 		t.Fatalf("unexpected global defaults: %#v", cfg)
 	}
 	if cfg.IdleClearTimeout != "20m" || cfg.DetailsFormat != "Using {tool}" {
@@ -86,6 +86,7 @@ func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
 		"enabled = true",
 		"start_at_login = true",
 		"update_check = true",
+		"auto_update = false",
 		"scan_interval = \"3s\"",
 		"idle_clear_timeout = \"20m\"",
 		"Clear presence after this much CPU-idle time",
@@ -146,6 +147,7 @@ func TestLoadValidConfig(t *testing.T) {
 enabled = true
 start_at_login = false
 update_check = false
+auto_update = true
 scan_interval = "5s"
 idle_clear_timeout = "8h"
 pin = "codex-cli"
@@ -189,7 +191,7 @@ priority = 5
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.StartAtLogin || cfg.UpdateCheck || cfg.ScanInterval != "5s" || cfg.Display.ToolName {
+	if cfg.StartAtLogin || cfg.UpdateCheck || !cfg.AutoUpdate || cfg.ScanInterval != "5s" || cfg.Display.ToolName {
 		t.Fatalf("unexpected loaded values: %#v", cfg)
 	}
 	if cfg.IdleClearTimeout != "8h" || cfg.DetailsFormat != "Working in {tool}" {
@@ -503,6 +505,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	cfg.Enabled = false
 	cfg.StartAtLogin = false
 	cfg.UpdateCheck = false
+	cfg.AutoUpdate = true
 	cfg.ScanInterval = "9s"
 	cfg.IdleClearTimeout = "6h"
 	cfg.Pin = "codex-cli"
@@ -543,7 +546,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Enabled || loaded.StartAtLogin || loaded.UpdateCheck || loaded.ScanInterval != "9s" || loaded.Pin != "codex-cli" {
+	if loaded.Enabled || loaded.StartAtLogin || loaded.UpdateCheck || !loaded.AutoUpdate || loaded.ScanInterval != "9s" || loaded.Pin != "codex-cli" {
 		t.Fatalf("globals did not round-trip: %#v", loaded)
 	}
 	if loaded.IdleClearTimeout != "6h" || loaded.DetailsFormat != "{tool} in {dir}" {

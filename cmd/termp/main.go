@@ -24,6 +24,7 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 	"github.com/polter-dev/discord_terminal_presence/internal/service"
 	"github.com/polter-dev/discord_terminal_presence/internal/tui"
+	updatepkg "github.com/polter-dev/discord_terminal_presence/internal/update"
 	usagepkg "github.com/polter-dev/discord_terminal_presence/internal/usage"
 )
 
@@ -343,17 +344,19 @@ func start(args []string) error {
 		log.Print(warning)
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer cancel()
+	// Updating is best-effort and asynchronous: it is triggered before the run
+	// loop, but can never delay or prevent daemon startup.
+	go runAutomaticUpdate(ctx, cfg, version, releaseChecker, updatepkg.ExecRunner{})
+
 	if err := config.EnsureConfigDir(cfg.Path); err == nil {
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-		defer cancel()
 		if err := manager.Watch(ctx); err != nil {
 			log.Printf("config watch disabled: %v", err)
 		}
 		return run(ctx, manager)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer cancel()
 	return run(ctx, manager)
 }
 
