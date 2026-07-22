@@ -17,6 +17,10 @@ func openPIDFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 }
 
+func lockPIDFile(file *os.File) error {
+	return syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
 func validatePIDFileHandle(_ *os.File, _ string) error {
 	return nil
 }

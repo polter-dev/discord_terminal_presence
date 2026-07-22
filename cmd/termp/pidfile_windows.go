@@ -12,14 +12,26 @@ import (
 )
 
 func createPIDFile(path string) (*os.File, error) {
-	return openWindowsPIDFile(path, windows.GENERIC_WRITE, windows.CREATE_NEW)
+	return openWindowsPIDFile(path, windows.GENERIC_WRITE, windows.CREATE_NEW, windows.FILE_SHARE_READ)
 }
 
 func openPIDFile(path string) (*os.File, error) {
-	return openWindowsPIDFile(path, windows.GENERIC_READ, windows.OPEN_EXISTING)
+	return openWindowsPIDFile(path, windows.GENERIC_READ, windows.OPEN_EXISTING, windows.FILE_SHARE_READ|windows.FILE_SHARE_DELETE)
 }
 
-func openWindowsPIDFile(path string, access, disposition uint32) (*os.File, error) {
+func lockPIDFile(file *os.File) error {
+	var overlapped windows.Overlapped
+	return windows.LockFileEx(
+		windows.Handle(file.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,
+		1,
+		0,
+		&overlapped,
+	)
+}
+
+func openWindowsPIDFile(path string, access, disposition, shareMode uint32) (*os.File, error) {
 	pathp, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
@@ -27,7 +39,7 @@ func openWindowsPIDFile(path string, access, disposition uint32) (*os.File, erro
 	handle, err := windows.CreateFile(
 		pathp,
 		access,
-		windows.FILE_SHARE_READ,
+		shareMode,
 		nil,
 		disposition,
 		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
