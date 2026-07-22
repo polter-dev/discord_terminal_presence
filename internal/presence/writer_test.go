@@ -165,6 +165,65 @@ func TestWriterThrottlesAndCoalescesActivityUpdates(t *testing.T) {
 	<-done
 }
 
+func TestWriterHeartbeatFailureDefersPendingWriteUntilRetry(t *testing.T) {
+	client := newFakeClient(nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(5*time.Second),
+		WithMinWriteInterval(15*time.Second),
+		withReapplyInterval(15*time.Second),
+		withWriteClock(clock),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "first"})
+	client.waitForSet(t, 1)
+	clock.waitForTimerCount(t, 1) // reapply at t=15s
+
+	client.setSetErrors(errors.New("heartbeat failed"), nil)
+	sendActivity(t, ctx, activities, &Activity{Details: "pending"})
+	clock.waitForTimerCount(t, 2) // throttled write also at t=15s
+
+	clock.AdvanceTimer(t, 0, 15*time.Second)
+	client.waitForSet(t, 2)
+	client.waitForLogout(t, 1)
+	clock.waitForTimerCount(t, 3) // retry at t=20s
+
+	if !clock.timerStopped(t, 1) {
+		t.Fatal("due throttled-write timer remains active after heartbeat failure")
+	}
+	clock.Advance(5*time.Second - time.Nanosecond)
+	if got := client.loginCount(); got != 1 {
+		t.Fatalf("login count before retry = %d, want 1", got)
+	}
+	if got := len(client.activities()); got != 2 {
+		t.Fatalf("set attempts before retry = %d, want 2", got)
+	}
+
+	clock.Advance(time.Nanosecond)
+	client.waitForSet(t, 3)
+	if got := client.loginCount(); got != 2 {
+		t.Fatalf("login count after retry = %d, want 2", got)
+	}
+	if got := client.activities()[2].Details; got != "pending" {
+		t.Fatalf("activity after retry = %q, want pending", got)
+	}
+
+	cancel()
+	<-done
+}
+
 func TestWriterClearsPromptlyWhileUpdateIsThrottled(t *testing.T) {
 	client := newFakeClient(nil)
 	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
@@ -335,6 +394,35 @@ func (f *fakeWriteClock) Advance(d time.Duration) {
 	for _, timer := range timers {
 		timer.fire(now)
 	}
+}
+
+func (f *fakeWriteClock) AdvanceTimer(t *testing.T, index int, d time.Duration) {
+	t.Helper()
+	f.mu.Lock()
+	f.now = f.now.Add(d)
+	now := f.now
+	if index < 0 || index >= len(f.timers) {
+		f.mu.Unlock()
+		t.Fatalf("timer index %d out of range [0, %d)", index, len(f.timers))
+	}
+	timer := f.timers[index]
+	f.mu.Unlock()
+	timer.fire(now)
+}
+
+func (f *fakeWriteClock) timerStopped(t *testing.T, index int) bool {
+	t.Helper()
+	f.mu.Lock()
+	if index < 0 || index >= len(f.timers) {
+		f.mu.Unlock()
+		t.Fatalf("timer index %d out of range [0, %d)", index, len(f.timers))
+	}
+	timer := f.timers[index]
+	f.mu.Unlock()
+
+	timer.mu.Lock()
+	defer timer.mu.Unlock()
+	return timer.stopped
 }
 
 func (f *fakeWriteClock) waitForTimerCount(t *testing.T, count int) {

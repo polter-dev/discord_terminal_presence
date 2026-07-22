@@ -183,15 +183,6 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		reapplyC = reapply.C()
 	}
 
-	scheduleRetry := func() {
-		stopRetry()
-		stopReapply()
-		delay := w.retryDelay.Next()
-		w.debugf("presence reconnect scheduled in %s", delay)
-		retry = w.clock.NewTimer(delay)
-		retryC = retry.C()
-	}
-
 	stopWrite := func() {
 		if write == nil {
 			return
@@ -199,6 +190,16 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		write.Stop()
 		write = nil
 		writeC = nil
+	}
+
+	scheduleRetry := func() {
+		stopRetry()
+		stopWrite()
+		stopReapply()
+		delay := w.retryDelay.Next()
+		w.debugf("presence reconnect scheduled in %s", delay)
+		retry = w.clock.NewTimer(delay)
+		retryC = retry.C()
 	}
 
 	scheduleWrite := func(delay time.Duration) {
@@ -255,6 +256,10 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 
 	requestApply := func() {
 		if desired == nil {
+			return
+		}
+		if retryC != nil {
+			pending = true
 			return
 		}
 		if w.minWriteInterval <= 0 || !wrote {
