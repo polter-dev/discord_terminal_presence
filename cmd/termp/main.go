@@ -591,15 +591,8 @@ func stop(args []string) error {
 		removePID(pidPath)
 		return errors.New("stale PID file removed; daemon is not running")
 	}
-	if !processLooksLikeTermp(pid) {
-		return fmt.Errorf("refusing to signal pid %d: process is not a termp process owned by the current user", pid)
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	if err := process.Signal(syscall.SIGTERM); err != nil {
-		return err
+	if err := signalTermpProcess(pid); err != nil {
+		return fmt.Errorf("refusing to signal pid %d: %w", pid, err)
 	}
 	removePID(pidPath)
 	serviceState := service.NewManager().Status()
@@ -1005,6 +998,10 @@ func openValidatedPIDFile(path string) (*os.File, error) {
 		file.Close()
 		return nil, err
 	}
+	if err := validatePIDFileHandle(file, path); err != nil {
+		file.Close()
+		return nil, err
+	}
 	return file, nil
 }
 
@@ -1017,58 +1014,6 @@ func validatePIDFileInfo(info os.FileInfo, path string) error {
 
 func removePID(path string) {
 	_ = os.Remove(path)
-}
-
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return process.Signal(syscall.Signal(0)) == nil
-}
-
-func processLooksLikeTermp(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		return false
-	}
-	wantName := filepath.Base(executable)
-
-	// Linux exposes both ownership and the executable without parsing a
-	// mutable command line.
-	procPath := filepath.Join("/proc", strconv.Itoa(pid))
-	if info, err := os.Stat(procPath); err == nil {
-		if requireCurrentUserOwner(info, "process") != nil {
-			return false
-		}
-		target, err := os.Readlink(filepath.Join(procPath, "exe"))
-		if err != nil {
-			return false
-		}
-		return filepath.Base(strings.TrimSuffix(target, " (deleted)")) == wantName
-	}
-
-	// macOS and other Unix platforms do not generally expose /proc. Ask ps
-	// for the effective owner and executable name, never the command line.
-	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "uid=", "-o", "comm=").Output()
-	if err != nil {
-		return false
-	}
-	fields := strings.Fields(string(output))
-	if len(fields) < 2 {
-		return false
-	}
-	uid, err := strconv.Atoi(fields[0])
-	if err != nil || uid != os.Geteuid() {
-		return false
-	}
-	return filepath.Base(strings.Join(fields[1:], " ")) == wantName
 }
 
 func isTerminal(file *os.File) bool {
