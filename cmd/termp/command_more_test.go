@@ -191,6 +191,38 @@ func TestSetupNonInteractiveWritesDefaults(t *testing.T) {
 	}
 }
 
+func TestSetupNonInteractivePreservesExistingConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", root)
+	path := config.DefaultPath()
+	enabled := false
+	cfg := config.Default()
+	cfg.Enabled = false
+	cfg.AutoUpdate = true
+	cfg.ScanInterval = "11s"
+	cfg.Display.ToolName = false
+	cfg.Privacy.DirectoryAllowlist = []string{"/work/private"}
+	cfg.Tools = map[string]config.ToolOverride{"codex-cli": {Enabled: &enabled}}
+	cfg.CustomTools = []registry.CustomTool{{
+		ID: "custom", DisplayName: "Custom", Match: registry.CustomMatch{Name: "custom"}, ImageKey: "custom",
+	}}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := captureStdout(t, func() error { return setup(nil) }); err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.LoadPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled || !got.AutoUpdate || got.ScanInterval != "11s" || got.Display.ToolName ||
+		len(got.Privacy.DirectoryAllowlist) != 1 || len(got.Tools) != 1 || len(got.CustomTools) != 1 || got.CustomTools[0].ID != "custom" {
+		t.Fatalf("non-interactive setup changed existing config: %+v", got)
+	}
+}
+
 func TestCompletionScriptRejectsUnknownShell(t *testing.T) {
 	if _, err := completionScript("powershell"); err == nil || !strings.Contains(err.Error(), "unsupported shell") {
 		t.Fatalf("error = %v, want unsupported shell", err)

@@ -43,9 +43,8 @@ type SetupModel struct {
 	exitConfirm  *ConfirmDialog
 }
 
-// NewSetupModel creates the onboarding wizard with privacy-first defaults.
-func NewSetupModel(save SetupSaveFunc, install SetupInstallFunc, exe SetupExeFunc) SetupModel {
-	cfg := config.Default()
+// NewSetupModel creates the onboarding wizard seeded from cfg.
+func NewSetupModel(cfg config.Config, save SetupSaveFunc, install SetupInstallFunc, exe SetupExeFunc) SetupModel {
 	return SetupModel{
 		cfg:     cfg,
 		save:    save,
@@ -57,6 +56,13 @@ func NewSetupModel(save SetupSaveFunc, install SetupInstallFunc, exe SetupExeFun
 				value: cfg.StartAtLogin,
 				apply: func(c *config.Config, v bool) {
 					c.StartAtLogin = v
+				},
+			},
+			{
+				label: "Automatically install updates?",
+				value: cfg.AutoUpdate,
+				apply: func(c *config.Config, v bool) {
+					c.AutoUpdate = v
 				},
 			},
 			{
@@ -120,63 +126,49 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.exitConfirm = &dialog
 			return m, nil
 		}
-		if m.step == 2 {
-			if msg.String() == "left" || msg.String() == "backspace" {
-				m.step = 1
-				return m, nil
-			}
+		if m.step == 1 {
 			dialog, selected := m.applyConfirm.Update(msg)
 			m.applyConfirm = dialog
 			if selected {
 				if dialog.Highlighted() == ConfirmYes {
-					m.step = 3
+					if !m.applySetup() {
+						m.step = 0
+					}
 				} else {
-					m.step = 1
+					m.step = 0
 				}
 			}
 			return m, nil
 		}
 		switch msg.String() {
 		case "up", "k":
-			if m.step == 1 {
+			if m.step == 0 {
 				m.moveSetup(-1)
 			}
 		case "down", "j":
-			if m.step == 1 {
+			if m.step == 0 {
 				m.moveSetup(1)
 			}
 		case " ":
 			switch m.step {
 			case 0:
-				m.step = 1
-			case 1:
 				if m.setupActionFocused() {
 					m.applyConfirm = NewConfirmDialog("Apply these settings?", ConfirmYes)
-					m.step = 2
+					m.step = 1
 				} else {
 					m.choices[m.cursor].value = !m.choices[m.cursor].value
 				}
-			case 3:
-				m.applySetup()
-			}
-		case "left", "backspace":
-			if m.step > 0 {
-				m.step--
 			}
 		case "right":
-			if m.step == 1 && !m.setupActionFocused() {
+			if m.step == 0 && !m.setupActionFocused() {
 				m.choices[m.cursor].value = !m.choices[m.cursor].value
 			}
 		case "enter":
 			switch m.step {
 			case 0:
-				m.step = 1
-			case 1:
 				m.applyConfirm = NewConfirmDialog("Apply these settings?", ConfirmYes)
-				m.step = 2
-			case 3:
-				m.applySetup()
-			case 4:
+				m.step = 1
+			case 2:
 				return m, tea.Quit
 			}
 		}
@@ -198,52 +190,22 @@ func (m SetupModel) View() string {
 	}
 	switch m.step {
 	case 0:
-		b.WriteString("Pick the defaults you want, then apply them.\n")
-		if !m.short() {
-			if m.compact() {
-				b.WriteString("Arrows move  •  space selects\nEnter continues from anywhere.\n\n")
-			} else {
-				b.WriteString("Use arrow keys to move, space to toggle or select, and enter to continue.\n\n")
-			}
-		}
-		b.WriteString(m.actionButton("Start", true))
-	case 1:
 		b.WriteString(m.choicesTable(true))
 		if m.short() {
 			b.WriteByte('\n')
 		} else {
 			b.WriteString("\n\n")
-			if m.compact() {
-				b.WriteString(m.styles.muted.Render("↑/↓ move  •  space toggle/select\nenter continues from anywhere"))
-			} else {
-				b.WriteString(m.styles.muted.Render("↑/k ↓/j navigate  •  space toggle or select  •  enter continues from anywhere"))
-			}
+			b.WriteString(m.styles.muted.Render("↑/↓ move · space toggle · enter to apply · q quit"))
 			b.WriteString("\n\n")
 		}
-		b.WriteString(m.actionButton("Continue", m.setupActionFocused()))
-	case 2:
-		b.WriteString(m.applyConfirm.View())
-	case 3:
-		b.WriteString("Apply setup with these choices:\n")
-		if !m.short() {
-			b.WriteByte('\n')
-		}
-		b.WriteString(m.choicesTable(false))
-		if m.short() {
-			b.WriteByte('\n')
-		} else {
-			b.WriteString("\n\n")
-		}
+		b.WriteString(m.actionButton("Apply", m.setupActionFocused()))
 		if m.err != nil {
+			b.WriteString("\n\n")
 			b.WriteString(m.styles.error.Render("setup failed: " + m.err.Error()))
-			if m.short() {
-				b.WriteByte('\n')
-			} else {
-				b.WriteString("\n\n")
-			}
 		}
-		b.WriteString(m.actionButton("Apply", true))
-	case 4:
+	case 1:
+		b.WriteString(m.applyConfirm.View())
+	case 2:
 		b.WriteString(m.summary())
 	}
 	return m.fitView(b.String())
@@ -285,6 +247,8 @@ func (m SetupModel) choicesTable(interactive bool) string {
 			case 0:
 				label = "Start at login?"
 			case 1:
+				label = "Install updates?"
+			case 2:
 				label = "Show working directory?"
 			}
 		}
@@ -333,7 +297,7 @@ func (m SetupModel) actionButton(label string, focused bool) string {
 }
 
 func (m *SetupModel) applySetup() bool {
-	cfg := config.Default()
+	cfg := m.cfg
 	for _, choice := range m.choices {
 		if choice.apply != nil {
 			choice.apply(&cfg, choice.value)
@@ -367,7 +331,7 @@ func (m *SetupModel) applySetup() bool {
 	m.path = path
 	m.err = nil
 	m.applied = true
-	m.step = 4
+	m.step = 2
 	return true
 }
 

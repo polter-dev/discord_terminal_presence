@@ -596,7 +596,7 @@ func TestModelLeaveFeedbackFailureShowsURL(t *testing.T) {
 func TestSetupModelApplyDefaultsInstallsAutostart(t *testing.T) {
 	var saved config.Config
 	var installedExe string
-	model := NewSetupModel(func(cfg config.Config) (string, error) {
+	model := NewSetupModel(config.Default(), func(cfg config.Config) (string, error) {
 		saved = cfg
 		return "/tmp/config.toml", nil
 	}, func(exe string) error {
@@ -606,23 +606,16 @@ func TestSetupModelApplyDefaultsInstallsAutostart(t *testing.T) {
 		return "/usr/local/bin/termp", nil
 	})
 
-	updated, _ := model.Update(key("enter"))
-	model = updated.(SetupModel)
-	if model.step != 1 {
-		t.Fatalf("enter on Start moved to step %d, want 1", model.step)
+	if model.step != 0 || !strings.Contains(model.View(), "Question") || strings.Contains(model.View(), "Pick the defaults") {
+		t.Fatalf("setup should open directly on choices:\n%s", model.View())
 	}
 	if strings.Contains(model.View(), "What is this?") {
 		t.Fatalf("setup choices still expose CTA setting:\n%s", model.View())
 	}
-	updated, _ = model.Update(key("enter"))
+	updated, _ := model.Update(key("enter"))
 	model = updated.(SetupModel)
-	if model.step != 2 {
-		t.Fatalf("enter-anywhere moved to step %d, want 2", model.step)
-	}
-	updated, _ = model.Update(key("enter"))
-	model = updated.(SetupModel)
-	if model.step != 3 {
-		t.Fatalf("confirming settings moved to step %d, want 3", model.step)
+	if model.step != 1 || model.Applied() {
+		t.Fatalf("enter should open confirmation without applying: step=%d applied=%t", model.step, model.Applied())
 	}
 	updated, _ = model.Update(key("enter"))
 	model = updated.(SetupModel)
@@ -636,6 +629,9 @@ func TestSetupModelApplyDefaultsInstallsAutostart(t *testing.T) {
 	if saved.Privacy.ShowDirectory {
 		t.Fatal("default setup should keep directory display disabled")
 	}
+	if saved.AutoUpdate {
+		t.Fatal("default setup should keep automatic updates disabled")
+	}
 	if !saved.CTA.Enabled {
 		t.Fatal("default setup should keep CTA enabled")
 	}
@@ -647,7 +643,7 @@ func TestSetupModelApplyDefaultsInstallsAutostart(t *testing.T) {
 func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 	var saved config.Config
 	installed := false
-	model := NewSetupModel(func(cfg config.Config) (string, error) {
+	model := NewSetupModel(config.Default(), func(cfg config.Config) (string, error) {
 		saved = cfg
 		return "/tmp/config.toml", nil
 	}, func(exe string) error {
@@ -657,9 +653,9 @@ func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 		return "/usr/local/bin/termp", nil
 	})
 
-	updated, _ := model.Update(key("enter"))
+	updated, _ := model.Update(key(" "))
 	model = updated.(SetupModel)
-	updated, _ = model.Update(key(" "))
+	updated, _ = model.Update(key("down"))
 	model = updated.(SetupModel)
 	updated, _ = model.Update(key("down"))
 	model = updated.(SetupModel)
@@ -668,20 +664,16 @@ func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 	updated, _ = model.Update(key("down"))
 	model = updated.(SetupModel)
 	if !model.setupActionFocused() {
-		t.Fatal("Continue button should be focused after moving past both choices")
+		t.Fatal("Apply button should be focused after moving past all choices")
 	}
-	if !strings.Contains(model.View(), "› Continue") {
-		t.Fatalf("focused Continue button is not visibly selected:\n%s", model.View())
-	}
-	updated, _ = model.Update(key(" "))
-	model = updated.(SetupModel)
-	if model.step != 2 {
-		t.Fatalf("space on Continue moved to step %d, want 2", model.step)
+	if !strings.Contains(model.View(), "› Apply") {
+		t.Fatalf("focused Apply button is not visibly selected:\n%s", model.View())
 	}
 	updated, _ = model.Update(key(" "))
 	model = updated.(SetupModel)
-	updated, _ = model.Update(key("enter"))
-	model = updated.(SetupModel)
+	if model.step != 1 {
+		t.Fatalf("space on Apply moved to step %d, want 1", model.step)
+	}
 	updated, _ = model.Update(key("enter"))
 	model = updated.(SetupModel)
 
@@ -700,36 +692,39 @@ func TestSetupModelApplyPersistsEveryToggleCombination(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
 		startAtLogin  bool
+		autoUpdate    bool
 		showDirectory bool
 	}{
-		{name: "on_on", startAtLogin: true, showDirectory: true},
-		{name: "off_off", startAtLogin: false, showDirectory: false},
-		{name: "on_off", startAtLogin: true, showDirectory: false},
-		{name: "off_on", startAtLogin: false, showDirectory: true},
+		{name: "all_on", startAtLogin: true, autoUpdate: true, showDirectory: true},
+		{name: "all_off", startAtLogin: false, autoUpdate: false, showDirectory: false},
+		{name: "mixed", startAtLogin: true, autoUpdate: false, showDirectory: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var saved config.Config
+			var updated tea.Model
 			saveCalls := 0
-			model := NewSetupModel(func(cfg config.Config) (string, error) {
+			model := NewSetupModel(config.Default(), func(cfg config.Config) (string, error) {
 				saveCalls++
 				saved = cfg
 				return "/tmp/config.toml", nil
 			}, func(string) error { return nil }, func() (string, error) { return "/usr/local/bin/termp", nil })
 
-			updated, _ := model.Update(key("enter"))
-			model = updated.(SetupModel)
 			if model.choices[0].value != tt.startAtLogin {
 				updated, _ = model.Update(key(" "))
 				model = updated.(SetupModel)
 			}
 			updated, _ = model.Update(key("down"))
 			model = updated.(SetupModel)
-			if model.choices[1].value != tt.showDirectory {
+			if model.choices[1].value != tt.autoUpdate {
 				updated, _ = model.Update(key(" "))
 				model = updated.(SetupModel)
 			}
-			updated, _ = model.Update(key("enter"))
+			updated, _ = model.Update(key("down"))
 			model = updated.(SetupModel)
+			if model.choices[2].value != tt.showDirectory {
+				updated, _ = model.Update(key(" "))
+				model = updated.(SetupModel)
+			}
 			updated, _ = model.Update(key("enter"))
 			model = updated.(SetupModel)
 			updated, _ = model.Update(key("enter"))
@@ -738,11 +733,71 @@ func TestSetupModelApplyPersistsEveryToggleCombination(t *testing.T) {
 			if saveCalls != 1 {
 				t.Fatalf("save calls = %d, want 1", saveCalls)
 			}
-			if saved.StartAtLogin != tt.startAtLogin || saved.Privacy.ShowDirectory != tt.showDirectory {
-				t.Fatalf("saved toggles = start_at_login:%t show_directory:%t, want start_at_login:%t show_directory:%t",
-					saved.StartAtLogin, saved.Privacy.ShowDirectory, tt.startAtLogin, tt.showDirectory)
+			if saved.StartAtLogin != tt.startAtLogin || saved.AutoUpdate != tt.autoUpdate || saved.Privacy.ShowDirectory != tt.showDirectory {
+				t.Fatalf("saved toggles = start_at_login:%t auto_update:%t show_directory:%t, want start_at_login:%t auto_update:%t show_directory:%t",
+					saved.StartAtLogin, saved.AutoUpdate, saved.Privacy.ShowDirectory, tt.startAtLogin, tt.autoUpdate, tt.showDirectory)
 			}
 		})
+	}
+}
+
+func TestSetupModelSeedsChoicesFromExistingConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.StartAtLogin = false
+	cfg.AutoUpdate = true
+	cfg.Privacy.ShowDirectory = true
+	model := NewSetupModel(cfg, nil, nil, nil)
+
+	want := []bool{false, true, true}
+	for i, choice := range model.choices {
+		if choice.value != want[i] {
+			t.Errorf("choice %q = %t, want %t", choice.label, choice.value, want[i])
+		}
+	}
+	for _, label := range []string{"Start termp", "Automatically install updates", "working directory"} {
+		line := lineContaining(t, model.View(), label)
+		wantState := "● On"
+		if strings.Contains(label, "Start termp") {
+			wantState = "○ Off"
+		}
+		if !strings.Contains(line, wantState) {
+			t.Errorf("%q line missing current state %q: %s", label, wantState, line)
+		}
+	}
+}
+
+func TestSetupModelApplyPreservesUnexposedConfig(t *testing.T) {
+	enabled := false
+	cfg := config.Default()
+	cfg.Enabled = false
+	cfg.ScanInterval = "9s"
+	cfg.Display = config.Display{ToolName: false, ElapsedTimer: false, Collection: false}
+	cfg.Privacy.DirectoryAllowlist = []string{"/work/private"}
+	cfg.CTA = config.CTA{Enabled: false, Label: "Custom", URL: "https://example.test"}
+	cfg.Tools = map[string]config.ToolOverride{"codex-cli": {Enabled: &enabled}}
+	cfg.CustomTools = []registry.CustomTool{{
+		ID: "custom", DisplayName: "Custom", Match: registry.CustomMatch{Name: "custom"}, ImageKey: "custom",
+	}}
+	var saved config.Config
+	model := NewSetupModel(cfg, func(got config.Config) (string, error) {
+		saved = got
+		return "/tmp/config.toml", nil
+	}, nil, nil)
+
+	for _, press := range []string{"enter", "enter"} {
+		updated, _ := model.Update(key(press))
+		model = updated.(SetupModel)
+	}
+	if !model.Applied() {
+		t.Fatal("setup was not applied")
+	}
+	if saved.Enabled != cfg.Enabled || saved.ScanInterval != cfg.ScanInterval ||
+		!reflect.DeepEqual(saved.Display, cfg.Display) ||
+		!reflect.DeepEqual(saved.Privacy.DirectoryAllowlist, cfg.Privacy.DirectoryAllowlist) ||
+		!reflect.DeepEqual(saved.CTA, cfg.CTA) ||
+		!reflect.DeepEqual(saved.Tools, cfg.Tools) ||
+		!reflect.DeepEqual(saved.CustomTools, cfg.CustomTools) {
+		t.Fatalf("unexposed config changed:\n got: %#v\nwant: %#v", saved, cfg)
 	}
 }
 
@@ -750,14 +805,12 @@ func TestSetupModelQuitDoesNotSave(t *testing.T) {
 	for _, quitKey := range []string{"q", "esc"} {
 		t.Run(quitKey, func(t *testing.T) {
 			saveCalls := 0
-			model := NewSetupModel(func(config.Config) (string, error) {
+			model := NewSetupModel(config.Default(), func(config.Config) (string, error) {
 				saveCalls++
 				return "/tmp/config.toml", nil
 			}, nil, nil)
 
-			updated, _ := model.Update(key("enter"))
-			model = updated.(SetupModel)
-			updated, _ = model.Update(key(" "))
+			updated, _ := model.Update(key(" "))
 			model = updated.(SetupModel)
 			updated, cmd := model.Update(key(quitKey))
 			model = updated.(SetupModel)
@@ -786,27 +839,24 @@ func TestSetupModelViewsRenderTableButtonsAndFitTerminal(t *testing.T) {
 	}
 	for _, width := range []int{80, 40} {
 		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
-			model := NewSetupModel(nil, nil, nil)
+			model := NewSetupModel(config.Default(), nil, nil, nil)
 			updated, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: 12})
 			model = updated.(SetupModel)
 
-			steps := []viewCase{
-				{name: "start", view: model.View(), want: []string{"termp setup", "Start"}},
+			updateLabel := "Automatically install updates?"
+			if width == 40 {
+				updateLabel = "Install updates?"
 			}
+			steps := []viewCase{{
+				name: "choices", view: model.View(), want: []string{"termp setup", "Question", "State", updateLabel, "Apply"},
+			}}
 
-			updated, _ = model.Update(key(" "))
-			model = updated.(SetupModel)
 			choicesView := model.View()
 			startLine := lineContaining(t, choicesView, "Start")
 			directoryLine := lineContaining(t, choicesView, "directory")
 			if got, want := visibleColumn(startLine, "● On"), visibleColumn(directoryLine, "○ Off"); got != want {
 				t.Errorf("setup state columns are not aligned: ● On at %d, ○ Off at %d\n%s", got, want, choicesView)
 			}
-			steps = append(steps, viewCase{
-				name: "choices",
-				view: choicesView,
-				want: []string{"╭", "Question", "State", "›", "Continue", "╰"},
-			})
 
 			updated, _ = model.Update(key("enter"))
 			model = updated.(SetupModel)
@@ -814,13 +864,6 @@ func TestSetupModelViewsRenderTableButtonsAndFitTerminal(t *testing.T) {
 				name: "confirm",
 				view: model.View(),
 				want: []string{"Apply these settings?", "YES", "NO"},
-			})
-			updated, _ = model.Update(key("enter"))
-			model = updated.(SetupModel)
-			steps = append(steps, viewCase{
-				name: "apply",
-				view: model.View(),
-				want: []string{"╭", "Question", "State", "Apply", "╰"},
 			})
 
 			for _, step := range steps {
@@ -842,6 +885,15 @@ func TestSetupModelViewsRenderTableButtonsAndFitTerminal(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSetupModelShowsExplicitKeyHints(t *testing.T) {
+	model := NewSetupModel(config.Default(), nil, nil, nil)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	view := updated.(SetupModel).View()
+	if want := "↑/↓ move · space toggle · enter to apply · q quit"; !strings.Contains(view, want) {
+		t.Fatalf("setup hints missing %q:\n%s", want, view)
 	}
 }
 
