@@ -26,19 +26,21 @@ type setupChoice struct {
 
 // SetupModel is the testable Bubble Tea onboarding wizard.
 type SetupModel struct {
-	choices []setupChoice
-	cursor  int
-	step    int
-	save    SetupSaveFunc
-	install SetupInstallFunc
-	exe     SetupExeFunc
-	cfg     config.Config
-	path    string
-	err     error
-	applied bool
-	width   int
-	height  int
-	styles  styles
+	choices      []setupChoice
+	cursor       int
+	step         int
+	save         SetupSaveFunc
+	install      SetupInstallFunc
+	exe          SetupExeFunc
+	cfg          config.Config
+	path         string
+	err          error
+	applied      bool
+	width        int
+	height       int
+	styles       styles
+	applyConfirm ConfirmDialog
+	exitConfirm  *ConfirmDialog
 }
 
 // NewSetupModel creates the onboarding wizard with privacy-first defaults.
@@ -72,6 +74,7 @@ func NewSetupModel(save SetupSaveFunc, install SetupInstallFunc, exe SetupExeFun
 			error:    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
 			selected: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),
 		},
+		applyConfirm: NewConfirmDialog("Apply these settings?", ConfirmYes),
 	}
 }
 
@@ -100,9 +103,46 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q", "esc":
+		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
+		}
+		if m.exitConfirm != nil {
+			if msg.String() == "backspace" {
+				m.exitConfirm = nil
+				return m, nil
+			}
+			dialog, selected := m.exitConfirm.Update(msg)
+			m.exitConfirm = &dialog
+			if selected {
+				if dialog.Highlighted() == ConfirmYes {
+					return m, tea.Quit
+				}
+				m.exitConfirm = nil
+			}
+			return m, nil
+		}
+		if msg.String() == "esc" || msg.String() == "q" {
+			dialog := NewConfirmDialog("Are you sure you want to exit?", ConfirmYes)
+			m.exitConfirm = &dialog
+			return m, nil
+		}
+		if m.step == 2 {
+			if msg.String() == "left" || msg.String() == "backspace" {
+				m.step = 1
+				return m, nil
+			}
+			dialog, selected := m.applyConfirm.Update(msg)
+			m.applyConfirm = dialog
+			if selected {
+				if dialog.Highlighted() == ConfirmYes {
+					m.step = 3
+				} else {
+					m.step = 1
+				}
+			}
+			return m, nil
+		}
+		switch msg.String() {
 		case "up", "k":
 			if m.step == 1 {
 				m.moveSetup(-1)
@@ -117,14 +157,19 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.step = 1
 			case 1:
 				if m.setupActionFocused() {
+					m.applyConfirm = NewConfirmDialog("Apply these settings?", ConfirmYes)
 					m.step = 2
 				} else {
 					m.choices[m.cursor].value = !m.choices[m.cursor].value
 				}
-			case 2:
+			case 3:
 				m.applySetup()
 			}
-		case "left", "right":
+		case "left", "backspace":
+			if m.step > 0 {
+				m.step--
+			}
+		case "right":
 			if m.step == 1 && !m.setupActionFocused() {
 				m.choices[m.cursor].value = !m.choices[m.cursor].value
 			}
@@ -133,10 +178,11 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case 0:
 				m.step = 1
 			case 1:
+				m.applyConfirm = NewConfirmDialog("Apply these settings?", ConfirmYes)
 				m.step = 2
-			case 2:
-				m.applySetup()
 			case 3:
+				m.applySetup()
+			case 4:
 				return m, tea.Quit
 			}
 		}
@@ -151,6 +197,10 @@ func (m SetupModel) View() string {
 		b.WriteByte('\n')
 	} else {
 		b.WriteString("\n\n")
+	}
+	if m.exitConfirm != nil {
+		b.WriteString(m.exitConfirm.View())
+		return m.fitView(b.String())
 	}
 	switch m.step {
 	case 0:
@@ -178,6 +228,8 @@ func (m SetupModel) View() string {
 		}
 		b.WriteString(m.actionButton("Continue", m.setupActionFocused()))
 	case 2:
+		b.WriteString(m.applyConfirm.View())
+	case 3:
 		b.WriteString("Apply setup with these choices:\n")
 		if !m.short() {
 			b.WriteByte('\n')
@@ -197,10 +249,13 @@ func (m SetupModel) View() string {
 			}
 		}
 		b.WriteString(m.actionButton("Apply", true))
-	case 3:
+	case 4:
 		b.WriteString(m.summary())
 	}
-	view := b.String()
+	return m.fitView(b.String())
+}
+
+func (m SetupModel) fitView(view string) string {
 	if m.width > 0 {
 		view = truncateBlock(view, m.width)
 	}
@@ -323,7 +378,7 @@ func (m *SetupModel) applySetup() bool {
 	m.path = path
 	m.err = nil
 	m.applied = true
-	m.step = 3
+	m.step = 4
 	return true
 }
 
