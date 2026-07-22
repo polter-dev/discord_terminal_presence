@@ -35,6 +35,11 @@ var (
 	verbose bool
 )
 
+const (
+	stopTimeout      = 5 * time.Second
+	stopPollInterval = 50 * time.Millisecond
+)
+
 var commandHelp = []struct {
 	name        string
 	description string
@@ -351,10 +356,13 @@ func start(args []string) error {
 	if pid, err := readPID(pidPath); err == nil && processAlive(pid) && processLooksLikeTermp(pid) {
 		return fmt.Errorf("daemon already running with pid %d", pid)
 	}
-	if err := writePID(pidPath, os.Getpid()); err != nil {
+	pidInfo, err := writePIDOwned(pidPath, os.Getpid())
+	if err != nil {
 		return err
 	}
-	defer removePID(pidPath)
+	defer func() {
+		_, _ = removePIDIfOwned(pidPath, os.Getpid(), pidInfo)
+	}()
 
 	manager := config.NewManager()
 	cfg, loadErr := manager.Current()
@@ -580,21 +588,10 @@ func stop(args []string) error {
 		return err
 	}
 	pidPath := pidFilePath()
-	pid, err := readPID(pidPath)
+	pid, err := stopDaemon(pidPath, stopTimeout, stopPollInterval, processAlive, signalTermpProcess, time.Sleep)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return errors.New("daemon is not running")
-		}
 		return err
 	}
-	if !processAlive(pid) {
-		removePID(pidPath)
-		return errors.New("stale PID file removed; daemon is not running")
-	}
-	if err := signalTermpProcess(pid); err != nil {
-		return fmt.Errorf("refusing to signal pid %d: %w", pid, err)
-	}
-	removePID(pidPath)
 	serviceState := service.NewManager().Status()
 	if serviceWillRelaunch(serviceState) {
 		fmt.Printf("stopped (pid %d), but autostart is enabled - the login service will relaunch it.\n", pid)
@@ -891,31 +888,49 @@ func pidFilePath() string {
 }
 
 func readPID(path string) (int, error) {
+	pid, _, err := readPIDRecord(path)
+	return pid, err
+}
+
+func readPIDRecord(path string) (int, os.FileInfo, error) {
 	file, err := openValidatedPIDFile(path)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer file.Close()
+	return readPIDRecordFromFile(file)
+}
+
+func readPIDRecordFromFile(file *os.File) (int, os.FileInfo, error) {
 	data, err := io.ReadAll(file)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if pid <= 0 {
-		return 0, fmt.Errorf("invalid PID %d", pid)
+		return 0, nil, fmt.Errorf("invalid PID %d", pid)
 	}
-	return pid, nil
+	info, err := file.Stat()
+	if err != nil {
+		return 0, nil, err
+	}
+	return pid, info, nil
 }
 
 func writePID(path string, pid int) error {
+	_, err := writePIDOwned(path, pid)
+	return err
+}
+
+func writePIDOwned(path string, pid int) (os.FileInfo, error) {
 	if pid <= 0 {
-		return fmt.Errorf("invalid PID %d", pid)
+		return nil, fmt.Errorf("invalid PID %d", pid)
 	}
 	if err := ensurePIDDirectory(filepath.Dir(path)); err != nil {
-		return err
+		return nil, err
 	}
 
 	file, err := createPIDFile(path)
@@ -924,47 +939,62 @@ func writePID(path string, pid int) error {
 		// file. O_EXCL then makes the new name acquisition atomic.
 		existing, openErr := openValidatedPIDFile(path)
 		if openErr != nil {
-			return openErr
+			return nil, openErr
+		}
+		if lockErr := lockPIDFile(existing); lockErr != nil {
+			existing.Close()
+			return nil, fmt.Errorf("PID file is busy: %w", lockErr)
 		}
 		existingData, readErr := io.ReadAll(existing)
 		existingInfo, statErr := existing.Stat()
-		closeErr := existing.Close()
 		if readErr != nil {
-			return readErr
+			existing.Close()
+			return nil, readErr
 		}
 		if statErr != nil {
-			return statErr
-		}
-		if closeErr != nil {
-			return closeErr
+			existing.Close()
+			return nil, statErr
 		}
 		if existingPID, parseErr := strconv.Atoi(strings.TrimSpace(string(existingData))); parseErr == nil &&
 			existingPID > 0 && processAlive(existingPID) && processLooksLikeTermp(existingPID) {
-			return fmt.Errorf("daemon already running with pid %d", existingPID)
+			existing.Close()
+			return nil, fmt.Errorf("daemon already running with pid %d", existingPID)
 		}
 		currentInfo, lstatErr := os.Lstat(path)
 		if lstatErr != nil {
-			return lstatErr
+			existing.Close()
+			return nil, lstatErr
 		}
 		if !os.SameFile(existingInfo, currentInfo) {
-			return errors.New("PID file changed while being replaced")
+			existing.Close()
+			return nil, errors.New("PID file changed while being replaced")
 		}
 		if removeErr := os.Remove(path); removeErr != nil {
-			return removeErr
+			existing.Close()
+			return nil, removeErr
 		}
 		file, err = createPIDFile(path)
+		if closeErr := existing.Close(); closeErr != nil {
+			if file != nil {
+				file.Close()
+			}
+			return nil, closeErr
+		}
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer file.Close()
 	if err := file.Chmod(0o600); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := io.WriteString(file, strconv.Itoa(pid)+"\n"); err != nil {
-		return err
+		return nil, err
 	}
-	return file.Sync()
+	if err := file.Sync(); err != nil {
+		return nil, err
+	}
+	return file.Stat()
 }
 
 func ensurePIDDirectory(path string) error {
@@ -1012,8 +1042,95 @@ func validatePIDFileInfo(info os.FileInfo, path string) error {
 	return requireCurrentUserOwner(info, "PID file")
 }
 
-func removePID(path string) {
-	_ = os.Remove(path)
+func pidFileMatchesOwner(expectedPID, actualPID int, expectedInfo, actualInfo os.FileInfo) bool {
+	return expectedPID > 0 && expectedPID == actualPID && expectedInfo != nil && actualInfo != nil && os.SameFile(expectedInfo, actualInfo)
+}
+
+func removePIDIfOwned(path string, expectedPID int, expectedInfo os.FileInfo) (bool, error) {
+	file, err := openValidatedPIDFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	if err := lockPIDFile(file); err != nil {
+		return false, fmt.Errorf("PID file is busy: %w", err)
+	}
+	actualPID, actualInfo, err := readPIDRecordFromFile(file)
+	if err != nil {
+		return false, err
+	}
+	currentInfo, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !pidFileMatchesOwner(expectedPID, actualPID, expectedInfo, actualInfo) || !os.SameFile(actualInfo, currentInfo) {
+		return false, nil
+	}
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int) bool, signal func(int) error, sleep func(time.Duration)) (int, error) {
+	pid, info, err := readPIDRecord(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, errors.New("daemon is not running")
+		}
+		return 0, err
+	}
+	if !alive(pid) {
+		removed, removeErr := removePIDIfOwned(path, pid, info)
+		if removeErr != nil {
+			return 0, fmt.Errorf("remove stale PID file: %w", removeErr)
+		}
+		if !removed {
+			return 0, errors.New("stale PID file changed before it could be removed")
+		}
+		return 0, errors.New("stale PID file removed; daemon is not running")
+	}
+	if err := signal(pid); err != nil {
+		return 0, fmt.Errorf("refusing to signal pid %d: %w", pid, err)
+	}
+	if !waitForProcessExit(pid, timeout, pollInterval, alive, sleep) {
+		return 0, fmt.Errorf("timed out after %s waiting for daemon pid %d to exit; PID file was not removed", timeout, pid)
+	}
+	removed, err := removePIDIfOwned(path, pid, info)
+	if err != nil {
+		return 0, fmt.Errorf("remove PID file: %w", err)
+	}
+	if !removed {
+		return 0, errors.New("daemon exited, but PID file changed ownership and was not removed")
+	}
+	return pid, nil
+}
+
+func waitForProcessExit(pid int, timeout, pollInterval time.Duration, alive func(int) bool, sleep func(time.Duration)) bool {
+	if !alive(pid) {
+		return true
+	}
+	if timeout <= 0 || pollInterval <= 0 {
+		return false
+	}
+	for waited := time.Duration(0); waited < timeout; {
+		delay := min(pollInterval, timeout-waited)
+		sleep(delay)
+		waited += delay
+		if !alive(pid) {
+			return true
+		}
+	}
+	return false
 }
 
 func isTerminal(file *os.File) bool {

@@ -215,8 +215,8 @@ func disable(args []string) error {
 		return nil
 	}
 	pidPath := pidFilePath()
-	if pid, err := readPID(pidPath); err == nil && !processAlive(pid) {
-		removePID(pidPath)
+	if pid, info, err := readPIDRecord(pidPath); err == nil && !processAlive(pid) {
+		_, _ = removePIDIfOwned(pidPath, pid, info)
 	}
 	fmt.Println("disabled: autostart paused (re-enable with: termp enable)")
 	return nil

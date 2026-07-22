@@ -227,8 +227,16 @@ func TestPIDProcessAndRemovalHelpers(t *testing.T) {
 	if err := os.WriteFile(path, []byte("1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	removePID(path)
-	removePID(path)
+	pid, info, err := readPIDRecord(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := removePIDIfOwned(path, pid, info); err != nil || !removed {
+		t.Fatalf("removePIDIfOwned() = %t, %v; want true, nil", removed, err)
+	}
+	if removed, err := removePIDIfOwned(path, pid, info); err != nil || removed {
+		t.Fatalf("second removePIDIfOwned() = %t, %v; want false, nil", removed, err)
+	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("removed PID stat error = %v", err)
 	}

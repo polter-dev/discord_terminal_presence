@@ -181,6 +181,132 @@ func TestReadPIDRequiresRegularFileOwnedByCurrentUser(t *testing.T) {
 	}
 }
 
+func TestRemovePIDIfOwnedPreservesNewOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	originalInfo, err := writePIDOwned(path, 1234)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePID(path, 5678); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := removePIDIfOwned(path, 1234, originalInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed {
+		t.Fatal("cleanup removed a PID file owned by a newer daemon")
+	}
+	if pid, err := readPID(path); err != nil || pid != 5678 {
+		t.Fatalf("new owner PID = %d, %v; want 5678, nil", pid, err)
+	}
+}
+
+func TestPIDFileMatchesOwnerRequiresPIDAndFileIdentity(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "first.pid")
+	second := filepath.Join(t.TempDir(), "second.pid")
+	if err := os.WriteFile(first, []byte("1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	firstInfo, err := os.Stat(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := os.Stat(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pidFileMatchesOwner(1234, 1234, firstInfo, firstInfo) {
+		t.Fatal("matching PID and file identity were rejected")
+	}
+	if pidFileMatchesOwner(1234, 5678, firstInfo, firstInfo) {
+		t.Fatal("different recorded PID was accepted")
+	}
+	if pidFileMatchesOwner(1234, 1234, firstInfo, secondInfo) {
+		t.Fatal("different file identity was accepted")
+	}
+}
+
+func TestStopDaemonWaitsForExitThenRemovesPIDFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 1234); err != nil {
+		t.Fatal(err)
+	}
+	aliveChecks := 0
+	alive := func(pid int) bool {
+		if pid != 1234 {
+			t.Fatalf("alive PID = %d, want 1234", pid)
+		}
+		aliveChecks++
+		return aliveChecks < 4
+	}
+	signalCalls := 0
+	signal := func(pid int) error {
+		signalCalls++
+		if pid != 1234 {
+			t.Fatalf("signal PID = %d, want 1234", pid)
+		}
+		return nil
+	}
+	var slept time.Duration
+	sleep := func(delay time.Duration) { slept += delay }
+
+	pid, err := stopDaemon(path, time.Second, 10*time.Millisecond, alive, signal, sleep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid != 1234 || signalCalls != 1 || slept != 20*time.Millisecond {
+		t.Fatalf("stop result: pid=%d signals=%d slept=%s", pid, signalCalls, slept)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("PID file remains after exit: %v", err)
+	}
+}
+
+func TestStopDaemonRemovesStalePIDFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 1234); err != nil {
+		t.Fatal(err)
+	}
+	_, err := stopDaemon(path, time.Second, time.Millisecond, func(int) bool { return false }, func(int) error {
+		t.Fatal("stale PID was signaled")
+		return nil
+	}, func(time.Duration) { t.Fatal("stale PID wait slept") })
+	if err == nil || !strings.Contains(err.Error(), "stale PID file removed") {
+		t.Fatalf("stopDaemon() error = %v, want stale-file message", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("stale PID file remains: %v", statErr)
+	}
+}
+
+func TestStopDaemonTimeoutKeepsPIDFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 1234); err != nil {
+		t.Fatal(err)
+	}
+	var slept time.Duration
+	_, err := stopDaemon(path, 25*time.Millisecond, 10*time.Millisecond, func(int) bool { return true }, func(int) error {
+		return nil
+	}, func(delay time.Duration) { slept += delay })
+	if err == nil || !strings.Contains(err.Error(), "PID file was not removed") {
+		t.Fatalf("stopDaemon() error = %v, want retained-file timeout", err)
+	}
+	if slept != 25*time.Millisecond {
+		t.Fatalf("slept %s, want bounded 25ms", slept)
+	}
+	if pid, readErr := readPID(path); readErr != nil || pid != 1234 {
+		t.Fatalf("retained PID = %d, %v; want 1234, nil", pid, readErr)
+	}
+}
+
 func TestFormatInstallSuccessShowsCTAForFreshInstall(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "termp", "config.toml")
 	got := formatInstallSuccess("/usr/local/bin/termp", configPath, nil, 80)
