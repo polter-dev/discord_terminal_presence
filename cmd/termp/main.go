@@ -250,7 +250,12 @@ func configInit(args []string) error {
 	if err := config.InitFile(path, *force); err != nil {
 		return err
 	}
-	fmt.Println(path)
+	if *force {
+		fmt.Printf("Reset config to defaults: %s\n", path)
+		fmt.Println("Run \"termp setup\" to configure interactively.")
+		return nil
+	}
+	fmt.Printf("Wrote default config: %s\n", path)
 	return nil
 }
 
@@ -656,15 +661,15 @@ func stop(args []string) error {
 	if err != nil {
 		return err
 	}
-	serviceState := service.NewManager().Status()
-	if serviceWillRelaunch(serviceState) {
-		fmt.Printf("stopped (pid %d), but autostart is enabled - the login service will relaunch it.\n", pid)
-		fmt.Println("To pause until next login or manual start: termp disable")
-		fmt.Println("To remove autostart entirely:          termp uninstall")
-		return nil
-	}
-	fmt.Println("stopped")
+	printStopSuccess(pid, service.NewManager().Status())
 	return nil
+}
+
+func printStopSuccess(pid int, state service.State) {
+	fmt.Printf("stopped (pid %d)\n", pid)
+	if serviceWillRelaunch(state) {
+		fmt.Println("Autostart is on — run \"termp disable\" to stop it launching at login (or \"termp uninstall\" to remove it).")
+	}
 }
 
 func serviceWillRelaunch(state service.State) bool {
