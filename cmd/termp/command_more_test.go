@@ -363,13 +363,7 @@ func timeForTest() time.Time {
 	return time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 }
 
-func TestWrapAndCenterTextEdges(t *testing.T) {
-	if got := wrapInstallText("   ", 10); len(got) != 1 || got[0] != "" {
-		t.Fatalf("wrapInstallText(blank) = %#v", got)
-	}
-	if got := centerInstallText("long", 2); got != "long" {
-		t.Fatalf("centerInstallText narrow = %q", got)
-	}
+func TestOutputTextEdges(t *testing.T) {
 	if got := strings.Join(wrapOutputText("abcdefghij", 4), "|"); got != "abcd|efgh|ij" {
 		t.Fatalf("wrapped long word = %q", got)
 	}
