@@ -904,8 +904,7 @@ func writePID(path string, pid int) error {
 		return err
 	}
 
-	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC | os.O_EXCL | syscall.O_NOFOLLOW
-	file, err := os.OpenFile(path, flags, 0o600)
+	file, err := createPIDFile(path)
 	if errors.Is(err, os.ErrExist) {
 		// Only replace a stale file after proving that it is an owned regular
 		// file. O_EXCL then makes the new name acquisition atomic.
@@ -939,7 +938,7 @@ func writePID(path string, pid int) error {
 		if removeErr := os.Remove(path); removeErr != nil {
 			return removeErr
 		}
-		file, err = os.OpenFile(path, flags, 0o600)
+		file, err = createPIDFile(path)
 	}
 	if err != nil {
 		return err
@@ -972,7 +971,7 @@ func ensurePIDDirectory(path string) error {
 }
 
 func openValidatedPIDFile(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	file, err := openPIDFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -993,17 +992,6 @@ func validatePIDFileInfo(info os.FileInfo, path string) error {
 		return fmt.Errorf("PID file %q is not a regular file", path)
 	}
 	return requireCurrentUserOwner(info, "PID file")
-}
-
-func requireCurrentUserOwner(info os.FileInfo, label string) error {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("cannot determine %s owner", label)
-	}
-	if stat.Uid != uint32(os.Geteuid()) {
-		return fmt.Errorf("%s is owned by uid %d, not current uid %d", label, stat.Uid, os.Geteuid())
-	}
-	return nil
 }
 
 func removePID(path string) {
