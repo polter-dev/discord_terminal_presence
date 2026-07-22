@@ -77,12 +77,57 @@ func TestWriterReconnectsAndReappliesActivity(t *testing.T) {
 	<-done
 }
 
+func TestWriterReappliesActivityAfterRemoteClose(t *testing.T) {
+	client := newFakeClient(nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(0),
+		withWriteClock(clock),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "unchanged"})
+	client.waitForSet(t, 1)
+	clock.waitForTimerCount(t, 1)
+
+	client.simulateRemoteClose()
+	clock.Advance(defaultReapplyInterval)
+	client.waitForSet(t, 2)
+	client.waitForLogout(t, 1)
+	clock.waitForTimerCount(t, 2)
+
+	clock.Advance(0)
+	client.waitForSet(t, 3)
+	if got := client.loginCount(); got != 2 {
+		t.Fatalf("login count after remote close = %d, want 2", got)
+	}
+	if got := client.activities()[2].Details; got != "unchanged" {
+		t.Fatalf("reapplied details = %q, want unchanged", got)
+	}
+
+	cancel()
+	<-done
+}
+
 func TestWriterThrottlesAndCoalescesActivityUpdates(t *testing.T) {
 	client := newFakeClient(nil)
 	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
 	writer, err := NewWriter(client, "app-id",
 		WithRetryDelays(0),
 		WithMinWriteInterval(15*time.Second),
+		withReapplyInterval(0),
 		withWriteClock(clock),
 	)
 	if err != nil {
@@ -126,6 +171,7 @@ func TestWriterClearsPromptlyWhileUpdateIsThrottled(t *testing.T) {
 	writer, err := NewWriter(client, "app-id",
 		WithRetryDelays(0),
 		WithMinWriteInterval(15*time.Second),
+		withReapplyInterval(0),
 		withWriteClock(clock),
 	)
 	if err != nil {
@@ -164,6 +210,7 @@ func TestWriterRunActivitiesReconnectsCoalescesClearsAndShutsDown(t *testing.T) 
 	writer, err := NewWriter(client, "app-id",
 		WithRetryDelays(0),
 		WithMinWriteInterval(15*time.Second),
+		withReapplyInterval(0),
 		withWriteClock(clock),
 	)
 	if err != nil {
@@ -376,6 +423,10 @@ func (f *fakeClient) setSetErrors(errs ...error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setErrs = append([]error(nil), errs...)
+}
+
+func (f *fakeClient) simulateRemoteClose() {
+	f.setSetErrors(errors.New("remote IPC connection closed"))
 }
 
 func (f *fakeClient) Login(appID string) error {
