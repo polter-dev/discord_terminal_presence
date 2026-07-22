@@ -131,8 +131,7 @@ func runUpdate(checkCtx, updateCtx context.Context, current string, checker late
 		return nil
 	}
 	fmt.Fprintf(stdout, "Updating termp from %s to %s...\n", current, result.Latest)
-	// Generic installs use the exact-tag installer, which verifies the release
-	// checksum's keyless signature before replacing the binary.
+	// Generic installs use the exact-tag installer before replacing the binary.
 	return updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, stdin, stdout, stderr)
 }
 

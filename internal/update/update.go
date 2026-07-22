@@ -385,10 +385,8 @@ func writeCache(path string, entry cacheEntry) error {
 }
 
 // GenericCommand returns a command that fetches the installer from the exact
-// release tag being installed. That installer verifies the release checksum's
-// keyless signature and signer identity before trusting the archive checksum.
-// Release tags have already been validated as semantic versions, so they cannot
-// add shell syntax to this command.
+// release tag being installed. Release tags have already been validated as
+// semantic versions, so they cannot add shell syntax to this command.
 func GenericCommand(tag string) string {
 	if !validReleaseTag(tag) {
 		return ""
@@ -433,8 +431,8 @@ func UpdateCommandForMethod(method InstallMethod, tag string) (Command, error) {
 }
 
 // PerformUpdate executes the install-aware updater with streamed I/O. Generic
-// updates use the release-tagged, signature-verifying installer. This function
-// is intentionally separate from release checking for reuse by opt-in automation.
+// updates use the release-tagged installer. This function is intentionally
+// separate from release checking for reuse by opt-in automation.
 func PerformUpdate(ctx context.Context, method InstallMethod, tag string, runner CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {
 	if runner == nil {
 		runner = ExecRunner{}
