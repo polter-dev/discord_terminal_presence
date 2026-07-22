@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
@@ -123,5 +124,37 @@ func TestRichClientLogoutWithoutConnection(t *testing.T) {
 	client := &RichClient{}
 	if err := client.Logout(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSetActivityTimesOutWhenPeerStalls(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	client := &RichClient{conn: clientConn, ioTimeout: 25 * time.Millisecond}
+	defer serverConn.Close()
+
+	requestRead := make(chan error, 1)
+	go func() {
+		_, err := readFrame(serverConn)
+		requestRead <- err
+		// Deliberately leave the response unread until the client deadline fires.
+	}()
+
+	started := time.Now()
+	err := client.SetActivity(Activity{Name: "Claude Code"})
+	if err == nil {
+		t.Fatal("SetActivity error = nil, want timeout")
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("SetActivity error = %v, want net timeout error", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("SetActivity took %v, want bounded timeout", elapsed)
+	}
+	if client.conn != nil {
+		t.Fatal("client retained connection after timeout")
+	}
+	if err := <-requestRead; err != nil {
+		t.Fatalf("server read request: %v", err)
 	}
 }
