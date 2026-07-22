@@ -2,12 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -19,9 +24,39 @@ import (
 	updatepkg "github.com/polter-dev/discord_terminal_presence/internal/update"
 )
 
+type failingReleaseSource struct {
+	calls int
+}
+
+func (s *failingReleaseSource) Latest(context.Context, string) (string, error) {
+	s.calls++
+	return "", errors.New("network must not be used")
+}
+
+type stubLatestChecker struct {
+	result updatepkg.Result
+	err    error
+}
+
+func (c stubLatestChecker) Latest(context.Context, string) (updatepkg.Result, error) {
+	return c.result, c.err
+}
+
+type recordingUpdateRunner struct {
+	command updatepkg.Command
+	calls   int
+}
+
+func (r *recordingUpdateRunner) Run(_ context.Context, command updatepkg.Command, _ io.Reader, _, _ io.Writer) error {
+	r.command = command
+	r.calls++
+	return nil
+}
+
 var expectedCommands = []string{
 	"install", "uninstall", "disable", "enable", "start", "stop", "status",
 	"settings", "watch", "version", "setup", "config", "completion",
+	"update",
 }
 
 func TestFormatInstallSuccessShowsCTAForFreshInstall(t *testing.T) {
@@ -174,6 +209,158 @@ func TestWrappedUpdateCommandsRemainCopyPasteable(t *testing.T) {
 				t.Fatalf("width %d unwrapped command = %q, want %q", width, got, command)
 			}
 		}
+	}
+}
+
+func TestCommandUpdateAlertUsesCacheWithoutNetwork(t *testing.T) {
+	oldChecker, oldVersion := releaseChecker, version
+	t.Cleanup(func() {
+		releaseChecker, version = oldChecker, oldVersion
+	})
+	_ = os.Unsetenv("NO_UPDATE_CHECK")
+	t.Cleanup(func() { _ = os.Unsetenv("NO_UPDATE_CHECK") })
+
+	cachePath := filepath.Join(t.TempDir(), "update-check.json")
+	data, err := json.Marshal(map[string]any{
+		"checked_at":     time.Now(),
+		"latest_version": "v1.2.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := &failingReleaseSource{}
+	releaseChecker = updatepkg.NewChecker(source, cachePath)
+	version = "1.0.0"
+	cfg := config.Default()
+	cfg.UpdateCheck = true
+
+	var stderr bytes.Buffer
+	printCommandUpdateAlert("start", nil, true, cfg, nil, &stderr)
+	want := "A new version (v1.2.0) is available — run `termp update`\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("alert = %q, want %q", got, want)
+	}
+	if source.calls != 0 {
+		t.Fatalf("cached alert made %d network calls", source.calls)
+	}
+}
+
+func TestCommandUpdateAlertSuppressed(t *testing.T) {
+	oldChecker, oldVersion := releaseChecker, version
+	t.Cleanup(func() {
+		releaseChecker, version = oldChecker, oldVersion
+		_ = os.Unsetenv("NO_UPDATE_CHECK")
+	})
+	cachePath := filepath.Join(t.TempDir(), "update-check.json")
+	data, err := json.Marshal(map[string]any{
+		"checked_at":     time.Now(),
+		"latest_version": "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releaseChecker = updatepkg.NewChecker(&failingReleaseSource{}, cachePath)
+
+	tests := []struct {
+		name    string
+		command string
+		args    []string
+		enabled bool
+		current string
+		loadErr error
+		envSet  bool
+	}{
+		{name: "update", command: "update", enabled: true, current: "1.0.0"},
+		{name: "version", command: "version", enabled: true, current: "1.0.0"},
+		{name: "status", command: "status", enabled: true, current: "1.0.0"},
+		{name: "completion", command: "completion", enabled: true, current: "1.0.0"},
+		{name: "config", command: "config", enabled: true, current: "1.0.0"},
+		{name: "watch once", command: "watch", args: []string{"--once"}, enabled: true, current: "1.0.0"},
+		{name: "disabled config", command: "start", enabled: false, current: "1.0.0"},
+		{name: "environment", command: "start", enabled: true, current: "1.0.0", envSet: true},
+		{name: "dev build", command: "start", enabled: true, current: "dev"},
+		{name: "config error", command: "start", enabled: true, current: "1.0.0", loadErr: errors.New("bad config")},
+		{name: "unknown command", command: "nope", enabled: true, current: "1.0.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = os.Unsetenv("NO_UPDATE_CHECK")
+			if tt.envSet {
+				t.Setenv("NO_UPDATE_CHECK", "")
+			}
+			version = tt.current
+			cfg := config.Default()
+			cfg.UpdateCheck = tt.enabled
+			var stderr bytes.Buffer
+			printCommandUpdateAlert(tt.command, tt.args, true, cfg, tt.loadErr, &stderr)
+			if got := stderr.String(); got != "" {
+				t.Fatalf("suppressed alert = %q", got)
+			}
+		})
+	}
+}
+
+func TestInteractiveOnlyAlertsAreSuppressedForScriptStyleInvocation(t *testing.T) {
+	for _, command := range []string{"settings", "setup", "watch"} {
+		if eligibleForUpdateAlert(command, nil, false) {
+			t.Fatalf("%s eligible without an interactive terminal", command)
+		}
+	}
+}
+
+func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
+	tests := []struct {
+		method updatepkg.InstallMethod
+		want   updatepkg.Command
+	}{
+		{method: updatepkg.InstallHomebrew, want: updatepkg.Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}},
+		{method: updatepkg.InstallGo, want: updatepkg.Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"}}},
+		{method: updatepkg.InstallGeneric, want: updatepkg.Command{Name: "sh", Args: []string{"-c", updatepkg.GenericCommand}}},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.method), func(t *testing.T) {
+			runner := &recordingUpdateRunner{}
+			checker := stubLatestChecker{result: updatepkg.Result{Current: "1.0.0", Latest: "v1.1.0", Method: tt.method}}
+			if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, io.Discard, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			if runner.calls != 1 || runner.command.Name != tt.want.Name || strings.Join(runner.command.Args, "\x00") != strings.Join(tt.want.Args, "\x00") {
+				t.Fatalf("runner = (%d, %#v), want (1, %#v)", runner.calls, runner.command, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunUpdateAlreadyLatest(t *testing.T) {
+	runner := &recordingUpdateRunner{}
+	checker := stubLatestChecker{result: updatepkg.Result{Current: "1.2.0", Latest: "v1.2.0", Method: updatepkg.InstallGo}}
+	var stdout bytes.Buffer
+	if err := runUpdate(context.Background(), context.Background(), "1.2.0", checker, runner, nil, &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "You're already on the latest version (v1.2.0).\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("already-latest ran updater %d times", runner.calls)
+	}
+}
+
+func TestRunUpdateCheckFailureDoesNotRunUpdater(t *testing.T) {
+	runner := &recordingUpdateRunner{}
+	checker := stubLatestChecker{err: errors.New("offline")}
+	err := runUpdate(context.Background(), context.Background(), "1.2.0", checker, runner, nil, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "unable to check for updates") || !strings.Contains(err.Error(), "offline") {
+		t.Fatalf("error = %v, want clear offline check failure", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("failed check ran updater %d times", runner.calls)
 	}
 }
 

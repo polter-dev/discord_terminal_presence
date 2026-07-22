@@ -65,6 +65,7 @@ Running `termp` by itself in a terminal opens the live `watch` view.
 | `termp config init` | Writes a commented sample config. Add `--force` to replace an existing config. |
 | `termp completion <bash\|zsh\|fish>` | Prints a tab-completion script for your shell. |
 | `termp version` | Prints the version, commit, build date, Go version, OS, and architecture. |
+| `termp update` | Checks for a newer release and updates using Homebrew, Go, or the shell installer as appropriate. |
 
 `termp watch`, `termp settings`, and the interactive setup wizard need a real
 terminal window.
@@ -115,15 +116,10 @@ Either setting is enough.
 
 ## Updates
 
-Today, source installs update with the same Go command used to install:
-
-```sh
-go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
-```
-
-The release update experience is still coming: `termp update` and optional
-automatic updates are planned for launch. Automatic updates will be opt-in; the
-current source build does not silently update itself.
+Run `termp update` to check for a newer release and update using the detected
+install method. Homebrew installs use `brew upgrade`, source installs use
+`go install ...@latest`, and shell/binary installs reuse the install script.
+termp does not silently update itself.
 
 ## Configuration
 

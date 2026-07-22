@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -15,6 +18,10 @@ import (
 const updateCheckTimeout = 2 * time.Second
 
 var releaseChecker = updatepkg.NewChecker(nil, updatepkg.DefaultCachePath())
+
+type latestChecker interface {
+	Latest(context.Context, string) (updatepkg.Result, error)
+}
 
 func printAvailableUpdate(cfg config.Config, loadErr error) {
 	// A malformed config may contain an opt-out we cannot safely read. Privacy
@@ -33,6 +40,67 @@ func printAvailableUpdate(cfg config.Config, loadErr error) {
 		installRenderer(os.Stdout),
 		installOutputWidth(os.Stdout),
 	))
+}
+
+func printCommandUpdateAlert(command string, args []string, interactive bool, cfg config.Config, loadErr error, stderr io.Writer) {
+	if loadErr != nil || !eligibleForUpdateAlert(command, args, interactive) {
+		return
+	}
+	result, ok := releaseChecker.CachedCheck(version, cfg.UpdateCheck)
+	if !ok {
+		return
+	}
+	fmt.Fprintf(stderr, "A new version (%s) is available — run `termp update`\n", result.Latest)
+}
+
+func eligibleForUpdateAlert(command string, args []string, interactive bool) bool {
+	switch command {
+	case "install", "uninstall", "disable", "enable", "start", "stop":
+		return true
+	case "settings", "setup":
+		return interactive
+	case "watch":
+		if !interactive {
+			return false
+		}
+		for _, arg := range args {
+			if arg == "--once" {
+				return false
+			}
+		}
+		return true
+	default:
+		// update, version, and status report update state themselves. config and
+		// completion are intended for non-interactive/script consumption.
+		return false
+	}
+}
+
+func updateCommand(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	addVerboseFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: termp update")
+	}
+	checkCtx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
+	defer cancel()
+	return runUpdate(checkCtx, context.Background(), version, releaseChecker, updatepkg.ExecRunner{}, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func runUpdate(checkCtx, updateCtx context.Context, current string, checker latestChecker, runner updatepkg.CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {
+	result, err := checker.Latest(checkCtx, current)
+	if err != nil {
+		return fmt.Errorf("unable to check for updates: %w", err)
+	}
+	if !updatepkg.IsNewer(current, result.Latest) {
+		fmt.Fprintf(stdout, "You're already on the latest version (%s).\n", result.Latest)
+		return nil
+	}
+	fmt.Fprintf(stdout, "Updating termp from %s to %s...\n", current, result.Latest)
+	return updatepkg.PerformUpdate(updateCtx, result.Method, runner, stdin, stdout, stderr)
 }
 
 func formatUpdateNotice(result updatepkg.Result, renderer *lipgloss.Renderer, width int) string {

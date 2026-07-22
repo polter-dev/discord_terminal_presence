@@ -137,6 +137,39 @@ func TestCheckerUsesFreshCache(t *testing.T) {
 	}
 }
 
+func TestCachedCheckNeverUsesReleaseSource(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		checkedAt time.Time
+		latest    string
+		want      bool
+	}{
+		{name: "fresh newer", checkedAt: now.Add(-time.Hour), latest: "v1.1.0", want: true},
+		{name: "fresh equal", checkedAt: now.Add(-time.Hour), latest: "v1.0.0"},
+		{name: "stale newer", checkedAt: now.Add(-cacheLifetime), latest: "v1.1.0"},
+		{name: "failed cached check", checkedAt: now.Add(-time.Hour), latest: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "update.json")
+			if err := writeCache(path, cacheEntry{CheckedAt: tt.checkedAt, Latest: tt.latest}); err != nil {
+				t.Fatal(err)
+			}
+			source := &fakeSource{err: errors.New("network must not be used")}
+			checker := NewChecker(source, path)
+			checker.Now = func() time.Time { return now }
+			_, got := checker.CachedCheck("1.0.0", true)
+			if got != tt.want {
+				t.Fatalf("CachedCheck() available = %t, want %t", got, tt.want)
+			}
+			if source.callCount() != 0 {
+				t.Fatalf("CachedCheck made %d source calls", source.callCount())
+			}
+		})
+	}
+}
+
 func TestCheckerRefreshesExpiredCache(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "update.json")
