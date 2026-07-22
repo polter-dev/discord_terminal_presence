@@ -11,19 +11,28 @@ import (
 	"github.com/Microsoft/go-winio"
 )
 
-// Windows uses go-winio to dial named pipes at \\.\pipe\discord-ipc-0..9 for Discord IPC.
-// Windows pipe ACL/server-token validation is not exposed by go-winio's net.Conn;
-// the shared client I/O deadlines still prevent an unresponsive server from hanging us.
 func dialDiscordIPC() (net.Conn, error) {
+	return dialDiscordIPCWith(winio.DialPipe, validatePipePeer)
+}
+
+type dialPipeFunc func(string, *time.Duration) (net.Conn, error)
+
+func dialDiscordIPCWith(dial dialPipeFunc, verify func(net.Conn) error) (net.Conn, error) {
 	var failures strings.Builder
 	for i := 0; i <= 9; i++ {
 		path := fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, i)
 		timeout := 500 * time.Millisecond
-		conn, err := winio.DialPipe(path, &timeout)
-		if err == nil {
-			return conn, nil
+		conn, err := dial(path, &timeout)
+		if err != nil {
+			fmt.Fprintf(&failures, "  %s: %v\n", path, err)
+			continue
 		}
-		fmt.Fprintf(&failures, "  %s: %v\n", path, err)
+		if err := verify(conn); err != nil {
+			_ = conn.Close()
+			fmt.Fprintf(&failures, "  %s: %v\n", path, err)
+			continue
+		}
+		return conn, nil
 	}
 
 	return nil, fmt.Errorf("presence: no Discord IPC pipe accepted a connection:\n%s", failures.String())
