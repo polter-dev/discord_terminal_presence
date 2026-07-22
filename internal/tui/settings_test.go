@@ -154,8 +154,8 @@ func TestModelViewRendersMasterDetailColumnsAndFriendlyLabels(t *testing.T) {
 	if got, want := visibleColumn(presenceLine, "Presence enabled"), visibleColumn(scanLine, "Scan interval"); got != want {
 		t.Errorf("setting columns are not aligned: Presence enabled at %d, Scan interval at %d", got, want)
 	}
-	if got, want := visibleColumn(presenceLine, "On"), visibleColumn(scanLine, model.Config().ScanInterval); got != want {
-		t.Errorf("value columns are not aligned: On at %d, scan interval at %d", got, want)
+	if got, want := visibleColumn(presenceLine, "● On"), visibleColumn(scanLine, model.Config().ScanInterval); got != want {
+		t.Errorf("value columns are not aligned: ● On at %d, scan interval at %d", got, want)
 	}
 
 	for category, labels := range map[string][]string{
@@ -785,8 +785,8 @@ func TestSetupModelViewsRenderTableButtonsAndFitTerminal(t *testing.T) {
 			choicesView := model.View()
 			startLine := lineContaining(t, choicesView, "Start")
 			directoryLine := lineContaining(t, choicesView, "directory")
-			if got, want := visibleColumn(startLine, "On"), visibleColumn(directoryLine, "Off"); got != want {
-				t.Errorf("setup state columns are not aligned: On at %d, Off at %d\n%s", got, want, choicesView)
+			if got, want := visibleColumn(startLine, "● On"), visibleColumn(directoryLine, "○ Off"); got != want {
+				t.Errorf("setup state columns are not aligned: ● On at %d, ○ Off at %d\n%s", got, want, choicesView)
 			}
 			steps = append(steps, viewCase{
 				name: "choices",
