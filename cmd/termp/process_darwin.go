@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -64,7 +66,7 @@ func validatedDarwinIdentity(pid int) (darwinProcessIdentity, error) {
 	if err != nil {
 		return darwinProcessIdentity{}, fmt.Errorf("cannot determine current executable: %w", err)
 	}
-	currentPath, err = filepath.EvalSymlinks(currentPath)
+	currentPath, err = normalizeDarwinExecutablePath(currentPath)
 	if err != nil {
 		return darwinProcessIdentity{}, fmt.Errorf("cannot resolve current executable: %w", err)
 	}
@@ -72,7 +74,7 @@ func validatedDarwinIdentity(pid int) (darwinProcessIdentity, error) {
 	if err != nil {
 		return darwinProcessIdentity{}, err
 	}
-	imagePath, err = filepath.EvalSymlinks(imagePath)
+	imagePath, err = normalizeDarwinExecutablePath(imagePath)
 	if err != nil {
 		return darwinProcessIdentity{}, fmt.Errorf("cannot resolve process executable: %w", err)
 	}
@@ -89,6 +91,9 @@ func validatedDarwinIdentity(pid int) (darwinProcessIdentity, error) {
 }
 
 func darwinProcessImage(pid int) (string, error) {
+	if path, err := darwinKernelProcessImage(pid); err == nil && path != "" {
+		return path, nil
+	}
 	procArgs, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
 		return "", fmt.Errorf("cannot determine process image: %w", err)
@@ -98,6 +103,45 @@ func darwinProcessImage(pid int) (string, error) {
 		return "", errors.New("cannot parse process image")
 	}
 	return path, nil
+}
+
+func normalizeDarwinExecutablePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(absolute)
+}
+
+func darwinKernelProcessImage(pid int) (string, error) {
+	const (
+		procInfoCallPIDInfo = 2
+		procPIDPathInfo     = 11
+		procPIDPathMaxSize  = 4 * 1024
+	)
+	buffer := make([]byte, procPIDPathMaxSize)
+	length, _, errno := syscall.Syscall6(
+		unix.SYS_PROC_INFO,
+		procInfoCallPIDInfo,
+		uintptr(pid),
+		procPIDPathInfo,
+		0,
+		uintptr(unsafe.Pointer(&buffer[0])),
+		uintptr(len(buffer)),
+	)
+	if errno != 0 {
+		return "", errno
+	}
+	if length == 0 || length > uintptr(len(buffer)) {
+		return "", errors.New("kernel returned an invalid process image")
+	}
+	if end := bytes.IndexByte(buffer[:length], 0); end >= 0 {
+		length = uintptr(end)
+	}
+	if length == 0 {
+		return "", errors.New("kernel returned an empty process image")
+	}
+	return string(buffer[:length]), nil
 }
 
 func darwinExecutableFromProcArgs(procArgs []byte) (string, bool) {

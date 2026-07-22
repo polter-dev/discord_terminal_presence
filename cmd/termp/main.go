@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1181,6 +1182,24 @@ func writePID(path string, pid int) error {
 }
 
 func writePIDOwned(path string, pid int) (os.FileInfo, error) {
+	return writePIDOwnedWithHook(path, pid, nil)
+}
+
+var pendingPIDFileSequence atomic.Uint64
+
+func createPendingPIDFile(path string) (*os.File, string, error) {
+	for attempts := 0; attempts < 100; attempts++ {
+		pendingPath := fmt.Sprintf("%s.pending-%d-%d", path, os.Getpid(), pendingPIDFileSequence.Add(1))
+		file, err := createPIDFile(pendingPath)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return file, pendingPath, err
+	}
+	return nil, "", errors.New("cannot allocate pending PID file")
+}
+
+func writePIDOwnedWithHook(path string, pid int, initializingHook func()) (os.FileInfo, error) {
 	if pid <= 0 {
 		return nil, fmt.Errorf("invalid PID %d", pid)
 	}
@@ -1188,12 +1207,55 @@ func writePIDOwned(path string, pid int) (os.FileInfo, error) {
 		return nil, err
 	}
 
-	file, err := createPIDFile(path)
-	if errors.Is(err, os.ErrExist) {
+	for {
+		file, pendingPath, err := createPendingPIDFile(path)
+		if err != nil {
+			return nil, err
+		}
+		published := false
+		cleanup := func() {
+			_ = file.Close()
+			if !published {
+				_ = os.Remove(pendingPath)
+			}
+		}
+		if err := file.Chmod(0o600); err != nil {
+			cleanup()
+			return nil, err
+		}
+		if err := lockPIDFile(file); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("lock pending PID file: %w", err)
+		}
+		if initializingHook != nil {
+			initializingHook()
+		}
+		if _, err := io.WriteString(file, strconv.Itoa(pid)+"\n"); err != nil {
+			cleanup()
+			return nil, err
+		}
+		if err := file.Sync(); err != nil {
+			cleanup()
+			return nil, err
+		}
+		if err := publishPIDFile(pendingPath, path); err == nil {
+			published = true
+			info, err := file.Stat()
+			cleanup()
+			return info, err
+		} else if !errors.Is(err, os.ErrExist) {
+			cleanup()
+			return nil, err
+		}
+		cleanup()
+
 		// Only replace a stale file after proving that it is an owned regular
-		// file. O_EXCL then makes the new name acquisition atomic.
+		// file. Its lock serializes initialization and stale replacement.
 		existing, openErr := openValidatedPIDFile(path)
 		if openErr != nil {
+			if errors.Is(openErr, os.ErrNotExist) {
+				continue
+			}
 			return nil, openErr
 		}
 		if lockErr := lockPIDFile(existing); lockErr != nil {
@@ -1228,28 +1290,12 @@ func writePIDOwned(path string, pid int) (os.FileInfo, error) {
 			existing.Close()
 			return nil, removeErr
 		}
-		file, err = createPIDFile(path)
 		if closeErr := existing.Close(); closeErr != nil {
-			if file != nil {
-				file.Close()
-			}
 			return nil, closeErr
 		}
+		// Loop to stage, lock, initialize, and atomically publish the replacement.
+		// No contender can observe an empty authoritative file.
 	}
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	if err := file.Chmod(0o600); err != nil {
-		return nil, err
-	}
-	if _, err := io.WriteString(file, strconv.Itoa(pid)+"\n"); err != nil {
-		return nil, err
-	}
-	if err := file.Sync(); err != nil {
-		return nil, err
-	}
-	return file.Stat()
 }
 
 func ensurePIDDirectory(path string) error {
@@ -1301,39 +1347,52 @@ func pidFileMatchesOwner(expectedPID, actualPID int, expectedInfo, actualInfo os
 	return expectedPID > 0 && expectedPID == actualPID && expectedInfo != nil && actualInfo != nil && os.SameFile(expectedInfo, actualInfo)
 }
 
-func removePIDIfOwned(path string, expectedPID int, expectedInfo os.FileInfo) (bool, error) {
+type pidRemovalResult uint8
+
+const (
+	pidRemovalChanged pidRemovalResult = iota
+	pidRemovalRemoved
+	pidRemovalAbsent
+)
+
+func removePIDIfOwnedResult(path string, expectedPID int, expectedInfo os.FileInfo) (pidRemovalResult, error) {
 	file, err := openValidatedPIDFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return pidRemovalAbsent, nil
 	}
 	if err != nil {
-		return false, err
+		return pidRemovalChanged, err
 	}
 	defer file.Close()
 	if err := lockPIDFile(file); err != nil {
-		return false, fmt.Errorf("PID file is busy: %w", err)
+		return pidRemovalChanged, fmt.Errorf("PID file is busy: %w", err)
 	}
 	actualPID, actualInfo, err := readPIDRecordFromFile(file)
 	if err != nil {
-		return false, err
+		return pidRemovalChanged, err
 	}
 	currentInfo, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return pidRemovalAbsent, nil
 		}
-		return false, err
+		return pidRemovalChanged, err
 	}
 	if !pidFileMatchesOwner(expectedPID, actualPID, expectedInfo, actualInfo) || !os.SameFile(actualInfo, currentInfo) {
-		return false, nil
+		return pidRemovalChanged, nil
 	}
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return pidRemovalAbsent, nil
 		}
-		return false, err
+		return pidRemovalChanged, err
 	}
-	return true, nil
+	return pidRemovalRemoved, nil
+}
+
+func removePIDIfOwned(path string, expectedPID int, expectedInfo os.FileInfo) (bool, error) {
+	result, err := removePIDIfOwnedResult(path, expectedPID, expectedInfo)
+	return result == pidRemovalRemoved, err
 }
 
 func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int) bool, signal func(int) error, sleep func(time.Duration)) (int, error) {
@@ -1360,11 +1419,11 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int
 	if !waitForProcessExit(pid, timeout, pollInterval, alive, sleep) {
 		return 0, fmt.Errorf("timed out after %s waiting for daemon pid %d to exit; PID file was not removed", timeout, pid)
 	}
-	removed, err := removePIDIfOwned(path, pid, info)
+	result, err := removePIDIfOwnedResult(path, pid, info)
 	if err != nil {
 		return 0, fmt.Errorf("remove PID file: %w", err)
 	}
-	if !removed {
+	if result == pidRemovalChanged {
 		return 0, errors.New("daemon exited, but PID file changed ownership and was not removed")
 	}
 	return pid, nil

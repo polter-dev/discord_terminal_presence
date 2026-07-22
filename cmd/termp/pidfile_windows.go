@@ -12,7 +12,15 @@ import (
 )
 
 func createPIDFile(path string) (*os.File, error) {
-	return openWindowsPIDFile(path, windows.GENERIC_WRITE, windows.CREATE_NEW, windows.FILE_SHARE_READ)
+	return openWindowsPIDFile(path, windows.GENERIC_WRITE, windows.CREATE_NEW, windows.FILE_SHARE_READ|windows.FILE_SHARE_DELETE)
+}
+
+func publishPIDFile(pendingPath, path string) error {
+	err := windows.MoveFile(windows.StringToUTF16Ptr(pendingPath), windows.StringToUTF16Ptr(path))
+	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) || errors.Is(err, windows.ERROR_FILE_EXISTS) {
+		return os.ErrExist
+	}
+	return err
 }
 
 func openPIDFile(path string) (*os.File, error) {

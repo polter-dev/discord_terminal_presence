@@ -99,7 +99,7 @@ func validateLinuxProcess(pid int) error {
 	if err != nil {
 		return fmt.Errorf("cannot determine current executable: %w", err)
 	}
-	currentPath, err = filepath.EvalSymlinks(currentPath)
+	currentPath, err = normalizeLinuxExecutablePath(currentPath)
 	if err != nil {
 		return fmt.Errorf("cannot resolve current executable: %w", err)
 	}
@@ -121,6 +121,14 @@ func validateLinuxProcess(pid int) error {
 		return errors.New("process executable or owner does not match current termp")
 	}
 	return nil
+}
+
+func normalizeLinuxExecutablePath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(absolute)
 }
 
 func linuxIdentityMatches(actualUID, currentUID uint32, actualPath, currentPath string) bool {

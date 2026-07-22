@@ -270,6 +270,56 @@ func TestStopDaemonWaitsForExitThenRemovesPIDFile(t *testing.T) {
 	}
 }
 
+func TestStopDaemonSucceedsWhenDaemonRemovesPIDFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 1234); err != nil {
+		t.Fatal(err)
+	}
+	alive := true
+	pid, err := stopDaemon(path, time.Second, time.Millisecond, func(int) bool {
+		return alive
+	}, func(pid int) error {
+		if pid != 1234 {
+			t.Fatalf("signal PID = %d, want 1234", pid)
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		alive = false
+		return nil
+	}, func(time.Duration) {})
+	if err != nil || pid != 1234 {
+		t.Fatalf("stopDaemon() = %d, %v; want 1234, nil", pid, err)
+	}
+}
+
+func TestConcurrentPIDInitializationDoesNotPublishEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	initializing := make(chan struct{})
+	release := make(chan struct{})
+	pausedDone := make(chan error, 1)
+	go func() {
+		_, err := writePIDOwnedWithHook(path, os.Getpid(), func() {
+			close(initializing)
+			<-release
+		})
+		pausedDone <- err
+	}()
+	<-initializing
+
+	if _, err := writePIDOwned(path, os.Getpid()); err != nil {
+		close(release)
+		t.Fatalf("contending starter did not acquire unpublished PID file: %v", err)
+	}
+	close(release)
+	if err := <-pausedDone; err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("paused starter error = %v, want live-owner rejection", err)
+	}
+	if pid, err := readPID(path); err != nil || pid != os.Getpid() {
+		t.Fatalf("published PID = %d, %v; want %d, nil", pid, err, os.Getpid())
+	}
+}
+
 func TestStopDaemonRemovesStalePIDFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 1234); err != nil {
