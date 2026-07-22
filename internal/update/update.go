@@ -23,7 +23,6 @@ const (
 	maxReleaseBody   = 1 << 20
 
 	BrewCommand         = "brew upgrade --cask polter-dev/tap/termp"
-	GoCommand           = "go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"
 	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
 )
 
@@ -394,6 +393,14 @@ func GenericCommand(tag string) string {
 	return fmt.Sprintf("curl -fsSL "+genericInstallerURL+" | VERSION=%s sh", tag, tag)
 }
 
+// GoCommand returns a go install command pinned to the validated release tag.
+func GoCommand(tag string) string {
+	if !validReleaseTag(tag) {
+		return ""
+	}
+	return "go install github.com/polter-dev/discord_terminal_presence/cmd/termp@" + tag
+}
+
 func validReleaseTag(tag string) bool {
 	if tag == "" || tag != strings.TrimSpace(tag) {
 		return false
@@ -408,7 +415,7 @@ func CommandForMethod(method InstallMethod, tag string) string {
 	case InstallHomebrew:
 		return BrewCommand
 	case InstallGo:
-		return GoCommand
+		return GoCommand(tag)
 	default:
 		return GenericCommand(tag)
 	}
@@ -420,7 +427,10 @@ func UpdateCommandForMethod(method InstallMethod, tag string) (Command, error) {
 	case InstallHomebrew:
 		return Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}, nil
 	case InstallGo:
-		return Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@latest"}}, nil
+		if !validReleaseTag(tag) {
+			return Command{}, fmt.Errorf("invalid release tag %q", tag)
+		}
+		return Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@" + tag}}, nil
 	default:
 		command := GenericCommand(tag)
 		if command == "" {
