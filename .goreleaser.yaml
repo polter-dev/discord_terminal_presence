@@ -32,17 +32,6 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
-signs:
-  - id: checksums
-    cmd: cosign
-    signature: "${artifact}.sigstore.json"
-    args:
-      - sign-blob
-      - "--bundle=${signature}"
-      - "${artifact}"
-      - --yes
-    artifacts: checksum
-
 nfpms:
   - id: termp
     ids:

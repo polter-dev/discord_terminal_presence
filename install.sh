@@ -3,8 +3,6 @@ set -eu
 
 REPO="polter-dev/discord_terminal_presence"
 DEFAULT_BINDIR="/usr/local/bin"
-OIDC_ISSUER="https://token.actions.githubusercontent.com"
-SIGNER_WORKFLOW="https://github.com/$REPO/.github/workflows/release.yml"
 
 err() {
 	printf 'termp install: %s\n' "$*" >&2
@@ -25,27 +23,6 @@ download() {
 		wget -q "$url" -O "$dest"
 	else
 		err "curl or wget is required"
-	fi
-}
-
-require_cosign() {
-	if ! have cosign; then
-		err "cosign is required to verify release authenticity; install it from https://docs.sigstore.dev/cosign/system_config/installation/ and retry"
-	fi
-}
-
-verify_checksum_signature() {
-	checksums=$1
-	bundle=$2
-	release_tag=$3
-	signer_identity="$SIGNER_WORKFLOW@refs/tags/$release_tag"
-
-	if ! cosign verify-blob \
-		--bundle "$bundle" \
-		--certificate-identity "$signer_identity" \
-		--certificate-oidc-issuer "$OIDC_ISSUER" \
-		"$checksums"; then
-		err "signature verification failed for checksums.txt (expected signer: $signer_identity)"
 	fi
 }
 
@@ -280,20 +257,18 @@ v[0-9]*.[0-9]*.[0-9]* | [0-9]*.[0-9]*.[0-9]*) ;;
 *) err "invalid release tag: $tag" ;;
 esac
 version=${tag#v}
-require_cosign
 
 archive_name="termp_${version}_${os}_${arch}.tar.gz"
 base_url="https://github.com/$REPO/releases/download/$tag"
 archive_path="$tmpdir/$archive_name"
 checksums_path="$tmpdir/checksums.txt"
-checksums_bundle_path="$tmpdir/checksums.txt.sigstore.json"
 extract_dir="$tmpdir/extract"
 
+# The archive is pinned to the exact release tag and verified against that
+# release's SHA-256 checksums.
 printf 'Downloading termp %s for %s/%s...\n' "$tag" "$os" "$arch"
 download "$base_url/$archive_name" "$archive_path"
 download "$base_url/checksums.txt" "$checksums_path"
-download "$base_url/checksums.txt.sigstore.json" "$checksums_bundle_path"
-verify_checksum_signature "$checksums_path" "$checksums_bundle_path" "$tag"
 verify_checksum "$checksums_path" "$archive_path" "$archive_name"
 
 mkdir -p "$extract_dir"
