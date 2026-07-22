@@ -516,6 +516,11 @@ func TestSetupModelApplyDefaultsInstallsAutostart(t *testing.T) {
 	}
 	updated, _ = model.Update(key("enter"))
 	model = updated.(SetupModel)
+	if model.step != 3 {
+		t.Fatalf("confirming settings moved to step %d, want 3", model.step)
+	}
+	updated, _ = model.Update(key("enter"))
+	model = updated.(SetupModel)
 
 	if !model.Applied() {
 		t.Fatal("setup should be applied")
@@ -570,6 +575,10 @@ func TestSetupModelAutostartOptOutSkipsInstallAndSavesChoices(t *testing.T) {
 	}
 	updated, _ = model.Update(key(" "))
 	model = updated.(SetupModel)
+	updated, _ = model.Update(key("enter"))
+	model = updated.(SetupModel)
+	updated, _ = model.Update(key("enter"))
+	model = updated.(SetupModel)
 
 	if installed {
 		t.Fatal("install should be skipped when autostart is disabled")
@@ -618,6 +627,8 @@ func TestSetupModelApplyPersistsEveryToggleCombination(t *testing.T) {
 			model = updated.(SetupModel)
 			updated, _ = model.Update(key("enter"))
 			model = updated.(SetupModel)
+			updated, _ = model.Update(key("enter"))
+			model = updated.(SetupModel)
 
 			if saveCalls != 1 {
 				t.Fatalf("save calls = %d, want 1", saveCalls)
@@ -631,7 +642,7 @@ func TestSetupModelApplyPersistsEveryToggleCombination(t *testing.T) {
 }
 
 func TestSetupModelQuitDoesNotSave(t *testing.T) {
-	for _, quitKey := range []string{"q", "esc", "ctrl+c"} {
+	for _, quitKey := range []string{"q", "esc"} {
 		t.Run(quitKey, func(t *testing.T) {
 			saveCalls := 0
 			model := NewSetupModel(func(config.Config) (string, error) {
@@ -643,8 +654,14 @@ func TestSetupModelQuitDoesNotSave(t *testing.T) {
 			model = updated.(SetupModel)
 			updated, _ = model.Update(key(" "))
 			model = updated.(SetupModel)
-			updated, _ = model.Update(key(quitKey))
+			updated, cmd := model.Update(key(quitKey))
 			model = updated.(SetupModel)
+			if cmd != nil {
+				t.Fatal("guarded quit key should not quit before confirmation")
+			}
+			if model.exitConfirm == nil {
+				t.Fatal("guarded quit key should open the exit dialog")
+			}
 
 			if saveCalls != 0 {
 				t.Fatalf("save calls = %d, want 0", saveCalls)
@@ -686,6 +703,13 @@ func TestSetupModelViewsRenderTableButtonsAndFitTerminal(t *testing.T) {
 				want: []string{"╭", "Question", "State", "›", "Continue", "╰"},
 			})
 
+			updated, _ = model.Update(key("enter"))
+			model = updated.(SetupModel)
+			steps = append(steps, viewCase{
+				name: "confirm",
+				view: model.View(),
+				want: []string{"Apply these settings?", "YES", "NO"},
+			})
 			updated, _ = model.Update(key("enter"))
 			model = updated.(SetupModel)
 			steps = append(steps, viewCase{
