@@ -327,7 +327,7 @@ func start(args []string) error {
 	}
 
 	pidPath := pidFilePath()
-	if pid, err := readPID(pidPath); err == nil && processAlive(pid) {
+	if pid, err := readPID(pidPath); err == nil && processAlive(pid) && processLooksLikeTermp(pid) {
 		return fmt.Errorf("daemon already running with pid %d", pid)
 	}
 	if err := writePID(pidPath, os.Getpid()); err != nil {
@@ -570,6 +570,9 @@ func stop(args []string) error {
 		removePID(pidPath)
 		return errors.New("stale PID file removed; daemon is not running")
 	}
+	if !processLooksLikeTermp(pid) {
+		return fmt.Errorf("refusing to signal pid %d: process is not a termp process owned by the current user", pid)
+	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return err
@@ -617,7 +620,7 @@ func status(args []string) error {
 	pidPath := pidFilePath()
 	running := false
 	if pid, err := readPID(pidPath); err == nil {
-		running = processAlive(pid)
+		running = processAlive(pid) && processLooksLikeTermp(pid)
 	}
 
 	fmt.Printf("running: %t\n", running)
@@ -867,11 +870,19 @@ func pidFilePath() string {
 	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
 		return filepath.Join(runtimeDir, "termp.pid")
 	}
-	return filepath.Join(os.TempDir(), "termp.pid")
+	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+		return filepath.Join(cacheDir, "termp", "run", "termp.pid")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("termp-%d", os.Geteuid()), "termp.pid")
 }
 
 func readPID(path string) (int, error) {
-	data, err := os.ReadFile(path)
+	file, err := openValidatedPIDFile(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return 0, err
 	}
@@ -879,14 +890,120 @@ func readPID(path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid PID %d", pid)
+	}
 	return pid, nil
 }
 
 func writePID(path string, pid int) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if pid <= 0 {
+		return fmt.Errorf("invalid PID %d", pid)
+	}
+	if err := ensurePIDDirectory(filepath.Dir(path)); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o644)
+
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC | os.O_EXCL | syscall.O_NOFOLLOW
+	file, err := os.OpenFile(path, flags, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		// Only replace a stale file after proving that it is an owned regular
+		// file. O_EXCL then makes the new name acquisition atomic.
+		existing, openErr := openValidatedPIDFile(path)
+		if openErr != nil {
+			return openErr
+		}
+		existingData, readErr := io.ReadAll(existing)
+		existingInfo, statErr := existing.Stat()
+		closeErr := existing.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if existingPID, parseErr := strconv.Atoi(strings.TrimSpace(string(existingData))); parseErr == nil &&
+			existingPID > 0 && processAlive(existingPID) && processLooksLikeTermp(existingPID) {
+			return fmt.Errorf("daemon already running with pid %d", existingPID)
+		}
+		currentInfo, lstatErr := os.Lstat(path)
+		if lstatErr != nil {
+			return lstatErr
+		}
+		if !os.SameFile(existingInfo, currentInfo) {
+			return errors.New("PID file changed while being replaced")
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			return removeErr
+		}
+		file, err = os.OpenFile(path, flags, 0o600)
+	}
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := file.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(file, strconv.Itoa(pid)+"\n"); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func ensurePIDDirectory(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("PID directory %q is not a directory", path)
+	}
+	if err := requireCurrentUserOwner(info, "PID directory"); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o700)
+}
+
+func openValidatedPIDFile(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	if err := validatePIDFileInfo(info, path); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+func validatePIDFileInfo(info os.FileInfo, path string) error {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("PID file %q is not a regular file", path)
+	}
+	return requireCurrentUserOwner(info, "PID file")
+}
+
+func requireCurrentUserOwner(info os.FileInfo, label string) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("cannot determine %s owner", label)
+	}
+	if stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("%s is owned by uid %d, not current uid %d", label, stat.Uid, os.Geteuid())
+	}
+	return nil
 }
 
 func removePID(path string) {
@@ -902,6 +1019,47 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return process.Signal(syscall.Signal(0)) == nil
+}
+
+func processLooksLikeTermp(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	wantName := filepath.Base(executable)
+
+	// Linux exposes both ownership and the executable without parsing a
+	// mutable command line.
+	procPath := filepath.Join("/proc", strconv.Itoa(pid))
+	if info, err := os.Stat(procPath); err == nil {
+		if requireCurrentUserOwner(info, "process") != nil {
+			return false
+		}
+		target, err := os.Readlink(filepath.Join(procPath, "exe"))
+		if err != nil {
+			return false
+		}
+		return filepath.Base(strings.TrimSuffix(target, " (deleted)")) == wantName
+	}
+
+	// macOS and other Unix platforms do not generally expose /proc. Ask ps
+	// for the effective owner and executable name, never the command line.
+	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "uid=", "-o", "comm=").Output()
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) < 2 {
+		return false
+	}
+	uid, err := strconv.Atoi(fields[0])
+	if err != nil || uid != os.Geteuid() {
+		return false
+	}
+	return filepath.Base(strings.Join(fields[1:], " ")) == wantName
 }
 
 func isTerminal(file *os.File) bool {
