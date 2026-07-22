@@ -243,7 +243,7 @@ func setup(args []string) error {
 		return nil
 	}
 	model := tui.NewSetupModel(save, installAutostart, service.ResolveExecutable)
-	finalModel, err := tea.NewProgram(model).Run()
+	finalModel, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
 	if err != nil {
 		return err
 	}
@@ -747,7 +747,7 @@ func watch(args []string) error {
 	}
 
 	model := tui.NewWatchModel()
-	program := tea.NewProgram(model, tea.WithContext(ctx))
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	detections := det.Run(ctx)
 
 	go bridgeWatchActivities(ctx, manager, detections, program)
