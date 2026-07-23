@@ -4,6 +4,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -29,6 +30,29 @@ func TestLinuxIdentityMatches(t *testing.T) {
 				t.Fatalf("linuxIdentityMatches() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLinuxIdentityMatchesDeletedExecutableImage(t *testing.T) {
+	executablePath := filepath.Join(t.TempDir(), "termp")
+	if err := os.WriteFile(executablePath, []byte("replacement"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	procExePath := filepath.Join(t.TempDir(), "exe")
+	if err := os.Symlink(executablePath+" (deleted)", procExePath); err != nil {
+		t.Fatal(err)
+	}
+	actualPath, err := resolveLinuxProcessExecutablePath(procExePath)
+	if err != nil {
+		t.Fatalf("resolveLinuxProcessExecutablePath() error = %v", err)
+	}
+	currentPath, err := normalizeLinuxExecutablePath(executablePath)
+	if err != nil {
+		t.Fatalf("normalizeLinuxExecutablePath() error = %v", err)
+	}
+	if !linuxIdentityMatches(1000, 1000, actualPath, currentPath) {
+		t.Fatal("deleted executable image did not retain process identity")
 	}
 }
 

@@ -26,6 +26,7 @@ func TestWindowsIdentityMatches(t *testing.T) {
 		want                    bool
 	}{
 		{name: "owner and full path match", actualSID: currentSID, expectedSID: currentSID, actualPath: "C:\\Program Files\\termp.exe", currentPath: "C:\\Program Files\\termp.exe", want: true},
+		{name: "path casing differences match", actualSID: currentSID, expectedSID: currentSID, actualPath: "c:\\program files\\TERMP.EXE", currentPath: "C:\\Program Files\\termp.exe", want: true},
 		{name: "extended path prefix normalized", actualSID: currentSID, expectedSID: currentSID, actualPath: "\\\\?\\C:\\Program Files\\termp.exe", currentPath: "C:\\Program Files\\termp.exe", want: true},
 		{name: "owner mismatch", actualSID: otherSID, expectedSID: currentSID, actualPath: "C:\\termp.exe", currentPath: "C:\\termp.exe"},
 		{name: "same basename different executable", actualSID: currentSID, expectedSID: currentSID, actualPath: "C:\\Temp\\termp.exe", currentPath: "C:\\Program Files\\termp.exe"},

@@ -132,7 +132,7 @@ func processImagePathWithQuery(query func(*uint16, *uint32) error) (string, erro
 
 func windowsIdentityMatches(actualSID, currentSID *windows.SID, actualPath, currentPath string) bool {
 	return sameSID(actualSID, currentSID) && actualPath != "" && currentPath != "" &&
-		normalizeWindowsImagePath(actualPath) == normalizeWindowsImagePath(currentPath)
+		strings.EqualFold(normalizeWindowsImagePath(actualPath), normalizeWindowsImagePath(currentPath))
 }
 
 func normalizeWindowsImagePath(path string) string {
