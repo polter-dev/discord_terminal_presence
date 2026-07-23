@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -46,10 +47,11 @@ var commandHelp = []struct {
 	name        string
 	description string
 }{
-	{"install", "install the login autostart service (not the binary)"},
-	{"uninstall", "remove the login autostart service (not the binary)"},
-	{"disable", "pause login autostart"},
-	{"enable", "resume login autostart"},
+	{"autostart", "manage login autostart with grouped actions"},
+	{"install", "alias for \"termp autostart install\" (not the binary)"},
+	{"uninstall", "alias for \"termp autostart uninstall\" (not the binary)"},
+	{"disable", "alias for \"termp autostart disable\""},
+	{"enable", "alias for \"termp autostart enable\""},
 	{"start", "run the presence daemon in the foreground"},
 	{"stop", "stop the running presence daemon"},
 	{"status", "show daemon, Discord, autostart, and config status"},
@@ -103,22 +105,20 @@ func main() {
 var errUnknownCommand = errors.New("unknown command")
 
 func dispatchCommand(command string, args []string) error {
+	return dispatchCommandWithAutostartHandlers(command, args, autostartActionHandlers())
+}
+
+func dispatchCommandWithAutostartHandlers(command string, args []string, handlers map[string]autostartActionHandler) error {
 	var err error
 	switch command {
-	case "install":
-		err = install(args)
-	case "uninstall":
-		err = uninstall(args)
-	case "disable":
-		err = disable(args)
-	case "enable":
-		err = enable(args)
+	case "install", "uninstall", "disable", "enable", "status":
+		err = dispatchAutostartAction(command, args, handlers)
+	case "autostart":
+		err = dispatchAutostartCommand(args, handlers)
 	case "start":
 		err = start(args)
 	case "stop":
 		err = stop(args)
-	case "status":
-		err = status(args)
 	case "settings":
 		err = settings(args)
 	case "watch":
@@ -214,18 +214,62 @@ type versionInfo struct {
 	version   string
 	commit    string
 	built     string
+	dateLabel string
 	goVersion string
 	platform  string
 }
 
 func currentVersionInfo() versionInfo {
-	return versionInfo{
-		version:   version,
-		commit:    commit,
-		built:     date,
+	return resolveVersionInfo(version, commit, date, debug.ReadBuildInfo)
+}
+
+type buildInfoReader func() (*debug.BuildInfo, bool)
+
+func resolveVersionInfo(stampedVersion, stampedCommit, stampedDate string, readBuildInfo buildInfoReader) versionInfo {
+	info := versionInfo{
+		version:   stampedVersion,
+		commit:    stampedCommit,
+		built:     stampedDate,
+		dateLabel: "Built",
 		goVersion: runtime.Version(),
 		platform:  runtime.GOOS + "/" + runtime.GOARCH,
 	}
+	if stampedVersion != "dev" && stampedCommit != "none" && stampedDate != "unknown" {
+		return info
+	}
+
+	buildInfo, ok := readBuildInfo()
+	if !ok || buildInfo == nil {
+		return info
+	}
+	if info.version == "dev" && buildInfo.Main.Version != "" && buildInfo.Main.Version != "(devel)" {
+		info.version = buildInfo.Main.Version
+	}
+	for _, setting := range buildInfo.Settings {
+		switch {
+		case info.commit == "none" && setting.Key == "vcs.revision" && setting.Value != "":
+			info.commit = shortRevision(setting.Value)
+		case info.built == "unknown" && setting.Key == "vcs.time" && setting.Value != "":
+			info.built = setting.Value
+			info.dateLabel = "Commit time"
+		}
+	}
+	return info
+}
+
+func shortRevision(revision string) string {
+	const shortLength = 7
+	if len(revision) <= shortLength {
+		return revision
+	}
+	return revision[:shortLength]
+}
+
+func normalizedDateLabel(info versionInfo) string {
+	if info.dateLabel == "" {
+		return "Built"
+	}
+	return info.dateLabel
 }
 
 func printCompactVersion() {
@@ -241,7 +285,7 @@ func formatVersion(info versionInfo) string {
 	return formatSections("termp", outputSection{fields: []outputField{
 		{label: "Version", value: info.version},
 		{label: "Commit", value: info.commit},
-		{label: "Built", value: info.built},
+		{label: normalizedDateLabel(info), value: info.built},
 		{label: "Go", value: info.goVersion},
 		{label: "Platform", value: info.platform},
 	}})
@@ -308,7 +352,7 @@ func setup(args []string) error {
 			return err
 		}
 		fmt.Printf("Wrote default config: %s\n", path)
-		fmt.Println("Non-interactive setup skipped autostart. Run `termp install` to enable autostart, then `termp start` to run now.")
+		fmt.Println("Non-interactive setup skipped autostart. Run `termp autostart install` to enable autostart, then `termp start` to run now.")
 		return nil
 	}
 	model := newSetupModel(cfg, save, service.NewManager(), service.ResolveExecutable)
@@ -364,7 +408,7 @@ func completion(args []string) error {
 }
 
 func completionScript(shell string) (string, error) {
-	commands := "start stop status install uninstall disable enable settings watch version update setup config completion"
+	commands := "start stop status install uninstall disable enable autostart settings watch version update setup config completion"
 	switch shell {
 	case "bash":
 		return `# termp bash completion.
@@ -397,6 +441,15 @@ _termp_complete() {
       ;;
     completion)
       COMPREPLY=( $(compgen -W "bash zsh fish --verbose -v --help -h" -- "$cur") )
+      ;;
+    autostart)
+      if [[ " ${COMP_WORDS[*]} " == *" install "* ]]; then
+        COMPREPLY=( $(compgen -W "--force --help -h" -- "$cur") )
+      elif [[ " ${COMP_WORDS[*]} " == *" status "* ]]; then
+        COMPREPLY=( $(compgen -W "--verbose -v --help -h" -- "$cur") )
+      else
+        COMPREPLY=( $(compgen -W "enable disable status install uninstall --help -h" -- "$cur") )
+      fi
       ;;
     install)
       COMPREPLY=( $(compgen -W "--force --help -h" -- "$cur") )
@@ -439,6 +492,15 @@ _termp() {
       completion)
         compadd -- bash zsh fish --verbose -v --help -h
         ;;
+      autostart)
+        if [[ " ${words[*]} " == *" install "* ]]; then
+          compadd -- --force --help -h
+        elif [[ " ${words[*]} " == *" status "* ]]; then
+          compadd -- --verbose -v --help -h
+        else
+          compadd -- enable disable status install uninstall --help -h
+        fi
+        ;;
       install)
         compadd -- --force --help -h
         ;;
@@ -479,6 +541,9 @@ compdef _termp termp
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from init' -a init\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from init' -l force -d 'overwrite an existing config'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from autostart; and not __fish_seen_subcommand_from enable disable status install uninstall' -a 'enable disable status install uninstall'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from autostart; and __fish_seen_subcommand_from install' -l force -d 'install even when the executable path is unstable'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from autostart; and __fish_seen_subcommand_from status' -s v -l verbose -d 'enable verbose logging'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from install' -l force -d 'install even when the executable path is unstable'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from watch' -l once -d 'render one preview snapshot and exit'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start stop status settings watch version update setup completion' -s v -l verbose -d 'enable verbose logging'\n")
@@ -807,7 +872,7 @@ func stop(args []string) error {
 func printStopSuccess(pid int, state service.State) {
 	fmt.Printf("stopped (pid %d)\n", pid)
 	if serviceWillRelaunch(state) {
-		fmt.Println("Autostart is on — run \"termp disable\" to stop it launching at login (or \"termp uninstall\" to remove it).")
+		fmt.Println("Autostart is on — run \"termp autostart disable\" to pause it (or \"termp autostart uninstall\" to remove autostart, not the binary).")
 	}
 }
 
@@ -857,6 +922,7 @@ func status(args []string) error {
 		serviceLoaded:    serviceState.Loaded,
 		serviceEnabled:   serviceState.Enabled,
 		servicePath:      serviceState.Path,
+		servicePathLabel: autostartLocationLabel(runtime.GOOS),
 		serviceMessage:   serviceState.Message,
 		configPath:       cfg.Path,
 		configOK:         loadErr == nil,
@@ -898,6 +964,7 @@ type statusInfo struct {
 	serviceLoaded    string
 	serviceEnabled   string
 	servicePath      string
+	servicePathLabel string
 	serviceMessage   string
 	configPath       string
 	configOK         bool
@@ -914,7 +981,11 @@ func formatStatus(info statusInfo) string {
 		{label: "Enabled", value: humanizeState(info.serviceEnabled)},
 	}
 	if info.servicePath != "" {
-		autostart = append(autostart, outputField{label: "Path", value: abbreviateHome(info.servicePath, info.homeDir)})
+		label := info.servicePathLabel
+		if label == "" {
+			label = "Path"
+		}
+		autostart = append(autostart, outputField{label: label, value: abbreviateHome(info.servicePath, info.homeDir)})
 	}
 	if info.serviceMessage != "" {
 		autostart = append(autostart, outputField{label: "Message", value: info.serviceMessage})
@@ -940,6 +1011,13 @@ func formatStatus(info statusInfo) string {
 		outputSection{header: "Autostart", fields: autostart},
 		outputSection{header: "Config", fields: configFields},
 	)
+}
+
+func autostartLocationLabel(goos string) string {
+	if goos == "windows" {
+		return "Task"
+	}
+	return "Path"
 }
 
 func abbreviateHome(path, homeDir string) string {
