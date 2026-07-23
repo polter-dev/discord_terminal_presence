@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -51,7 +52,15 @@ func fakeHome(t *testing.T) string {
 	return home
 }
 
+func requireGOOS(t *testing.T, goos string) {
+	t.Helper()
+	if runtime.GOOS != goos {
+		t.Skip(goos + "-only")
+	}
+}
+
 func TestLaunchAgentPathsUseHomeAndLabel(t *testing.T) {
+	requireGOOS(t, "darwin")
 	home := fakeHome(t)
 	path, err := launchAgentPath()
 	if err != nil {
@@ -71,6 +80,7 @@ func TestLaunchAgentPathsUseHomeAndLabel(t *testing.T) {
 }
 
 func TestSystemdUnitPathUsesHome(t *testing.T) {
+	requireGOOS(t, "linux")
 	home := fakeHome(t)
 	path, err := systemdUnitPath()
 	if err != nil {
@@ -155,7 +165,17 @@ func TestHomebrewCheckoutAncestorIsNotTermpSourceTree(t *testing.T) {
 
 func TestValidateInstallExecutableResolvesNestedSymlinkAndHonorsForce(t *testing.T) {
 	dir := t.TempDir()
-	target := filepath.Join(dir, "termp-real")
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/polter-dev/discord_terminal_presence\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buildDir := filepath.Join(dir, "build")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(buildDir, "termp-real")
 	if err := os.WriteFile(target, []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +265,7 @@ func TestBuildSystemdUnitRejectsLineBreaks(t *testing.T) {
 }
 
 func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
+	requireGOOS(t, "darwin")
 	home := fakeHome(t)
 	runner := &recordingRunner{
 		fail: map[string]error{
@@ -275,6 +296,7 @@ func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 }
 
 func TestDarwinInstallDoesNotOverwritePlistOnUnloadFailure(t *testing.T) {
+	requireGOOS(t, "darwin")
 	home := fakeHome(t)
 	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -317,6 +339,7 @@ func TestDarwinInstallDoesNotOverwritePlistOnUnloadFailure(t *testing.T) {
 }
 
 func TestDarwinInstallReplacesPlistWhenAlreadyUnloaded(t *testing.T) {
+	requireGOOS(t, "darwin")
 	home := fakeHome(t)
 	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -351,6 +374,7 @@ func TestDarwinInstallReplacesPlistWhenAlreadyUnloaded(t *testing.T) {
 }
 
 func TestDarwinDisableAndEnableToggleLaunchAgentWithoutRemovingPlist(t *testing.T) {
+	requireGOOS(t, "darwin")
 	home := fakeHome(t)
 	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -433,6 +457,7 @@ func TestDarwinDisableAndEnableAreIdempotent(t *testing.T) {
 }
 
 func TestDarwinDisableEnableMissingPlistReturnStatusWithoutLaunchctl(t *testing.T) {
+	requireGOOS(t, "darwin")
 	fakeHome(t)
 	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
 	manager := Manager{GOOS: "darwin", Runner: runner}
@@ -459,6 +484,7 @@ func TestDarwinDisableEnableMissingPlistReturnStatusWithoutLaunchctl(t *testing.
 }
 
 func TestDarwinStatusMapsLaunchctlErrors(t *testing.T) {
+	requireGOOS(t, "darwin")
 	home := fakeHome(t)
 	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -501,6 +527,7 @@ func TestDarwinStatusMapsLaunchctlErrors(t *testing.T) {
 }
 
 func TestDarwinUninstallKeepsPlistOnUnloadFailure(t *testing.T) {
+	requireGOOS(t, "darwin")
 	home := fakeHome(t)
 	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -535,6 +562,7 @@ func TestDarwinUninstallKeepsPlistOnUnloadFailure(t *testing.T) {
 }
 
 func TestDarwinUninstallRemovesPlistWhenAlreadyUnloaded(t *testing.T) {
+	requireGOOS(t, "darwin")
 	home := fakeHome(t)
 	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -581,6 +609,7 @@ func TestDarwinUninstallAbsentIsNoOp(t *testing.T) {
 }
 
 func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
+	requireGOOS(t, "linux")
 	home := fakeHome(t)
 	runner := &recordingRunner{
 		fail: map[string]error{},
@@ -609,6 +638,7 @@ func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 }
 
 func TestLinuxDisableAndEnableToggleUserService(t *testing.T) {
+	requireGOOS(t, "linux")
 	home := fakeHome(t)
 	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -1059,6 +1089,7 @@ func TestServiceUnitEscapingEdges(t *testing.T) {
 }
 
 func TestLinuxUninstallIsIdempotent(t *testing.T) {
+	requireGOOS(t, "linux")
 	home := fakeHome(t)
 	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -1084,6 +1115,7 @@ func TestLinuxUninstallIsIdempotent(t *testing.T) {
 }
 
 func TestLinuxUninstallKeepsUnitOnDisableFailure(t *testing.T) {
+	requireGOOS(t, "linux")
 	home := fakeHome(t)
 	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -1114,6 +1146,7 @@ func TestLinuxUninstallKeepsUnitOnDisableFailure(t *testing.T) {
 }
 
 func TestLinuxUninstallRemovesUnitWhenAlreadyDisabled(t *testing.T) {
+	requireGOOS(t, "linux")
 	home := fakeHome(t)
 	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -1144,6 +1177,7 @@ func TestLinuxUninstallRemovesUnitWhenAlreadyDisabled(t *testing.T) {
 }
 
 func TestLinuxUninstallReportsDaemonReloadFailure(t *testing.T) {
+	requireGOOS(t, "linux")
 	home := fakeHome(t)
 	path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

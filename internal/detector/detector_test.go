@@ -437,6 +437,9 @@ func TestSelectorDetachedTmuxExcludedImmediately(t *testing.T) {
 }
 
 func TestSelectorTmuxUnknownFallsThroughToAtime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("presence detection unimplemented on Windows — see #183")
+	}
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	for _, name := range []string{"query error", "missing tmux", "unmatched tty"} {
 		t.Run(name, func(t *testing.T) {
@@ -468,6 +471,9 @@ func TestSelectorTTYResolutionFailureKeepsAndDefinitiveNoTTYExcludes(t *testing.
 }
 
 func TestSelectorAtimeStatFailureKeeps(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("presence detection unimplemented on Windows — see #183")
+	}
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	selector := NewSelector(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base})
 	enricher := presenceEnricher(
@@ -497,6 +503,9 @@ func TestTmuxPaneSnapshotRequiresEveryOwningSessionDetached(t *testing.T) {
 }
 
 func TestSelectorPresenceEpisodeAnchorsAndPIDReuse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("presence detection unimplemented on Windows — see #183")
+	}
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, clock)

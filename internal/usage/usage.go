@@ -52,7 +52,7 @@ func New() *Store {
 
 // Load reads a usage store from path. Missing or corrupt files return an empty store.
 func Load(path string) (*Store, error) {
-	data, err := os.ReadFile(path)
+	data, err := readFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return New(), nil
 	}
@@ -101,7 +101,7 @@ func Save(path string, store *Store) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	return replaceFile(tmpPath, path)
 }
 
 // Record marks toolID as seen at now.

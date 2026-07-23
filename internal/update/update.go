@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -164,6 +165,13 @@ func NewChecker(source ReleaseSource, cachePath string) *Checker {
 // DefaultCachePath returns the XDG-aware update cache location.
 func DefaultCachePath() string {
 	if dir := os.Getenv("XDG_CACHE_HOME"); dir != "" {
+		return filepath.Join(dir, "termp", "update-check.json")
+	}
+	if runtime.GOOS == "windows" {
+		dir, err := os.UserCacheDir()
+		if err != nil || dir == "" {
+			return ""
+		}
 		return filepath.Join(dir, "termp", "update-check.json")
 	}
 	home, err := os.UserHomeDir()

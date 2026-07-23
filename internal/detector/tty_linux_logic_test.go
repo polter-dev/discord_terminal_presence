@@ -3,6 +3,7 @@ package detector
 import (
 	"errors"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -209,6 +210,9 @@ func TestLinuxAtimeKnownGateMatrix(t *testing.T) {
 }
 
 func TestLinuxMountParsingEscapesAndLongestCoveringMount(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only")
+	}
 	mounts, err := parseLinuxMounts([]byte("devpts /dev/pts devpts rw,strictatime 0 0\ndevpts /dev/pts/special\\040pane devpts rw,strictatime 0 0\n"))
 	if err != nil {
 		t.Fatal(err)
