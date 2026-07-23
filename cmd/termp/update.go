@@ -29,12 +29,16 @@ type automaticUpdateChecker interface {
 }
 
 func printAvailableUpdate(cfg config.Config, loadErr error) {
+	printAvailableUpdateContext(context.Background(), cfg, loadErr)
+}
+
+func printAvailableUpdateContext(parent context.Context, cfg config.Config, loadErr error) {
 	// A malformed config may contain an opt-out we cannot safely read. Privacy
 	// wins over checking in that case.
 	if loadErr != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
+	ctx, cancel := context.WithTimeout(parent, updateCheckTimeout)
 	defer cancel()
 	result, ok := releaseChecker.Check(ctx, version, cfg.UpdateCheck)
 	if !ok {

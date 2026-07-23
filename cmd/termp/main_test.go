@@ -573,6 +573,94 @@ func TestFormatStatusGroupedAlignedAndComplete(t *testing.T) {
 	}
 }
 
+func TestRunStatusProbesFastPathUnchanged(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	wantService := service.State{
+		Supported: true,
+		Installed: true,
+		Loaded:    "active",
+		Enabled:   "enabled",
+		Path:      "/tmp/termp.service",
+	}
+	got := runStatusProbes(ctx, statusProbeFuncs{
+		discord: func(context.Context) error { return nil },
+		service: func(context.Context) service.State { return wantService },
+		tool: func(context.Context) (detector.Detection, error) {
+			tool := registry.Tool{ID: "claude-code"}
+			return detector.Detection{Tool: tool, Featured: detector.FeaturedTool{Tool: tool}}, nil
+		},
+	})
+
+	if got.discord != "connected" || got.detectedTool != "claude-code" || !reflect.DeepEqual(got.service, wantService) {
+		t.Fatalf("runStatusProbes() = %+v, want connected/claude-code and service %+v", got, wantService)
+	}
+}
+
+func TestRunStatusProbesHonorsOverallDeadline(t *testing.T) {
+	const budget = 40 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	wait := func(ctx context.Context) {
+		<-ctx.Done()
+	}
+
+	started := time.Now()
+	got := runStatusProbes(ctx, statusProbeFuncs{
+		discord: func(ctx context.Context) error {
+			wait(ctx)
+			return ctx.Err()
+		},
+		service: func(ctx context.Context) service.State {
+			wait(ctx)
+			return service.State{Supported: true, Loaded: "unknown", Enabled: "unknown"}
+		},
+		tool: func(ctx context.Context) (detector.Detection, error) {
+			wait(ctx)
+			return detector.Detection{}, ctx.Err()
+		},
+	})
+	elapsed := time.Since(started)
+
+	if elapsed < budget/2 || elapsed > 250*time.Millisecond {
+		t.Fatalf("runStatusProbes() elapsed = %v, want approximately %v overall budget", elapsed, budget)
+	}
+	if got.discord != "unknown (probe timed out)" || got.detectedTool != "unknown (probe timed out)" {
+		t.Fatalf("deadline results = %+v, want timed-out stages reported unknown", got)
+	}
+}
+
+func TestRunStatusProbesDoesNotWaitForHungProbe(t *testing.T) {
+	const budget = 40 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	release := make(chan struct{})
+
+	started := time.Now()
+	got := runStatusProbes(ctx, statusProbeFuncs{
+		discord: func(context.Context) error {
+			<-release
+			return nil
+		},
+		service: func(context.Context) service.State {
+			return service.State{Supported: true, Installed: true, Loaded: "active", Enabled: "enabled"}
+		},
+		tool: func(context.Context) (detector.Detection, error) {
+			return detector.Detection{None: true}, nil
+		},
+	})
+	close(release)
+
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("runStatusProbes() waited %v for hung fake, budget was %v", elapsed, budget)
+	}
+	if got.discord != "unknown (probe timed out)" || got.detectedTool != "none" ||
+		!got.service.Installed || got.service.Loaded != "active" {
+		t.Fatalf("hung-probe results = %+v, want only Discord unavailable", got)
+	}
+}
+
 func TestUpdateNoticeHasNoANSIWithoutColorSupport(t *testing.T) {
 	result := updatepkg.Result{Current: "1.0.0", Latest: "1.1.0", Command: updatepkg.BrewCommand}
 	for _, renderer := range []*lipgloss.Renderer{nil, newInstallRenderer(os.Stdout, true, true)} {

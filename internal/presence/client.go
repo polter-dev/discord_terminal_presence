@@ -1,6 +1,7 @@
 package presence
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -19,6 +20,7 @@ const (
 	opcodeFrame      uint32 = 1
 	maxPayload              = 16 << 20
 	defaultIOTimeout        = 5 * time.Second
+	statusIOTimeout         = time.Second
 )
 
 // Client is the Discord IPC boundary. Tests should inject a fake implementation.
@@ -185,6 +187,27 @@ func (c *RichClient) Logout() error {
 // Probe checks whether Discord IPC is reachable without setting an activity.
 func Probe(appID string) error {
 	return probeWith(&RichClient{}, appID)
+}
+
+// StatusProbe performs the lightweight CLI connectivity check with a short
+// handshake timeout. The daemon's normal client keeps the full I/O timeout.
+func StatusProbe(ctx context.Context, appID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return probeWith(newStatusClient(ctx), appID)
+}
+
+func newStatusClient(ctx context.Context) *RichClient {
+	timeout := statusIOTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining <= 0 {
+			timeout = time.Nanosecond
+		} else if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	return &RichClient{ioTimeout: timeout}
 }
 
 func probeWith(client Client, appID string) error {

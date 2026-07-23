@@ -1,18 +1,34 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingRunner struct {
 	calls []string
 	fail  map[string]error
 	out   map[string]string
+}
+
+type blockingContextRunner struct {
+	contextCalls int
+}
+
+func (*blockingContextRunner) Run(string, ...string) ([]byte, error) {
+	panic("StatusContext used Runner.Run instead of Runner.RunContext")
+}
+
+func (r *blockingContextRunner) RunContext(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+	r.contextCalls++
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func (r *recordingRunner) Run(name string, args ...string) ([]byte, error) {
@@ -705,6 +721,28 @@ func TestLinuxStatusUsesUnknownForMissingOrUnrecognizedOutput(t *testing.T) {
 				t.Fatalf("Status() = %+v, want unknown states", state)
 			}
 		})
+	}
+}
+
+func TestStatusContextBoundsHungServiceCommands(t *testing.T) {
+	fakeHome(t)
+	runner := &blockingContextRunner{}
+	const budget = 40 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	started := time.Now()
+	state := (Manager{GOOS: "linux", Runner: runner}).StatusContext(ctx)
+	elapsed := time.Since(started)
+
+	if elapsed < budget/2 || elapsed > 250*time.Millisecond {
+		t.Fatalf("StatusContext() elapsed = %v, want approximately %v budget", elapsed, budget)
+	}
+	if state.Loaded != "unknown" || state.Enabled != "unknown" {
+		t.Fatalf("StatusContext() = %+v, want unknown timed-out states", state)
+	}
+	if runner.contextCalls != 2 {
+		t.Fatalf("RunContext calls = %d, want both bounded Linux status queries", runner.contextCalls)
 	}
 }
 
