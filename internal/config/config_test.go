@@ -93,6 +93,8 @@ func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
 		"headliner_idle_timeout = \"60s\"",
 		"activity_switching = true",
 		"details_format = \"Using {tool}\"",
+		"[ui]",
+		"accent_color = \"purple\"",
 		"[display]",
 		"[privacy]",
 		"[cta]",
@@ -392,6 +394,49 @@ future_key = true
 	}
 	if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "future_key") {
 		t.Fatalf("warnings = %#v", cfg.Warnings)
+	}
+}
+
+func TestLoadValidAccentColor(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `
+[ui]
+accent_color = "#12AbEF"
+`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UI.AccentColor != "#12AbEF" {
+		t.Fatalf("ui.accent_color = %q, want #12AbEF", cfg.UI.AccentColor)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", cfg.Warnings)
+	}
+}
+
+func TestInvalidAccentColorWarnsAndUsesDefault(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `
+scan_interval = "7s"
+
+[ui]
+accent_color = "ultraviolet"
+`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UI.AccentColor != DefaultAccentColor {
+		t.Fatalf("ui.accent_color = %q, want default %q", cfg.UI.AccentColor, DefaultAccentColor)
+	}
+	if cfg.ScanInterval != "7s" {
+		t.Fatalf("valid config was not retained: scan_interval = %q", cfg.ScanInterval)
+	}
+	if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "ui.accent_color") {
+		t.Fatalf("warnings = %#v, want invalid accent warning", cfg.Warnings)
 	}
 }
 

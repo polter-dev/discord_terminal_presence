@@ -5,6 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 )
 
@@ -35,18 +36,31 @@ type WatchModel struct {
 
 // NewWatchModel creates a watch model using the real clock.
 func NewWatchModel() WatchModel {
-	return NewWatchModelWithClock(time.Now)
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.Default()
+	}
+	return newWatchModel(cfg.UI.AccentColor, time.Now)
 }
 
 // NewWatchModelWithClock creates a watch model with an injected clock.
 func NewWatchModelWithClock(nowFunc func() time.Time) WatchModel {
+	return newWatchModel(defaultAccentColor(), nowFunc)
+}
+
+// NewWatchModelWithConfig creates a watch model styled from cfg.
+func NewWatchModelWithConfig(cfg config.Config, nowFunc func() time.Time) WatchModel {
+	return newWatchModel(cfg.UI.AccentColor, nowFunc)
+}
+
+func newWatchModel(accentColor string, nowFunc func() time.Time) WatchModel {
 	if nowFunc == nil {
 		nowFunc = time.Now
 	}
 	return WatchModel{
 		now:     nowFunc(),
 		nowFunc: nowFunc,
-		styles:  DefaultCardStyles(),
+		styles:  DefaultCardStyles(accentColor),
 	}
 }
 

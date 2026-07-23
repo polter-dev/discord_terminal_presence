@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +21,16 @@ const (
 	// DefaultFeedbackURL deep-links to the live feedback form via the page's only stable anchor, the Turnstile container.
 	DefaultFeedbackURL = "https://termp.polter.sh/#feedback-turnstile"
 )
+
+// DefaultAccentColor preserves the original adaptive purple TUI palette.
+const DefaultAccentColor = "purple"
+
+var hexColorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+// UI controls terminal interface appearance.
+type UI struct {
+	AccentColor string `toml:"accent_color"`
+}
 
 // Display controls which activity fields are shown by default.
 type Display struct {
@@ -71,6 +82,7 @@ type Config struct {
 	ActivitySwitching    bool                    `toml:"activity_switching"`
 	DetailsFormat        string                  `toml:"details_format"`
 	FeedbackURL          string                  `toml:"feedback_url"`
+	UI                   UI                      `toml:"ui"`
 	Display              Display                 `toml:"display"`
 	Privacy              Privacy                 `toml:"privacy"`
 	CTA                  CTA                     `toml:"cta"`
@@ -92,6 +104,7 @@ type fileConfig struct {
 	ActivitySwitching    bool                    `toml:"activity_switching"`
 	DetailsFormat        string                  `toml:"details_format"`
 	FeedbackURL          string                  `toml:"feedback_url"`
+	UI                   UI                      `toml:"ui"`
 	Display              Display                 `toml:"display"`
 	Privacy              Privacy                 `toml:"privacy"`
 	CTA                  CTA                     `toml:"cta"`
@@ -144,6 +157,9 @@ func Default() Config {
 		ActivitySwitching:    true,
 		DetailsFormat:        "Using {tool}",
 		FeedbackURL:          DefaultFeedbackURL,
+		UI: UI{
+			AccentColor: DefaultAccentColor,
+		},
 		Display: Display{
 			ToolName:     true,
 			ElapsedTimer: true,
@@ -194,6 +210,9 @@ activity_switching = %t     # Let recent activity switch the headliner after the
 details_format = %q # Details text; {tool} expands to the display name.
 feedback_url = %q # URL opened by the settings feedback action.
 
+[ui]
+accent_color = %q          # TUI accent: purple, blue, green, orange, pink, red, or #RRGGBB.
+
 [display]
 tool_name = %t              # Show the tool display name in Discord details.
 elapsed_timer = %t          # Show Discord's elapsed timer for the session.
@@ -219,7 +238,7 @@ url = %q       # URL for the CTA button.
 # image_url = "https://example.com/lazygit.png" # Logo URL used by Discord.
 # priority = 10              # Higher priority wins when multiple tools match.
 `, cfg.Enabled, cfg.StartAtLogin, cfg.UpdateCheck, cfg.AutoUpdate, cfg.ScanInterval, cfg.IdleClearTimeout, cfg.Pin, cfg.HeadlinerIdleTimeout,
-		cfg.ActivitySwitching, cfg.DetailsFormat, cfg.FeedbackURL,
+		cfg.ActivitySwitching, cfg.DetailsFormat, cfg.FeedbackURL, cfg.UI.AccentColor,
 		cfg.Display.ToolName, cfg.Display.ElapsedTimer, cfg.Display.SmallImage, cfg.Display.Collection, cfg.Display.Buttons,
 		cfg.Privacy.ShowDirectory, cfg.Privacy.DirectoryBasenameOnly,
 		cfg.CTA.Enabled, cfg.CTA.Label, cfg.CTA.URL)
@@ -303,6 +322,7 @@ func LoadPath(path string) (Config, error) {
 		ActivitySwitching:    cfg.ActivitySwitching,
 		DetailsFormat:        cfg.DetailsFormat,
 		FeedbackURL:          cfg.FeedbackURL,
+		UI:                   cfg.UI,
 		Display:              cfg.Display,
 		Privacy:              cfg.Privacy,
 		CTA:                  cfg.CTA,
@@ -323,6 +343,7 @@ func LoadPath(path string) (Config, error) {
 	cfg.ActivitySwitching = raw.ActivitySwitching
 	cfg.DetailsFormat = raw.DetailsFormat
 	cfg.FeedbackURL = raw.FeedbackURL
+	cfg.UI = raw.UI
 	cfg.Display = raw.Display
 	cfg.Privacy = raw.Privacy
 	cfg.CTA = raw.CTA
@@ -476,6 +497,15 @@ func (r ResolvedTool) DisplayDirectory(path string) (string, bool) {
 }
 
 func validate(cfg *Config) error {
+	if !validAccentColor(cfg.UI.AccentColor) {
+		cfg.Warnings = append(cfg.Warnings, fmt.Sprintf(
+			"invalid config value: ui.accent_color %q; using %q",
+			cfg.UI.AccentColor,
+			DefaultAccentColor,
+		))
+		cfg.UI.AccentColor = DefaultAccentColor
+	}
+
 	cfg.Privacy.DirectoryAllowlist = expandPaths(cfg.Privacy.DirectoryAllowlist)
 	for id, override := range cfg.Tools {
 		override.DirectoryAllowlist = expandPaths(override.DirectoryAllowlist)
@@ -512,6 +542,7 @@ func saveDocument(cfg Config) map[string]any {
 		"activity_switching":     cfg.ActivitySwitching,
 		"details_format":         cfg.DetailsFormat,
 		"feedback_url":           cfg.FeedbackURL,
+		"ui":                     saveUI(cfg.UI),
 		"display":                saveDisplay(cfg.Display),
 		"privacy":                savePrivacy(cfg.Privacy),
 		"cta":                    saveCTA(cfg.CTA),
@@ -519,6 +550,12 @@ func saveDocument(cfg Config) map[string]any {
 		"custom_tools":           saveCustomTools(cfg.CustomTools),
 	}
 	return doc
+}
+
+func saveUI(ui UI) map[string]any {
+	return map[string]any{
+		"accent_color": ui.AccentColor,
+	}
 }
 
 func saveDisplay(display Display) map[string]any {
@@ -612,6 +649,15 @@ func saveButtons(buttons []registry.Button) []map[string]string {
 		})
 	}
 	return out
+}
+
+func validAccentColor(value string) bool {
+	switch strings.ToLower(value) {
+	case "purple", "blue", "green", "orange", "pink", "red":
+		return true
+	default:
+		return hexColorPattern.MatchString(value)
+	}
 }
 
 func unknownKeyWarnings(keys []toml.Key) []string {

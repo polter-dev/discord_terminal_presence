@@ -6,8 +6,34 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 )
+
+func TestAccentColorAppliesAcrossTUIScreens(t *testing.T) {
+	cfg := config.Default()
+	cfg.UI.AccentColor = "#12ABEF"
+	want := lipgloss.AdaptiveColor{Light: "#12ABEF", Dark: "#12ABEF"}
+
+	watch := NewWatchModelWithConfig(cfg, time.Now)
+	if got := watch.styles.Title.GetForeground(); got != want {
+		t.Fatalf("watch accent = %#v, want %#v", got, want)
+	}
+
+	settings := NewSettingsModel(cfg, nil, nil, nil, nil)
+	if got := settings.styles.focusedBorder.GetForeground(); got != want {
+		t.Fatalf("settings accent = %#v, want %#v", got, want)
+	}
+
+	setup := NewSetupModel(cfg, nil, nil, nil, nil)
+	if got := setup.styles.title.GetForeground(); got != want {
+		t.Fatalf("setup accent = %#v, want %#v", got, want)
+	}
+	if got := setup.applyConfirm.accent.GetForeground(); got != want {
+		t.Fatalf("setup confirmation accent = %#v, want %#v", got, want)
+	}
+}
 
 func TestWatchModelActivityAndConnection(t *testing.T) {
 	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)

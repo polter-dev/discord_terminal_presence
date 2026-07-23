@@ -35,15 +35,20 @@ type CardStyles struct {
 }
 
 // DefaultCardStyles returns the shared preview styles.
-func DefaultCardStyles() CardStyles {
+func DefaultCardStyles(accentColor ...string) CardStyles {
+	color := defaultAccentColor()
+	if len(accentColor) > 0 {
+		color = accentColor[0]
+	}
+	p := paletteForAccent(color)
 	return CardStyles{
-		Title:   lipgloss.NewStyle().Bold(true).Foreground(tuiPalette.accent),
-		Muted:   lipgloss.NewStyle().Foreground(tuiPalette.muted),
-		Accent:  lipgloss.NewStyle().Bold(true).Foreground(tuiPalette.accent),
-		Success: lipgloss.NewStyle().Foreground(tuiPalette.success),
+		Title:   lipgloss.NewStyle().Bold(true).Foreground(p.accent),
+		Muted:   lipgloss.NewStyle().Foreground(p.muted),
+		Accent:  lipgloss.NewStyle().Bold(true).Foreground(p.accent),
+		Success: lipgloss.NewStyle().Foreground(p.success),
 		Card: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(tuiPalette.accent).
+			BorderForeground(p.accent).
 			Padding(1, 2),
 	}
 }
