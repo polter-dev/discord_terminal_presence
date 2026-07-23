@@ -4,6 +4,8 @@ package service
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -13,7 +15,11 @@ func TestWindowsSchtasksIntegration(t *testing.T) {
 		t.Fatalf("NewManager().GOOS = %q, want windows", manager.GOOS)
 	}
 
+	exe := buildWindowsIntegrationHelper(t)
 	t.Cleanup(func() {
+		// The task normally exits promptly, but explicitly end it so Windows
+		// releases the helper binary before TempDir cleanup removes it.
+		_, _ = manager.Runner.Run("schtasks", "/End", "/TN", TaskName)
 		if _, err := manager.Uninstall(); err != nil {
 			t.Errorf("cleanup Uninstall() error = %v", err)
 		}
@@ -26,11 +32,6 @@ func TestWindowsSchtasksIntegration(t *testing.T) {
 		t.Fatalf("initial Uninstall() error = %v", err)
 	}
 	assertWindowsIntegrationState(t, "initial uninstall", state, false, "false", "false")
-
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable() error = %v", err)
-	}
 
 	state, err = manager.Install(exe)
 	if err != nil {
@@ -61,6 +62,20 @@ func TestWindowsSchtasksIntegration(t *testing.T) {
 		t.Fatalf("Uninstall() error = %v", err)
 	}
 	assertWindowsIntegrationState(t, "uninstall", state, false, "false", "false")
+}
+
+func buildWindowsIntegrationHelper(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(source, []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatalf("write helper source: %v", err)
+	}
+	exe := filepath.Join(dir, "termp-integration-helper.exe")
+	if output, err := exec.Command("go", "build", "-o", exe, source).CombinedOutput(); err != nil {
+		t.Fatalf("build helper executable: %v\n%s", err, output)
+	}
+	return exe
 }
 
 func assertWindowsIntegrationState(
