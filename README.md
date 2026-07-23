@@ -148,6 +148,21 @@ install method. Homebrew installs use `brew upgrade`, source installs use
 Automatic updates are opt-in with `auto_update = true`; they run silently when
 `termp start` launches, never delay daemon startup, and take effect next start.
 
+## About the packaged installer
+
+When packaged installs launch, `install.sh` will pin an exact release tag, use
+HTTPS throughout to download the matching binary and `checksums.txt`, verify the
+binary's SHA-256, and install it to `/usr/local/bin`. Please inspect the script
+before running it, as you should with any install script.
+
+Each packaged install—or direct download of a release binary—will add to
+GitHub's anonymous, aggregate download tally. The tally contains no identifier,
+IP address, or data from your machine; it is simply a small vanity/resume
+statistic for termp's student maintainer.
+
+`termp` itself still sends no telemetry, and nothing is collected from the
+running app.
+
 ## Configuration
 
 Your config lives at `~/.config/termp/config.toml`, or at
