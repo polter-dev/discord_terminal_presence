@@ -1,8 +1,13 @@
 package service
 
 import (
+	"bytes"
+	"encoding/binary"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"strings"
+	"unicode/utf16"
 )
 
 type windowsService struct {
@@ -21,11 +26,17 @@ func (s windowsService) Install(exe string) (State, error) {
 	); err != nil {
 		return State{Supported: true, Path: TaskName}, fmt.Errorf("schtasks create failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	if err := s.runTask(); err != nil {
+		return State{Supported: true, Installed: true, Path: TaskName}, err
+	}
 	return s.Status(), nil
 }
 
 func (s windowsService) Uninstall() (State, error) {
 	if out, err := s.runner.Run("schtasks", "/Delete", "/TN", TaskName, "/F"); err != nil {
+		if isTaskNotFound(out, err) {
+			return State{Supported: true, Path: TaskName, Loaded: "false", Enabled: "false"}, nil
+		}
 		return State{Supported: true, Path: TaskName}, fmt.Errorf("schtasks delete failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return s.Status(), nil
@@ -67,6 +78,9 @@ func (s windowsService) Enable() (State, error) {
 		}
 		return State{Supported: true, Installed: true, Path: TaskName}, fmt.Errorf("schtasks enable failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	if err := s.runTask(); err != nil {
+		return State{Supported: true, Installed: true, Path: TaskName}, err
+	}
 	status = s.Status()
 	if status.Message != "" {
 		return status, fmt.Errorf("%s", status.Message)
@@ -76,7 +90,7 @@ func (s windowsService) Enable() (State, error) {
 
 func (s windowsService) Status() State {
 	state := State{Supported: true, Path: TaskName, Loaded: "unknown", Enabled: "unknown"}
-	out, err := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/FO", "LIST", "/V")
+	out, err := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/XML")
 	if err != nil {
 		if isTaskNotFound(out, err) {
 			state.Loaded = "false"
@@ -88,13 +102,61 @@ func (s windowsService) Status() State {
 		return state
 	}
 	state.Installed = true
-	state.Loaded = "true"
-	state.Enabled = "true"
-	if strings.EqualFold(windowsTaskStatus(out), "Disabled") {
-		state.Loaded = "false"
-		state.Enabled = "false"
+	var task struct {
+		Settings struct {
+			Enabled *bool `xml:"Enabled"`
+		} `xml:"Settings"`
+	}
+	if err := unmarshalTaskXML(out, &task); err != nil {
+		state.Message = fmt.Sprintf("schtasks query returned invalid XML: %v", err)
+		return state
+	}
+	if task.Settings.Enabled != nil {
+		state.Enabled = fmt.Sprintf("%t", *task.Settings.Enabled)
 	}
 	return state
+}
+
+func unmarshalTaskXML(data []byte, value any) error {
+	if len(data) >= 2 {
+		var byteOrder binary.ByteOrder
+		switch {
+		case data[0] == 0xff && data[1] == 0xfe:
+			byteOrder = binary.LittleEndian
+			data = data[2:]
+		case data[0] == 0xfe && data[1] == 0xff:
+			byteOrder = binary.BigEndian
+			data = data[2:]
+		case data[0] == '<' && data[1] == 0:
+			byteOrder = binary.LittleEndian
+		case data[0] == 0 && data[1] == '<':
+			byteOrder = binary.BigEndian
+		}
+		if byteOrder != nil {
+			codeUnits := make([]uint16, len(data)/2)
+			for i := range codeUnits {
+				codeUnits[i] = byteOrder.Uint16(data[i*2:])
+			}
+			data = []byte(string(utf16.Decode(codeUnits)))
+		}
+	}
+
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	decoder.CharsetReader = func(label string, input io.Reader) (io.Reader, error) {
+		if strings.EqualFold(label, "utf-16") {
+			return input, nil
+		}
+		return nil, fmt.Errorf("unsupported XML encoding %q", label)
+	}
+	return decoder.Decode(value)
+}
+
+func (s windowsService) runTask() error {
+	out, err := s.runner.Run("schtasks", "/Run", "/TN", TaskName)
+	if err == nil || isTaskNotFound(out, err) || isTaskAlreadyRunning(out, err) {
+		return nil
+	}
+	return fmt.Errorf("schtasks run failed: %w: %s", err, strings.TrimSpace(string(out)))
 }
 
 // isTaskNotFound best-effort matches the English schtasks absence messages.
@@ -117,13 +179,10 @@ func isTaskNotFound(out []byte, err error) bool {
 	return false
 }
 
-func windowsTaskStatus(out []byte) string {
-	for _, line := range strings.Split(string(out), "\n") {
-		key, value, ok := strings.Cut(line, ":")
-		if !ok || !strings.EqualFold(strings.TrimSpace(key), "Status") {
-			continue
-		}
-		return strings.TrimSpace(value)
+func isTaskAlreadyRunning(out []byte, err error) bool {
+	text := string(out)
+	if err != nil {
+		text += "\n" + err.Error()
 	}
-	return ""
+	return containsAnyFold(text, "already running", "instance of this task is currently running")
 }

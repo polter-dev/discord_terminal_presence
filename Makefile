@@ -14,7 +14,7 @@ test:
 	go test ./...
 
 install:
-	go install $(CMD)
+	go install -ldflags "$(LDFLAGS)" $(CMD)
 
 snapshot:
 	@if command -v goreleaser >/dev/null 2>&1; then \
