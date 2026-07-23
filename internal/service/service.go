@@ -15,7 +15,7 @@ import (
 const (
 	Label       = "dev.termp.daemon"
 	ServiceName = "termp.service"
-	TaskName    = "termp"
+	TaskName    = `\Terminal Presence\termp`
 )
 
 // Runner executes service-manager commands. Tests replace it so launchctl and
@@ -49,32 +49,27 @@ func NewManager() Manager {
 }
 
 func ResolveExecutable() (string, error) {
+	if invocationPath, err := exec.LookPath(os.Args[0]); err == nil {
+		return filepath.Abs(invocationPath)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	exe, err = filepath.Abs(exe)
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(exe)
-	if err != nil {
-		return "", err
-	}
-	return resolved, nil
+	return filepath.Abs(exe)
 }
 
 func ValidateInstallExecutable(exe string, force bool) (string, error) {
-	exe, err := filepath.Abs(exe)
+	invocationPath, err := filepath.Abs(exe)
 	if err != nil {
 		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(exe)
+	resolved, err := filepath.EvalSymlinks(invocationPath)
 	if err != nil {
 		return "", err
 	}
 	if force || !isUnstableExecutablePath(resolved) {
-		return resolved, nil
+		return invocationPath, nil
 	}
 	return "", fmt.Errorf(
 		"refusing to install autostart from unstable executable path %q; move the binary to a stable location such as ~/.local/bin or /usr/local/bin, then re-run `termp install` (or use --force to install this path anyway)",
@@ -90,7 +85,7 @@ func isUnstableExecutablePath(exe string) bool {
 	}
 
 	for dir := filepath.Dir(exe); ; dir = filepath.Dir(dir) {
-		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+		if isTermpSourceTree(dir) {
 			return true
 		}
 		parent := filepath.Dir(dir)
@@ -98,6 +93,22 @@ func isUnstableExecutablePath(exe string) bool {
 			return false
 		}
 	}
+}
+
+func isTermpSourceTree(dir string) bool {
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); err != nil {
+		return false
+	}
+	goMod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(goMod), "\n") {
+		if strings.TrimSpace(line) == "module github.com/polter-dev/discord_terminal_presence" {
+			return true
+		}
+	}
+	return false
 }
 
 func pathWithin(path, root string) bool {
@@ -204,6 +215,9 @@ func launchAgentLogPath() (string, error) {
 }
 
 func systemdUnitPath() (string, error) {
+	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
+		return filepath.Join(configHome, "systemd", "user", ServiceName), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

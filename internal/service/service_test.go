@@ -31,6 +31,7 @@ func fakeHome(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
 	return home
 }
 
@@ -65,6 +66,20 @@ func TestSystemdUnitPathUsesHome(t *testing.T) {
 	}
 }
 
+func TestSystemdUnitPathUsesXDGConfigHome(t *testing.T) {
+	fakeHome(t)
+	configHome := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	path, err := systemdUnitPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(configHome, "systemd", "user", ServiceName)
+	if path != want {
+		t.Fatalf("systemdUnitPath() = %q, want %q", path, want)
+	}
+}
+
 func TestUnstableExecutablePath(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(filepath.Join(repo, "build"), 0o755); err != nil {
@@ -72,6 +87,12 @@ func TestUnstableExecutablePath(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module github.com/polter-dev/discord_terminal_presence\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !isTermpSourceTree(repo) {
+		t.Fatal("termp checkout was not recognized as a source tree")
 	}
 
 	tests := []struct {
@@ -84,6 +105,8 @@ func TestUnstableExecutablePath(t *testing.T) {
 		{name: "tmp", path: "/tmp/build/termp", want: true},
 		{name: "private tmp", path: "/private/tmp/build/termp", want: true},
 		{name: "private var folders", path: "/private/var/folders/ab/cache/termp", want: true},
+		{name: "homebrew cellar", path: "/opt/homebrew/Cellar/termp/1.2.3/bin/termp", want: false},
+		{name: "homebrew caskroom", path: "/opt/homebrew/Caskroom/termp/1.2.3/termp", want: false},
 		{name: "usr local", path: "/usr/local/bin/termp", want: false},
 		{name: "local bin", path: filepath.Join(string(filepath.Separator), "Users", "alice", ".local", "bin", "termp"), want: false},
 		{name: "similar tmp prefix", path: "/tmp-stable/termp", want: false},
@@ -95,6 +118,22 @@ func TestUnstableExecutablePath(t *testing.T) {
 				t.Fatalf("isUnstableExecutablePath(%q) = %t, want %t", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHomebrewCheckoutAncestorIsNotTermpSourceTree(t *testing.T) {
+	prefix := filepath.Join(t.TempDir(), "homebrew")
+	if err := os.MkdirAll(filepath.Join(prefix, "Cellar", "termp", "1.2.3", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prefix, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prefix, "go.mod"), []byte("module github.com/Homebrew/brew\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isTermpSourceTree(prefix) {
+		t.Fatal("Homebrew prefix was mistaken for the termp source tree")
 	}
 }
 
@@ -127,12 +166,12 @@ func TestValidateInstallExecutableResolvesNestedSymlinkAndHonorsForce(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := filepath.EvalSymlinks(target)
+	want, err := filepath.Abs(link2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != want {
-		t.Fatalf("ValidateInstallExecutable(force) = %q, want resolved target %q", got, want)
+		t.Fatalf("ValidateInstallExecutable(force) = %q, want stable invocation path %q", got, want)
 	}
 }
 
@@ -669,11 +708,16 @@ func TestLinuxStatusUsesUnknownForMissingOrUnrecognizedOutput(t *testing.T) {
 	}
 }
 
-func TestWindowsInstallCreatesLogonTaskWithoutRealSchtasks(t *testing.T) {
+const (
+	windowsEnabledTaskXML  = `<Task><Settings><Enabled>true</Enabled></Settings></Task>`
+	windowsDisabledTaskXML = `<Task><Settings><Enabled>false</Enabled></Settings></Task>`
+)
+
+func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) {
 	runner := &recordingRunner{
 		fail: map[string]error{},
 		out: map[string]string{
-			"schtasks /Query /TN " + TaskName + " /FO LIST /V": "Status: Ready\n",
+			"schtasks /Query /TN " + TaskName + " /XML": windowsEnabledTaskXML,
 		},
 	}
 	manager := Manager{GOOS: "windows", Runner: runner}
@@ -681,8 +725,8 @@ func TestWindowsInstallCreatesLogonTaskWithoutRealSchtasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.Installed || state.Enabled != "true" || state.Loaded != "true" {
-		t.Fatalf("state = %+v, want installed enabled true loaded true", state)
+	if !state.Installed || state.Enabled != "true" || state.Loaded != "unknown" {
+		t.Fatalf("state = %+v, want installed enabled true loaded unknown", state)
 	}
 	if len(runner.calls) < 1 {
 		t.Fatal("runner was not called")
@@ -700,13 +744,16 @@ func TestWindowsInstallCreatesLogonTaskWithoutRealSchtasks(t *testing.T) {
 			t.Fatalf("create call missing %q:\n%s", want, create)
 		}
 	}
+	if !hasCall(runner.calls, "schtasks /Run /TN "+TaskName) {
+		t.Fatalf("Install calls = %#v, want immediate schtasks run", runner.calls)
+	}
 }
 
 func TestWindowsDisableAndEnableToggleTaskWithoutRealSchtasks(t *testing.T) {
 	runner := &recordingRunner{
 		fail: map[string]error{},
 		out: map[string]string{
-			"schtasks /Query /TN " + TaskName + " /FO LIST /V": "Status: Ready\n",
+			"schtasks /Query /TN " + TaskName + " /XML": windowsEnabledTaskXML,
 		},
 	}
 	manager := Manager{GOOS: "windows", Runner: runner}
@@ -728,15 +775,18 @@ func TestWindowsDisableAndEnableToggleTaskWithoutRealSchtasks(t *testing.T) {
 	if !hasCall(runner.calls, "schtasks /Change /TN "+TaskName+" /ENABLE") {
 		t.Fatalf("Enable calls = %#v, want schtasks enable", runner.calls)
 	}
+	if !hasCall(runner.calls, "schtasks /Run /TN "+TaskName) {
+		t.Fatalf("Enable calls = %#v, want immediate schtasks run", runner.calls)
+	}
 }
 
 func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 	runner := &recordingRunner{
 		fail: map[string]error{
-			"schtasks /Query /TN " + TaskName + " /FO LIST /V": errors.New("exit status 1"),
+			"schtasks /Query /TN " + TaskName + " /XML": errors.New("exit status 1"),
 		},
 		out: map[string]string{
-			"schtasks /Query /TN " + TaskName + " /FO LIST /V": "ERROR: The system cannot find the file specified.\n",
+			"schtasks /Query /TN " + TaskName + " /XML": "ERROR: The system cannot find the file specified.\n",
 		},
 	}
 	manager := Manager{GOOS: "windows", Runner: runner}
@@ -762,6 +812,52 @@ func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 	}
 }
 
+func TestWindowsUninstallTreatsMissingTaskAsSuccess(t *testing.T) {
+	deleteCall := "schtasks /Delete /TN " + TaskName + " /F"
+	runner := &recordingRunner{
+		fail: map[string]error{deleteCall: errors.New("exit status 1")},
+		out:  map[string]string{deleteCall: "ERROR: The specified task name does not exist in the system.\n"},
+	}
+
+	state, err := (Manager{GOOS: "windows", Runner: runner}).Uninstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Installed || state.Loaded != "false" || state.Enabled != "false" {
+		t.Fatalf("Uninstall() = %+v, want clean absent state", state)
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != deleteCall {
+		t.Fatalf("Uninstall calls = %#v, want only idempotent delete", runner.calls)
+	}
+}
+
+func TestWindowsRunToleratesBenignRaces(t *testing.T) {
+	runCall := "schtasks /Run /TN " + TaskName
+	queryCall := "schtasks /Query /TN " + TaskName + " /XML"
+	tests := []struct {
+		name string
+		out  string
+	}{
+		{name: "already running", out: "ERROR: An instance of this task is currently running.\n"},
+		{name: "task removed", out: "ERROR: The specified task name does not exist in the system.\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingRunner{
+				fail: map[string]error{runCall: errors.New("exit status 1")},
+				out: map[string]string{
+					runCall:   tt.out,
+					queryCall: windowsEnabledTaskXML,
+				},
+			}
+			if _, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestWindowsStatusParsesTaskState(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -774,17 +870,24 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 	}{
 		{
 			name:          "ready task is enabled",
-			queryOut:      "TaskName: termp\nStatus: Ready\n",
+			queryOut:      windowsEnabledTaskXML,
 			wantInstalled: true,
-			wantLoaded:    "true",
+			wantLoaded:    "unknown",
 			wantEnabled:   "true",
 		},
 		{
 			name:          "disabled task is not enabled",
-			queryOut:      "TaskName: termp\nStatus: Disabled\n",
+			queryOut:      windowsDisabledTaskXML,
 			wantInstalled: true,
-			wantLoaded:    "false",
+			wantLoaded:    "unknown",
 			wantEnabled:   "false",
+		},
+		{
+			name:          "missing enabled field remains unknown",
+			queryOut:      `<Task><Settings /></Task>`,
+			wantInstalled: true,
+			wantLoaded:    "unknown",
+			wantEnabled:   "unknown",
 		},
 		{
 			name:          "absent task is not installed",
@@ -807,7 +910,7 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query := "schtasks /Query /TN " + TaskName + " /FO LIST /V"
+			query := "schtasks /Query /TN " + TaskName + " /XML"
 			runner := &recordingRunner{
 				fail: map[string]error{},
 				out:  map[string]string{query: tt.queryOut},
@@ -831,7 +934,7 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 }
 
 func TestWindowsDisableAndEnableReturnQueryFailures(t *testing.T) {
-	query := "schtasks /Query /TN " + TaskName + " /FO LIST /V"
+	query := "schtasks /Query /TN " + TaskName + " /XML"
 	tests := []struct {
 		name string
 		run  func(Manager) (State, error)

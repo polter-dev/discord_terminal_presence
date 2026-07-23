@@ -16,6 +16,18 @@ builds:
       - arm64
     ldflags:
       - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+  - id: termp-windows
+    main: ./cmd/termp
+    binary: termp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
 
 archives:
   - id: termp
@@ -23,6 +35,15 @@ archives:
       - termp
     formats:
       - tar.gz
+    name_template: "termp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+  - id: termp-windows
+    ids:
+      - termp-windows
+    formats:
+      - zip
     name_template: "termp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
