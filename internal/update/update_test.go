@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -466,7 +467,16 @@ func TestDefaultCachePathUsesXDGDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", "")
 	t.Setenv("HOME", home)
-	want := filepath.Join(home, ".cache", "termp", "update-check.json")
+	var want string
+	if runtime.GOOS == "windows" {
+		cacheDir, err := os.UserCacheDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = filepath.Join(cacheDir, "termp", "update-check.json")
+	} else {
+		want = filepath.Join(home, ".cache", "termp", "update-check.json")
+	}
 	if got := DefaultCachePath(); got != want {
 		t.Fatalf("DefaultCachePath() = %q, want %q", got, want)
 	}

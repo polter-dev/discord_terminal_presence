@@ -204,8 +204,10 @@ func TestReadPIDRequiresRegularFileOwnedByCurrentUser(t *testing.T) {
 	if err := os.Mkdir(directoryPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readPID(directoryPath); err == nil || !strings.Contains(err.Error(), "regular file") {
-		t.Fatalf("readPID(directory) error = %v, want regular-file rejection", err)
+	if _, err := readPID(directoryPath); err == nil ||
+		(!strings.Contains(err.Error(), "regular file") &&
+			!(runtime.GOOS == "windows" && strings.Contains(strings.ToLower(err.Error()), "access is denied"))) {
+		t.Fatalf("readPID(directory) error = %v, want unusable-PID-file rejection", err)
 	}
 
 	info, err := os.Stat(path)
