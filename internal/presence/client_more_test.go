@@ -2,6 +2,7 @@ package presence
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -26,6 +27,19 @@ func (w *shortWriter) Write(p []byte) (int, error) {
 type zeroWriter struct{}
 
 func (zeroWriter) Write([]byte) (int, error) { return 0, nil }
+
+func TestStatusClientUsesShortTimeoutWithoutChangingDaemonDefault(t *testing.T) {
+	if got := (&RichClient{}).timeout(); got != defaultIOTimeout {
+		t.Fatalf("daemon client timeout = %v, want %v", got, defaultIOTimeout)
+	}
+	client := newStatusClient(context.Background())
+	if got := client.timeout(); got != statusIOTimeout {
+		t.Fatalf("status client timeout = %v, want %v", got, statusIOTimeout)
+	}
+	if statusIOTimeout >= defaultIOTimeout {
+		t.Fatalf("status timeout %v is not shorter than daemon timeout %v", statusIOTimeout, defaultIOTimeout)
+	}
+}
 
 func TestIPCFrameRoundTripHandlesShortWrites(t *testing.T) {
 	w := &shortWriter{limit: 3}

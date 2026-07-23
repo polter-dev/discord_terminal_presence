@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -24,10 +25,18 @@ type Runner interface {
 	Run(name string, args ...string) ([]byte, error)
 }
 
+type contextRunner interface {
+	RunContext(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
 type ExecRunner struct{}
 
 func (ExecRunner) Run(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
+}
+
+func (ExecRunner) RunContext(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 type Manager struct {
@@ -177,15 +186,45 @@ func (m Manager) Enable() (State, error) {
 }
 
 func (m Manager) Status() State {
+	return m.StatusContext(context.Background())
+}
+
+// StatusContext reports service state while bounding service-manager queries
+// to the supplied context. Install, enable, disable, and uninstall continue to
+// use their existing unbounded command path.
+func (m Manager) StatusContext(ctx context.Context) State {
 	switch m.GOOS {
 	case "darwin":
-		return darwinService{runner: m.runner()}.Status()
+		return darwinService{runner: m.runner()}.StatusContext(ctx)
 	case "linux":
-		return linuxService{runner: m.runner()}.Status()
+		return linuxService{runner: m.runner()}.StatusContext(ctx)
 	case "windows":
-		return windowsService{runner: m.runner()}.Status()
+		return windowsService{runner: m.runner()}.StatusContext(ctx)
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}
+	}
+}
+
+func runStatusCommand(ctx context.Context, runner Runner, name string, args ...string) ([]byte, error) {
+	if runner, ok := runner.(contextRunner); ok {
+		return runner.RunContext(ctx, name, args...)
+	}
+
+	type result struct {
+		out []byte
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		out, err := runner.Run(name, args...)
+		resultCh <- result{out: out, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		return result.out, result.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,6 +106,10 @@ func (s linuxService) Enable() (State, error) {
 }
 
 func (s linuxService) Status() State {
+	return s.StatusContext(context.Background())
+}
+
+func (s linuxService) StatusContext(ctx context.Context) State {
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true, Loaded: "unknown", Enabled: "unknown"}
@@ -115,9 +120,9 @@ func (s linuxService) Status() State {
 	} else if os.IsNotExist(err) {
 		state.Installed = false
 	}
-	out, _ := s.runner.Run("systemctl", "--user", "is-enabled", ServiceName)
+	out, _ := runStatusCommand(ctx, s.runner, "systemctl", "--user", "is-enabled", ServiceName)
 	state.Enabled = systemctlState(out, "enabled", "disabled", "static", "masked", "linked")
-	out, _ = s.runner.Run("systemctl", "--user", "is-active", ServiceName)
+	out, _ = runStatusCommand(ctx, s.runner, "systemctl", "--user", "is-active", ServiceName)
 	state.Loaded = systemctlState(out, "active", "inactive", "failed", "activating", "deactivating")
 	return state
 }

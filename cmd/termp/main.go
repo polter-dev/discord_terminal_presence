@@ -41,6 +41,7 @@ var (
 const (
 	stopTimeout      = 5 * time.Second
 	stopPollInterval = 50 * time.Millisecond
+	statusTimeout    = 2500 * time.Millisecond
 )
 
 var commandHelp = []struct {
@@ -899,24 +900,46 @@ func status(args []string) error {
 		return err
 	}
 
+	statusCtx, cancelStatus := context.WithTimeout(context.Background(), statusTimeout)
+	defer cancelStatus()
 	cfg, loadErr := config.Load()
-	defer printAvailableUpdate(cfg, loadErr)
+	defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
 	pidPath := pidFilePath()
 	running := false
 	if pid, err := readPID(pidPath); err == nil {
 		running = processAlive(pid) && processLooksLikeTermp(pid)
 	}
 
-	discord := "connected"
-	if err := presence.Probe(presence.DefaultAppID); err != nil {
-		discord = "not running (start Discord to show presence)"
-	}
-	serviceState := service.NewManager().Status()
+	reg, registryErr := registry.NewWithCustom(cfg.CustomTools...)
+	probes := runStatusProbes(statusCtx, statusProbeFuncs{
+		discord: func(ctx context.Context) error {
+			return presence.StatusProbe(ctx, presence.DefaultAppID)
+		},
+		service: func(ctx context.Context) service.State {
+			return service.NewManager().StatusContext(ctx)
+		},
+		tool: func(ctx context.Context) (detector.Detection, error) {
+			if registryErr != nil {
+				return detector.Detection{}, registryErr
+			}
+			if err := ctx.Err(); err != nil {
+				return detector.Detection{}, err
+			}
+			return detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
+				ScanInterval:         cfg.ScanIntervalDuration(),
+				IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
+				Pin:                  cfg.Pin,
+				HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
+				ActivitySwitching:    cfg.ActivitySwitching,
+			})
+		},
+	})
+	serviceState := probes.service
 	homeDir, _ := os.UserHomeDir()
 	info := statusInfo{
 		running:          running,
-		discord:          discord,
-		detectedTool:     "unknown",
+		discord:          probes.discord,
+		detectedTool:     probes.detectedTool,
 		serviceSupported: serviceState.Supported,
 		serviceInstalled: serviceState.Installed,
 		serviceLoaded:    serviceState.Loaded,
@@ -931,28 +954,100 @@ func status(args []string) error {
 		homeDir:          homeDir,
 	}
 
-	reg, err := registry.NewWithCustom(cfg.CustomTools...)
-	if err != nil {
+	if registryErr != nil {
 		fmt.Print(formatStatus(info))
-		return err
+		return registryErr
 	}
-	detectedTool := "none"
-	detection, err := detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
-		ScanInterval:         cfg.ScanIntervalDuration(),
-		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
-		Pin:                  cfg.Pin,
-		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
-		ActivitySwitching:    cfg.ActivitySwitching,
-	})
-	if err != nil {
-		detectedTool = fmt.Sprintf("unknown (%v)", err)
-	} else if !detection.None {
-		detectedTool = detection.Tool.ID
-	}
-
-	info.detectedTool = detectedTool
 	fmt.Print(formatStatus(info))
 	return nil
+}
+
+type statusProbeFuncs struct {
+	discord func(context.Context) error
+	service func(context.Context) service.State
+	tool    func(context.Context) (detector.Detection, error)
+}
+
+type statusProbeResults struct {
+	discord      string
+	service      service.State
+	detectedTool string
+}
+
+type statusStageResult struct {
+	stage        string
+	discord      string
+	service      service.State
+	detectedTool string
+}
+
+func runStatusProbes(ctx context.Context, probes statusProbeFuncs) statusProbeResults {
+	results := statusProbeResults{
+		discord: "unknown (probe timed out)",
+		service: service.State{
+			Supported: runtime.GOOS == "darwin" || runtime.GOOS == "linux" || runtime.GOOS == "windows",
+			Loaded:    "unknown",
+			Enabled:   "unknown",
+			Message:   "status probe timed out",
+		},
+		detectedTool: "unknown (probe timed out)",
+	}
+	resultCh := make(chan statusStageResult, 3)
+
+	go func() {
+		err := probes.discord(ctx)
+		value := "connected"
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			value = "unknown (probe timed out)"
+		} else if err != nil {
+			value = "not running (start Discord to show presence)"
+		}
+		resultCh <- statusStageResult{stage: "discord", discord: value}
+	}()
+	go func() {
+		resultCh <- statusStageResult{stage: "service", service: probes.service(ctx)}
+	}()
+	go func() {
+		detection, err := probes.tool(ctx)
+		value := "none"
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			value = "unknown (probe timed out)"
+		} else if err != nil {
+			value = fmt.Sprintf("unknown (%v)", err)
+		} else if !detection.None {
+			value = detection.Tool.ID
+		}
+		resultCh <- statusStageResult{stage: "tool", detectedTool: value}
+	}()
+
+	for completed := 0; completed < 3; {
+		select {
+		case result := <-resultCh:
+			applyStatusStageResult(&results, result)
+			completed++
+		case <-ctx.Done():
+			for {
+				select {
+				case result := <-resultCh:
+					applyStatusStageResult(&results, result)
+				default:
+					return results
+				}
+			}
+		}
+	}
+	return results
+}
+
+func applyStatusStageResult(results *statusProbeResults, result statusStageResult) {
+	switch result.stage {
+	case "discord":
+		results.discord = result.discord
+	case "service":
+		results.service = result.service
+	case "tool":
+		results.detectedTool = result.detectedTool
+	}
 }
 
 type statusInfo struct {

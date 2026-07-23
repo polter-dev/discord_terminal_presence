@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,6 +95,10 @@ func (s darwinService) Enable() (State, error) {
 }
 
 func (s darwinService) Status() State {
+	return s.StatusContext(context.Background())
+}
+
+func (s darwinService) StatusContext(ctx context.Context) State {
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true, Loaded: "unknown", Enabled: "unknown"}
@@ -105,7 +110,7 @@ func (s darwinService) Status() State {
 		state.Loaded = "false"
 		return state
 	}
-	if out, err := s.runner.Run("launchctl", "print", "gui/"+currentUID()+"/"+Label); err == nil {
+	if out, err := runStatusCommand(ctx, s.runner, "launchctl", "print", "gui/"+currentUID()+"/"+Label); err == nil {
 		state.Loaded = "true"
 		_ = out
 	} else if isLaunchctlServiceNotFoundError(out) {

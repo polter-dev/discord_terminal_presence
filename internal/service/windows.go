@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/xml"
 	"fmt"
@@ -89,8 +90,12 @@ func (s windowsService) Enable() (State, error) {
 }
 
 func (s windowsService) Status() State {
+	return s.StatusContext(context.Background())
+}
+
+func (s windowsService) StatusContext(ctx context.Context) State {
 	state := State{Supported: true, Path: TaskName, Loaded: "unknown", Enabled: "unknown"}
-	out, err := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/XML")
+	out, err := runStatusCommand(ctx, s.runner, "schtasks", "/Query", "/TN", TaskName, "/XML")
 	if err != nil {
 		if isTaskNotFound(out, err) {
 			state.Loaded = "false"
