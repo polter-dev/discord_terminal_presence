@@ -5,6 +5,7 @@ package presence
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -12,15 +13,14 @@ import (
 )
 
 func dialDiscordIPC() (net.Conn, error) {
-	return dialDiscordIPCWith(winio.DialPipe, validatePipePeer)
+	return dialDiscordIPCWith(os.Getenv("DISCORD_IPC_PATH"), winio.DialPipe, validatePipePeer)
 }
 
 type dialPipeFunc func(string, *time.Duration) (net.Conn, error)
 
-func dialDiscordIPCWith(dial dialPipeFunc, verify func(net.Conn) error) (net.Conn, error) {
+func dialDiscordIPCWith(override string, dial dialPipeFunc, verify func(net.Conn) error) (net.Conn, error) {
 	var failures strings.Builder
-	for i := 0; i <= 9; i++ {
-		path := fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, i)
+	for _, path := range discordIPCPipeCandidates(override) {
 		timeout := 500 * time.Millisecond
 		conn, err := dial(path, &timeout)
 		if err != nil {
@@ -36,4 +36,24 @@ func dialDiscordIPCWith(dial dialPipeFunc, verify func(net.Conn) error) (net.Con
 	}
 
 	return nil, fmt.Errorf("presence: no Discord IPC pipe accepted a connection:\n%s", failures.String())
+}
+
+func discordIPCPipeCandidates(override string) []string {
+	paths := make([]string, 0, 11)
+	seen := make(map[string]struct{}, 11)
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	add(override)
+	for i := 0; i <= 9; i++ {
+		add(fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, i))
+	}
+	return paths
 }

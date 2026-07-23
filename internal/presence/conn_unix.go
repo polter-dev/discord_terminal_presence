@@ -23,29 +23,73 @@ func dialDiscordIPC() (net.Conn, error) {
 	baseDirs = append(baseDirs, "/tmp")
 
 	var failures strings.Builder
-	for _, dir := range discordIPCCandidateDirs(baseDirs) {
-		for i := 0; i <= 9; i++ {
-			path := filepath.Join(dir, fmt.Sprintf("discord-ipc-%d", i))
-			before, err := validateSocketCandidate(path, os.Geteuid())
-			if err != nil {
-				fmt.Fprintf(&failures, "  %s: %v\n", path, err)
+	seen := make(map[string]struct{})
+	tryCandidates := func(paths []string) net.Conn {
+		for _, path := range paths {
+			path = filepath.Clean(path)
+			if _, ok := seen[path]; ok {
 				continue
 			}
-			conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
+			seen[path] = struct{}{}
+
+			conn, err := dialDiscordIPCSocket(path)
 			if err == nil {
-				if err := validateConnectedSocket(conn, path, before, os.Geteuid()); err == nil {
-					return conn, nil
-				} else {
-					_ = conn.Close()
-					fmt.Fprintf(&failures, "  %s: %v\n", path, err)
-					continue
-				}
+				return conn
 			}
 			fmt.Fprintf(&failures, "  %s: %v\n", path, err)
 		}
+		return nil
+	}
+
+	if conn := tryCandidates(discordIPCOverrideCandidates(os.Getenv("DISCORD_IPC_PATH"), os.Lstat)); conn != nil {
+		return conn, nil
+	}
+	for _, dir := range discordIPCCandidateDirs(baseDirs) {
+		paths := make([]string, 0, 10)
+		for i := 0; i <= 9; i++ {
+			paths = append(paths, filepath.Join(dir, fmt.Sprintf("discord-ipc-%d", i)))
+		}
+		if conn := tryCandidates(paths); conn != nil {
+			return conn, nil
+		}
+	}
+	if conn := tryCandidates(discordIPCGlobCandidates(baseDirs)); conn != nil {
+		return conn, nil
 	}
 
 	return nil, fmt.Errorf("presence: no Discord IPC socket accepted a connection:\n%s", failures.String())
+}
+
+func dialDiscordIPCSocket(path string) (net.Conn, error) {
+	before, err := validateSocketCandidate(path, os.Geteuid())
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateConnectedSocket(conn, path, before, os.Geteuid()); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func discordIPCOverrideCandidates(value string, lstat func(string) (os.FileInfo, error)) []string {
+	if value == "" {
+		return nil
+	}
+	value = filepath.Clean(value)
+	info, err := lstat(value)
+	if err != nil || !info.IsDir() {
+		return []string{value}
+	}
+	paths := make([]string, 0, 10)
+	for i := 0; i <= 9; i++ {
+		paths = append(paths, filepath.Join(value, fmt.Sprintf("discord-ipc-%d", i)))
+	}
+	return paths
 }
 
 func discordIPCCandidateDirs(baseDirs []string) []string {
@@ -72,6 +116,26 @@ func discordIPCCandidateDirs(baseDirs []string) []string {
 		}
 	}
 	return dirs
+}
+
+func discordIPCGlobCandidates(baseDirs []string) []string {
+	var paths []string
+	seen := make(map[string]struct{})
+	for _, baseDir := range baseDirs {
+		matches, err := filepath.Glob(filepath.Join(baseDir, "*", "discord-ipc-*"))
+		if err != nil {
+			continue
+		}
+		for _, path := range matches {
+			path = filepath.Clean(path)
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 func validateSocketCandidate(path string, euid int) (os.FileInfo, error) {
