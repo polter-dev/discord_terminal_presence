@@ -76,6 +76,10 @@ terminal window. Applying setup reconciles start-at-login in both directions: en
 installs autostart, disabling an existing setting removes autostart, and leaving it unchanged
 does not run a service-manager operation.
 
+If termp cannot find Discord IPC in an unusual WSL, container, or newly packaged
+setup, set `DISCORD_IPC_PATH` to the socket file or its containing directory on
+Unix, or to the named-pipe path on Windows.
+
 Global flags:
 
 | Flag | What it does |

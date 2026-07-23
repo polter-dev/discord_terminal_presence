@@ -98,7 +98,7 @@ func TestDialDiscordIPCRejectsReplacedPipeAndTriesNext(t *testing.T) {
 		return validatePeerSIDs(owner, candidate.serverSID)
 	}
 
-	conn, err := dialDiscordIPCWith(dial, verify)
+	conn, err := dialDiscordIPCWith("", dial, verify)
 	if err != nil {
 		t.Fatalf("dialDiscordIPCWith: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestDialDiscordIPCClosesConnectionOnInspectionFailure(t *testing.T) {
 	}
 	inspectionErr := errors.New("cannot query process")
 
-	conn, err := dialDiscordIPCWith(dial, func(net.Conn) error { return inspectionErr })
+	conn, err := dialDiscordIPCWith("", dial, func(net.Conn) error { return inspectionErr })
 	if conn != nil {
 		t.Fatalf("connection = %v, want nil", conn)
 	}
@@ -134,6 +134,22 @@ func TestDialDiscordIPCClosesConnectionOnInspectionFailure(t *testing.T) {
 	}
 	if !candidate.closed {
 		t.Fatal("unverified connection was not closed")
+	}
+}
+
+func TestDiscordIPCPipeCandidatesOverrideFirst(t *testing.T) {
+	const override = `\\wsl.localhost\Ubuntu\discord-ipc-0`
+	got := discordIPCPipeCandidates(override)
+	if len(got) != 11 {
+		t.Fatalf("candidate count = %d, want 11", len(got))
+	}
+	if got[0] != override {
+		t.Fatalf("first candidate = %q, want override %q", got[0], override)
+	}
+
+	defaultOnly := discordIPCPipeCandidates("")
+	if len(defaultOnly) != 10 || defaultOnly[0] != `\\.\pipe\discord-ipc-0` {
+		t.Fatalf("unset override candidates = %v", defaultOnly)
 	}
 }
 

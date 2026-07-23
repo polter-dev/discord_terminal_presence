@@ -4,6 +4,7 @@ package presence
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -51,6 +52,73 @@ func TestDiscordIPCCandidateDirs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("candidate directory %d = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestDiscordIPCOverrideCandidates(t *testing.T) {
+	socketPath := filepath.Join(string(filepath.Separator), "run", "user", "501", "custom-ipc")
+	dirPath := filepath.Dir(socketPath)
+	lstatCalls := 0
+	lstat := func(path string) (os.FileInfo, error) {
+		lstatCalls++
+		switch path {
+		case socketPath:
+			return fakeFileInfo{name: "custom-ipc", mode: os.ModeSocket}, nil
+		case dirPath:
+			return fakeFileInfo{name: "501", mode: os.ModeDir | 0o700}, nil
+		default:
+			return nil, fs.ErrNotExist
+		}
+	}
+
+	if got := discordIPCOverrideCandidates("", lstat); got != nil {
+		t.Fatalf("unset override candidates = %v, want nil", got)
+	}
+	if lstatCalls != 0 {
+		t.Fatalf("unset override called lstat %d times, want 0", lstatCalls)
+	}
+
+	gotFile := discordIPCOverrideCandidates(socketPath, lstat)
+	if len(gotFile) != 1 || gotFile[0] != socketPath {
+		t.Fatalf("socket override candidates = %v, want [%s]", gotFile, socketPath)
+	}
+
+	gotDir := discordIPCOverrideCandidates(dirPath, lstat)
+	if len(gotDir) != 10 {
+		t.Fatalf("directory override candidate count = %d, want 10", len(gotDir))
+	}
+	for i, got := range gotDir {
+		want := filepath.Join(dirPath, fmt.Sprintf("discord-ipc-%d", i))
+		if got != want {
+			t.Errorf("directory override candidate %d = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestDiscordIPCGlobCandidatesFindsOneLevelNestedAndDedupes(t *testing.T) {
+	base := t.TempDir()
+	nested := filepath.Join(base, "new-package")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(nested, "discord-ipc-7")
+	if err := os.WriteFile(socketPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deeper := filepath.Join(nested, "deeper")
+	if err := os.Mkdir(deeper, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deeper, "discord-ipc-8"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "unrelated"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := discordIPCGlobCandidates([]string{base, filepath.Join(base, ".")})
+	if len(got) != 1 || got[0] != socketPath {
+		t.Fatalf("glob candidates = %v, want [%s]", got, socketPath)
 	}
 }
 
