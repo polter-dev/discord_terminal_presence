@@ -113,7 +113,7 @@ func validateLinuxProcess(pid int) error {
 	if !ok {
 		return errors.New("cannot determine process owner")
 	}
-	targetPath, err := filepath.EvalSymlinks(filepath.Join(procPath, "exe"))
+	targetPath, err := resolveLinuxProcessExecutablePath(filepath.Join(procPath, "exe"))
 	if err != nil {
 		return fmt.Errorf("cannot resolve process executable: %w", err)
 	}
@@ -121,6 +121,23 @@ func validateLinuxProcess(pid int) error {
 		return errors.New("process executable or owner does not match current termp")
 	}
 	return nil
+}
+
+func resolveLinuxProcessExecutablePath(procExePath string) (string, error) {
+	resolvedPath, resolveErr := filepath.EvalSymlinks(procExePath)
+	if resolveErr == nil {
+		return resolvedPath, nil
+	}
+	targetPath, err := os.Readlink(procExePath)
+	if err != nil {
+		return "", resolveErr
+	}
+	const deletedSuffix = " (deleted)"
+	if !strings.HasSuffix(targetPath, deletedSuffix) {
+		return "", resolveErr
+	}
+	targetPath = strings.TrimSuffix(targetPath, deletedSuffix)
+	return normalizeLinuxExecutablePath(targetPath)
 }
 
 func normalizeLinuxExecutablePath(path string) (string, error) {
