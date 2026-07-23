@@ -148,13 +148,7 @@ func TestPIDFilePathUsesPrivateUserCacheDirectory(t *testing.T) {
 	if err := writePID(want, 99999999); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(filepath.Dir(want))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o700 {
-		t.Fatalf("PID directory mode = %o, want 700", got)
-	}
+	assertPIDDirectoryMode(t, filepath.Dir(want))
 }
 
 func TestWritePIDUses0600AndRefusesSymlink(t *testing.T) {
@@ -163,13 +157,7 @@ func TestWritePIDUses0600AndRefusesSymlink(t *testing.T) {
 	if err := writePID(path, 99999998); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("PID file mode = %o, want 600", got)
-	}
+	assertPIDFileMode(t, path)
 	if err := writePID(path, 99999997); err != nil {
 		t.Fatalf("replace stale PID file: %v", err)
 	}
@@ -537,6 +525,9 @@ func TestFormatStatusLabelsWindowsScheduledTask(t *testing.T) {
 }
 
 func TestFormatStatusGroupedAlignedAndComplete(t *testing.T) {
+	homeDir := filepath.Join(string(filepath.Separator), "Users", "test")
+	servicePath := filepath.Join(homeDir, "Library", "LaunchAgents", "dev.termp.plist")
+	configPath := filepath.Join(homeDir, ".config", "termp", "config.toml")
 	info := statusInfo{
 		running:          false,
 		discord:          "connected",
@@ -545,13 +536,15 @@ func TestFormatStatusGroupedAlignedAndComplete(t *testing.T) {
 		serviceInstalled: true,
 		serviceLoaded:    "false",
 		serviceEnabled:   "n/a",
-		servicePath:      "/Users/test/Library/LaunchAgents/dev.termp.plist",
+		servicePath:      servicePath,
 		serviceMessage:   "ready",
-		configPath:       "/Users/test/.config/termp/config.toml",
+		configPath:       configPath,
 		configOK:         true,
 		configWarnings:   []string{"unknown key ignored"},
-		homeDir:          "/Users/test",
+		homeDir:          homeDir,
 	}
+	shortServicePath := "~" + strings.TrimPrefix(servicePath, homeDir)
+	shortConfigPath := "~" + strings.TrimPrefix(configPath, homeDir)
 	want := "termp status\n\n" +
 		"Daemon\n" +
 		"  Running        no\n" +
@@ -562,10 +555,10 @@ func TestFormatStatusGroupedAlignedAndComplete(t *testing.T) {
 		"  Installed  yes\n" +
 		"  Loaded     no\n" +
 		"  Enabled    —\n" +
-		"  Path       ~/Library/LaunchAgents/dev.termp.plist\n" +
+		"  Path       " + shortServicePath + "\n" +
 		"  Message    ready\n\n" +
 		"Config\n" +
-		"  Path     ~/.config/termp/config.toml\n" +
+		"  Path     " + shortConfigPath + "\n" +
 		"  Valid    yes\n" +
 		"  Warning  unknown key ignored\n"
 	if got := formatStatus(info); got != want {

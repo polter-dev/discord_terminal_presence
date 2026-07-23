@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -359,6 +360,9 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 }
 
 func TestSelectorStaleAtimeExcludedFromCandidatesAndOthers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("presence detection unimplemented on Windows — see #183")
+	}
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{
@@ -404,6 +408,9 @@ func TestSelectorIdleClearDisabledNeverClears(t *testing.T) {
 }
 
 func TestSelectorFreshAndFutureAtimeArePresent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("presence detection unimplemented on Windows — see #183")
+	}
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{

@@ -15,12 +15,25 @@ import (
 func withConfigHome(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
-	t.Setenv("HOME", filepath.Join(root, "home"))
-	if err := os.MkdirAll(os.Getenv("HOME"), 0o755); err != nil {
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(os.Getenv("XDG_CONFIG_HOME"), appConfigDir, defaultConfigFile)
+	home = canonicalTestPath(t, home)
+	configHome := filepath.Join(canonicalTestPath(t, root), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return filepath.Join(configHome, appConfigDir, defaultConfigFile)
+}
+
+func canonicalTestPath(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(canonical)
 }
 
 func writeConfig(t *testing.T, path, content string) {
@@ -211,7 +224,7 @@ priority = 5
 	if cfg.CTA.Enabled || cfg.CTA.Label != "Preview termp" || cfg.CTA.URL != "https://example.test/dead-cta" {
 		t.Fatalf("CTA not loaded: %#v", cfg.CTA)
 	}
-	if got := cfg.Privacy.DirectoryAllowlist[0]; got != filepath.Join(os.Getenv("HOME"), "dev") {
+	if got := cfg.Privacy.DirectoryAllowlist[0]; got != filepath.Join(canonicalTestPath(t, os.Getenv("HOME")), "dev") {
 		t.Fatalf("allowlist = %q", got)
 	}
 	override := cfg.Tools["claude-code"]
@@ -364,14 +377,15 @@ directory_basename_only = true
 	}
 	resolved := cfg.Resolve(registry.Tool{ID: "codex-cli"})
 
-	inside := filepath.Join(os.Getenv("HOME"), "work", "client")
+	home := canonicalTestPath(t, os.Getenv("HOME"))
+	inside := filepath.Join(home, "work", "client")
 	if !resolved.DirectoryAllowed(inside) {
 		t.Fatalf("expected %q to be allowed", inside)
 	}
 	if got, ok := resolved.DisplayDirectory(inside); !ok || got != "client" {
 		t.Fatalf("display directory = %q, %t; want client, true", got, ok)
 	}
-	outside := filepath.Join(os.Getenv("HOME"), "other")
+	outside := filepath.Join(home, "other")
 	if resolved.DirectoryAllowed(outside) {
 		t.Fatalf("expected %q to be denied", outside)
 	}
@@ -664,7 +678,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	if !loaded.Privacy.ShowDirectory || loaded.Privacy.DirectoryBasenameOnly {
 		t.Fatalf("privacy did not round-trip: %#v", loaded.Privacy)
 	}
-	wantAllow := filepath.Join(os.Getenv("HOME"), "dev")
+	wantAllow := filepath.Join(canonicalTestPath(t, os.Getenv("HOME")), "dev")
 	if len(loaded.Privacy.DirectoryAllowlist) != 1 || loaded.Privacy.DirectoryAllowlist[0] != wantAllow {
 		t.Fatalf("allowlist = %#v, want %q", loaded.Privacy.DirectoryAllowlist, wantAllow)
 	}
