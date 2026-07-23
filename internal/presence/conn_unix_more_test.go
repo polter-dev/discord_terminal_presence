@@ -26,6 +26,34 @@ func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
 func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
 func (f fakeFileInfo) Sys() any           { return f.sys }
 
+func TestDiscordIPCCandidateDirs(t *testing.T) {
+	runtimeDir := filepath.Join(string(filepath.Separator), "run", "user", "501")
+	got := discordIPCCandidateDirs([]string{
+		runtimeDir,
+		filepath.Join(runtimeDir, "."),
+		filepath.Join(runtimeDir, "snap.discord"),
+	})
+	want := []string{
+		runtimeDir,
+		filepath.Join(runtimeDir, "snap.discord"),
+		filepath.Join(runtimeDir, "app", "com.discordapp.Discord"),
+		filepath.Join(runtimeDir, "app", "com.discordapp.DiscordCanary"),
+		filepath.Join(runtimeDir, "app", "com.discordapp.DiscordPTB"),
+		filepath.Join(runtimeDir, "snap.discord", "snap.discord"),
+		filepath.Join(runtimeDir, "snap.discord", "app", "com.discordapp.Discord"),
+		filepath.Join(runtimeDir, "snap.discord", "app", "com.discordapp.DiscordCanary"),
+		filepath.Join(runtimeDir, "snap.discord", "app", "com.discordapp.DiscordPTB"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("candidate directories = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("candidate directory %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestValidateSocketCandidateMatrix(t *testing.T) {
 	const euid = 501
 	dir := filepath.Join(string(filepath.Separator), "run", "user", "501")

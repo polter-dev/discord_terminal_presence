@@ -14,23 +14,16 @@ import (
 
 func dialDiscordIPC() (net.Conn, error) {
 	envNames := []string{"XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"}
-	dirs := make([]string, 0, len(envNames)+1)
-	seen := make(map[string]bool, len(envNames)+1)
+	baseDirs := make([]string, 0, len(envNames)+1)
 	for _, name := range envNames {
 		if dir := os.Getenv(name); dir != "" {
-			dir = filepath.Clean(dir)
-			if !seen[dir] {
-				dirs = append(dirs, dir)
-				seen[dir] = true
-			}
+			baseDirs = append(baseDirs, dir)
 		}
 	}
-	if !seen["/tmp"] {
-		dirs = append(dirs, "/tmp")
-	}
+	baseDirs = append(baseDirs, "/tmp")
 
 	var failures strings.Builder
-	for _, dir := range dirs {
+	for _, dir := range discordIPCCandidateDirs(baseDirs) {
 		for i := 0; i <= 9; i++ {
 			path := filepath.Join(dir, fmt.Sprintf("discord-ipc-%d", i))
 			before, err := validateSocketCandidate(path, os.Geteuid())
@@ -53,6 +46,32 @@ func dialDiscordIPC() (net.Conn, error) {
 	}
 
 	return nil, fmt.Errorf("presence: no Discord IPC socket accepted a connection:\n%s", failures.String())
+}
+
+func discordIPCCandidateDirs(baseDirs []string) []string {
+	nestedDirs := []string{
+		"snap.discord",
+		filepath.Join("app", "com.discordapp.Discord"),
+		filepath.Join("app", "com.discordapp.DiscordCanary"),
+		filepath.Join("app", "com.discordapp.DiscordPTB"),
+	}
+	dirs := make([]string, 0, len(baseDirs)*(len(nestedDirs)+1))
+	seen := make(map[string]struct{}, cap(dirs))
+	add := func(dir string) {
+		dir = filepath.Clean(dir)
+		if _, ok := seen[dir]; !ok {
+			dirs = append(dirs, dir)
+			seen[dir] = struct{}{}
+		}
+	}
+	for _, baseDir := range baseDirs {
+		baseDir = filepath.Clean(baseDir)
+		add(baseDir)
+		for _, nestedDir := range nestedDirs {
+			add(filepath.Join(baseDir, nestedDir))
+		}
+	}
+	return dirs
 }
 
 func validateSocketCandidate(path string, euid int) (os.FileInfo, error) {
