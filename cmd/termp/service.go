@@ -15,6 +15,49 @@ import (
 
 const maxInstallCTAWidth = 80
 
+type autostartActionHandler func([]string) error
+
+func autostartActionHandlers() map[string]autostartActionHandler {
+	return map[string]autostartActionHandler{
+		"enable":    enable,
+		"disable":   disable,
+		"status":    status,
+		"install":   install,
+		"uninstall": uninstall,
+	}
+}
+
+func dispatchAutostartCommand(args []string, handlers map[string]autostartActionHandler) error {
+	fs := flag.NewFlagSet("autostart", flag.ContinueOnError)
+	fs.Usage = autostartUsage
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		autostartUsage()
+		return flag.ErrHelp
+	}
+	return dispatchAutostartAction(fs.Arg(0), fs.Args()[1:], handlers)
+}
+
+func dispatchAutostartAction(action string, args []string, handlers map[string]autostartActionHandler) error {
+	handler, ok := handlers[action]
+	if !ok {
+		autostartUsage()
+		return fmt.Errorf("unknown autostart action %q", action)
+	}
+	return handler(args)
+}
+
+func autostartUsage() {
+	fmt.Fprintln(os.Stderr, "usage: termp autostart <action> [arguments]")
+	fmt.Fprintln(os.Stderr, "  enable     resume login autostart")
+	fmt.Fprintln(os.Stderr, "  disable    pause login autostart")
+	fmt.Fprintln(os.Stderr, "  status     show daemon, Discord, autostart, and config status")
+	fmt.Fprintln(os.Stderr, "  install    install the login autostart service (not the binary)")
+	fmt.Fprintln(os.Stderr, "  uninstall  remove the login autostart service (not the binary)")
+}
+
 func install(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	force := fs.Bool("force", false, "install even when the executable path is unstable")
@@ -47,7 +90,7 @@ func formatInstallSuccess(installedPath, configPath string) string {
 		fields: []outputField{
 			{label: "Installed", value: installedPath},
 			{label: "Runs", value: "termp start"},
-			{label: "Remove", value: "termp uninstall"},
+			{label: "Remove autostart", value: "termp autostart uninstall"},
 		},
 	}}
 	if _, err := os.Stat(configPath); err != nil {
@@ -105,10 +148,10 @@ func uninstall(args []string) error {
 		return err
 	}
 	if state.Path == "" {
-		fmt.Println("not installed")
+		fmt.Println("autostart not installed")
 		return nil
 	}
-	fmt.Printf("removed: %s\n", state.Path)
+	fmt.Printf("removed autostart: %s (binary was not removed)\n", state.Path)
 	return nil
 }
 
@@ -133,7 +176,7 @@ func disable(args []string) error {
 	if pid, info, err := readPIDRecord(pidPath); err == nil && !processAlive(pid) {
 		_, _ = removePIDIfOwned(pidPath, pid, info)
 	}
-	fmt.Println("disabled: autostart paused (re-enable with: termp enable)")
+	fmt.Println("disabled: autostart paused (re-enable with: termp autostart enable)")
 	return nil
 }
 
@@ -151,7 +194,7 @@ func enable(args []string) error {
 		return err
 	}
 	if !state.Installed {
-		fmt.Println("autostart not installed; run: termp install")
+		fmt.Println("autostart not installed; run: termp autostart install")
 		return nil
 	}
 	fmt.Println("enabled: autostart active")

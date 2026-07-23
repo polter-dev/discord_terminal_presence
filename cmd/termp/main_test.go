@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -116,7 +117,7 @@ func (r *recordingUpdateRunner) Run(_ context.Context, command updatepkg.Command
 }
 
 var expectedCommands = []string{
-	"install", "uninstall", "disable", "enable", "start", "stop", "status",
+	"install", "uninstall", "disable", "enable", "autostart", "start", "stop", "status",
 	"settings", "watch", "version", "setup", "config", "completion",
 	"update",
 }
@@ -429,9 +430,9 @@ func TestFormatInstallSuccessSkipsCTAWhenConfigExists(t *testing.T) {
 
 	got := formatInstallSuccess("/usr/local/bin/termp", configPath)
 	want := "termp install\n\nAutostart\n" +
-		"  Installed  /usr/local/bin/termp\n" +
-		"  Runs       termp start\n" +
-		"  Remove     termp uninstall\n"
+		"  Installed         /usr/local/bin/termp\n" +
+		"  Runs              termp start\n" +
+		"  Remove autostart  termp autostart uninstall\n"
 	if got != want {
 		t.Fatalf("configured install output = %q, want %q", got, want)
 	}
@@ -459,6 +460,45 @@ func TestFormatVersionGroupedAndAligned(t *testing.T) {
 	}
 }
 
+func TestResolveVersionInfoFallsBackToGoBuildInfo(t *testing.T) {
+	calls := 0
+	info := resolveVersionInfo("dev", "none", "unknown", func() (*debug.BuildInfo, bool) {
+		calls++
+		return &debug.BuildInfo{
+			Main: debug.Module{Version: "v1.2.3"},
+			Settings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "0123456789abcdef"},
+				{Key: "vcs.time", Value: "2026-07-23T12:34:56Z"},
+			},
+		}, true
+	})
+	if calls != 1 {
+		t.Fatalf("ReadBuildInfo calls = %d, want 1", calls)
+	}
+	if info.version != "v1.2.3" || info.commit != "0123456" ||
+		info.built != "2026-07-23T12:34:56Z" || info.dateLabel != "Commit time" {
+		t.Fatalf("fallback version info = %+v", info)
+	}
+	if got := formatVersion(info); !strings.Contains(got, "Commit time  2026-07-23T12:34:56Z") {
+		t.Fatalf("fallback output does not label vcs.time as commit time:\n%s", got)
+	}
+}
+
+func TestResolveVersionInfoPreservesStampedValues(t *testing.T) {
+	calls := 0
+	info := resolveVersionInfo("1.2.3", "release-sha", "2026-07-23", func() (*debug.BuildInfo, bool) {
+		calls++
+		return &debug.BuildInfo{Main: debug.Module{Version: "v9.9.9"}}, true
+	})
+	if calls != 0 {
+		t.Fatalf("ReadBuildInfo calls = %d, want 0 for fully stamped build", calls)
+	}
+	if info.version != "1.2.3" || info.commit != "release-sha" ||
+		info.built != "2026-07-23" || info.dateLabel != "Built" {
+		t.Fatalf("stamped version info changed: %+v", info)
+	}
+}
+
 func TestCompactVersionKeepsParseableFirstToken(t *testing.T) {
 	info := versionInfo{
 		version:   "1.2.3",
@@ -470,6 +510,29 @@ func TestCompactVersionKeepsParseableFirstToken(t *testing.T) {
 	want := "termp 1.2.3 (abc123, 2026-07-05)\ngo " + runtime.Version() + "\n" + runtime.GOOS + "/" + runtime.GOARCH + "\n"
 	if got := formatCompactVersion(info); got != want {
 		t.Fatalf("formatCompactVersion() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatStatusLabelsWindowsScheduledTask(t *testing.T) {
+	info := statusInfo{
+		serviceSupported: true,
+		serviceInstalled: true,
+		servicePath:      `\Terminal Presence\termp`,
+		servicePathLabel: autostartLocationLabel("windows"),
+		configOK:         true,
+	}
+	got := formatStatus(info)
+	if !strings.Contains(got, "  Task       \\Terminal Presence\\termp\n") {
+		t.Fatalf("Windows status missing Task label:\n%s", got)
+	}
+	if strings.Contains(got, "  Path       \\Terminal Presence\\termp\n") {
+		t.Fatalf("Windows task was mislabeled as a path:\n%s", got)
+	}
+	if got := autostartLocationLabel("linux"); got != "Path" {
+		t.Fatalf("Linux autostart label = %q, want Path", got)
+	}
+	if got := autostartLocationLabel("darwin"); got != "Path" {
+		t.Fatalf("Darwin autostart label = %q, want Path", got)
 	}
 }
 
@@ -863,6 +926,30 @@ func TestSubcommandHelpReturnsSuccess(t *testing.T) {
 	}
 }
 
+func TestAutostartSubcommandMatchesLegacyDispatch(t *testing.T) {
+	for _, action := range []string{"enable", "disable", "status", "install", "uninstall"} {
+		t.Run(action, func(t *testing.T) {
+			var calls [][]string
+			handlers := map[string]autostartActionHandler{
+				action: func(args []string) error {
+					calls = append(calls, append([]string(nil), args...))
+					return nil
+				},
+			}
+			wantArgs := []string{"--sentinel"}
+			if err := dispatchCommandWithAutostartHandlers(action, wantArgs, handlers); err != nil {
+				t.Fatalf("legacy %s dispatch: %v", action, err)
+			}
+			if err := dispatchCommandWithAutostartHandlers("autostart", append([]string{action}, wantArgs...), handlers); err != nil {
+				t.Fatalf("grouped %s dispatch: %v", action, err)
+			}
+			if len(calls) != 2 || !reflect.DeepEqual(calls[0], wantArgs) || !reflect.DeepEqual(calls[1], wantArgs) {
+				t.Fatalf("handler calls = %#v, want two calls with %#v", calls, wantArgs)
+			}
+		})
+	}
+}
+
 func TestUsageListsEveryCommandWithDescription(t *testing.T) {
 	var buf bytes.Buffer
 	usage(&buf)
@@ -1055,7 +1142,7 @@ func TestPrintStopSuccessAutostartHint(t *testing.T) {
 		},
 	}
 
-	const hint = "Autostart is on — run \"termp disable\" to stop it launching at login (or \"termp uninstall\" to remove it)."
+	const hint = "Autostart is on — run \"termp autostart disable\" to pause it (or \"termp autostart uninstall\" to remove autostart, not the binary)."
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out, err := captureStdout(t, func() error {
@@ -1071,7 +1158,7 @@ func TestPrintStopSuccessAutostartHint(t *testing.T) {
 			if got := strings.Contains(out, hint); got != tt.wantHint {
 				t.Fatalf("stop output hint present = %t, want %t: %q", got, tt.wantHint, out)
 			}
-			if !tt.wantHint && (strings.Contains(out, "termp disable") || strings.Contains(out, "termp uninstall")) {
+			if !tt.wantHint && (strings.Contains(out, "termp autostart disable") || strings.Contains(out, "termp autostart uninstall")) {
 				t.Fatalf("stop output unexpectedly contains autostart commands: %q", out)
 			}
 		})
