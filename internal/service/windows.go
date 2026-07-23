@@ -34,6 +34,11 @@ func (s windowsService) Install(exe string) (State, error) {
 }
 
 func (s windowsService) Uninstall() (State, error) {
+	// A task definition can be deleted while an instance launched from it keeps
+	// running. Ending first makes uninstall stop the daemon as well. /End is
+	// intentionally best-effort because an idle or already-removed task is a
+	// normal uninstall state.
+	_, _ = s.runner.Run("schtasks", "/End", "/TN", TaskName)
 	if out, err := s.runner.Run("schtasks", "/Delete", "/TN", TaskName, "/F"); err != nil {
 		if isTaskNotFound(out, err) {
 			return State{Supported: true, Path: TaskName, Loaded: "false", Enabled: "false"}, nil
@@ -108,6 +113,7 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 	}
 	state.Installed = true
 	var task struct {
+		XMLName  xml.Name `xml:"Task"`
 		Settings struct {
 			Enabled *bool `xml:"Enabled"`
 		} `xml:"Settings"`
@@ -116,6 +122,9 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 		state.Message = fmt.Sprintf("schtasks query returned invalid XML: %v", err)
 		return state
 	}
+	// Task Scheduler's schema defaults Settings/Enabled to true when the
+	// element is omitted.
+	state.Enabled = "true"
 	if task.Settings.Enabled != nil {
 		state.Enabled = fmt.Sprintf("%t", *task.Settings.Enabled)
 	}

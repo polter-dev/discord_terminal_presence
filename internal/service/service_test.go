@@ -835,10 +835,13 @@ func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 	if state.Installed || state.Enabled != "false" || state.Loaded != "false" {
 		t.Fatalf("state = %+v, want not installed enabled false loaded false", state)
 	}
-	if len(runner.calls) < 1 {
-		t.Fatal("runner was not called")
+	if len(runner.calls) < 2 {
+		t.Fatalf("Uninstall calls = %#v, want end then delete", runner.calls)
 	}
-	delete := runner.calls[0]
+	if want := "schtasks /End /TN " + TaskName; runner.calls[0] != want {
+		t.Fatalf("first Uninstall call = %q, want %q", runner.calls[0], want)
+	}
+	delete := runner.calls[1]
 	for _, want := range []string{
 		"schtasks /Delete",
 		"/TN " + TaskName,
@@ -864,8 +867,9 @@ func TestWindowsUninstallTreatsMissingTaskAsSuccess(t *testing.T) {
 	if state.Installed || state.Loaded != "false" || state.Enabled != "false" {
 		t.Fatalf("Uninstall() = %+v, want clean absent state", state)
 	}
-	if len(runner.calls) != 1 || runner.calls[0] != deleteCall {
-		t.Fatalf("Uninstall calls = %#v, want only idempotent delete", runner.calls)
+	endCall := "schtasks /End /TN " + TaskName
+	if len(runner.calls) != 2 || runner.calls[0] != endCall || runner.calls[1] != deleteCall {
+		t.Fatalf("Uninstall calls = %#v, want best-effort end then idempotent delete", runner.calls)
 	}
 }
 
@@ -921,11 +925,11 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 			wantEnabled:   "false",
 		},
 		{
-			name:          "missing enabled field remains unknown",
+			name:          "missing enabled field defaults true",
 			queryOut:      `<Task><Settings /></Task>`,
 			wantInstalled: true,
 			wantLoaded:    "unknown",
-			wantEnabled:   "unknown",
+			wantEnabled:   "true",
 		},
 		{
 			name:          "absent task is not installed",

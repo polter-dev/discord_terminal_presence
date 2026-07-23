@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -476,9 +477,9 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 	if len(r.DirectoryAllowlist) == 0 {
 		return true
 	}
-	cleanPath := filepath.Clean(path)
+	cleanPath := canonicalPrivacyPath(path)
 	for _, allowed := range r.DirectoryAllowlist {
-		if pathHasPrefix(cleanPath, allowed) {
+		if pathHasPrefix(cleanPath, canonicalPrivacyPath(allowed)) {
 			return true
 		}
 	}
@@ -723,6 +724,17 @@ func pathHasPrefix(path, prefix string) bool {
 		return false
 	}
 	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func canonicalPrivacyPath(path string) string {
+	path = filepath.Clean(path)
+	if runtime.GOOS != "windows" {
+		return path
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = filepath.Clean(resolved)
+	}
+	return strings.ToLower(path)
 }
 
 func cloneConfig(cfg Config) Config {

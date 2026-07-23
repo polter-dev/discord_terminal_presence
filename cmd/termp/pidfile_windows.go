@@ -82,12 +82,12 @@ func validatePIDFileHandle(file *os.File, path string) error {
 	if err != nil {
 		return fmt.Errorf("cannot determine PID file owner: %w", err)
 	}
-	current, err := currentUserSID()
+	currentUser, currentOwner, err := currentTokenOwnerSIDs()
 	if err != nil {
-		return fmt.Errorf("cannot determine current user SID: %w", err)
+		return fmt.Errorf("cannot determine current token owner SIDs: %w", err)
 	}
-	if !pidFileOwnerMatches(owner, current) {
-		return errors.New("PID file owner SID does not match current user SID")
+	if !pidFileOwnerMatches(owner, currentUser) && !pidFileOwnerMatches(owner, currentOwner) {
+		return errors.New("PID file owner SID does not match current token user or owner SID")
 	}
 	return nil
 }
@@ -120,6 +120,46 @@ func currentUserSID() (*windows.SID, error) {
 		return nil, err
 	}
 	return user.User.Sid.Copy()
+}
+
+type tokenOwner struct {
+	owner *windows.SID
+}
+
+func currentTokenOwnerSIDs() (*windows.SID, *windows.SID, error) {
+	token, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer token.Close()
+
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return nil, nil, err
+	}
+	userSID, err := user.User.Sid.Copy()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var size uint32
+	err = windows.GetTokenInformation(token, windows.TokenOwner, nil, 0, &size)
+	if err != windows.ERROR_INSUFFICIENT_BUFFER {
+		return nil, nil, err
+	}
+	buffer := make([]byte, size)
+	if err := windows.GetTokenInformation(token, windows.TokenOwner, &buffer[0], size, &size); err != nil {
+		return nil, nil, err
+	}
+	owner := (*tokenOwner)(unsafe.Pointer(&buffer[0])).owner
+	if owner == nil {
+		return nil, nil, errors.New("current token has no owner SID")
+	}
+	ownerSID, err := owner.Copy()
+	if err != nil {
+		return nil, nil, err
+	}
+	return userSID, ownerSID, nil
 }
 
 func sameSID(left, right *windows.SID) bool {
