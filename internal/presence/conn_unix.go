@@ -7,10 +7,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
+
+const discordIPCDialBudget = 2 * time.Second
 
 func dialDiscordIPC() (net.Conn, error) {
 	envNames := []string{"XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"}
@@ -24,6 +28,8 @@ func dialDiscordIPC() (net.Conn, error) {
 
 	var failures strings.Builder
 	seen := make(map[string]struct{})
+	deadline := time.Now().Add(discordIPCDialBudget)
+	budgetExhausted := false
 	tryCandidates := func(paths []string) net.Conn {
 		for _, path := range paths {
 			path = filepath.Clean(path)
@@ -32,7 +38,14 @@ func dialDiscordIPC() (net.Conn, error) {
 			}
 			seen[path] = struct{}{}
 
-			conn, err := dialDiscordIPCSocket(path)
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				fmt.Fprintf(&failures, "  discovery stopped after %s aggregate dial-time budget\n", discordIPCDialBudget)
+				budgetExhausted = true
+				return nil
+			}
+			timeout := min(500*time.Millisecond, remaining)
+			conn, err := dialDiscordIPCSocket(path, timeout)
 			if err == nil {
 				return conn
 			}
@@ -41,10 +54,17 @@ func dialDiscordIPC() (net.Conn, error) {
 		return nil
 	}
 
-	if conn := tryCandidates(discordIPCOverrideCandidates(os.Getenv("DISCORD_IPC_PATH"), os.Lstat)); conn != nil {
+	override := os.Getenv("DISCORD_IPC_PATH")
+	if override != "" && !filepath.IsAbs(override) {
+		fmt.Fprintf(&failures, "  DISCORD_IPC_PATH %q is not absolute; override ignored\n", override)
+	}
+	if conn := tryCandidates(discordIPCOverrideCandidates(override, os.Lstat)); conn != nil {
 		return conn, nil
 	}
 	for _, dir := range discordIPCCandidateDirs(baseDirs) {
+		if budgetExhausted {
+			break
+		}
 		paths := make([]string, 0, 10)
 		for i := 0; i <= 9; i++ {
 			paths = append(paths, filepath.Join(dir, fmt.Sprintf("discord-ipc-%d", i)))
@@ -53,19 +73,21 @@ func dialDiscordIPC() (net.Conn, error) {
 			return conn, nil
 		}
 	}
-	if conn := tryCandidates(discordIPCGlobCandidates(baseDirs)); conn != nil {
-		return conn, nil
+	if !budgetExhausted {
+		if conn := tryCandidates(discordIPCGlobCandidates(baseDirs)); conn != nil {
+			return conn, nil
+		}
 	}
 
 	return nil, fmt.Errorf("presence: no Discord IPC socket accepted a connection:\n%s", failures.String())
 }
 
-func dialDiscordIPCSocket(path string) (net.Conn, error) {
+func dialDiscordIPCSocket(path string, timeout time.Duration) (net.Conn, error) {
 	before, err := validateSocketCandidate(path, os.Geteuid())
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
+	conn, err := net.DialTimeout("unix", path, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +99,7 @@ func dialDiscordIPCSocket(path string) (net.Conn, error) {
 }
 
 func discordIPCOverrideCandidates(value string, lstat func(string) (os.FileInfo, error)) []string {
-	if value == "" {
+	if value == "" || !filepath.IsAbs(value) {
 		return nil
 	}
 	value = filepath.Clean(value)
@@ -119,7 +141,11 @@ func discordIPCCandidateDirs(baseDirs []string) []string {
 }
 
 func discordIPCGlobCandidates(baseDirs []string) []string {
-	var paths []string
+	type candidate struct {
+		path  string
+		index int
+	}
+	var candidates []candidate
 	seen := make(map[string]struct{})
 	for _, baseDir := range baseDirs {
 		matches, err := filepath.Glob(filepath.Join(baseDir, "*", "discord-ipc-*"))
@@ -128,12 +154,33 @@ func discordIPCGlobCandidates(baseDirs []string) []string {
 		}
 		for _, path := range matches {
 			path = filepath.Clean(path)
+			name := filepath.Base(path)
+			indexText := strings.TrimPrefix(name, "discord-ipc-")
+			if indexText == "" || strings.IndexFunc(indexText, func(r rune) bool {
+				return r < '0' || r > '9'
+			}) != -1 {
+				continue
+			}
+			index, err := strconv.Atoi(indexText)
+			if err != nil {
+				continue
+			}
 			if _, ok := seen[path]; ok {
 				continue
 			}
 			seen[path] = struct{}{}
-			paths = append(paths, path)
+			candidates = append(candidates, candidate{path: path, index: index})
 		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].index != candidates[j].index {
+			return candidates[i].index < candidates[j].index
+		}
+		return candidates[i].path < candidates[j].path
+	})
+	paths := make([]string, len(candidates))
+	for i, candidate := range candidates {
+		paths[i] = candidate.path
 	}
 	return paths
 }

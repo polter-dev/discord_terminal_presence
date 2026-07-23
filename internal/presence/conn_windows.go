@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +21,9 @@ type dialPipeFunc func(string, *time.Duration) (net.Conn, error)
 
 func dialDiscordIPCWith(override string, dial dialPipeFunc, verify func(net.Conn) error) (net.Conn, error) {
 	var failures strings.Builder
+	if override != "" && !filepath.IsAbs(override) {
+		fmt.Fprintf(&failures, "  DISCORD_IPC_PATH %q is not absolute; override ignored\n", override)
+	}
 	for _, path := range discordIPCPipeCandidates(override) {
 		timeout := 500 * time.Millisecond
 		conn, err := dial(path, &timeout)
@@ -51,7 +55,9 @@ func discordIPCPipeCandidates(override string) []string {
 		seen[path] = struct{}{}
 		paths = append(paths, path)
 	}
-	add(override)
+	if filepath.IsAbs(override) {
+		add(override)
+	}
 	for i := 0; i <= 9; i++ {
 		add(fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, i))
 	}

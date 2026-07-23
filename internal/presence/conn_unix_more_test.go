@@ -77,6 +77,12 @@ func TestDiscordIPCOverrideCandidates(t *testing.T) {
 	if lstatCalls != 0 {
 		t.Fatalf("unset override called lstat %d times, want 0", lstatCalls)
 	}
+	if got := discordIPCOverrideCandidates("relative/discord-ipc-0", lstat); got != nil {
+		t.Fatalf("relative override candidates = %v, want nil", got)
+	}
+	if lstatCalls != 0 {
+		t.Fatalf("relative override called lstat %d times, want 0", lstatCalls)
+	}
 
 	gotFile := discordIPCOverrideCandidates(socketPath, lstat)
 	if len(gotFile) != 1 || gotFile[0] != socketPath {
@@ -95,15 +101,24 @@ func TestDiscordIPCOverrideCandidates(t *testing.T) {
 	}
 }
 
-func TestDiscordIPCGlobCandidatesFindsOneLevelNestedAndDedupes(t *testing.T) {
+func TestDiscordIPCGlobCandidatesFiltersSortsAndDedupes(t *testing.T) {
 	base := t.TempDir()
 	nested := filepath.Join(base, "new-package")
 	if err := os.Mkdir(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	socketPath := filepath.Join(nested, "discord-ipc-7")
-	if err := os.WriteFile(socketPath, nil, 0o600); err != nil {
-		t.Fatal(err)
+	var numericPaths []string
+	for _, index := range []string{"10", "2", "0"} {
+		path := filepath.Join(nested, "discord-ipc-"+index)
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		numericPaths = append(numericPaths, path)
+	}
+	for _, name := range []string{"discord-ipc-old", "discord-ipc-1x", "discord-ipc-", "unrelated"} {
+		if err := os.WriteFile(filepath.Join(nested, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	deeper := filepath.Join(nested, "deeper")
 	if err := os.Mkdir(deeper, 0o700); err != nil {
@@ -112,13 +127,16 @@ func TestDiscordIPCGlobCandidatesFindsOneLevelNestedAndDedupes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(deeper, "discord-ipc-8"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(nested, "unrelated"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
 
 	got := discordIPCGlobCandidates([]string{base, filepath.Join(base, ".")})
-	if len(got) != 1 || got[0] != socketPath {
-		t.Fatalf("glob candidates = %v, want [%s]", got, socketPath)
+	want := []string{numericPaths[2], numericPaths[1], numericPaths[0]}
+	if len(got) != len(want) {
+		t.Fatalf("glob candidates = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("glob candidate %d = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
