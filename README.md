@@ -13,6 +13,10 @@
 dozens more—as Discord Rich Presence. It runs quietly on your computer and
 needs no Discord bot or token.
 
+<p align="center">
+  <a href="https://termp.polter.sh"><img src=".github/presence-demo.gif" alt="termp showing your active terminal tool as Discord Rich Presence, cycling through Claude Code, Codex CLI, Gemini CLI, Aider, Ollama, and nano" width="720"></a>
+</p>
+
 ## See it in about 30 seconds
 
 There is not a published release yet, so for now you will need Go 1.24 or newer:
