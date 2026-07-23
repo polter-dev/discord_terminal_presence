@@ -53,8 +53,8 @@ var commandHelp = []struct {
 	{"uninstall", "alias for \"termp autostart uninstall\" (not the binary)"},
 	{"disable", "alias for \"termp autostart disable\""},
 	{"enable", "alias for \"termp autostart enable\""},
-	{"start", "run the presence daemon in the foreground"},
-	{"stop", "stop the running presence daemon"},
+	{"start", "run the daemon (foreground by default; --detach backgrounds it)"},
+	{"stop", "stop the running daemon (autostart controls login startup)"},
 	{"status", "show daemon, Discord, autostart, and config status"},
 	{"settings", "open the interactive settings TUI"},
 	{"watch", "preview the live Discord card (--once prints one snapshot)"},
@@ -458,7 +458,10 @@ _termp_complete() {
     watch)
       COMPREPLY=( $(compgen -W "--once --verbose -v --help -h" -- "$cur") )
       ;;
-    start|stop|status|settings|version|update|setup)
+    start)
+      COMPREPLY=( $(compgen -W "--detach -d --verbose -v --help -h" -- "$cur") )
+      ;;
+    stop|status|settings|version|update|setup)
       COMPREPLY=( $(compgen -W "--verbose -v --help -h" -- "$cur") )
       ;;
     *)
@@ -508,7 +511,10 @@ _termp() {
       watch)
         compadd -- --once --verbose -v --help -h
         ;;
-      start|stop|status|settings|version|update|setup)
+      start)
+        compadd -- --detach -d --verbose -v --help -h
+        ;;
+      stop|status|settings|version|update|setup)
         compadd -- --verbose -v --help -h
         ;;
       *)
@@ -547,6 +553,7 @@ compdef _termp termp
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from autostart; and __fish_seen_subcommand_from status' -s v -l verbose -d 'enable verbose logging'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from install' -l force -d 'install even when the executable path is unstable'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from watch' -l once -d 'render one preview snapshot and exit'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start' -s d -l detach -d 'start the daemon in the background'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start stop status settings watch version update setup completion' -s v -l verbose -d 'enable verbose logging'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from init' -s v -l verbose -d 'enable verbose logging'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from " + commands + "' -s h -l help -d 'show help'\n")
@@ -557,16 +564,25 @@ compdef _termp termp
 }
 
 func start(args []string) error {
-	fs := flag.NewFlagSet("start", flag.ContinueOnError)
-	addVerboseFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	options, err := parseStartOptions(args, verbose, os.Stderr)
+	if err != nil {
 		return err
 	}
+	verbose = options.verbose
 
 	pidPath := pidFilePath()
 	if pid, err := readPID(pidPath); err == nil && processAlive(pid) && processLooksLikeTermp(pid) {
 		return fmt.Errorf("daemon already running with pid %d", pid)
 	}
+	if options.detach && !options.detachedChild {
+		pid, logPath, err := spawnDetachedStart(options.verbose)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("termp started in the background (pid %d); stop with 'termp stop'; logs: %s\n", pid, logPath)
+		return nil
+	}
+
 	pidInfo, err := writePIDOwned(pidPath, os.Getpid())
 	if err != nil {
 		return err
@@ -598,6 +614,35 @@ func start(args []string) error {
 	}
 
 	return run(ctx, manager)
+}
+
+type startOptions struct {
+	detach        bool
+	detachedChild bool
+	verbose       bool
+}
+
+func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (startOptions, error) {
+	options := startOptions{verbose: defaultVerbose}
+	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	fs.SetOutput(output)
+	fs.BoolVar(&options.detach, "detach", false, "start the daemon in the background")
+	fs.BoolVar(&options.detach, "d", false, "start the daemon in the background")
+	fs.BoolVar(&options.detachedChild, detachedChildFlag, false, "internal detached child marker")
+	fs.BoolVar(&options.verbose, "verbose", defaultVerbose, "enable verbose logging")
+	fs.BoolVar(&options.verbose, "v", defaultVerbose, "enable verbose logging")
+	fs.Usage = func() {
+		fmt.Fprintln(output, "usage: termp start [--detach]")
+		fmt.Fprintln(output, "  -d, --detach  start the daemon in the background")
+		fmt.Fprintln(output, "  -v, --verbose enable verbose logging")
+		fmt.Fprintln(output)
+		fmt.Fprintln(output, "start/stop control the current daemon lifetime.")
+		fmt.Fprintln(output, "Use \"termp autostart install\" to start automatically at login.")
+	}
+	if err := fs.Parse(args); err != nil {
+		return startOptions{}, err
+	}
+	return options, nil
 }
 
 func run(ctx context.Context, manager *config.Manager) error {

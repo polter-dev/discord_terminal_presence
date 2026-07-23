@@ -103,6 +103,60 @@ func TestRootHelpRequested(t *testing.T) {
 	}
 }
 
+func TestParseStartOptions(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		args           []string
+		defaultVerbose bool
+		want           startOptions
+	}{
+		{name: "foreground default", want: startOptions{}},
+		{name: "long detach", args: []string{"--detach"}, want: startOptions{detach: true}},
+		{name: "short detach and verbose", args: []string{"-d", "-v"}, want: startOptions{detach: true, verbose: true}},
+		{name: "inherits root verbose", defaultVerbose: true, want: startOptions{verbose: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseStartOptions(tt.args, tt.defaultVerbose, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseStartOptions() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStartHelpExplainsDetachAndAutostart(t *testing.T) {
+	var output bytes.Buffer
+	_, err := parseStartOptions([]string{"--help"}, false, &output)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("parseStartOptions() error = %v, want %v", err, flag.ErrHelp)
+	}
+	for _, want := range []string{"--detach", "current daemon lifetime", "autostart install"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("start help missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestDetachedChildConstructionAndMarker(t *testing.T) {
+	if got := detachedChildArgs(false); strings.Join(got, " ") != "start --internal-detached-child" {
+		t.Fatalf("detachedChildArgs(false) = %q", got)
+	}
+	if got := detachedChildArgs(true); strings.Join(got, " ") != "start --internal-detached-child --verbose" {
+		t.Fatalf("detachedChildArgs(true) = %q", got)
+	}
+
+	options, err := parseStartOptions(detachedChildArgs(false)[1:], false, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.detachedChild || options.detach {
+		t.Fatalf("child options = %#v, want marker without detach", options)
+	}
+}
+
 func TestCommandsRejectInvalidArgumentsBeforeSideEffects(t *testing.T) {
 	tests := []struct {
 		name string
