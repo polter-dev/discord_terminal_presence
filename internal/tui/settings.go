@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"reflect"
 	"sort"
 	"strings"
 	"unicode"
@@ -86,8 +87,9 @@ type Model struct {
 }
 
 type settingsSaveResultMsg struct {
-	err  error
-	quit bool
+	err   error
+	quit  bool
+	saved config.Config
 }
 
 type settingsOpenURLResultMsg struct {
@@ -179,8 +181,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = nil
-		m.saved = true
 		m.status = ""
+		if !reflect.DeepEqual(m.cfg, msg.saved) {
+			m.saved = false
+			if msg.quit {
+				return m.startSave(true)
+			}
+			return m, nil
+		}
+		m.saved = true
 		if msg.quit {
 			m.quitting = true
 			return m, tea.Quit
@@ -894,7 +903,7 @@ func (m Model) startSave(quit bool) (tea.Model, tea.Cmd) {
 		if save != nil {
 			err = save(cfg)
 		}
-		return settingsSaveResultMsg{err: err, quit: quit}
+		return settingsSaveResultMsg{err: err, quit: quit, saved: cfg}
 	}
 }
 

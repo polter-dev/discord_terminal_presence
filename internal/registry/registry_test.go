@@ -1,6 +1,9 @@
 package registry
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestRegistryMatchBuiltInByName(t *testing.T) {
 	reg, err := New()
@@ -138,6 +141,36 @@ func TestRegistryPriorityBreaksMatchTie(t *testing.T) {
 	}
 	if tool.ID != "high" {
 		t.Fatalf("tool ID = %q, want high", tool.ID)
+	}
+}
+
+func TestRegistryPriorityExtremesDoNotOverflow(t *testing.T) {
+	high := Tool{
+		ID:          "priority-max",
+		DisplayName: "Maximum Priority",
+		Match:       MatchSpec{Name: "priority-overflow-test"},
+		Priority:    math.MaxInt64,
+	}
+	low := Tool{
+		ID:          "priority-min",
+		DisplayName: "Minimum Priority",
+		Match:       MatchSpec{Name: "priority-overflow-test"},
+		Priority:    math.MinInt64,
+	}
+
+	for _, tools := range [][]Tool{{high, low}, {low, high}} {
+		reg, err := New(tools...)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		tool, ok := reg.Match("priority-overflow-test")
+		if !ok {
+			t.Fatal("expected priority-overflow-test to match")
+		}
+		if tool.ID != high.ID {
+			t.Fatalf("tool ID = %q, want %q", tool.ID, high.ID)
+		}
 	}
 }
 
