@@ -116,7 +116,7 @@ func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []stri
 		input:   input,
 		save:    save,
 		openURL: openURL,
-		styles:  defaultStyles(),
+		styles:  defaultStyles(cfg.UI.AccentColor),
 	}
 }
 
@@ -629,11 +629,11 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 		if m.saving {
 			return m, nil
 		}
-		dialog := NewConfirmDialog("Save changes and quit?", ConfirmYes)
+		dialog := NewConfirmDialog("Save changes and quit?", ConfirmYes, m.cfg.UI.AccentColor)
 		m.confirm = &dialog
 		m.confirmAction = rowSave
 	case rowQuit:
-		dialog := NewConfirmDialog("Discard changes and quit?", ConfirmNo)
+		dialog := NewConfirmDialog("Discard changes and quit?", ConfirmNo, m.cfg.UI.AccentColor)
 		m.confirm = &dialog
 		m.confirmAction = rowQuit
 	}

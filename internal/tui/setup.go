@@ -89,8 +89,8 @@ func NewSetupModel(cfg config.Config, save SetupSaveFunc, install SetupInstallFu
 				},
 			},
 		},
-		styles:       defaultStyles(),
-		applyConfirm: NewConfirmDialog("Apply these settings?", ConfirmYes),
+		styles:       defaultStyles(cfg.UI.AccentColor),
+		applyConfirm: NewConfirmDialog("Apply these settings?", ConfirmYes, cfg.UI.AccentColor),
 	}
 }
 
@@ -156,7 +156,7 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.String() == "esc" || msg.String() == "q" {
-			dialog := NewConfirmDialog("Are you sure you want to exit?", ConfirmYes)
+			dialog := NewConfirmDialog("Are you sure you want to exit?", ConfirmYes, m.cfg.UI.AccentColor)
 			m.exitConfirm = &dialog
 			return m, nil
 		}
@@ -186,7 +186,7 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.step {
 			case 0:
 				if m.setupActionFocused() {
-					m.applyConfirm = NewConfirmDialog("Apply these settings?", ConfirmYes)
+					m.applyConfirm = NewConfirmDialog("Apply these settings?", ConfirmYes, m.cfg.UI.AccentColor)
 					m.step = 1
 				} else {
 					m.choices[m.cursor].value = !m.choices[m.cursor].value
@@ -199,7 +199,7 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			switch m.step {
 			case 0:
-				m.applyConfirm = NewConfirmDialog("Apply these settings?", ConfirmYes)
+				m.applyConfirm = NewConfirmDialog("Apply these settings?", ConfirmYes, m.cfg.UI.AccentColor)
 				m.step = 1
 			case 2:
 				return m, tea.Quit
@@ -330,7 +330,7 @@ func (m SetupModel) actionButton(label string, focused bool) string {
 	if focused {
 		buttonLabel = "› " + label
 	}
-	return accentButtonStyle(focused).Render(buttonLabel)
+	return accentButtonStyle(focused, m.cfg.UI.AccentColor).Render(buttonLabel)
 }
 
 func (m SetupModel) startApply() (tea.Model, tea.Cmd) {

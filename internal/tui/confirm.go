@@ -21,18 +21,25 @@ type ConfirmDialog struct {
 	highlighted ConfirmOption
 	accent      lipgloss.Style
 	muted       lipgloss.Style
+	accentColor string
 }
 
 // NewConfirmDialog creates a dialog with the requested initial highlight.
-func NewConfirmDialog(prompt string, defaultOption ConfirmOption) ConfirmDialog {
+func NewConfirmDialog(prompt string, defaultOption ConfirmOption, accentColor ...string) ConfirmDialog {
 	if defaultOption != ConfirmNo {
 		defaultOption = ConfirmYes
 	}
+	color := defaultAccentColor()
+	if len(accentColor) > 0 {
+		color = accentColor[0]
+	}
+	p := paletteForAccent(color)
 	return ConfirmDialog{
 		prompt:      prompt,
 		highlighted: defaultOption,
-		accent:      lipgloss.NewStyle().Bold(true).Foreground(tuiPalette.accent),
-		muted:       lipgloss.NewStyle().Foreground(tuiPalette.muted),
+		accent:      lipgloss.NewStyle().Bold(true).Foreground(p.accent),
+		muted:       lipgloss.NewStyle().Foreground(p.muted),
+		accentColor: color,
 	}
 }
 
@@ -65,9 +72,9 @@ func (d ConfirmDialog) View() string {
 }
 
 func (d ConfirmDialog) button(label string, option ConfirmOption) string {
-	style := accentButtonStyle(false).Inherit(d.accent)
+	style := accentButtonStyle(false, d.accentColor).Inherit(d.accent)
 	if d.highlighted == option {
-		style = accentButtonStyle(true)
+		style = accentButtonStyle(true, d.accentColor)
 		label = "› " + label
 	} else {
 		label = "  " + label
