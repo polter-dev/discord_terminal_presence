@@ -697,6 +697,79 @@ func TestModelSlowCallbacksRunInCommandsAndResultsDriveState(t *testing.T) {
 	})
 }
 
+func TestModelSaveResultTracksSavedSnapshot(t *testing.T) {
+	t.Run("edit during save remains unsaved", func(t *testing.T) {
+		model := NewSettingsModel(config.Default(), nil, nil, func(config.Config) error {
+			return nil
+		}, nil)
+		updated, cmd := model.startSave(false)
+		model = updated.(Model)
+		result := cmd().(settingsSaveResultMsg)
+
+		model = openCategory(t, model, "Global")
+		model.columns[1].cursor = findColumnRow(t, model, 1, rowToggle, "Automatic updates")
+		updated, _ = model.Update(key(" "))
+		model = updated.(Model)
+
+		updated, _ = model.Update(result)
+		model = updated.(Model)
+		if model.Saved() {
+			t.Fatal("model should not report a concurrent edit as saved")
+		}
+		if model.saving {
+			t.Fatal("model should leave saving state after the save result")
+		}
+	})
+
+	t.Run("unchanged config is saved", func(t *testing.T) {
+		model := NewSettingsModel(config.Default(), nil, nil, func(config.Config) error {
+			return nil
+		}, nil)
+		updated, cmd := model.startSave(false)
+		model = updated.(Model)
+
+		updated, _ = model.Update(cmd())
+		model = updated.(Model)
+		if !model.Saved() {
+			t.Fatal("model should report an unchanged config as saved")
+		}
+	})
+
+	t.Run("quit resaves a concurrent edit", func(t *testing.T) {
+		var saved []config.Config
+		model := NewSettingsModel(config.Default(), nil, nil, func(cfg config.Config) error {
+			saved = append(saved, cfg)
+			return nil
+		}, nil)
+		updated, cmd := model.startSave(true)
+		model = updated.(Model)
+		result := cmd()
+
+		model = openCategory(t, model, "Global")
+		model.columns[1].cursor = findColumnRow(t, model, 1, rowToggle, "Automatic updates")
+		updated, _ = model.Update(key(" "))
+		model = updated.(Model)
+
+		updated, resave := model.Update(result)
+		model = updated.(Model)
+		if resave == nil || model.quitting || !model.saving || model.Saved() {
+			t.Fatal("quit with a concurrent edit should start another save before quitting")
+		}
+		if len(saved) != 1 || saved[0].AutoUpdate {
+			t.Fatalf("first saved snapshots = %#v, want original config only", saved)
+		}
+
+		updated, quit := model.Update(resave())
+		model = updated.(Model)
+		if quit == nil || !model.quitting || !model.Saved() {
+			t.Fatal("quit should proceed after the current config is saved")
+		}
+		if len(saved) != 2 || !saved[1].AutoUpdate {
+			t.Fatalf("saved snapshots = %#v, want concurrent edit in second save", saved)
+		}
+	})
+}
+
 func TestSetupModelEnablingAutostartInstalls(t *testing.T) {
 	var saved config.Config
 	var installedExe string

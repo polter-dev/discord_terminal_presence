@@ -242,7 +242,10 @@ func (t Tool) matchesProcess(process ProcessInfo) bool {
 
 func compareTools(left, right Tool) int {
 	if left.Priority != right.Priority {
-		return left.Priority - right.Priority
+		if left.Priority < right.Priority {
+			return -1
+		}
+		return 1
 	}
 	return right.order - left.order
 }
