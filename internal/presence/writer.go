@@ -32,6 +32,7 @@ type Writer struct {
 	reapplyInterval  time.Duration
 	clock            writeClock
 	debugf           func(string, ...any)
+	connectionState  func(bool)
 }
 
 // WriterOption configures a Writer.
@@ -63,6 +64,15 @@ func WithDebugf(debugf func(string, ...any)) WriterOption {
 	return func(writer *Writer) {
 		if debugf != nil {
 			writer.debugf = debugf
+		}
+	}
+}
+
+// WithConnectionState registers a hook for Discord IPC connection transitions.
+func WithConnectionState(connectionState func(bool)) WriterOption {
+	return func(writer *Writer) {
+		if connectionState != nil {
+			writer.connectionState = connectionState
 		}
 	}
 }
@@ -99,6 +109,7 @@ func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, e
 		reapplyInterval:  defaultReapplyInterval,
 		clock:            realWriteClock{},
 		debugf:           func(string, ...any) {},
+		connectionState:  func(bool) {},
 	}
 	for _, option := range options {
 		option(writer)
@@ -155,6 +166,14 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		wrote     bool
 		pending   bool
 	)
+
+	setConnected := func(next bool) {
+		if connected == next {
+			return
+		}
+		connected = next
+		w.connectionState(next)
+	}
 
 	stopRetry := func() {
 		if retry == nil {
@@ -218,7 +237,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		w.retryDelay.Reset()
 		if connected {
 			_ = w.client.Logout()
-			connected = false
+			setConnected(false)
 		}
 	}
 
@@ -233,13 +252,13 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 				scheduleRetry()
 				return
 			}
-			connected = true
+			setConnected(true)
 		}
 		if err := w.client.SetActivity(*desired); err != nil {
 			w.debugf("presence push failed: %v", err)
 			if connected {
 				_ = w.client.Logout()
-				connected = false
+				setConnected(false)
 			}
 			scheduleRetry()
 			return
@@ -281,6 +300,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		stopReapply()
 		if connected {
 			_ = w.client.Logout()
+			setConnected(false)
 		}
 	}()
 

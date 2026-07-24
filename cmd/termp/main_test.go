@@ -615,6 +615,192 @@ func TestRunStatusProbesFastPathUnchanged(t *testing.T) {
 	}
 }
 
+func TestRunStatusProbesUsesFreshDaemonDiscordStateWithoutDirectProbe(t *testing.T) {
+	tests := []struct {
+		name      string
+		connected bool
+		want      string
+	}{
+		{name: "connected", connected: true, want: "connected"},
+		{name: "not connected", connected: false, want: "not connected (daemon is running; reconnecting)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+			discordCalls := 0
+
+			got := runStatusProbes(ctx, statusProbeFuncs{
+				daemonRunning: true,
+				daemonPID:     1234,
+				now:           func() time.Time { return now },
+				discordState: func(time.Time) (daemonDiscordState, bool) {
+					return daemonDiscordState{
+						Connected: tt.connected,
+						UpdatedAt: now,
+						PID:       1234,
+					}, true
+				},
+				discord: func(context.Context) error {
+					discordCalls++
+					return presence.ErrDiscordIPCHandshakeTimeout
+				},
+				service: func(context.Context) service.State {
+					return service.State{Supported: true, Loaded: "active", Enabled: "enabled"}
+				},
+				tool: func(context.Context) (detector.Detection, error) {
+					return detector.Detection{None: true}, nil
+				},
+			})
+
+			if discordCalls != 0 {
+				t.Fatalf("direct Discord probe calls = %d, want 0", discordCalls)
+			}
+			if got.discord != tt.want {
+				t.Fatalf("discord status = %q, want %q", got.discord, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunStatusProbesFallsBackWhenDaemonStateMissingOrStale(t *testing.T) {
+	tests := []struct {
+		name  string
+		state func(time.Time) (daemonDiscordState, bool)
+	}{
+		{
+			name: "missing",
+			state: func(time.Time) (daemonDiscordState, bool) {
+				return daemonDiscordState{}, false
+			},
+		},
+		{
+			name: "stale",
+			state: func(now time.Time) (daemonDiscordState, bool) {
+				return readFreshDaemonDiscordState(writeDaemonDiscordStateFixture(t, daemonDiscordState{
+					Connected: true,
+					UpdatedAt: now.Add(-daemonDiscordStateStaleAfter - time.Nanosecond),
+					PID:       1234,
+				}), now, daemonDiscordStateStaleAfter)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+			discordCalls := 0
+
+			got := runStatusProbes(ctx, statusProbeFuncs{
+				daemonRunning: true,
+				daemonPID:     1234,
+				now:           func() time.Time { return now },
+				discordState:  tt.state,
+				discord: func(context.Context) error {
+					discordCalls++
+					return presence.ErrDiscordIPCHandshakeTimeout
+				},
+				service: func(context.Context) service.State {
+					return service.State{Supported: true, Loaded: "active", Enabled: "enabled"}
+				},
+				tool: func(context.Context) (detector.Detection, error) {
+					return detector.Detection{None: true}, nil
+				},
+			})
+
+			if discordCalls != 1 {
+				t.Fatalf("direct Discord probe calls = %d, want 1", discordCalls)
+			}
+			if got.discord != "not responding (Discord IPC handshake timed out)" {
+				t.Fatalf("discord status = %q, want handshake-timeout mapping", got.discord)
+			}
+		})
+	}
+}
+
+func TestRunStatusProbesIgnoresDaemonStateWhenDaemonNotRunning(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	discordCalls := 0
+
+	got := runStatusProbes(ctx, statusProbeFuncs{
+		daemonRunning: false,
+		discordState: func(time.Time) (daemonDiscordState, bool) {
+			return daemonDiscordState{
+				Connected: true,
+				UpdatedAt: time.Now(),
+				PID:       1234,
+			}, true
+		},
+		discord: func(context.Context) error {
+			discordCalls++
+			return presence.ErrDiscordIPCNotFound
+		},
+		service: func(context.Context) service.State {
+			return service.State{Supported: true, Loaded: "inactive", Enabled: "enabled"}
+		},
+		tool: func(context.Context) (detector.Detection, error) {
+			return detector.Detection{None: true}, nil
+		},
+	})
+
+	if discordCalls != 1 {
+		t.Fatalf("direct Discord probe calls = %d, want 1", discordCalls)
+	}
+	if got.discord != "not running (start Discord to show presence)" {
+		t.Fatalf("discord status = %q, want direct not-running result", got.discord)
+	}
+}
+
+func TestReadFreshDaemonDiscordStateAcceptsBoundaryAndRejectsOlder(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	boundaryPath := writeDaemonDiscordStateFixture(t, daemonDiscordState{
+		Connected: true,
+		UpdatedAt: now.Add(-daemonDiscordStateStaleAfter),
+		PID:       1234,
+	})
+	if state, ok := readFreshDaemonDiscordState(boundaryPath, now, daemonDiscordStateStaleAfter); !ok || !state.Connected {
+		t.Fatalf("boundary state = (%+v, %t), want fresh connected", state, ok)
+	}
+
+	stalePath := writeDaemonDiscordStateFixture(t, daemonDiscordState{
+		Connected: true,
+		UpdatedAt: now.Add(-daemonDiscordStateStaleAfter - time.Nanosecond),
+		PID:       1234,
+	})
+	if state, ok := readFreshDaemonDiscordState(stalePath, now, daemonDiscordStateStaleAfter); ok {
+		t.Fatalf("older state = (%+v, %t), want stale", state, ok)
+	}
+}
+
+func TestWriteDaemonDiscordStateUses0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "discord.json")
+	state := daemonDiscordState{
+		Connected: true,
+		UpdatedAt: time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
+		PID:       1234,
+	}
+	if err := writeDaemonDiscordState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	read, ok := readFreshDaemonDiscordState(path, state.UpdatedAt, daemonDiscordStateStaleAfter)
+	if !ok || read != state {
+		t.Fatalf("read state = (%+v, %t), want %+v, true", read, ok, state)
+	}
+	assertPIDFileMode(t, path)
+}
+
+func writeDaemonDiscordStateFixture(t *testing.T, state daemonDiscordState) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "discord.json")
+	if err := writeDaemonDiscordState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestRunStatusProbesDiscordStateMapping(t *testing.T) {
 	tests := []struct {
 		name string
