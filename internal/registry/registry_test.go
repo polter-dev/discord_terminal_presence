@@ -427,6 +427,143 @@ func TestEmbeddedCatalogSampleMatches(t *testing.T) {
 	}
 }
 
+func TestEmbeddedCatalogWindowsExactNameMatches(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		process ProcessInfo
+		id      string
+	}{
+		{
+			name: "nvim exe",
+			process: ProcessInfo{
+				Name: "nvim.exe",
+				Exe:  `C:\Program Files\Neovim\bin\nvim.exe`,
+			},
+			id: "nvim",
+		},
+		{
+			name: "lazygit exe",
+			process: ProcessInfo{
+				Name: "lazygit.exe",
+				Exe:  `C:\Users\me\scoop\apps\lazygit\current\lazygit.exe`,
+			},
+			id: "lazygit",
+		},
+		{
+			name: "btop exe",
+			process: ProcessInfo{
+				Name: "btop.exe",
+				Exe:  `C:\tools\btop\btop.exe`,
+			},
+			id: "btop",
+		},
+		{
+			name: "tmux exe",
+			process: ProcessInfo{
+				Name: "tmux.exe",
+				Exe:  `C:\msys64\usr\bin\tmux.exe`,
+			},
+			id: "tmux",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool, ok := reg.MatchProcess(tt.process)
+			if !ok {
+				t.Fatalf("expected process to match %q", tt.id)
+			}
+			if tool.ID != tt.id {
+				t.Fatalf("MatchProcess(%#v) ID = %q, want %q", tt.process, tool.ID, tt.id)
+			}
+		})
+	}
+}
+
+func TestEmbeddedCatalogWindowsRegexMatches(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		process ProcessInfo
+		id      string
+	}{
+		{
+			name: "codex exe",
+			process: ProcessInfo{
+				Name:    "codex.exe",
+				Exe:     `C:\Users\me\AppData\Local\codex\codex.exe`,
+				Cmdline: `C:\Users\me\AppData\Local\codex\codex.exe exec`,
+			},
+			id: "codex-cli",
+		},
+		{
+			name: "claude exe",
+			process: ProcessInfo{
+				Name:    "claude.exe",
+				Exe:     `C:\Users\me\AppData\Local\claude\claude.exe`,
+				Cmdline: `C:\Users\me\AppData\Local\claude\claude.exe --dangerously-skip-permissions`,
+			},
+			id: "claude-code",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool, ok := reg.MatchProcess(tt.process)
+			if !ok {
+				t.Fatalf("expected process to match %q", tt.id)
+			}
+			if tool.ID != tt.id {
+				t.Fatalf("MatchProcess(%#v) ID = %q, want %q", tt.process, tool.ID, tt.id)
+			}
+		})
+	}
+}
+
+func TestEmbeddedCatalogWindowsDoesNotMatchPrefixExecutable(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if tool, ok := reg.MatchProcess(ProcessInfo{
+		Name: "notnvim.exe",
+		Exe:  `C:\tools\notnvim.exe`,
+	}); ok {
+		t.Fatalf("MatchProcess(notnvim.exe) = %q, want no match", tool.ID)
+	}
+}
+
+func TestRegistryWindowsRegexExcludeUsesNormalizedSeparators(t *testing.T) {
+	reg, err := New(Tool{
+		ID:          "windows-regex-tool",
+		DisplayName: "Windows Regex Tool",
+		Match:       MatchSpec{Regex: `(^|\s|/)tool(\.exe)?(\s|$)`},
+		Exclude:     `(^|/)helpers/`,
+		ImageKey:    "windows-regex-tool",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if tool, ok := reg.MatchProcess(ProcessInfo{
+		Name:    "tool.exe",
+		Exe:     `C:\tools\tool.exe`,
+		Cmdline: `C:\tools\tool.exe --config C:\Users\me\helpers\config.json`,
+	}); ok {
+		t.Fatalf("MatchProcess with Windows helper path = %q, want no match", tool.ID)
+	}
+}
+
 func TestEmbeddedCatalogWrapperMatches(t *testing.T) {
 	reg, err := New()
 	if err != nil {

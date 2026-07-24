@@ -4,7 +4,7 @@
     "display_name": "Claude Code",
     "match": {
       "name": "claude",
-      "regex": "(^|\\s|/)(claude|claude\\.exe|claude\\.js)(\\s|$)|(^|/)@anthropic-ai/claude-code/|(^|/)claude/versions/"
+      "regex": "(^|\\s|/)(claude|claude\\.exe|claude\\.js)(\\.exe)?(\\s|$)|(^|/)@anthropic-ai/claude-code/|(^|/)claude/versions/"
     },
     "exclude": "(^|\\s)(bg-spare|bg-pty-host|daemon run)(\\s|$)",
     "image_url": "https://termp.polter.sh/logos/claude-code.png",
@@ -17,7 +17,7 @@
     "display_name": "Gemini CLI",
     "match": {
       "name": "gemini",
-      "regex": "(^|\\s|/)(gemini|gemini\\.js)(\\s|$)|(^|/)@google/gemini-cli/"
+      "regex": "(^|\\s|/)(gemini|gemini\\.js)(\\.exe)?(\\s|$)|(^|/)@google/gemini-cli/"
     },
     "image_url": "https://termp.polter.sh/logos/gemini-cli.png",
     "icon_slug": "gemini-color",
@@ -29,7 +29,7 @@
     "display_name": "Codex CLI",
     "match": {
       "name": "codex",
-      "regex": "(^|\\s|/)(codex|codex\\.js)(\\s|$)|(^|/)@openai/codex/"
+      "regex": "(^|\\s|/)(codex|codex\\.js)(\\.exe)?(\\s|$)|(^|/)@openai/codex/"
     },
     "image_url": "https://termp.polter.sh/logos/codex-cli.png",
     "icon_slug": "openai",
@@ -41,7 +41,7 @@
     "display_name": "aider",
     "match": {
       "name": "aider",
-      "regex": "(^|\\s|/)(aider|aider\\.py)(\\s|$)"
+      "regex": "(^|\\s|/)(aider|aider\\.py)(\\.exe)?(\\s|$)"
     },
     "image_url": "https://termp.polter.sh/logos/aider.png",
     "icon_slug": "openai",
@@ -184,7 +184,7 @@
     "display_name": "ranger",
     "match": {
       "name": "ranger",
-      "regex": "(^|\\s|/)(ranger|ranger\\.py)(\\s|$)"
+      "regex": "(^|\\s|/)(ranger|ranger\\.py)(\\.exe)?(\\s|$)"
     },
     "priority": 55
   },
@@ -241,7 +241,7 @@
     "display_name": "Glances",
     "match": {
       "name": "glances",
-      "regex": "(^|\\s|/)(glances|glances\\.py)(\\s|$)"
+      "regex": "(^|\\s|/)(glances|glances\\.py)(\\.exe)?(\\s|$)"
     },
     "priority": 45
   },
@@ -258,7 +258,7 @@
     "display_name": "gtop",
     "match": {
       "name": "gtop",
-      "regex": "(^|\\s|/)(gtop|gtop\\.js)(\\s|$)"
+      "regex": "(^|\\s|/)(gtop|gtop\\.js)(\\.exe)?(\\s|$)"
     },
     "priority": 45
   },
@@ -267,7 +267,7 @@
     "display_name": "bpytop",
     "match": {
       "name": "bpytop",
-      "regex": "(^|\\s|/)(bpytop|bpytop\\.py)(\\s|$)"
+      "regex": "(^|\\s|/)(bpytop|bpytop\\.py)(\\.exe)?(\\s|$)"
     },
     "priority": 45
   },
@@ -346,7 +346,7 @@
     "display_name": "NeoMutt",
     "match": {
       "name": "neomutt",
-      "regex": "(^|/)(neomutt|mutt)(\\s|$)"
+      "regex": "(^|/)(neomutt|mutt)(\\.exe)?(\\s|$)"
     },
     "priority": 45
   },

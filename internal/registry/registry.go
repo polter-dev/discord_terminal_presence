@@ -213,7 +213,9 @@ func (t Tool) matchesProcess(process ProcessInfo) bool {
 	if strings.TrimSpace(haystack) == "" {
 		haystack = process.Name
 	}
-	if t.compiledExclude != nil && t.compiledExclude.MatchString(haystack) {
+	// Catalog regexes are written with Unix separators; normalize Windows paths for regex matching.
+	regexHaystack := strings.ReplaceAll(haystack, `\`, "/")
+	if t.compiledExclude != nil && t.compiledExclude.MatchString(regexHaystack) {
 		return false
 	}
 
@@ -233,7 +235,7 @@ func (t Tool) matchesProcess(process ProcessInfo) bool {
 	}
 
 	if t.Match.compiled != nil {
-		if t.Match.compiled.MatchString(haystack) {
+		if t.Match.compiled.MatchString(regexHaystack) {
 			return true
 		}
 	}
@@ -263,7 +265,12 @@ func normalizeName(name string) string {
 	if name == "" {
 		return ""
 	}
-	return filepath.Base(name)
+	name = filepath.Base(strings.ReplaceAll(name, `\`, "/"))
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".exe", ".com", ".bat", ".cmd":
+		name = strings.TrimSuffix(name, filepath.Ext(name))
+	}
+	return name
 }
 
 func argv0FromCmdline(cmdline string) string {
