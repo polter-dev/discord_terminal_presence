@@ -617,6 +617,8 @@ func start(args []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
+	stopShutdownWatch := installShutdownSignal(cancel)
+	defer stopShutdownWatch()
 	// Updating is best-effort and asynchronous: it is triggered before the run
 	// loop, but can never delay or prevent daemon startup.
 	go runAutomaticUpdate(ctx, cfg, version, releaseChecker, updatepkg.ExecRunner{})
