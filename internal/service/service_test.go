@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 type recordingRunner struct {
@@ -20,6 +22,12 @@ type recordingRunner struct {
 
 type blockingContextRunner struct {
 	contextCalls int
+}
+
+type windowsInstallRunner struct {
+	calls   [][]string
+	xmlPath string
+	xmlData []byte
 }
 
 func (*blockingContextRunner) Run(string, ...string) ([]byte, error) {
@@ -39,6 +47,28 @@ func (r *recordingRunner) Run(name string, args ...string) ([]byte, error) {
 		return []byte(r.out[call]), err
 	}
 	return []byte(r.out[call]), nil
+}
+
+func (r *windowsInstallRunner) Run(name string, args ...string) ([]byte, error) {
+	call := append([]string{name}, args...)
+	r.calls = append(r.calls, call)
+	if name == "schtasks" && len(args) > 0 && args[0] == "/Create" {
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "/XML" {
+				r.xmlPath = args[i+1]
+				data, err := os.ReadFile(r.xmlPath)
+				if err != nil {
+					return nil, err
+				}
+				r.xmlData = data
+				break
+			}
+		}
+	}
+	if name == "schtasks" && len(args) > 0 && args[0] == "/Query" {
+		return []byte(windowsEnabledTaskXML), nil
+	}
+	return nil, nil
 }
 
 func fakeHome(t *testing.T) string {
@@ -782,14 +812,9 @@ const (
 )
 
 func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) {
-	runner := &recordingRunner{
-		fail: map[string]error{},
-		out: map[string]string{
-			"schtasks /Query /TN " + TaskName + " /XML": windowsEnabledTaskXML,
-		},
-	}
+	runner := &windowsInstallRunner{}
 	manager := Manager{GOOS: "windows", Runner: runner}
-	state, err := manager.Install(`C:\Program Files\termp\termp.exe`)
+	state, err := manager.Install(`C:\Program Files & Tools\<termp>\termp.exe`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -800,22 +825,74 @@ func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) 
 		t.Fatal("runner was not called")
 	}
 	create := runner.calls[0]
-	for _, want := range []string{
-		"schtasks /Create",
-		"/TN " + TaskName,
-		`/TR "C:\Program Files\termp\termp.exe" start`,
-		"/SC ONLOGON",
-		"/RU ",
-		"/IT",
-		"/RL LIMITED",
-		"/F",
-	} {
-		if !strings.Contains(create, want) {
-			t.Fatalf("create call missing %q:\n%s", want, create)
+	for _, want := range []string{"schtasks", "/Create", "/TN", TaskName, "/XML", "/F"} {
+		if !hasArg(create, want) {
+			t.Fatalf("create call missing %q:\n%#v", want, create)
 		}
 	}
-	if !hasCall(runner.calls, "schtasks /Run /TN "+TaskName) {
+	for _, absent := range []string{"/SC", "ONLOGON", "/TR", "/RU", "/IT", "/RL", "LIMITED"} {
+		if hasArg(create, absent) {
+			t.Fatalf("create call unexpectedly contains %q:\n%#v", absent, create)
+		}
+	}
+	xmlText := decodeUTF16XML(t, runner.xmlData)
+	for _, want := range []string{
+		"<LogonTrigger>",
+		"InteractiveToken",
+		"LeastPrivilege",
+		`<Command>C:\Program Files &amp; Tools\&lt;termp&gt;\termp.exe</Command>`,
+		"<Arguments>start</Arguments>",
+	} {
+		if !strings.Contains(xmlText, want) {
+			t.Fatalf("task XML missing %q:\n%s", want, xmlText)
+		}
+	}
+	if strings.Contains(xmlText, `C:\Program Files & Tools\<termp>\termp.exe`) {
+		t.Fatalf("task XML contains unescaped executable path:\n%s", xmlText)
+	}
+	if runner.xmlPath == "" {
+		t.Fatal("create call did not include /XML path")
+	}
+	if _, err := os.Stat(runner.xmlPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp XML file still exists after Install: %v", err)
+	}
+	if !hasArgCall(runner.calls, "schtasks", "/Run", "/TN", TaskName) {
 		t.Fatalf("Install calls = %#v, want immediate schtasks run", runner.calls)
+	}
+}
+
+func TestBuildWindowsTaskXMLWritesUTF16WithBOM(t *testing.T) {
+	data, err := BuildWindowsTaskXML(`C:\termp.exe`, `DOMAIN\user`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) < 2 || data[0] != 0xff || data[1] != 0xfe {
+		t.Fatalf("task XML missing UTF-16 little-endian BOM: % x", data[:min(len(data), 4)])
+	}
+	text := decodeUTF16XML(t, data)
+	if !strings.HasPrefix(text, `<?xml version="1.0" encoding="UTF-16"?>`) {
+		t.Fatalf("task XML declaration = %q", text[:min(len(text), 50)])
+	}
+}
+
+func TestBuildWindowsTaskXMLEscapesInterpolatedValues(t *testing.T) {
+	data, err := BuildWindowsTaskXML(`C:\A&B\<termp>\termp.exe`, `DOMAIN\a&b<user>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := decodeUTF16XML(t, data)
+	for _, want := range []string{
+		`<Command>C:\A&amp;B\&lt;termp&gt;\termp.exe</Command>`,
+		`<UserId>DOMAIN\a&amp;b&lt;user&gt;</UserId>`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("task XML missing escaped value %q:\n%s", want, text)
+		}
+	}
+	for _, raw := range []string{`C:\A&B\<termp>\termp.exe`, `DOMAIN\a&b<user>`} {
+		if strings.Contains(text, raw) {
+			t.Fatalf("task XML contains raw value %q:\n%s", raw, text)
+		}
 	}
 }
 
@@ -1240,4 +1317,48 @@ func hasCall(calls []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func hasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasArgCall(calls [][]string, want ...string) bool {
+	for _, call := range calls {
+		if len(call) != len(want) {
+			continue
+		}
+		matches := true
+		for i := range call {
+			if call[i] != want[i] {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeUTF16XML(t *testing.T, data []byte) string {
+	t.Helper()
+	if len(data) < 2 || data[0] != 0xff || data[1] != 0xfe {
+		t.Fatalf("data is not UTF-16 little-endian with BOM: % x", data[:min(len(data), 4)])
+	}
+	data = data[2:]
+	if len(data)%2 != 0 {
+		t.Fatalf("UTF-16 data has odd length: %d", len(data))
+	}
+	codeUnits := make([]uint16, len(data)/2)
+	for i := range codeUnits {
+		codeUnits[i] = binary.LittleEndian.Uint16(data[i*2:])
+	}
+	return string(utf16.Decode(codeUnits))
 }
