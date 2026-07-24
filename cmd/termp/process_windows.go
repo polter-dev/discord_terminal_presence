@@ -42,6 +42,20 @@ func signalTermpProcess(pid int) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")
 	}
+	name, nameErr := windows.UTF16PtrFromString(shutdownEventName(pid))
+	if nameErr == nil {
+		event, err := windows.OpenEvent(windows.EVENT_MODIFY_STATE, false, name)
+		if err == nil {
+			defer windows.CloseHandle(event)
+			if err := windows.SetEvent(event); err != nil {
+				return fmt.Errorf("signal shutdown event: %w", err)
+			}
+			return nil
+		}
+	} else {
+		debugf("shutdown event name invalid: %v", nameErr)
+	}
+
 	handle, err := windows.OpenProcess(
 		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE,
 		false,
