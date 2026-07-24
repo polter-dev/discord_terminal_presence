@@ -32,6 +32,25 @@ func TestProbeWithLoginError(t *testing.T) {
 	}
 }
 
+func TestProbeWithStatusStateErrors(t *testing.T) {
+	tests := []error{
+		ErrDiscordIPCNotFound,
+		ErrDiscordIPCUnreachable,
+		ErrDiscordIPCHandshakeTimeout,
+	}
+	for _, want := range tests {
+		t.Run(want.Error(), func(t *testing.T) {
+			client := &probeClient{loginErr: want}
+			if err := probeWith(client, "app-id"); !errors.Is(err, want) {
+				t.Fatalf("probeWith error = %v, want %v", err, want)
+			}
+			if client.logoutCalls != 0 {
+				t.Fatalf("logout calls = %d, want 0", client.logoutCalls)
+			}
+		})
+	}
+}
+
 func TestProbeWithEmptyAppIDUsesDefault(t *testing.T) {
 	client := &probeClient{}
 	if err := probeWith(client, ""); err != nil {

@@ -40,6 +40,12 @@ type RichClient struct {
 
 var _ Client = (*RichClient)(nil)
 
+var (
+	ErrDiscordIPCNotFound         = errors.New("presence: Discord IPC endpoint not found")
+	ErrDiscordIPCUnreachable      = errors.New("presence: Discord IPC endpoint unreachable")
+	ErrDiscordIPCHandshakeTimeout = errors.New("presence: Discord IPC handshake timed out")
+)
+
 // Login connects to Discord IPC using the public application ID and waits for READY.
 func (c *RichClient) Login(appID string) error {
 	if appID == "" {
@@ -75,6 +81,9 @@ func (c *RichClient) Login(appID string) error {
 
 	frame, err := c.readFrame(conn)
 	if err != nil {
+		if isTimeoutError(err) {
+			return fmt.Errorf("%w: %w", ErrDiscordIPCHandshakeTimeout, err)
+		}
 		return fmt.Errorf("presence: read Discord IPC handshake: %w", err)
 	}
 	if frame.opcode != opcodeFrame {
@@ -389,6 +398,11 @@ func readFrame(reader io.Reader) (ipcFrame, error) {
 		return ipcFrame{}, fmt.Errorf("read %d-byte frame payload: %w", length, err)
 	}
 	return ipcFrame{opcode: opcode, payload: payload}, nil
+}
+
+func isTimeoutError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func newUUID() (string, error) {
