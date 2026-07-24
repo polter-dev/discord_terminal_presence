@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -39,9 +40,11 @@ var (
 )
 
 const (
-	stopTimeout      = 5 * time.Second
-	stopPollInterval = 50 * time.Millisecond
-	statusTimeout    = 2500 * time.Millisecond
+	stopTimeout                     = 5 * time.Second
+	stopPollInterval                = 50 * time.Millisecond
+	statusTimeout                   = 2500 * time.Millisecond
+	daemonDiscordStateWriteInterval = 15 * time.Second
+	daemonDiscordStateStaleAfter    = 45 * time.Second
 )
 
 var commandHelp = []struct {
@@ -673,6 +676,8 @@ func run(ctx context.Context, manager *config.Manager) error {
 	}
 
 	writerOptions := []presence.WriterOption{}
+	publishDiscordState := runDaemonDiscordStatePublisher(ctx, daemonDiscordStatePath(), daemonDiscordStateWriteInterval, os.Getpid())
+	writerOptions = append(writerOptions, presence.WithConnectionState(publishDiscordState))
 	if verbose {
 		writerOptions = append(writerOptions, presence.WithDebugf(debugf))
 	}
@@ -967,12 +972,21 @@ func status(args []string) error {
 	defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
 	pidPath := pidFilePath()
 	running := false
+	daemonPID := 0
 	if pid, err := readPID(pidPath); err == nil {
 		running = processAlive(pid) && processLooksLikeTermp(pid)
+		if running {
+			daemonPID = pid
+		}
 	}
 
 	reg, registryErr := registry.NewWithCustom(cfg.CustomTools...)
 	probes := runStatusProbes(statusCtx, statusProbeFuncs{
+		daemonRunning: running,
+		daemonPID:     daemonPID,
+		discordState: func(now time.Time) (daemonDiscordState, bool) {
+			return readFreshDaemonDiscordState(daemonDiscordStatePath(), now, daemonDiscordStateStaleAfter)
+		},
 		discord: func(ctx context.Context) error {
 			return presence.StatusProbe(ctx, presence.DefaultAppID)
 		},
@@ -1024,9 +1038,13 @@ func status(args []string) error {
 }
 
 type statusProbeFuncs struct {
-	discord func(context.Context) error
-	service func(context.Context) service.State
-	tool    func(context.Context) (detector.Detection, error)
+	daemonRunning bool
+	daemonPID     int
+	discordState  func(time.Time) (daemonDiscordState, bool)
+	now           func() time.Time
+	discord       func(context.Context) error
+	service       func(context.Context) service.State
+	tool          func(context.Context) (detector.Detection, error)
 }
 
 type statusProbeResults struct {
@@ -1054,8 +1072,20 @@ func runStatusProbes(ctx context.Context, probes statusProbeFuncs) statusProbeRe
 		detectedTool: "unknown (probe timed out)",
 	}
 	resultCh := make(chan statusStageResult, 3)
+	now := probes.now
+	if now == nil {
+		now = time.Now
+	}
 
 	go func() {
+		if probes.daemonRunning && probes.discordState != nil {
+			if state, ok := probes.discordState(now()); ok {
+				if state.Connected && (probes.daemonPID <= 0 || state.PID == probes.daemonPID) {
+					resultCh <- statusStageResult{stage: "discord", discord: "connected"}
+					return
+				}
+			}
+		}
 		err := probes.discord(ctx)
 		resultCh <- statusStageResult{stage: "discord", discord: formatDiscordStatus(err)}
 	}()
@@ -1092,6 +1122,109 @@ func runStatusProbes(ctx context.Context, probes statusProbeFuncs) statusProbeRe
 		}
 	}
 	return results
+}
+
+type daemonDiscordState struct {
+	Connected bool      `json:"connected"`
+	UpdatedAt time.Time `json:"updated_at"`
+	PID       int       `json:"pid"`
+}
+
+func daemonDiscordStatePath() string {
+	return filepath.Join(filepath.Dir(usagepkg.StatePath()), "discord.json")
+}
+
+func runDaemonDiscordStatePublisher(ctx context.Context, path string, interval time.Duration, pid int) func(bool) {
+	updates := make(chan bool, 1)
+	go func() {
+		connected := false
+		writeDaemonDiscordState(path, daemonDiscordState{
+			Connected: connected,
+			UpdatedAt: time.Now(),
+			PID:       pid,
+		})
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case connected = <-updates:
+				writeDaemonDiscordState(path, daemonDiscordState{
+					Connected: connected,
+					UpdatedAt: time.Now(),
+					PID:       pid,
+				})
+			case <-ticker.C:
+				writeDaemonDiscordState(path, daemonDiscordState{
+					Connected: connected,
+					UpdatedAt: time.Now(),
+					PID:       pid,
+				})
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return func(connected bool) {
+		select {
+		case updates <- connected:
+		default:
+			select {
+			case <-updates:
+			default:
+			}
+			select {
+			case updates <- connected:
+			default:
+			}
+		}
+	}
+}
+
+func writeDaemonDiscordState(path string, state daemonDiscordState) error {
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func readFreshDaemonDiscordState(path string, now time.Time, staleAfter time.Duration) (daemonDiscordState, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return daemonDiscordState{}, false
+	}
+	var state daemonDiscordState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return daemonDiscordState{}, false
+	}
+	if state.UpdatedAt.IsZero() || staleAfter <= 0 || now.Sub(state.UpdatedAt) > staleAfter {
+		return daemonDiscordState{}, false
+	}
+	return state, true
 }
 
 func formatDiscordStatus(err error) string {

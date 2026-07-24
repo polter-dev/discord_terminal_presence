@@ -3,6 +3,7 @@ package presence
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -75,6 +76,66 @@ func TestWriterReconnectsAndReappliesActivity(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+func TestWriterConnectionStateHookTracksTransitions(t *testing.T) {
+	client := newFakeClient([]error{errors.New("discord unavailable"), nil})
+	client.setSetErrors(errors.New("socket reset"), nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	var statesMu sync.Mutex
+	var states []bool
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(0),
+		withReapplyInterval(0),
+		withWriteClock(clock),
+		WithConnectionState(func(connected bool) {
+			statesMu.Lock()
+			defer statesMu.Unlock()
+			states = append(states, connected)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "first"})
+	clock.waitForTimerCount(t, 1)
+	assertConnectionStates(t, &statesMu, &states, []bool{})
+
+	clock.Advance(0)
+	client.waitForLogout(t, 1)
+	assertConnectionStates(t, &statesMu, &states, []bool{true, false})
+
+	clock.Advance(0)
+	client.waitForSet(t, 2)
+	assertConnectionStates(t, &statesMu, &states, []bool{true, false, true})
+
+	sendActivity(t, ctx, activities, nil)
+	client.waitForLogout(t, 2)
+	assertConnectionStates(t, &statesMu, &states, []bool{true, false, true, false})
+
+	cancel()
+	<-done
+}
+
+func assertConnectionStates(t *testing.T, mu *sync.Mutex, got *[]bool, want []bool) {
+	t.Helper()
+	mu.Lock()
+	defer mu.Unlock()
+	copied := make([]bool, len(*got))
+	copy(copied, *got)
+	if !reflect.DeepEqual(copied, want) {
+		t.Fatalf("connection states = %#v, want %#v", copied, want)
+	}
 }
 
 func TestWriterReappliesActivityAfterRemoteClose(t *testing.T) {
