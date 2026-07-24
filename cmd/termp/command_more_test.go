@@ -109,11 +109,15 @@ func TestParseStartOptions(t *testing.T) {
 		args           []string
 		defaultVerbose bool
 		want           startOptions
+		wantBackground bool
 	}{
-		{name: "foreground default", want: startOptions{}},
-		{name: "long detach", args: []string{"--detach"}, want: startOptions{detach: true}},
-		{name: "short detach and verbose", args: []string{"-d", "-v"}, want: startOptions{detach: true, verbose: true}},
-		{name: "inherits root verbose", defaultVerbose: true, want: startOptions{verbose: true}},
+		{name: "background default", want: startOptions{}, wantBackground: true},
+		{name: "long foreground", args: []string{"--foreground"}, want: startOptions{foreground: true}},
+		{name: "short foreground", args: []string{"-f"}, want: startOptions{foreground: true}},
+		{name: "long detach compatibility", args: []string{"--detach"}, want: startOptions{detach: true}, wantBackground: true},
+		{name: "short detach and verbose", args: []string{"-d", "-v"}, want: startOptions{detach: true, verbose: true}, wantBackground: true},
+		{name: "detach does not conflict with foreground", args: []string{"--foreground", "--detach"}, want: startOptions{detach: true, foreground: true}},
+		{name: "inherits root verbose", defaultVerbose: true, want: startOptions{verbose: true}, wantBackground: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := parseStartOptions(tt.args, tt.defaultVerbose, io.Discard)
@@ -123,17 +127,20 @@ func TestParseStartOptions(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("parseStartOptions() = %#v, want %#v", got, tt.want)
 			}
+			if background := !got.foreground; background != tt.wantBackground {
+				t.Fatalf("background = %t, want %t", background, tt.wantBackground)
+			}
 		})
 	}
 }
 
-func TestStartHelpExplainsDetachAndAutostart(t *testing.T) {
+func TestStartHelpExplainsBackgroundDefaultForegroundAndAutostart(t *testing.T) {
 	var output bytes.Buffer
 	_, err := parseStartOptions([]string{"--help"}, false, &output)
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("parseStartOptions() error = %v, want %v", err, flag.ErrHelp)
 	}
-	for _, want := range []string{"--detach", "current daemon lifetime", "autostart install"} {
+	for _, want := range []string{"--foreground", "--detach", "background (default)", "current daemon lifetime", "autostart install"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("start help missing %q:\n%s", want, output.String())
 		}
@@ -296,7 +303,7 @@ func TestCompletionScriptsExplainInstallationAndCoverCLI(t *testing.T) {
 				"# Enable in the current session: source <(termp completion bash)\n" +
 				"# Or install permanently: termp completion bash > ~/.local/share/bash-completion/completions/termp\n",
 			marker: "_termp_complete()",
-			flags:  []string{"--verbose", "--version", "--help", "--force", "--once"},
+			flags:  []string{"--verbose", "--version", "--help", "--force", "--once", "--foreground -f", "--detach -d"},
 		},
 		{
 			shell: "zsh",
@@ -305,7 +312,7 @@ func TestCompletionScriptsExplainInstallationAndCoverCLI(t *testing.T) {
 				"# Enable in the current session: source <(termp completion zsh)\n" +
 				"# Or install permanently: termp completion zsh > ${fpath[1]}/_termp\n",
 			marker: "_termp()",
-			flags:  []string{"--verbose", "--version", "--help", "--force", "--once"},
+			flags:  []string{"--verbose", "--version", "--help", "--force", "--once", "--foreground -f", "--detach -d"},
 		},
 		{
 			shell: "fish",
@@ -313,7 +320,7 @@ func TestCompletionScriptsExplainInstallationAndCoverCLI(t *testing.T) {
 				"# Enable in the current session: termp completion fish | source\n" +
 				"# Or install permanently: termp completion fish > ~/.config/fish/completions/termp.fish\n",
 			marker: "complete -c termp",
-			flags:  []string{"-l verbose", "-l version", "-l help", "-l force", "-l once"},
+			flags:  []string{"-l verbose", "-l version", "-l help", "-l force", "-l once", "-s f -l foreground", "-s d -l detach"},
 		},
 	}
 
