@@ -129,6 +129,14 @@ type fileInfoWithSys struct {
 
 func (i fileInfoWithSys) Sys() any { return i.sys }
 
+func requireSymlink(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(dir, "target"), filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable on this account: %v", err)
+	}
+}
+
 func TestPIDFilePathUsesPrivateUserCacheDirectory(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("HOME", t.TempDir())
@@ -152,6 +160,8 @@ func TestPIDFilePathUsesPrivateUserCacheDirectory(t *testing.T) {
 }
 
 func TestWritePIDUses0600AndRefusesSymlink(t *testing.T) {
+	requireSymlink(t)
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "termp.pid")
 	if err := writePID(path, 99999998); err != nil {
