@@ -17,6 +17,18 @@ const maxInstallCTAWidth = 80
 
 type autostartActionHandler func([]string) error
 
+type autostartManager interface {
+	Install(string) (service.State, error)
+	Uninstall() (service.State, error)
+	Disable() (service.State, error)
+	Enable() (service.State, error)
+	Status() service.State
+}
+
+var newAutostartManager = func() autostartManager {
+	return service.NewManager()
+}
+
 func autostartActionHandlers() map[string]autostartActionHandler {
 	return map[string]autostartActionHandler{
 		"enable":    enable,
@@ -72,7 +84,7 @@ func install(args []string) error {
 	if err != nil {
 		return err
 	}
-	state, err := service.NewManager().Install(exe)
+	state, err := newAutostartManager().Install(exe)
 	if errors.Is(err, service.ErrUnsupported) {
 		fmt.Println(state.Message)
 		return err
@@ -139,7 +151,10 @@ func uninstall(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	state, err := service.NewManager().Uninstall()
+	manager := newAutostartManager()
+	preState := manager.Status()
+	wasInstalled := preState.Installed
+	state, err := manager.Uninstall()
 	if errors.Is(err, service.ErrUnsupported) {
 		fmt.Println(state.Message)
 		return err
@@ -147,11 +162,15 @@ func uninstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	if state.Path == "" {
-		fmt.Println("autostart not installed")
+	if !wasInstalled {
+		fmt.Println("autostart not installed (nothing to remove)")
 		return nil
 	}
-	fmt.Printf("removed autostart: %s (binary was not removed)\n", state.Path)
+	path := state.Path
+	if path == "" {
+		path = preState.Path
+	}
+	fmt.Printf("removed autostart: %s (binary was not removed)\n", path)
 	return nil
 }
 
@@ -160,7 +179,7 @@ func disable(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	state, err := service.NewManager().Disable()
+	state, err := newAutostartManager().Disable()
 	if errors.Is(err, service.ErrUnsupported) {
 		fmt.Println(state.Message)
 		return err
@@ -169,7 +188,7 @@ func disable(args []string) error {
 		return err
 	}
 	if !state.Installed {
-		fmt.Println("autostart not installed (nothing to disable); run: termp stop")
+		fmt.Println("autostart not installed (nothing to disable); run: termp autostart install")
 		return nil
 	}
 	pidPath := pidFilePath()
@@ -185,7 +204,7 @@ func enable(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	state, err := service.NewManager().Enable()
+	state, err := newAutostartManager().Enable()
 	if errors.Is(err, service.ErrUnsupported) {
 		fmt.Println(state.Message)
 		return err

@@ -94,8 +94,7 @@ func main() {
 	printCommandUpdateAlert(command, args, interactive, cfg, loadErr, os.Stderr)
 
 	err = dispatchCommand(command, args)
-	if errors.Is(err, errUnknownCommand) {
-		usage(os.Stderr)
+	if printDispatchUsageError(err, os.Stderr) {
 		os.Exit(2)
 	}
 	if err != nil {
@@ -104,6 +103,15 @@ func main() {
 }
 
 var errUnknownCommand = errors.New("unknown command")
+
+func printDispatchUsageError(err error, w io.Writer) bool {
+	if !errors.Is(err, errUnknownCommand) {
+		return false
+	}
+	fmt.Fprintln(w, err)
+	usage(w)
+	return true
+}
 
 func dispatchCommand(command string, args []string) error {
 	return dispatchCommandWithAutostartHandlers(command, args, autostartActionHandlers())
@@ -134,8 +142,10 @@ func dispatchCommandWithAutostartHandlers(command string, args []string, handler
 		err = configCommand(args)
 	case "completion":
 		err = completion(args)
+	case "help":
+		usage(os.Stdout)
 	default:
-		return errUnknownCommand
+		return fmt.Errorf("%w %q", errUnknownCommand, command)
 	}
 	if errors.Is(err, flag.ErrHelp) && rootHelpRequested(args) {
 		return nil
