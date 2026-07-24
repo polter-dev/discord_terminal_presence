@@ -20,7 +20,7 @@ const (
 	opcodeFrame      uint32 = 1
 	maxPayload              = 16 << 20
 	defaultIOTimeout        = 5 * time.Second
-	statusIOTimeout         = time.Second
+	statusIOTimeout         = 2 * time.Second
 )
 
 // Client is the Discord IPC boundary. Tests should inject a fake implementation.
