@@ -45,6 +45,14 @@ func (s *fakeSource) callCount() int {
 	return s.calls
 }
 
+func requireSymlink(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(dir, "target"), filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable on this account: %v", err)
+	}
+}
+
 func TestIsNewerSemver(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -179,6 +187,8 @@ func TestInstallMethodDetection(t *testing.T) {
 }
 
 func TestInstallDetectionResolvesSymlinkBeforeMatching(t *testing.T) {
+	requireSymlink(t)
+
 	root := t.TempDir()
 	target := filepath.Join(root, "Caskroom", "termp", "1.2.3", "termp")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {

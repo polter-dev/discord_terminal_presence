@@ -89,6 +89,14 @@ func requireGOOS(t *testing.T, goos string) {
 	}
 }
 
+func requireSymlink(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(dir, "target"), filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable on this account: %v", err)
+	}
+}
+
 func TestLaunchAgentPathsUseHomeAndLabel(t *testing.T) {
 	requireGOOS(t, "darwin")
 	home := fakeHome(t)
@@ -194,6 +202,8 @@ func TestHomebrewCheckoutAncestorIsNotTermpSourceTree(t *testing.T) {
 }
 
 func TestValidateInstallExecutableResolvesNestedSymlinkAndHonorsForce(t *testing.T) {
+	requireSymlink(t)
+
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
 		t.Fatal(err)
