@@ -1047,13 +1047,7 @@ func runStatusProbes(ctx context.Context, probes statusProbeFuncs) statusProbeRe
 
 	go func() {
 		err := probes.discord(ctx)
-		value := "connected"
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			value = "unknown (probe timed out)"
-		} else if err != nil {
-			value = "not running (start Discord to show presence)"
-		}
-		resultCh <- statusStageResult{stage: "discord", discord: value}
+		resultCh <- statusStageResult{stage: "discord", discord: formatDiscordStatus(err)}
 	}()
 	go func() {
 		resultCh <- statusStageResult{stage: "service", service: probes.service(ctx)}
@@ -1088,6 +1082,25 @@ func runStatusProbes(ctx context.Context, probes statusProbeFuncs) statusProbeRe
 		}
 	}
 	return results
+}
+
+func formatDiscordStatus(err error) string {
+	if err == nil {
+		return "connected"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "unknown (probe timed out)"
+	}
+	if errors.Is(err, presence.ErrDiscordIPCNotFound) {
+		return "not running (start Discord to show presence)"
+	}
+	if errors.Is(err, presence.ErrDiscordIPCUnreachable) {
+		return "connection failed (Discord is running but unreachable)"
+	}
+	if errors.Is(err, presence.ErrDiscordIPCHandshakeTimeout) {
+		return "not responding (Discord IPC handshake timed out)"
+	}
+	return "connection failed (Discord is running but unreachable)"
 }
 
 func applyStatusStageResult(results *statusProbeResults, result statusStageResult) {

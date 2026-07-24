@@ -603,6 +603,50 @@ func TestRunStatusProbesFastPathUnchanged(t *testing.T) {
 	}
 }
 
+func TestRunStatusProbesDiscordStateMapping(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "endpoint absent",
+			err:  presence.ErrDiscordIPCNotFound,
+			want: "not running (start Discord to show presence)",
+		},
+		{
+			name: "endpoint present connect failure",
+			err:  presence.ErrDiscordIPCUnreachable,
+			want: "connection failed (Discord is running but unreachable)",
+		},
+		{
+			name: "handshake timeout",
+			err:  presence.ErrDiscordIPCHandshakeTimeout,
+			want: "not responding (Discord IPC handshake timed out)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+
+			got := runStatusProbes(ctx, statusProbeFuncs{
+				discord: func(context.Context) error { return tt.err },
+				service: func(context.Context) service.State {
+					return service.State{Supported: true, Loaded: "unknown", Enabled: "unknown"}
+				},
+				tool: func(context.Context) (detector.Detection, error) {
+					return detector.Detection{None: true}, nil
+				},
+			})
+
+			if got.discord != tt.want {
+				t.Fatalf("discord status = %q, want %q", got.discord, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunStatusProbesHonorsOverallDeadline(t *testing.T) {
 	const budget = 40 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), budget)

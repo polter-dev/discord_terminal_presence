@@ -3,6 +3,7 @@
 package presence
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -30,6 +31,7 @@ func dialDiscordIPC() (net.Conn, error) {
 	seen := make(map[string]struct{})
 	deadline := time.Now().Add(discordIPCDialBudget)
 	budgetExhausted := false
+	endpointFound := false
 	tryCandidates := func(paths []string) net.Conn {
 		for _, path := range paths {
 			path = filepath.Clean(path)
@@ -45,9 +47,12 @@ func dialDiscordIPC() (net.Conn, error) {
 				return nil
 			}
 			timeout := min(500*time.Millisecond, remaining)
-			conn, err := dialDiscordIPCSocket(path, timeout)
+			conn, exists, err := dialDiscordIPCSocket(path, timeout)
 			if err == nil {
 				return conn
+			}
+			if exists {
+				endpointFound = true
 			}
 			fmt.Fprintf(&failures, "  %s: %v\n", path, err)
 		}
@@ -79,23 +84,26 @@ func dialDiscordIPC() (net.Conn, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("presence: no Discord IPC socket accepted a connection:\n%s", failures.String())
+	if !endpointFound {
+		return nil, fmt.Errorf("%w:\n%s", ErrDiscordIPCNotFound, failures.String())
+	}
+	return nil, fmt.Errorf("%w:\n%s", ErrDiscordIPCUnreachable, failures.String())
 }
 
-func dialDiscordIPCSocket(path string, timeout time.Duration) (net.Conn, error) {
+func dialDiscordIPCSocket(path string, timeout time.Duration) (net.Conn, bool, error) {
 	before, err := validateSocketCandidate(path, os.Geteuid())
 	if err != nil {
-		return nil, err
+		return nil, !errors.Is(err, os.ErrNotExist), err
 	}
 	conn, err := net.DialTimeout("unix", path, timeout)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	if err := validateConnectedSocket(conn, path, before, os.Geteuid()); err != nil {
 		_ = conn.Close()
-		return nil, err
+		return nil, true, err
 	}
-	return conn, nil
+	return conn, true, nil
 }
 
 func discordIPCOverrideCandidates(value string, lstat func(string) (os.FileInfo, error)) []string {
