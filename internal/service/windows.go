@@ -34,15 +34,33 @@ func (s windowsService) Install(exe string) (State, error) {
 		return State{Supported: true, Path: TaskName}, fmt.Errorf("cannot resolve current user for scheduled task")
 	}
 
+	taskXML, err := BuildWindowsTaskXML(exe, username)
+	if err != nil {
+		return State{Supported: true, Path: TaskName}, err
+	}
+	xmlFile, err := os.CreateTemp("", "termp-autostart-*.xml")
+	if err != nil {
+		return State{Supported: true, Path: TaskName}, fmt.Errorf("create scheduled task XML temp file: %w", err)
+	}
+	xmlPath := xmlFile.Name()
+	defer os.Remove(xmlPath)
+	if err := xmlFile.Chmod(0o600); err != nil {
+		_ = xmlFile.Close()
+		return State{Supported: true, Path: TaskName}, fmt.Errorf("restrict scheduled task XML temp file: %w", err)
+	}
+	if _, err := xmlFile.Write(taskXML); err != nil {
+		_ = xmlFile.Close()
+		return State{Supported: true, Path: TaskName}, fmt.Errorf("write scheduled task XML temp file: %w", err)
+	}
+	if err := xmlFile.Close(); err != nil {
+		return State{Supported: true, Path: TaskName}, fmt.Errorf("close scheduled task XML temp file: %w", err)
+	}
+
 	if out, err := s.runner.Run(
 		"schtasks",
 		"/Create",
 		"/TN", TaskName,
-		"/TR", `"`+exe+`" start`,
-		"/SC", "ONLOGON",
-		"/RU", username,
-		"/IT",
-		"/RL", "LIMITED",
+		"/XML", xmlPath,
 		"/F",
 	); err != nil {
 		return State{Supported: true, Path: TaskName}, fmt.Errorf("schtasks create failed: %w: %s", err, strings.TrimSpace(string(out)))
@@ -51,6 +69,45 @@ func (s windowsService) Install(exe string) (State, error) {
 		return State{Supported: true, Installed: true, Path: TaskName}, err
 	}
 	return s.Status(), nil
+}
+
+func BuildWindowsTaskXML(exe, username string) ([]byte, error) {
+	const description = "Terminal Presence autostart"
+	esc := func(s string) string {
+		var out bytes.Buffer
+		_ = xml.EscapeText(&out, []byte(s))
+		return out.String()
+	}
+	content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>%s</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>%s</UserId></LogonTrigger></Triggers>
+  <Principals><Principal id="Author">
+    <UserId>%s</UserId>
+    <LogonType>InteractiveToken</LogonType>
+    <RunLevel>LeastPrivilege</RunLevel>
+  </Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec><Command>%s</Command><Arguments>start</Arguments></Exec>
+  </Actions>
+</Task>
+`, esc(description), esc(username), esc(username), esc(exe))
+
+	encoded := utf16.Encode([]rune(content))
+	data := make([]byte, 2+len(encoded)*2)
+	data[0], data[1] = 0xff, 0xfe
+	for i, unit := range encoded {
+		binary.LittleEndian.PutUint16(data[2+i*2:], unit)
+	}
+	return data, nil
 }
 
 func (s windowsService) Uninstall() (State, error) {
