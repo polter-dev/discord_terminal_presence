@@ -1242,9 +1242,12 @@ func watch(args []string) error {
 		return err
 	}
 	if *once {
-		card, err := watchSnapshot(time.Now())
+		card, warnings, err := watchSnapshot(time.Now())
 		if err != nil {
 			return err
+		}
+		for _, warning := range warnings {
+			log.Print(warning)
 		}
 		fmt.Println(card)
 		return nil
@@ -1298,14 +1301,14 @@ func watch(args []string) error {
 	return err
 }
 
-func watchSnapshot(now time.Time) (string, error) {
+func watchSnapshot(now time.Time) (string, []string, error) {
 	cfg, loadErr := config.Load()
 	if loadErr != nil {
 		debugf("config load error, using last-good/default config: %v", loadErr)
 	}
 	reg, err := registry.NewWithCustom(cfg.CustomTools...)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	detection, err := detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
 		ScanInterval:         cfg.ScanIntervalDuration(),
@@ -1329,7 +1332,7 @@ func watchSnapshot(now time.Time) (string, error) {
 		Connected: connected,
 		Now:       now,
 		Recent:    recent,
-	}, tui.DefaultCardStyles(cfg.UI.AccentColor)), nil
+	}, tui.DefaultCardStyles(cfg.UI.AccentColor)), cfg.Warnings, nil
 }
 
 func bridgeWatchActivities(ctx context.Context, manager *config.Manager, detections <-chan detector.Detection, program *tea.Program) {

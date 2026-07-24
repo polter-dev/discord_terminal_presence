@@ -137,6 +137,18 @@ func requireSymlink(t *testing.T) {
 	}
 }
 
+func withTermpConfigHome(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	configHome := filepath.Join(root, "config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("APPDATA", configHome)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return configHome
+}
+
 func TestPIDFilePathUsesPrivateUserCacheDirectory(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("HOME", t.TempDir())
@@ -1142,6 +1154,44 @@ func TestDebugfEmitsOnlyWhenVerbose(t *testing.T) {
 	debugf("hello %s", "world")
 	if got := buf.String(); !strings.Contains(got, "hello world") {
 		t.Fatalf("debugf output = %q, want hello world", got)
+	}
+}
+
+func TestWatchOnceEmitsConfigWarnings(t *testing.T) {
+	configHome := withTermpConfigHome(t)
+
+	path := filepath.Join(configHome, "termp", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`
+[ui]
+accent_color = "cyan"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	var stderr bytes.Buffer
+	log.SetOutput(&stderr)
+	log.SetFlags(0)
+	log.SetPrefix("")
+
+	if _, err := captureStdout(t, func() error {
+		return watch([]string{"--once"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := stderr.String(); !strings.Contains(got, `invalid config value: ui.accent_color "cyan"; using "purple"`) {
+		t.Fatalf("watch --once warnings = %q, want invalid accent warning", got)
 	}
 }
 

@@ -312,8 +312,7 @@ func TestCommandsRejectInvalidArgumentsBeforeSideEffects(t *testing.T) {
 }
 
 func TestConfigCommandInitAndForce(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", root)
+	withTermpConfigHome(t)
 	path := config.DefaultPath()
 
 	out, err := captureStdout(t, func() error { return configCommand([]string{"init"}) })
@@ -352,8 +351,7 @@ func TestConfigCommandInitAndForce(t *testing.T) {
 }
 
 func TestSetupNonInteractiveWritesDefaults(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", root)
+	withTermpConfigHome(t)
 	out, err := captureStdout(t, func() error { return setup(nil) })
 	if err != nil {
 		t.Fatal(err)
@@ -374,8 +372,7 @@ func TestSetupNonInteractiveWritesDefaults(t *testing.T) {
 }
 
 func TestSetupNonInteractivePreservesExistingConfig(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", root)
+	withTermpConfigHome(t)
 	path := config.DefaultPath()
 	enabled := false
 	cfg := config.Default()

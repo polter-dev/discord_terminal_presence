@@ -581,45 +581,71 @@ future_key = true
 }
 
 func TestLoadValidAccentColor(t *testing.T) {
-	path := withConfigHome(t)
-	writeConfig(t, path, `
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "short hex", in: "#abc", want: "#abc"},
+		{name: "long hex", in: "#abcdef", want: "#abcdef"},
+		{name: "mixed-case long hex", in: "#12AbEF", want: "#12AbEF"},
+		{name: "empty uses default palette", in: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := withConfigHome(t)
+			writeConfig(t, path, fmt.Sprintf(`
 [ui]
-accent_color = "#12AbEF"
-`)
+accent_color = %q
+`, tt.in))
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.UI.AccentColor != "#12AbEF" {
-		t.Fatalf("ui.accent_color = %q, want #12AbEF", cfg.UI.AccentColor)
-	}
-	if len(cfg.Warnings) != 0 {
-		t.Fatalf("warnings = %#v, want none", cfg.Warnings)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.UI.AccentColor != tt.want {
+				t.Fatalf("ui.accent_color = %q, want %q", cfg.UI.AccentColor, tt.want)
+			}
+			if len(cfg.Warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none", cfg.Warnings)
+			}
+		})
 	}
 }
 
 func TestInvalidAccentColorWarnsAndUsesDefault(t *testing.T) {
-	path := withConfigHome(t)
-	writeConfig(t, path, `
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "unsupported name", value: "cyan"},
+		{name: "malformed hex", value: "#12345"},
+		{name: "unknown word", value: "ultraviolet"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := withConfigHome(t)
+			writeConfig(t, path, fmt.Sprintf(`
 scan_interval = "7s"
 
 [ui]
-accent_color = "ultraviolet"
-`)
+accent_color = %q
+`, tt.value))
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.UI.AccentColor != DefaultAccentColor {
-		t.Fatalf("ui.accent_color = %q, want default %q", cfg.UI.AccentColor, DefaultAccentColor)
-	}
-	if cfg.ScanInterval != "7s" {
-		t.Fatalf("valid config was not retained: scan_interval = %q", cfg.ScanInterval)
-	}
-	if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "ui.accent_color") {
-		t.Fatalf("warnings = %#v, want invalid accent warning", cfg.Warnings)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.UI.AccentColor != DefaultAccentColor {
+				t.Fatalf("ui.accent_color = %q, want default %q", cfg.UI.AccentColor, DefaultAccentColor)
+			}
+			if cfg.ScanInterval != "7s" {
+				t.Fatalf("valid config was not retained: scan_interval = %q", cfg.ScanInterval)
+			}
+			if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "ui.accent_color") || !strings.Contains(cfg.Warnings[0], tt.value) {
+				t.Fatalf("warnings = %#v, want invalid accent warning for %q", cfg.Warnings, tt.value)
+			}
+		})
 	}
 }
 
