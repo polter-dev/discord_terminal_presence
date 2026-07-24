@@ -29,6 +29,21 @@ const (
 //go:embed catalog.json
 var catalogJSON []byte
 
+var shellInterpreterNames = map[string]struct{}{
+	"bash":       {},
+	"sh":         {},
+	"zsh":        {},
+	"fish":       {},
+	"dash":       {},
+	"ash":        {},
+	"ksh":        {},
+	"csh":        {},
+	"tcsh":       {},
+	"cmd":        {},
+	"powershell": {},
+	"pwsh":       {},
+}
+
 // Button is a Discord activity button definition owned by a tool entry.
 type Button struct {
 	Label string
@@ -209,6 +224,10 @@ func newFromTools(tools []Tool) (*Registry, error) {
 }
 
 func (t Tool) matchesProcess(process ProcessInfo) bool {
+	if isShellInterpreterProcess(process) {
+		return false
+	}
+
 	haystack := process.Exe + " " + process.Cmdline
 	if strings.TrimSpace(haystack) == "" {
 		haystack = process.Name
@@ -238,6 +257,18 @@ func (t Tool) matchesProcess(process ProcessInfo) bool {
 		if t.Match.compiled.MatchString(regexHaystack) {
 			return true
 		}
+	}
+	return false
+}
+
+func isShellInterpreterProcess(process ProcessInfo) bool {
+	for _, candidate := range []string{process.Name, process.Argv0, process.Exe} {
+		name := normalizeName(candidate)
+		if name == "" {
+			continue
+		}
+		_, ok := shellInterpreterNames[strings.ToLower(name)]
+		return ok
 	}
 	return false
 }

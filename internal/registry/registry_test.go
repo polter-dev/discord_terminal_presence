@@ -564,6 +564,91 @@ func TestRegistryWindowsRegexExcludeUsesNormalizedSeparators(t *testing.T) {
 	}
 }
 
+func TestEmbeddedCatalogDoesNotMatchShellInterpreterProcesses(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		process ProcessInfo
+	}{
+		{
+			name: "bash launches codex",
+			process: ProcessInfo{
+				Name:    "bash.exe",
+				Exe:     `C:\Program Files\Git\usr\bin\bash.exe`,
+				Cmdline: `bash -c "codex exec --ask-for-approval never"`,
+			},
+		},
+		{
+			name: "powershell references codex",
+			process: ProcessInfo{
+				Name:    "powershell.exe",
+				Exe:     `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+				Cmdline: `powershell -NoProfile -Command "Get-Process -Name codex"`,
+			},
+		},
+		{
+			name: "cmd launches claude",
+			process: ProcessInfo{
+				Name:    "cmd.exe",
+				Exe:     `C:\Windows\System32\cmd.exe`,
+				Cmdline: `cmd.exe /C claude --print`,
+			},
+		},
+		{
+			name: "sh launches gemini",
+			process: ProcessInfo{
+				Name:    "sh",
+				Exe:     "/bin/sh",
+				Cmdline: `sh -lc "gemini --model gemini-pro"`,
+			},
+		},
+		{
+			name: "zsh launches aider",
+			process: ProcessInfo{
+				Name:    "zsh",
+				Exe:     "/bin/zsh",
+				Cmdline: `zsh -lc "aider --model sonnet"`,
+			},
+		},
+		{
+			name: "pwsh launches ranger",
+			process: ProcessInfo{
+				Name:    "pwsh",
+				Exe:     "/usr/local/bin/pwsh",
+				Cmdline: `pwsh -NoProfile -Command "ranger"`,
+			},
+		},
+		{
+			name: "uppercase bash launches codex",
+			process: ProcessInfo{
+				Name:    "BASH.EXE",
+				Exe:     `C:\Program Files\Git\usr\bin\bash.exe`,
+				Cmdline: `BASH.EXE -c "codex exec"`,
+			},
+		},
+		{
+			name: "mixed case powershell references codex",
+			process: ProcessInfo{
+				Name:    "PowerShell.exe",
+				Exe:     `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+				Cmdline: `PowerShell.exe -Command "Get-Command codex"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tool, ok := reg.MatchProcess(tt.process); ok {
+				t.Fatalf("MatchProcess(%#v) = %q, want no match", tt.process, tool.ID)
+			}
+		})
+	}
+}
+
 func TestEmbeddedCatalogWrapperMatches(t *testing.T) {
 	reg, err := New()
 	if err != nil {
@@ -673,6 +758,74 @@ func TestEmbeddedCatalogWrapperMatches(t *testing.T) {
 				Cmdline: "python3 /usr/local/bin/bpytop",
 			},
 			id: "bpytop",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool, ok := reg.MatchProcess(tt.process)
+			if !ok {
+				t.Fatalf("expected process to match %q", tt.id)
+			}
+			if tool.ID != tt.id {
+				t.Fatalf("MatchProcess(%#v) ID = %q, want %q", tt.process, tool.ID, tt.id)
+			}
+		})
+	}
+}
+
+func TestEmbeddedCatalogShellExclusionKeepsRealToolsAndInterpreters(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		process ProcessInfo
+		id      string
+	}{
+		{
+			name: "real codex exe",
+			process: ProcessInfo{
+				Name:    "codex.exe",
+				Exe:     `C:\Users\me\AppData\Local\codex\codex.exe`,
+				Cmdline: `C:\Users\me\AppData\Local\codex\codex.exe exec`,
+			},
+			id: "codex-cli",
+		},
+		{
+			name: "node codex package cli",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/usr/local/bin/node",
+				Cmdline: "node /usr/local/lib/node_modules/@openai/codex/cli.js exec",
+			},
+			id: "codex-cli",
+		},
+		{
+			name: "nvim exe",
+			process: ProcessInfo{
+				Name: "nvim.exe",
+				Exe:  `C:\Program Files\Neovim\bin\nvim.exe`,
+			},
+			id: "nvim",
+		},
+		{
+			name: "tig exe",
+			process: ProcessInfo{
+				Name: "tig.exe",
+				Exe:  `C:\msys64\usr\bin\tig.exe`,
+			},
+			id: "tig",
+		},
+		{
+			name: "tmux",
+			process: ProcessInfo{
+				Name: "tmux",
+				Exe:  "/usr/bin/tmux",
+			},
+			id: "tmux",
 		},
 	}
 
