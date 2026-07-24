@@ -189,6 +189,17 @@ func TestEpisodeStatePathWindowsMigration(t *testing.T) {
 		if _, err := os.Stat(native); err != nil {
 			t.Fatalf("migrated episode state missing: %v", err)
 		}
+		nativeData, err := os.ReadFile(native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyData, err := os.ReadFile(legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(nativeData) != string(legacyData) {
+			t.Fatalf("migrated episode state = %q, want full legacy contents %q", nativeData, legacyData)
+		}
 	})
 
 	t.Run("neither present uses native empty store", func(t *testing.T) {

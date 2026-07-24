@@ -160,6 +160,26 @@ func TestValidatePipePeerWithLookupsSkipsServerImageNameWithOverride(t *testing.
 	}
 }
 
+func TestDiscordIPCPathOverrideSetRequiresAbsolutePath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "unset", path: "", want: false},
+		{name: "relative", path: `discord-ipc-0`, want: false},
+		{name: "absolute named pipe", path: `\\.\pipe\discord-ipc-0`, want: true},
+		{name: "absolute drive path", path: `C:\Users\test\discord-ipc-0`, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := discordIPCPathOverrideSet(tt.path); got != tt.want {
+				t.Fatalf("discordIPCPathOverrideSet(%q) = %t, want %t", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDialDiscordIPCRejectsReplacedPipeAndTriesNext(t *testing.T) {
 	owner := mustSID(t, "S-1-5-21-1-2-3-1001")
 	attacker := mustSID(t, "S-1-5-21-1-2-3-1002")

@@ -108,7 +108,24 @@ func copyEpisodeFileBestEffort(from, to string) error {
 			return err
 		}
 	}
-	return os.WriteFile(to, data, 0o644)
+	tmp, err := os.CreateTemp(dir, filepath.Base(to)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, to)
 }
 
 func EpisodeKey(toolID string, pid int32, createTime time.Time) string {

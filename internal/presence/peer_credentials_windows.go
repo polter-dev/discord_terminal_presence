@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/windows"
 )
@@ -20,8 +21,12 @@ func validatePipePeer(conn net.Conn) error {
 		currentProcessUserSID,
 		namedPipeServerUserSID,
 		namedPipeServerImageName,
-		os.Getenv("DISCORD_IPC_PATH") != "",
+		discordIPCPathOverrideSet(os.Getenv("DISCORD_IPC_PATH")),
 	)
+}
+
+func discordIPCPathOverrideSet(path string) bool {
+	return filepath.IsAbs(path)
 }
 
 func validatePipePeerWithLookups(
