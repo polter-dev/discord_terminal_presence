@@ -7,6 +7,8 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"os"
+	"os/user"
 	"strings"
 	"unicode/utf16"
 )
@@ -16,12 +18,30 @@ type windowsService struct {
 }
 
 func (s windowsService) Install(exe string) (State, error) {
+	username := ""
+	if current, err := user.Current(); err == nil && current != nil {
+		username = strings.TrimSpace(current.Username)
+	}
+	if username == "" {
+		envUsername := strings.TrimSpace(os.Getenv("USERNAME"))
+		if domain := strings.TrimSpace(os.Getenv("USERDOMAIN")); domain != "" && envUsername != "" {
+			username = domain + `\` + envUsername
+		} else {
+			username = envUsername
+		}
+	}
+	if username == "" {
+		return State{Supported: true, Path: TaskName}, fmt.Errorf("cannot resolve current user for scheduled task")
+	}
+
 	if out, err := s.runner.Run(
 		"schtasks",
 		"/Create",
 		"/TN", TaskName,
 		"/TR", `"`+exe+`" start`,
 		"/SC", "ONLOGON",
+		"/RU", username,
+		"/IT",
 		"/RL", "LIMITED",
 		"/F",
 	); err != nil {

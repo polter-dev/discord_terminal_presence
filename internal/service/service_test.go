@@ -805,6 +805,8 @@ func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) 
 		"/TN " + TaskName,
 		`/TR "C:\Program Files\termp\termp.exe" start`,
 		"/SC ONLOGON",
+		"/RU ",
+		"/IT",
 		"/RL LIMITED",
 		"/F",
 	} {
