@@ -44,19 +44,18 @@ func signalTermpProcess(pid int) error {
 	}
 	name, nameErr := windows.UTF16PtrFromString(shutdownEventName(pid))
 	if nameErr == nil {
-		event, err := windows.OpenEvent(windows.EVENT_MODIFY_STATE, false, name)
+		event, err := windowsOpenEvent(windows.EVENT_MODIFY_STATE, false, name)
 		if err == nil {
-			defer windows.CloseHandle(event)
-			if err := windows.SetEvent(event); err != nil {
-				return fmt.Errorf("signal shutdown event: %w", err)
+			defer windowsCloseHandle(event)
+			if err := windowsSetEvent(event); err == nil {
+				return nil
 			}
-			return nil
 		}
 	} else {
 		debugf("shutdown event name invalid: %v", nameErr)
 	}
 
-	handle, err := windows.OpenProcess(
+	handle, err := windowsOpenProcess(
 		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE,
 		false,
 		uint32(pid),
@@ -64,17 +63,26 @@ func signalTermpProcess(pid int) error {
 	if err != nil {
 		return fmt.Errorf("cannot open process: %w", err)
 	}
-	defer windows.CloseHandle(handle)
-	if err := validateWindowsProcessHandle(handle); err != nil {
+	defer windowsCloseHandle(handle)
+	if err := validateWindowsProcessHandleForSignal(handle); err != nil {
 		return err
 	}
 	// Validation and termination use the same kernel handle, so PID recycling
 	// cannot redirect termination to another process.
-	if err := windows.TerminateProcess(handle, 1); err != nil {
+	if err := windowsTerminateProcess(handle, 1); err != nil {
 		return fmt.Errorf("terminate process: %w", err)
 	}
 	return nil
 }
+
+var (
+	windowsOpenEvent                      = windows.OpenEvent
+	windowsSetEvent                       = windows.SetEvent
+	windowsOpenProcess                    = windows.OpenProcess
+	windowsCloseHandle                    = windows.CloseHandle
+	windowsTerminateProcess               = windows.TerminateProcess
+	validateWindowsProcessHandleForSignal = validateWindowsProcessHandle
+)
 
 func validateWindowsProcessHandle(handle windows.Handle) error {
 	var exitCode uint32

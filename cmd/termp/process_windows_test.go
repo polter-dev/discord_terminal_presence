@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"testing"
 	"unsafe"
@@ -49,6 +50,76 @@ func TestWindowsLiveAndStaleProcessLookup(t *testing.T) {
 	}
 	if processAlive(99999999) || processLooksLikeTermp(99999999) {
 		t.Fatal("stale PID was accepted")
+	}
+}
+
+func TestSignalTermpProcessFallsBackToTerminateWhenSetEventFails(t *testing.T) {
+	oldOpenEvent := windowsOpenEvent
+	oldSetEvent := windowsSetEvent
+	oldOpenProcess := windowsOpenProcess
+	oldCloseHandle := windowsCloseHandle
+	oldTerminateProcess := windowsTerminateProcess
+	oldValidate := validateWindowsProcessHandleForSignal
+	t.Cleanup(func() {
+		windowsOpenEvent = oldOpenEvent
+		windowsSetEvent = oldSetEvent
+		windowsOpenProcess = oldOpenProcess
+		windowsCloseHandle = oldCloseHandle
+		windowsTerminateProcess = oldTerminateProcess
+		validateWindowsProcessHandleForSignal = oldValidate
+	})
+
+	const (
+		eventHandle   windows.Handle = 101
+		processHandle windows.Handle = 202
+	)
+	setEventErr := errors.New("set event failed")
+	var openedProcess bool
+	var terminated bool
+	closed := make(map[windows.Handle]bool)
+
+	windowsOpenEvent = func(uint32, bool, *uint16) (windows.Handle, error) {
+		return eventHandle, nil
+	}
+	windowsSetEvent = func(handle windows.Handle) error {
+		if handle != eventHandle {
+			t.Fatalf("SetEvent handle = %v, want %v", handle, eventHandle)
+		}
+		return setEventErr
+	}
+	windowsOpenProcess = func(access uint32, inheritHandle bool, pid uint32) (windows.Handle, error) {
+		openedProcess = true
+		if pid != 1234 {
+			t.Fatalf("OpenProcess pid = %d, want 1234", pid)
+		}
+		return processHandle, nil
+	}
+	validateWindowsProcessHandleForSignal = func(handle windows.Handle) error {
+		if handle != processHandle {
+			t.Fatalf("validate handle = %v, want %v", handle, processHandle)
+		}
+		return nil
+	}
+	windowsTerminateProcess = func(handle windows.Handle, exitCode uint32) error {
+		if handle != processHandle {
+			t.Fatalf("TerminateProcess handle = %v, want %v", handle, processHandle)
+		}
+		terminated = true
+		return nil
+	}
+	windowsCloseHandle = func(handle windows.Handle) error {
+		closed[handle] = true
+		return nil
+	}
+
+	if err := signalTermpProcess(1234); err != nil {
+		t.Fatalf("signalTermpProcess returned error: %v", err)
+	}
+	if !openedProcess || !terminated {
+		t.Fatalf("fallback openedProcess=%t terminated=%t, want both true", openedProcess, terminated)
+	}
+	if !closed[eventHandle] || !closed[processHandle] {
+		t.Fatalf("closed handles = %#v, want event and process handles closed", closed)
 	}
 }
 

@@ -172,6 +172,13 @@ func TestDefaultPathWindowsMigration(t *testing.T) {
 		if _, err := os.Stat(native); err != nil {
 			t.Fatalf("migrated config missing: %v", err)
 		}
+		data, err := os.ReadFile(native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "enabled = false\n" {
+			t.Fatalf("migrated config = %q, want full legacy contents", data)
+		}
 	})
 
 	t.Run("neither present uses native default", func(t *testing.T) {
