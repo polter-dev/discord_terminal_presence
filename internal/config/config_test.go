@@ -411,33 +411,65 @@ future_key = true
 	}
 }
 
-func TestLoadValidAccentColor(t *testing.T) {
-	path := withConfigHome(t)
-	writeConfig(t, path, `
-[ui]
-accent_color = "#12AbEF"
-`)
+func TestLoadAccentColorValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		value      string
+		wantValue  string
+		wantErr    bool
+		wantErrHas string
+	}{
+		{name: "purple", value: "purple", wantValue: "purple"},
+		{name: "blue", value: "blue", wantValue: "blue"},
+		{name: "green", value: "green", wantValue: "green"},
+		{name: "orange", value: "orange", wantValue: "orange"},
+		{name: "pink", value: "pink", wantValue: "pink"},
+		{name: "red", value: "red", wantValue: "red"},
+		{name: "six digit hex", value: "#00d7af", wantValue: "#00d7af"},
+		{name: "three digit hex", value: "#0da", wantValue: "#0da"},
+		{name: "empty", value: "", wantValue: ""},
+		{name: "mixed case named", value: "GREEN", wantValue: "GREEN"},
+		{name: "cyan", value: "cyan", wantErr: true, wantErrHas: `invalid ui.accent_color "cyan"`},
+		{name: "malformed hex", value: "#12345", wantErr: true, wantErrHas: `invalid ui.accent_color "#12345"`},
+	}
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.UI.AccentColor != "#12AbEF" {
-		t.Fatalf("ui.accent_color = %q, want #12AbEF", cfg.UI.AccentColor)
-	}
-	if len(cfg.Warnings) != 0 {
-		t.Fatalf("warnings = %#v, want none", cfg.Warnings)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := withConfigHome(t)
+			writeConfig(t, path, fmt.Sprintf(`
+[ui]
+accent_color = %q
+`, tt.value))
+
+			cfg, err := Load()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected accent color validation error")
+				}
+				if !strings.Contains(err.Error(), tt.wantErrHas) {
+					t.Fatalf("error = %v, want to contain %q", err, tt.wantErrHas)
+				}
+				if !strings.Contains(err.Error(), "purple, blue, green, orange, pink, red") {
+					t.Fatalf("error = %v, want valid options", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.UI.AccentColor != tt.wantValue {
+				t.Fatalf("ui.accent_color = %q, want %q", cfg.UI.AccentColor, tt.wantValue)
+			}
+			if len(cfg.Warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none", cfg.Warnings)
+			}
+		})
 	}
 }
 
-func TestInvalidAccentColorWarnsAndUsesDefault(t *testing.T) {
+func TestLoadAccentColorOmittedUsesDefault(t *testing.T) {
 	path := withConfigHome(t)
-	writeConfig(t, path, `
-scan_interval = "7s"
-
-[ui]
-accent_color = "ultraviolet"
-`)
+	writeConfig(t, path, `scan_interval = "7s"`)
 
 	cfg, err := Load()
 	if err != nil {
@@ -446,11 +478,25 @@ accent_color = "ultraviolet"
 	if cfg.UI.AccentColor != DefaultAccentColor {
 		t.Fatalf("ui.accent_color = %q, want default %q", cfg.UI.AccentColor, DefaultAccentColor)
 	}
-	if cfg.ScanInterval != "7s" {
-		t.Fatalf("valid config was not retained: scan_interval = %q", cfg.ScanInterval)
+}
+
+func TestManagerReportsInvalidAccentColor(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `
+[ui]
+accent_color = "cyan"
+`)
+
+	manager := NewManagerPath(path)
+	cfg, err := manager.Current()
+	if err == nil {
+		t.Fatal("expected Current error for invalid accent color")
 	}
-	if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "ui.accent_color") {
-		t.Fatalf("warnings = %#v, want invalid accent warning", cfg.Warnings)
+	if !strings.Contains(err.Error(), `invalid ui.accent_color "cyan"`) {
+		t.Fatalf("error = %v, want invalid cyan accent color", err)
+	}
+	if cfg.UI.AccentColor != DefaultAccentColor {
+		t.Fatalf("current ui.accent_color = %q, want default %q", cfg.UI.AccentColor, DefaultAccentColor)
 	}
 }
 

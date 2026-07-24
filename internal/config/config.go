@@ -26,7 +26,7 @@ const (
 // DefaultAccentColor preserves the original adaptive purple TUI palette.
 const DefaultAccentColor = "purple"
 
-var hexColorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+var hexColorPattern = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
 
 // UI controls terminal interface appearance.
 type UI struct {
@@ -499,12 +499,10 @@ func (r ResolvedTool) DisplayDirectory(path string) (string, bool) {
 
 func validate(cfg *Config) error {
 	if !validAccentColor(cfg.UI.AccentColor) {
-		cfg.Warnings = append(cfg.Warnings, fmt.Sprintf(
-			"invalid config value: ui.accent_color %q; using %q",
+		return fmt.Errorf(
+			"invalid ui.accent_color %q: must be one of purple, blue, green, orange, pink, red, or a hex color like #00d7af",
 			cfg.UI.AccentColor,
-			DefaultAccentColor,
-		))
-		cfg.UI.AccentColor = DefaultAccentColor
+		)
 	}
 
 	cfg.Privacy.DirectoryAllowlist = expandPaths(cfg.Privacy.DirectoryAllowlist)
@@ -654,7 +652,7 @@ func saveButtons(buttons []registry.Button) []map[string]string {
 
 func validAccentColor(value string) bool {
 	switch strings.ToLower(value) {
-	case "purple", "blue", "green", "orange", "pink", "red":
+	case "", "purple", "blue", "green", "orange", "pink", "red":
 		return true
 	default:
 		return hexColorPattern.MatchString(value)
