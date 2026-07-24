@@ -135,6 +135,7 @@ func TestUnknownCommandNamesOffendingToken(t *testing.T) {
 }
 
 type fakeAutostartManager struct {
+	statusState    service.State
 	uninstallState service.State
 	disableState   service.State
 }
@@ -156,7 +157,7 @@ func (m fakeAutostartManager) Enable() (service.State, error) {
 }
 
 func (m fakeAutostartManager) Status() service.State {
-	return service.State{}
+	return m.statusState
 }
 
 func withFakeAutostartManager(t *testing.T, manager fakeAutostartManager) {
@@ -168,6 +169,7 @@ func withFakeAutostartManager(t *testing.T, manager fakeAutostartManager) {
 
 func TestAutostartUninstallNotInstalledMessage(t *testing.T) {
 	withFakeAutostartManager(t, fakeAutostartManager{
+		statusState:    service.State{Supported: true, Path: service.TaskName},
 		uninstallState: service.State{Supported: true, Path: service.TaskName},
 	})
 
@@ -184,7 +186,8 @@ func TestAutostartUninstallNotInstalledMessage(t *testing.T) {
 
 func TestAutostartUninstallRemovedMessage(t *testing.T) {
 	withFakeAutostartManager(t, fakeAutostartManager{
-		uninstallState: service.State{Supported: true, Installed: true, Path: service.TaskName},
+		statusState:    service.State{Supported: true, Installed: true, Path: service.TaskName},
+		uninstallState: service.State{Supported: true, Path: service.TaskName},
 	})
 
 	out, err := captureStdout(t, func() error {

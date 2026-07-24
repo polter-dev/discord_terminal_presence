@@ -151,7 +151,10 @@ func uninstall(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	state, err := newAutostartManager().Uninstall()
+	manager := newAutostartManager()
+	preState := manager.Status()
+	wasInstalled := preState.Installed
+	state, err := manager.Uninstall()
 	if errors.Is(err, service.ErrUnsupported) {
 		fmt.Println(state.Message)
 		return err
@@ -159,11 +162,15 @@ func uninstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !state.Installed {
+	if !wasInstalled {
 		fmt.Println("autostart not installed (nothing to remove)")
 		return nil
 	}
-	fmt.Printf("removed autostart: %s (binary was not removed)\n", state.Path)
+	path := state.Path
+	if path == "" {
+		path = preState.Path
+	}
+	fmt.Printf("removed autostart: %s (binary was not removed)\n", path)
 	return nil
 }
 
