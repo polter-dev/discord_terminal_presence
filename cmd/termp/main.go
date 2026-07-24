@@ -1080,8 +1080,8 @@ func runStatusProbes(ctx context.Context, probes statusProbeFuncs) statusProbeRe
 	go func() {
 		if probes.daemonRunning && probes.discordState != nil {
 			if state, ok := probes.discordState(now()); ok {
-				if probes.daemonPID <= 0 || state.PID == probes.daemonPID {
-					resultCh <- statusStageResult{stage: "discord", discord: formatDaemonDiscordStatus(state)}
+				if state.Connected && (probes.daemonPID <= 0 || state.PID == probes.daemonPID) {
+					resultCh <- statusStageResult{stage: "discord", discord: "connected"}
 					return
 				}
 			}
@@ -1225,13 +1225,6 @@ func readFreshDaemonDiscordState(path string, now time.Time, staleAfter time.Dur
 		return daemonDiscordState{}, false
 	}
 	return state, true
-}
-
-func formatDaemonDiscordStatus(state daemonDiscordState) string {
-	if state.Connected {
-		return "connected"
-	}
-	return "not connected (daemon is running; reconnecting)"
 }
 
 func formatDiscordStatus(err error) string {

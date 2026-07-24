@@ -615,52 +615,77 @@ func TestRunStatusProbesFastPathUnchanged(t *testing.T) {
 	}
 }
 
-func TestRunStatusProbesUsesFreshDaemonDiscordStateWithoutDirectProbe(t *testing.T) {
-	tests := []struct {
-		name      string
-		connected bool
-		want      string
-	}{
-		{name: "connected", connected: true, want: "connected"},
-		{name: "not connected", connected: false, want: "not connected (daemon is running; reconnecting)"},
+func TestRunStatusProbesUsesFreshConnectedDaemonDiscordStateWithoutDirectProbe(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	discordCalls := 0
+
+	got := runStatusProbes(ctx, statusProbeFuncs{
+		daemonRunning: true,
+		daemonPID:     1234,
+		now:           func() time.Time { return now },
+		discordState: func(time.Time) (daemonDiscordState, bool) {
+			return daemonDiscordState{
+				Connected: true,
+				UpdatedAt: now,
+				PID:       1234,
+			}, true
+		},
+		discord: func(context.Context) error {
+			discordCalls++
+			return presence.ErrDiscordIPCHandshakeTimeout
+		},
+		service: func(context.Context) service.State {
+			return service.State{Supported: true, Loaded: "active", Enabled: "enabled"}
+		},
+		tool: func(context.Context) (detector.Detection, error) {
+			return detector.Detection{None: true}, nil
+		},
+	})
+
+	if discordCalls != 0 {
+		t.Fatalf("direct Discord probe calls = %d, want 0", discordCalls)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
-			discordCalls := 0
+	if got.discord != "connected" {
+		t.Fatalf("discord status = %q, want connected", got.discord)
+	}
+}
 
-			got := runStatusProbes(ctx, statusProbeFuncs{
-				daemonRunning: true,
-				daemonPID:     1234,
-				now:           func() time.Time { return now },
-				discordState: func(time.Time) (daemonDiscordState, bool) {
-					return daemonDiscordState{
-						Connected: tt.connected,
-						UpdatedAt: now,
-						PID:       1234,
-					}, true
-				},
-				discord: func(context.Context) error {
-					discordCalls++
-					return presence.ErrDiscordIPCHandshakeTimeout
-				},
-				service: func(context.Context) service.State {
-					return service.State{Supported: true, Loaded: "active", Enabled: "enabled"}
-				},
-				tool: func(context.Context) (detector.Detection, error) {
-					return detector.Detection{None: true}, nil
-				},
-			})
+func TestRunStatusProbesFallsBackWhenFreshDaemonDiscordStateIsDisconnected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	discordCalls := 0
 
-			if discordCalls != 0 {
-				t.Fatalf("direct Discord probe calls = %d, want 0", discordCalls)
-			}
-			if got.discord != tt.want {
-				t.Fatalf("discord status = %q, want %q", got.discord, tt.want)
-			}
-		})
+	got := runStatusProbes(ctx, statusProbeFuncs{
+		daemonRunning: true,
+		daemonPID:     1234,
+		now:           func() time.Time { return now },
+		discordState: func(time.Time) (daemonDiscordState, bool) {
+			return daemonDiscordState{
+				Connected: false,
+				UpdatedAt: now,
+				PID:       1234,
+			}, true
+		},
+		discord: func(context.Context) error {
+			discordCalls++
+			return nil
+		},
+		service: func(context.Context) service.State {
+			return service.State{Supported: true, Loaded: "active", Enabled: "enabled"}
+		},
+		tool: func(context.Context) (detector.Detection, error) {
+			return detector.Detection{None: true}, nil
+		},
+	})
+
+	if discordCalls != 1 {
+		t.Fatalf("direct Discord probe calls = %d, want 1", discordCalls)
+	}
+	if got.discord != "connected" {
+		t.Fatalf("discord status = %q, want direct connected result", got.discord)
 	}
 }
 
