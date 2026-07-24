@@ -129,12 +129,24 @@ func TestWriterConnectionStateHookTracksTransitions(t *testing.T) {
 
 func assertConnectionStates(t *testing.T, mu *sync.Mutex, got *[]bool, want []bool) {
 	t.Helper()
-	mu.Lock()
-	defer mu.Unlock()
-	copied := make([]bool, len(*got))
-	copy(copied, *got)
-	if !reflect.DeepEqual(copied, want) {
-		t.Fatalf("connection states = %#v, want %#v", copied, want)
+	deadline := time.Now().Add(2 * time.Second)
+	var copied []bool
+	for {
+		mu.Lock()
+		copied = make([]bool, len(*got))
+		copy(copied, *got)
+		mu.Unlock()
+
+		if len(copied) >= len(want) {
+			if !reflect.DeepEqual(copied, want) {
+				t.Fatalf("connection states = %#v, want %#v", copied, want)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for connection states = %#v, want %#v", copied, want)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
