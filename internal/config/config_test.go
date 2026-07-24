@@ -22,6 +22,7 @@ func withConfigHome(t *testing.T) string {
 	home = canonicalTestPath(t, home)
 	configHome := filepath.Join(canonicalTestPath(t, root), "xdg")
 	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("APPDATA", configHome)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	return filepath.Join(configHome, appConfigDir, defaultConfigFile)
@@ -48,6 +49,174 @@ func writeConfig(t *testing.T, path, content string) {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func TestDefaultPathForOSBranches(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	configHome := filepath.Join(root, "xdg-config")
+	appData := filepath.Join(root, "AppData", "Roaming")
+	resolver := func(goos string) pathResolver {
+		return pathResolver{
+			goos: goos,
+			getenv: func(key string) string {
+				if key == "XDG_CONFIG_HOME" {
+					return configHome
+				}
+				return ""
+			},
+			userHomeDir:   func() (string, error) { return home, nil },
+			userConfigDir: func() (string, error) { return appData, nil },
+			stat:          os.Stat,
+			copyFile:      copyFileBestEffort,
+		}
+	}
+
+	tests := []struct {
+		name string
+		goos string
+		want string
+	}{
+		{
+			name: "windows uses app data",
+			goos: "windows",
+			want: filepath.Join(appData, appConfigDir, defaultConfigFile),
+		},
+		{
+			name: "linux honors xdg",
+			goos: "linux",
+			want: filepath.Join(configHome, appConfigDir, defaultConfigFile),
+		},
+		{
+			name: "darwin honors xdg",
+			goos: "darwin",
+			want: filepath.Join(configHome, appConfigDir, defaultConfigFile),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := defaultPathFor(resolver(tt.goos)); got != tt.want {
+				t.Fatalf("defaultPathFor(%q) = %q, want %q", tt.goos, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultPathForUnixHomeFallbackUnchanged(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	resolver := pathResolver{
+		goos:          "linux",
+		getenv:        func(string) string { return "" },
+		userHomeDir:   func() (string, error) { return home, nil },
+		userConfigDir: func() (string, error) { return t.TempDir(), nil },
+		stat:          os.Stat,
+		copyFile:      copyFileBestEffort,
+	}
+
+	got := defaultPathFor(resolver)
+	want := filepath.Join(home, defaultConfigDir, appConfigDir, defaultConfigFile)
+	if got != want {
+		t.Fatalf("defaultPathFor(linux) = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultPathWindowsMigration(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	appData := filepath.Join(root, "AppData", "Roaming")
+	native := filepath.Join(appData, appConfigDir, defaultConfigFile)
+	legacy := filepath.Join(home, defaultConfigDir, appConfigDir, defaultConfigFile)
+	base := pathResolver{
+		goos:          "windows",
+		getenv:        func(string) string { return "" },
+		userHomeDir:   func() (string, error) { return home, nil },
+		userConfigDir: func() (string, error) { return appData, nil },
+		stat:          os.Stat,
+		copyFile:      copyFileBestEffort,
+	}
+
+	t.Run("new path present ignores legacy", func(t *testing.T) {
+		writeConfig(t, native, "enabled = true\n")
+		writeConfig(t, legacy, "enabled = false\n")
+
+		path := defaultPathFor(base)
+		cfg, err := LoadPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path != native || !cfg.Enabled {
+			t.Fatalf("path = %q enabled = %t, want native enabled", path, cfg.Enabled)
+		}
+	})
+
+	t.Run("legacy only is read and copied", func(t *testing.T) {
+		root := t.TempDir()
+		home := filepath.Join(root, "home")
+		appData := filepath.Join(root, "AppData", "Roaming")
+		native := filepath.Join(appData, appConfigDir, defaultConfigFile)
+		legacy := filepath.Join(home, defaultConfigDir, appConfigDir, defaultConfigFile)
+		writeConfig(t, legacy, "enabled = false\n")
+		resolver := base
+		resolver.userHomeDir = func() (string, error) { return home, nil }
+		resolver.userConfigDir = func() (string, error) { return appData, nil }
+
+		path := defaultPathFor(resolver)
+		cfg, err := LoadPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path != native || cfg.Enabled {
+			t.Fatalf("path = %q enabled = %t, want migrated native disabled config", path, cfg.Enabled)
+		}
+		if _, err := os.Stat(native); err != nil {
+			t.Fatalf("migrated config missing: %v", err)
+		}
+	})
+
+	t.Run("neither present uses native default", func(t *testing.T) {
+		root := t.TempDir()
+		home := filepath.Join(root, "home")
+		appData := filepath.Join(root, "AppData", "Roaming")
+		native := filepath.Join(appData, appConfigDir, defaultConfigFile)
+		resolver := base
+		resolver.userHomeDir = func() (string, error) { return home, nil }
+		resolver.userConfigDir = func() (string, error) { return appData, nil }
+
+		path := defaultPathFor(resolver)
+		cfg, err := LoadPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path != native || !cfg.Enabled {
+			t.Fatalf("path = %q enabled = %t, want native default config", path, cfg.Enabled)
+		}
+	})
+
+	t.Run("copy failure still reads legacy", func(t *testing.T) {
+		root := t.TempDir()
+		home := filepath.Join(root, "home")
+		appData := filepath.Join(root, "AppData", "Roaming")
+		native := filepath.Join(appData, appConfigDir, defaultConfigFile)
+		legacy := filepath.Join(home, defaultConfigDir, appConfigDir, defaultConfigFile)
+		writeConfig(t, legacy, "enabled = false\n")
+		resolver := base
+		resolver.userHomeDir = func() (string, error) { return home, nil }
+		resolver.userConfigDir = func() (string, error) { return appData, nil }
+		resolver.copyFile = func(string, string) error { return fmt.Errorf("copy failed") }
+
+		path := defaultPathFor(resolver)
+		cfg, err := LoadPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path != legacy || cfg.Enabled {
+			t.Fatalf("path = %q enabled = %t, want legacy disabled config", path, cfg.Enabled)
+		}
+		if _, err := os.Stat(native); !os.IsNotExist(err) {
+			t.Fatalf("native config err = %v, want not exist", err)
+		}
+	})
 }
 
 func TestLoadMissingFileUsesDefaults(t *testing.T) {

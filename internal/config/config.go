@@ -93,6 +93,15 @@ type Config struct {
 	Warnings             []string                `toml:"-"`
 }
 
+type pathResolver struct {
+	goos          string
+	getenv        func(string) string
+	userHomeDir   func() (string, error)
+	userConfigDir func() (string, error)
+	stat          func(string) (os.FileInfo, error)
+	copyFile      func(string, string) error
+}
+
 type fileConfig struct {
 	Enabled              bool                    `toml:"enabled"`
 	StartAtLogin         bool                    `toml:"start_at_login"`
@@ -183,14 +192,70 @@ func Default() Config {
 
 // DefaultPath returns the XDG-aware config path.
 func DefaultPath() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+	return defaultPathFor(pathResolver{
+		goos:          runtime.GOOS,
+		getenv:        os.Getenv,
+		userHomeDir:   os.UserHomeDir,
+		userConfigDir: os.UserConfigDir,
+		stat:          os.Stat,
+		copyFile:      copyFileBestEffort,
+	})
+}
+
+func defaultPathFor(resolver pathResolver) string {
+	if resolver.goos == "windows" {
+		return defaultWindowsPathFor(resolver)
+	}
+	if xdg := resolver.getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, appConfigDir, defaultConfigFile)
 	}
-	home, err := os.UserHomeDir()
+	home, err := resolver.userHomeDir()
 	if err != nil || home == "" {
 		return filepath.Join(appConfigDir, defaultConfigFile)
 	}
 	return filepath.Join(home, defaultConfigDir, appConfigDir, defaultConfigFile)
+}
+
+func defaultWindowsPathFor(resolver pathResolver) string {
+	native := filepath.Join(appConfigDir, defaultConfigFile)
+	if configDir, err := resolver.userConfigDir(); err == nil && configDir != "" {
+		native = filepath.Join(configDir, appConfigDir, defaultConfigFile)
+	}
+	home, err := resolver.userHomeDir()
+	if err != nil || home == "" {
+		return native
+	}
+	legacy := filepath.Join(home, defaultConfigDir, appConfigDir, defaultConfigFile)
+	return migrateLegacyPath(native, legacy, resolver)
+}
+
+func migrateLegacyPath(native, legacy string, resolver pathResolver) string {
+	// Prefer the native Windows path, but copy an existing legacy file forward
+	// before using it; if migration fails, keep reading the legacy file.
+	if _, err := resolver.stat(native); err == nil {
+		return native
+	}
+	if _, err := resolver.stat(legacy); err != nil {
+		return native
+	}
+	if err := resolver.copyFile(legacy, native); err != nil {
+		return legacy
+	}
+	return native
+}
+
+func copyFileBestEffort(from, to string) error {
+	data, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(to)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(to, data, 0o644)
 }
 
 // AnnotatedSample returns a fully-commented config file containing every default key.

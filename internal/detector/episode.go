@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -14,6 +15,15 @@ const (
 	episodeStateFile       = "presence.json"
 	episodeAtimeSavePeriod = time.Minute
 )
+
+type episodePathResolver struct {
+	goos         string
+	getenv       func(string) string
+	userHomeDir  func() (string, error)
+	userCacheDir func() (string, error)
+	stat         func(string) (os.FileInfo, error)
+	copyFile     func(string, string) error
+}
 
 // Episode records one continuous process-presence interval.
 type Episode struct {
@@ -35,14 +45,70 @@ type diskEpisodes struct {
 }
 
 func EpisodeStatePath() string {
-	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+	return episodeStatePathFor(episodePathResolver{
+		goos:         runtime.GOOS,
+		getenv:       os.Getenv,
+		userHomeDir:  os.UserHomeDir,
+		userCacheDir: os.UserCacheDir,
+		stat:         os.Stat,
+		copyFile:     copyEpisodeFileBestEffort,
+	})
+}
+
+func episodeStatePathFor(resolver episodePathResolver) string {
+	if resolver.goos == "windows" {
+		return episodeWindowsStatePathFor(resolver)
+	}
+	if xdg := resolver.getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "termp", episodeStateFile)
 	}
-	home, err := os.UserHomeDir()
+	home, err := resolver.userHomeDir()
 	if err != nil || home == "" {
 		return filepath.Join("termp", episodeStateFile)
 	}
 	return filepath.Join(home, ".local", "state", "termp", episodeStateFile)
+}
+
+func episodeWindowsStatePathFor(resolver episodePathResolver) string {
+	native := filepath.Join("termp", episodeStateFile)
+	if cacheDir, err := resolver.userCacheDir(); err == nil && cacheDir != "" {
+		native = filepath.Join(cacheDir, "termp", episodeStateFile)
+	}
+	home, err := resolver.userHomeDir()
+	if err != nil || home == "" {
+		return native
+	}
+	legacy := filepath.Join(home, ".local", "state", "termp", episodeStateFile)
+	return migrateEpisodePath(native, legacy, resolver)
+}
+
+func migrateEpisodePath(native, legacy string, resolver episodePathResolver) string {
+	// Prefer the native Windows path, but copy an existing legacy file forward
+	// before using it; if migration fails, keep reading the legacy file.
+	if _, err := resolver.stat(native); err == nil {
+		return native
+	}
+	if _, err := resolver.stat(legacy); err != nil {
+		return native
+	}
+	if err := resolver.copyFile(legacy, native); err != nil {
+		return legacy
+	}
+	return native
+}
+
+func copyEpisodeFileBestEffort(from, to string) error {
+	data, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(to)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(to, data, 0o644)
 }
 
 func EpisodeKey(toolID string, pid int32, createTime time.Time) string {

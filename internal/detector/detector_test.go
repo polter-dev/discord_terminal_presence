@@ -56,6 +56,177 @@ func newControlledLister() *controlledLister {
 	}
 }
 
+func TestEpisodeStatePathForOSBranches(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	stateHome := filepath.Join(root, "xdg-state")
+	localAppData := filepath.Join(root, "AppData", "Local")
+	resolver := func(goos string) episodePathResolver {
+		return episodePathResolver{
+			goos: goos,
+			getenv: func(key string) string {
+				if key == "XDG_STATE_HOME" {
+					return stateHome
+				}
+				return ""
+			},
+			userHomeDir:  func() (string, error) { return home, nil },
+			userCacheDir: func() (string, error) { return localAppData, nil },
+			stat:         os.Stat,
+			copyFile:     copyEpisodeFileBestEffort,
+		}
+	}
+
+	tests := []struct {
+		name string
+		goos string
+		want string
+	}{
+		{
+			name: "windows uses local app data",
+			goos: "windows",
+			want: filepath.Join(localAppData, "termp", episodeStateFile),
+		},
+		{
+			name: "linux honors xdg",
+			goos: "linux",
+			want: filepath.Join(stateHome, "termp", episodeStateFile),
+		},
+		{
+			name: "darwin honors xdg",
+			goos: "darwin",
+			want: filepath.Join(stateHome, "termp", episodeStateFile),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := episodeStatePathFor(resolver(tt.goos)); got != tt.want {
+				t.Fatalf("episodeStatePathFor(%q) = %q, want %q", tt.goos, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEpisodeStatePathForUnixHomeFallbackUnchanged(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	resolver := episodePathResolver{
+		goos:         "linux",
+		getenv:       func(string) string { return "" },
+		userHomeDir:  func() (string, error) { return home, nil },
+		userCacheDir: func() (string, error) { return t.TempDir(), nil },
+		stat:         os.Stat,
+		copyFile:     copyEpisodeFileBestEffort,
+	}
+
+	got := episodeStatePathFor(resolver)
+	want := filepath.Join(home, ".local", "state", "termp", episodeStateFile)
+	if got != want {
+		t.Fatalf("episodeStatePathFor(linux) = %q, want %q", got, want)
+	}
+}
+
+func TestEpisodeStatePathWindowsMigration(t *testing.T) {
+	makeResolver := func(root string, copyFile func(string, string) error) (episodePathResolver, string, string) {
+		home := filepath.Join(root, "home")
+		localAppData := filepath.Join(root, "AppData", "Local")
+		native := filepath.Join(localAppData, "termp", episodeStateFile)
+		legacy := filepath.Join(home, ".local", "state", "termp", episodeStateFile)
+		return episodePathResolver{
+			goos:         "windows",
+			getenv:       func(string) string { return "" },
+			userHomeDir:  func() (string, error) { return home, nil },
+			userCacheDir: func() (string, error) { return localAppData, nil },
+			stat:         os.Stat,
+			copyFile:     copyFile,
+		}, native, legacy
+	}
+	writeStore := func(t *testing.T, path, key string) {
+		t.Helper()
+		store := NewEpisodeStore()
+		store.Episodes[key] = Episode{PresentSince: time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)}
+		if err := SaveEpisodeStore(path, store); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("new path present ignores legacy", func(t *testing.T) {
+		resolver, native, legacy := makeResolver(t.TempDir(), copyEpisodeFileBestEffort)
+		writeStore(t, native, "native")
+		writeStore(t, legacy, "legacy")
+
+		path := episodeStatePathFor(resolver)
+		store, err := LoadEpisodeStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path != native {
+			t.Fatalf("path = %q, want %q", path, native)
+		}
+		if _, ok := store.Episodes["native"]; !ok {
+			t.Fatalf("native episode missing: %#v", store.Episodes)
+		}
+		if _, ok := store.Episodes["legacy"]; ok {
+			t.Fatalf("legacy episode was read despite native file: %#v", store.Episodes)
+		}
+	})
+
+	t.Run("legacy only is read and copied", func(t *testing.T) {
+		resolver, native, legacy := makeResolver(t.TempDir(), copyEpisodeFileBestEffort)
+		writeStore(t, legacy, "legacy")
+
+		path := episodeStatePathFor(resolver)
+		store, err := LoadEpisodeStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path != native {
+			t.Fatalf("path = %q, want %q", path, native)
+		}
+		if _, ok := store.Episodes["legacy"]; !ok {
+			t.Fatalf("legacy episode missing after migration: %#v", store.Episodes)
+		}
+		if _, err := os.Stat(native); err != nil {
+			t.Fatalf("migrated episode state missing: %v", err)
+		}
+	})
+
+	t.Run("neither present uses native empty store", func(t *testing.T) {
+		resolver, native, _ := makeResolver(t.TempDir(), copyEpisodeFileBestEffort)
+
+		path := episodeStatePathFor(resolver)
+		store, err := LoadEpisodeStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path != native || len(store.Episodes) != 0 {
+			t.Fatalf("path = %q episodes = %#v, want native empty store", path, store.Episodes)
+		}
+	})
+
+	t.Run("copy failure still reads legacy", func(t *testing.T) {
+		resolver, native, legacy := makeResolver(t.TempDir(), func(string, string) error {
+			return errors.New("copy failed")
+		})
+		writeStore(t, legacy, "legacy")
+
+		path := episodeStatePathFor(resolver)
+		store, err := LoadEpisodeStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path != legacy {
+			t.Fatalf("path = %q, want %q", path, legacy)
+		}
+		if _, ok := store.Episodes["legacy"]; !ok {
+			t.Fatalf("legacy episode missing after failed migration: %#v", store.Episodes)
+		}
+		if _, err := os.Stat(native); !os.IsNotExist(err) {
+			t.Fatalf("native episode state err = %v, want not exist", err)
+		}
+	})
+}
+
 func (f *controlledLister) List() ([]Process, error) {
 	f.calls <- struct{}{}
 	result := <-f.results
