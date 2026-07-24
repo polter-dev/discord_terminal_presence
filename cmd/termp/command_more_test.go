@@ -13,6 +13,7 @@ import (
 
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
+	"github.com/polter-dev/discord_terminal_presence/internal/service"
 	usagepkg "github.com/polter-dev/discord_terminal_presence/internal/usage"
 )
 
@@ -100,6 +101,123 @@ func TestRootHelpRequested(t *testing.T) {
 		if got := rootHelpRequested(tt.args); got != tt.want {
 			t.Errorf("rootHelpRequested(%q) = %t, want %t", tt.args, got, tt.want)
 		}
+	}
+}
+
+func TestHelpCommandDispatchReturnsSuccess(t *testing.T) {
+	out, err := captureStdout(t, func() error {
+		return dispatchCommand("help", nil)
+	})
+	if err != nil {
+		t.Fatalf("dispatchCommand(help) = %v, want success", err)
+	}
+	if !strings.Contains(out, "Terminal Presence (termp)") {
+		t.Fatalf("help output missing usage:\n%s", out)
+	}
+}
+
+func TestUnknownCommandNamesOffendingToken(t *testing.T) {
+	err := dispatchCommand("boguscmd", nil)
+	if !errors.Is(err, errUnknownCommand) {
+		t.Fatalf("dispatchCommand(boguscmd) = %v, want unknown-command error", err)
+	}
+	var stderr bytes.Buffer
+	if !printDispatchUsageError(err, &stderr) {
+		t.Fatal("printDispatchUsageError() = false, want true")
+	}
+	out := stderr.String()
+	if !strings.Contains(out, `unknown command "boguscmd"`) {
+		t.Fatalf("unknown-command output missing token:\n%s", out)
+	}
+	if !strings.Contains(out, "Usage:") {
+		t.Fatalf("unknown-command output missing usage:\n%s", out)
+	}
+}
+
+type fakeAutostartManager struct {
+	uninstallState service.State
+	disableState   service.State
+}
+
+func (m fakeAutostartManager) Install(string) (service.State, error) {
+	return service.State{}, nil
+}
+
+func (m fakeAutostartManager) Uninstall() (service.State, error) {
+	return m.uninstallState, nil
+}
+
+func (m fakeAutostartManager) Disable() (service.State, error) {
+	return m.disableState, nil
+}
+
+func (m fakeAutostartManager) Enable() (service.State, error) {
+	return service.State{}, nil
+}
+
+func (m fakeAutostartManager) Status() service.State {
+	return service.State{}
+}
+
+func withFakeAutostartManager(t *testing.T, manager fakeAutostartManager) {
+	t.Helper()
+	old := newAutostartManager
+	newAutostartManager = func() autostartManager { return manager }
+	t.Cleanup(func() { newAutostartManager = old })
+}
+
+func TestAutostartUninstallNotInstalledMessage(t *testing.T) {
+	withFakeAutostartManager(t, fakeAutostartManager{
+		uninstallState: service.State{Supported: true, Path: service.TaskName},
+	})
+
+	out, err := captureStdout(t, func() error {
+		return uninstall(nil)
+	})
+	if err != nil {
+		t.Fatalf("uninstall() = %v, want success", err)
+	}
+	if got, want := strings.TrimSpace(out), "autostart not installed (nothing to remove)"; got != want {
+		t.Fatalf("uninstall output = %q, want %q", got, want)
+	}
+}
+
+func TestAutostartUninstallRemovedMessage(t *testing.T) {
+	withFakeAutostartManager(t, fakeAutostartManager{
+		uninstallState: service.State{Supported: true, Installed: true, Path: service.TaskName},
+	})
+
+	out, err := captureStdout(t, func() error {
+		return uninstall(nil)
+	})
+	if err != nil {
+		t.Fatalf("uninstall() = %v, want success", err)
+	}
+	if got, want := strings.TrimSpace(out), `removed autostart: \Terminal Presence\termp (binary was not removed)`; got != want {
+		t.Fatalf("uninstall output = %q, want %q", got, want)
+	}
+}
+
+func TestAutostartDisableNotInstalledMessage(t *testing.T) {
+	withFakeAutostartManager(t, fakeAutostartManager{
+		disableState: service.State{Supported: true, Path: service.TaskName},
+	})
+
+	out, err := captureStdout(t, func() error {
+		return disable(nil)
+	})
+	if err != nil {
+		t.Fatalf("disable() = %v, want success", err)
+	}
+	got := strings.TrimSpace(out)
+	if !strings.Contains(got, "autostart not installed (nothing to disable)") {
+		t.Fatalf("disable output missing not-installed message: %q", got)
+	}
+	if strings.Contains(got, "termp stop") {
+		t.Fatalf("disable output points at stop: %q", got)
+	}
+	if !strings.Contains(got, "termp autostart install") {
+		t.Fatalf("disable output missing install hint: %q", got)
 	}
 }
 
