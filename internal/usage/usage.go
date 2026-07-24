@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -33,16 +34,81 @@ type diskStore struct {
 	Tools map[string]Entry `json:"tools"`
 }
 
+type statePathResolver struct {
+	goos         string
+	getenv       func(string) string
+	userHomeDir  func() (string, error)
+	userCacheDir func() (string, error)
+	stat         func(string) (os.FileInfo, error)
+	copyFile     func(string, string) error
+}
+
 // StatePath returns the XDG-aware usage state path.
 func StatePath() string {
-	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+	return statePathFor(statePathResolver{
+		goos:         runtime.GOOS,
+		getenv:       os.Getenv,
+		userHomeDir:  os.UserHomeDir,
+		userCacheDir: os.UserCacheDir,
+		stat:         os.Stat,
+		copyFile:     copyStateFileBestEffort,
+	})
+}
+
+func statePathFor(resolver statePathResolver) string {
+	if resolver.goos == "windows" {
+		return windowsStatePathFor(resolver)
+	}
+	if xdg := resolver.getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, appStateDir, defaultStateFile)
 	}
-	home, err := os.UserHomeDir()
+	home, err := resolver.userHomeDir()
 	if err != nil || home == "" {
 		return filepath.Join(appStateDir, defaultStateFile)
 	}
 	return filepath.Join(home, defaultStateDir, appStateDir, defaultStateFile)
+}
+
+func windowsStatePathFor(resolver statePathResolver) string {
+	native := filepath.Join(appStateDir, defaultStateFile)
+	if cacheDir, err := resolver.userCacheDir(); err == nil && cacheDir != "" {
+		native = filepath.Join(cacheDir, appStateDir, defaultStateFile)
+	}
+	home, err := resolver.userHomeDir()
+	if err != nil || home == "" {
+		return native
+	}
+	legacy := filepath.Join(home, defaultStateDir, appStateDir, defaultStateFile)
+	return migrateStatePath(native, legacy, resolver)
+}
+
+func migrateStatePath(native, legacy string, resolver statePathResolver) string {
+	// Prefer the native Windows path, but copy an existing legacy file forward
+	// before using it; if migration fails, keep reading the legacy file.
+	if _, err := resolver.stat(native); err == nil {
+		return native
+	}
+	if _, err := resolver.stat(legacy); err != nil {
+		return native
+	}
+	if err := resolver.copyFile(legacy, native); err != nil {
+		return legacy
+	}
+	return native
+}
+
+func copyStateFileBestEffort(from, to string) error {
+	data, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(to)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(to, data, 0o644)
 }
 
 // New returns an empty usage store.
