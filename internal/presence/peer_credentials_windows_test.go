@@ -64,11 +64,99 @@ func TestValidatePipePeerInspectionFailureFailsClosed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validatePipePeerWithLookups(conn, tt.currentUser, tt.serverUser)
+			err := validatePipePeerWithLookups(
+				conn,
+				tt.currentUser,
+				tt.serverUser,
+				func(net.Conn) (string, error) { return "Discord.exe", nil },
+				false,
+			)
 			if !errors.Is(err, inspectionErr) {
 				t.Fatalf("error = %v, want wrapped inspection error", err)
 			}
 		})
+	}
+}
+
+func TestValidatePipePeerWithLookupsVerifiesServerImageName(t *testing.T) {
+	inspectionErr := errors.New("process exited")
+	owner := mustSID(t, "S-1-5-21-1-2-3-1001")
+	attacker := mustSID(t, "S-1-5-21-1-2-3-1002")
+	conn := &fakeWindowsConn{}
+
+	tests := []struct {
+		name            string
+		serverSID       *windows.SID
+		serverImageName func(net.Conn) (string, error)
+		wantErr         bool
+	}{
+		{
+			name:      "sid match discord name",
+			serverSID: owner,
+			serverImageName: func(net.Conn) (string, error) {
+				return "Discord.exe", nil
+			},
+		},
+		{
+			name:      "sid match non discord name",
+			serverSID: owner,
+			serverImageName: func(net.Conn) (string, error) {
+				return "evil.exe", nil
+			},
+			wantErr: true,
+		},
+		{
+			name:      "sid match image lookup error",
+			serverSID: owner,
+			serverImageName: func(net.Conn) (string, error) {
+				return "", inspectionErr
+			},
+		},
+		{
+			name:      "sid mismatch rejected before image name",
+			serverSID: attacker,
+			serverImageName: func(net.Conn) (string, error) {
+				return "Discord.exe", nil
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePipePeerWithLookups(
+				conn,
+				func() (*windows.SID, error) { return owner, nil },
+				func(net.Conn) (*windows.SID, error) { return tt.serverSID, nil },
+				tt.serverImageName,
+				false,
+			)
+			if tt.wantErr && err == nil {
+				t.Fatal("validatePipePeerWithLookups returned nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validatePipePeerWithLookups returned error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidatePipePeerWithLookupsSkipsServerImageNameWithOverride(t *testing.T) {
+	owner := mustSID(t, "S-1-5-21-1-2-3-1001")
+	conn := &fakeWindowsConn{}
+
+	err := validatePipePeerWithLookups(
+		conn,
+		func() (*windows.SID, error) { return owner, nil },
+		func(net.Conn) (*windows.SID, error) { return owner, nil },
+		func(net.Conn) (string, error) {
+			t.Fatal("server image name lookup should be skipped when DISCORD_IPC_PATH is set")
+			return "", nil
+		},
+		true,
+	)
+	if err != nil {
+		t.Fatalf("validatePipePeerWithLookups returned error: %v", err)
 	}
 }
 

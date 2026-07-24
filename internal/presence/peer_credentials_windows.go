@@ -5,6 +5,7 @@ package presence
 import (
 	"fmt"
 	"net"
+	"os"
 
 	"golang.org/x/sys/windows"
 )
@@ -14,13 +15,21 @@ type pipeHandle interface {
 }
 
 func validatePipePeer(conn net.Conn) error {
-	return validatePipePeerWithLookups(conn, currentProcessUserSID, namedPipeServerUserSID)
+	return validatePipePeerWithLookups(
+		conn,
+		currentProcessUserSID,
+		namedPipeServerUserSID,
+		namedPipeServerImageName,
+		os.Getenv("DISCORD_IPC_PATH") != "",
+	)
 }
 
 func validatePipePeerWithLookups(
 	conn net.Conn,
 	currentUser func() (*windows.SID, error),
 	serverUser func(net.Conn) (*windows.SID, error),
+	serverImageName func(net.Conn) (string, error),
+	overrideSet bool,
 ) error {
 	want, err := currentUser()
 	if err != nil {
@@ -30,7 +39,14 @@ func validatePipePeerWithLookups(
 	if err != nil {
 		return fmt.Errorf("presence: inspect named-pipe server user: %w", err)
 	}
-	return validatePeerSIDs(want, got)
+	if err := validatePeerSIDs(want, got); err != nil {
+		return err
+	}
+	if overrideSet {
+		return nil
+	}
+	imageName, imageErr := serverImageName(conn)
+	return verifyDiscordServerImage(imageName, false, imageErr)
 }
 
 func validatePeerSIDs(current, server *windows.SID) error {
@@ -52,19 +68,9 @@ func currentProcessUserSID() (*windows.SID, error) {
 }
 
 func namedPipeServerUserSID(conn net.Conn) (*windows.SID, error) {
-	handleConn, ok := conn.(pipeHandle)
-	if !ok {
-		return nil, fmt.Errorf("connection type %T does not expose a pipe handle", conn)
-	}
-
-	var processID uint32
-	if err := windows.GetNamedPipeServerProcessId(windows.Handle(handleConn.Fd()), &processID); err != nil {
-		return nil, fmt.Errorf("get named-pipe server process ID: %w", err)
-	}
-
-	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, processID)
+	process, err := openNamedPipeServerProcess(conn)
 	if err != nil {
-		return nil, fmt.Errorf("open named-pipe server process %d: %w", processID, err)
+		return nil, err
 	}
 	defer windows.CloseHandle(process) //nolint:errcheck -- best-effort cleanup after inspection
 
@@ -79,4 +85,37 @@ func namedPipeServerUserSID(conn net.Conn) (*windows.SID, error) {
 		return nil, fmt.Errorf("get named-pipe server token user: %w", err)
 	}
 	return user.User.Sid, nil
+}
+
+func namedPipeServerImageName(conn net.Conn) (string, error) {
+	process, err := openNamedPipeServerProcess(conn)
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(process) //nolint:errcheck -- best-effort cleanup after inspection
+
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	size := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(process, 0, &buf[0], &size); err != nil {
+		return "", fmt.Errorf("query named-pipe server process image name: %w", err)
+	}
+	return windows.UTF16ToString(buf[:size]), nil
+}
+
+func openNamedPipeServerProcess(conn net.Conn) (windows.Handle, error) {
+	handleConn, ok := conn.(pipeHandle)
+	if !ok {
+		return 0, fmt.Errorf("connection type %T does not expose a pipe handle", conn)
+	}
+
+	var processID uint32
+	if err := windows.GetNamedPipeServerProcessId(windows.Handle(handleConn.Fd()), &processID); err != nil {
+		return 0, fmt.Errorf("get named-pipe server process ID: %w", err)
+	}
+
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, processID)
+	if err != nil {
+		return 0, fmt.Errorf("open named-pipe server process %d: %w", processID, err)
+	}
+	return process, nil
 }
