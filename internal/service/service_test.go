@@ -818,8 +818,8 @@ func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.Installed || state.Enabled != "true" || state.Loaded != "unknown" {
-		t.Fatalf("state = %+v, want installed enabled true loaded unknown", state)
+	if !state.Installed || state.Enabled != "true" || state.Loaded != "true" {
+		t.Fatalf("state = %+v, want installed enabled true loaded true", state)
 	}
 	if len(runner.calls) < 1 {
 		t.Fatal("runner was not called")
@@ -1023,21 +1023,21 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 			name:          "ready task is enabled",
 			queryOut:      windowsEnabledTaskXML,
 			wantInstalled: true,
-			wantLoaded:    "unknown",
+			wantLoaded:    "true",
 			wantEnabled:   "true",
 		},
 		{
 			name:          "disabled task is not enabled",
 			queryOut:      windowsDisabledTaskXML,
 			wantInstalled: true,
-			wantLoaded:    "unknown",
+			wantLoaded:    "false",
 			wantEnabled:   "false",
 		},
 		{
 			name:          "missing enabled field defaults true",
 			queryOut:      `<Task><Settings /></Task>`,
 			wantInstalled: true,
-			wantLoaded:    "unknown",
+			wantLoaded:    "true",
 			wantEnabled:   "true",
 		},
 		{

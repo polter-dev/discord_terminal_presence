@@ -205,6 +205,10 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 	if task.Settings.Enabled != nil {
 		state.Enabled = fmt.Sprintf("%t", *task.Settings.Enabled)
 	}
+	// The XML query gives the registered task definition, not a locale-stable
+	// runtime status. For autostart, a registered enabled logon task is loaded
+	// in the cross-platform sense: the OS scheduler has it and will launch it.
+	state.Loaded = state.Enabled
 	return state
 }
 
