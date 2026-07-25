@@ -184,7 +184,8 @@ privacy settings, CTA settings, and per-tool overrides. A changed scan interval
 takes effect on the running scan ticker immediately. Reloading detector settings
 preserves continuous process episodes (identified by tool, PID, and process
 creation time), so elapsed timers do not restart for processes that remain
-present.
+present. Episode state is written atomically; temp files left by interrupted
+writes are removed after they have been stale for an hour.
 
 Create a fully commented starter config with:
 

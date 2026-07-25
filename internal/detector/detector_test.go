@@ -834,6 +834,72 @@ func TestEpisodePersistenceRoundTripAndCorruptFile(t *testing.T) {
 	}
 }
 
+func TestSaveEpisodeStoreScavengesOnlyStaleTemps(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "presence.json")
+	stale := path + ".tmp-stale"
+	fresh := path + ".tmp-fresh"
+	other := filepath.Join(dir, "other.json.tmp-stale")
+	for _, temp := range []string{stale, fresh, other} {
+		if err := os.WriteFile(temp, []byte("orphan"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	if err := os.Chtimes(stale, now.Add(-episodeTempMaxAge-time.Minute), now.Add(-episodeTempMaxAge-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveEpisodeStore(path, NewEpisodeStore()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale temp still exists: %v", err)
+	}
+	for _, temp := range []string{fresh, other} {
+		if _, err := os.Stat(temp); err != nil {
+			t.Fatalf("protected temp %q: %v", temp, err)
+		}
+	}
+}
+
+func TestSaveEpisodeStoreCleanupFailureDoesNotPreventWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "presence.json")
+	stale := path + ".tmp-stale"
+	if err := os.WriteFile(stale, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-episodeTempMaxAge - time.Minute)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := saveEpisodeStore(path, NewEpisodeStore(), func(string) error {
+		return errors.New("injected cleanup failure")
+	}); err != nil {
+		t.Fatalf("write failed after cleanup error: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("presence state was not written: %v", err)
+	}
+}
+
+func TestSaveEpisodeStoreLeavesNoTempResidue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "presence.json")
+	if err := SaveEpisodeStore(path, NewEpisodeStore()); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(path + ".tmp-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temp residue: %v", matches)
+	}
+}
+
 func TestEpisodeAtimeUpdatesArePersistedAtMostOncePerMinute(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "presence.json")
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
