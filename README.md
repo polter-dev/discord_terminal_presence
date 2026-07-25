@@ -27,9 +27,10 @@ termp setup
 termp start
 ```
 
-Keep `termp start` running, open a supported tool such as `nvim`, `claude`, or
-`lazygit`, and check your Discord profile. Discord's desktop app needs to be
-running. To preview the card in your terminal instead, run `termp watch`.
+`termp start` launches the service in the background and returns immediately.
+Open a supported tool such as `nvim`, `claude`, or `lazygit`, and check your
+Discord profile. Discord's desktop app needs to be running. To preview the card
+in your terminal instead, run `termp watch`.
 
 The setup wizard creates your config, asks before enabling start-at-login, and
 keeps folder names hidden unless you choose otherwise.
@@ -43,29 +44,34 @@ go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
 ```
 
 This builds `termp` and puts it in your Go bin directory. If your shell cannot
-find the command, make sure that directory is on your `PATH`.
+find the command, make sure that directory is on your `PATH`. This source
+install works on Windows, macOS, and Linux.
 
 ### Packaged installs — coming at launch
 
 There is no published GitHub release or Homebrew tap yet. Once the first release
-is live, the project plans to offer Homebrew, a shell installer, and `.deb` and
-`.rpm` packages. Until then, please use the source install above.
+is live, the project plans to offer downloadable Windows binaries as well as
+Homebrew, a Unix shell installer, and `.deb` and `.rpm` packages. Until then,
+please use the source install above.
 
 ## Everyday commands
 
-Running `termp` by itself in a terminal opens the live `watch` view.
+Running `termp` by itself opens the live `watch` view only when standard input
+and output are interactive terminals. Otherwise it prints help and exits with
+status 2; use `termp watch --once` for a non-interactive snapshot.
 
 | Command | What it does |
 |---|---|
-| `termp start` | Runs the presence service in the foreground, reloads config changes, and updates Discord. |
+| `termp start` | Starts the presence service in the background and returns immediately. Use `--foreground` (`-f`) to keep it attached. |
 | `termp stop` | Stops the running service and cleans up its process-ID file. |
 | `termp status` | Checks the service, Discord connection, start-at-login, config, warnings, and detected tool. |
 | `termp watch` | Opens a live terminal preview. Use `--once` for one snapshot. |
-| `termp install` | Enables start-at-login and starts termp using a macOS LaunchAgent or Linux systemd user service. |
+| `termp autostart <install\|uninstall\|enable\|disable\|status>` | Manages start-at-login with grouped actions. |
+| `termp install` | Alias for `termp autostart install`: installs start-at-login and starts termp using a Windows scheduled task, macOS LaunchAgent, or Linux systemd user service. It does not install the binary. |
 | `termp uninstall` | Removes start-at-login. It does not remove the binary. |
 | `termp enable` / `termp disable` | Resumes or pauses start-at-login without removing it. |
 | `termp settings` | Opens the interactive settings menu. |
-| `termp setup` | Runs first-time setup; without an interactive terminal, writes the default config and prints the next steps. |
+| `termp setup` | Runs first-time setup; without an interactive terminal, writes the config, skips autostart, and prints the next steps. |
 | `termp config init` | Writes a commented sample config. Add `--force` to replace an existing config. |
 | `termp completion <bash\|zsh\|fish>` | Prints a tab-completion script for your shell. |
 | `termp version` | Prints the version, commit, build date, Go version, OS, and architecture. |
@@ -84,7 +90,7 @@ Global flags:
 
 | Flag | What it does |
 |---|---|
-| `--verbose`, `-v` | Prints extra log detail, for example `termp --verbose start`. |
+| `--verbose`, `-v` | Enables verbose logging, for example `termp --verbose start`. |
 | `--version` | Prints the version and exits. |
 
 ## Shell completion
@@ -109,7 +115,7 @@ with these instructions as comments, so it remains safe to redirect to a file.
 
 ## Start automatically
 
-Start-at-login is optional and works on macOS and Linux:
+Start-at-login is optional and works on Windows, macOS, and Linux:
 
 ```sh
 termp install     # install the login service and start it
@@ -118,10 +124,12 @@ termp enable      # resume it
 termp uninstall   # remove the login service
 ```
 
-On macOS, this creates
-`~/Library/LaunchAgents/dev.termp.daemon.plist`, restarts termp after a crash,
-and writes logs to `~/Library/Logs/termp.log`. On Linux, it creates
-`~/.config/systemd/user/termp.service` and enables the systemd user service.
+On Windows, this creates and immediately runs the Task Scheduler task
+`\Terminal Presence\termp`; it runs again when the current user logs in. On
+macOS, this creates `~/Library/LaunchAgents/dev.termp.daemon.plist`, restarts
+termp after a crash, and writes logs to `~/Library/Logs/termp.log`. On Linux, it
+creates `~/.config/systemd/user/termp.service` and enables and starts the systemd
+user service.
 
 ## Your privacy
 
@@ -206,7 +214,13 @@ termp config init --force  # replace an existing config
 | `headliner_idle_timeout` | duration | `"60s"` | How long the spotlighted tool must be idle before another can replace it. |
 | `activity_switching` | bool | `true` | Allows a busier tool to take the spotlight after the current tool becomes idle. |
 
-On Windows, idle detection uses a system-wide input timer. As a known platform limitation, software that injects input, such as keep-awake tools and some peripheral suites, can keep that timer pinned and prevent presence from idle-clearing. macOS and Linux are unaffected because they read the atime of the specific terminal device.
+On Windows, idle detection associates activity with a terminal window and uses
+the system-wide input timer. Its granularity is per terminal window, not per
+tab: a tool in a background tab of the focused Windows Terminal window reads as
+active. Software that injects input, such as keep-awake tools and some
+peripheral suites, can also keep the timer pinned and prevent presence from
+idle-clearing. macOS and Linux are unaffected because they read the atime of the
+specific terminal device.
 
 ### Display options (`[display]`)
 
