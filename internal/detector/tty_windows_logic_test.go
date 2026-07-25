@@ -91,6 +91,27 @@ func TestWindowsTTYAtimeFirstUnfocusedObservationGetsFullGracePeriod(t *testing.
 	}
 }
 
+func TestWindowsTTYAtimeZeroEpisodeAtimeFallsBackToNow(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	source := windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return 200 },
+		rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
+		lastInputMillis: func() (uint32, bool) {
+			t.Fatal("lastInputMillis called for unfocused window")
+			return 0, false
+		},
+		now: func() time.Time { return now },
+	}
+
+	atime, err := source.AtimeWithEpisode("win:hwnd:100", time.Time{}, true)
+	if err != nil {
+		t.Fatalf("AtimeWithEpisode returned error: %v", err)
+	}
+	if age := now.Sub(atime); age != 0 {
+		t.Fatalf("age = %v, want full grace period with age 0", age)
+	}
+}
+
 func TestWindowsTTYAtimeClassicConhostOwnerComparisonRetainsFocusTime(t *testing.T) {
 	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	foreground := uintptr(100)
