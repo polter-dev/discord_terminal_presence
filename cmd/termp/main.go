@@ -383,6 +383,7 @@ func setup(args []string) error {
 type setupServiceManager interface {
 	Install(string) (service.State, error)
 	Uninstall() (service.State, error)
+	Status() service.State
 }
 
 func newSetupModel(cfg config.Config, save tui.SetupSaveFunc, manager setupServiceManager, exe tui.SetupExeFunc) tui.SetupModel {
@@ -394,7 +395,10 @@ func newSetupModel(cfg config.Config, save tui.SetupSaveFunc, manager setupServi
 		_, err := manager.Uninstall()
 		return err
 	}
-	return tui.NewSetupModel(cfg, save, installAutostart, uninstallAutostart, exe)
+	autostartInstalled := func() (bool, error) {
+		return manager.Status().Installed, nil
+	}
+	return tui.NewSetupModel(cfg, save, installAutostart, uninstallAutostart, exe, autostartInstalled)
 }
 
 func completion(args []string) error {

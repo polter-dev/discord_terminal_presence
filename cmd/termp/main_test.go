@@ -35,6 +35,7 @@ type failingReleaseSource struct {
 type fakeSetupServiceManager struct {
 	installedExe   string
 	uninstallCalls int
+	installed      bool
 }
 
 func (m *fakeSetupServiceManager) Install(exe string) (service.State, error) {
@@ -47,10 +48,14 @@ func (m *fakeSetupServiceManager) Uninstall() (service.State, error) {
 	return service.State{Supported: true}, nil
 }
 
+func (m *fakeSetupServiceManager) Status() service.State {
+	return service.State{Supported: true, Installed: m.installed}
+}
+
 func TestNewSetupModelWiresServiceUninstall(t *testing.T) {
 	cfg := config.Default()
 	cfg.StartAtLogin = true
-	manager := &fakeSetupServiceManager{}
+	manager := &fakeSetupServiceManager{installed: true}
 	var saved config.Config
 	model := newSetupModel(cfg, func(next config.Config) (string, error) {
 		saved = next
