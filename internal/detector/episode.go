@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,6 +16,7 @@ import (
 const (
 	episodeStateFile       = "presence.json"
 	episodeAtimeSavePeriod = time.Minute
+	episodeTempMaxAge      = time.Hour
 )
 
 type episodePathResolver struct {
@@ -227,6 +230,10 @@ func LoadEpisodeStore(path string) (*EpisodeStore, error) {
 }
 
 func SaveEpisodeStore(path string, store *EpisodeStore) error {
+	return saveEpisodeStore(path, store, os.Remove)
+}
+
+func saveEpisodeStore(path string, store *EpisodeStore, remove func(string) error) error {
 	if store == nil {
 		store = NewEpisodeStore()
 	}
@@ -248,6 +255,7 @@ func SaveEpisodeStore(path string, store *EpisodeStore) error {
 			return err
 		}
 	}
+	scavengeEpisodeTemps(path, time.Now(), remove)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
@@ -266,6 +274,33 @@ func SaveEpisodeStore(path string, store *EpisodeStore) error {
 	}
 	store.markPersisted(snapshot)
 	return nil
+}
+
+func scavengeEpisodeTemps(path string, now time.Time, remove func(string) error) {
+	dir := filepath.Dir(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		log.Printf("presence state temp cleanup: %v", err)
+		return
+	}
+	prefix := filepath.Base(path) + ".tmp-"
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			log.Printf("presence state temp cleanup: %v", err)
+			continue
+		}
+		if now.Sub(info.ModTime()) < episodeTempMaxAge {
+			continue
+		}
+		tmpPath := filepath.Join(dir, entry.Name())
+		if err := remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("presence state temp cleanup %q: %v", tmpPath, err)
+		}
+	}
 }
 
 func (s *EpisodeStore) markPersisted(snapshot diskEpisodes) {
