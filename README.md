@@ -206,6 +206,8 @@ termp config init --force  # replace an existing config
 | `headliner_idle_timeout` | duration | `"60s"` | How long the spotlighted tool must be idle before another can replace it. |
 | `activity_switching` | bool | `true` | Allows a busier tool to take the spotlight after the current tool becomes idle. |
 
+On Windows, idle detection uses a system-wide input timer. As a known platform limitation, software that injects input, such as keep-awake tools and some peripheral suites, can keep that timer pinned and prevent presence from idle-clearing. macOS and Linux are unaffected because they read the atime of the specific terminal device.
+
 ### Display options (`[display]`)
 
 | Key | Type | Default | Meaning |
