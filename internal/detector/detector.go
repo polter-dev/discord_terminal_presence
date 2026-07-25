@@ -288,6 +288,7 @@ func (s *Selector) Select(processes []Process) Detection {
 // SelectWithEnricher returns the collection snapshot, enriching only matched processes.
 func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnricher) Detection {
 	candidates := make(map[string]toolCandidate)
+	collectionCandidates := make(map[string]toolCandidate)
 	cpuTotals := make(map[string]float64)
 	now := s.clock.Now()
 	eligibleEpisodes := make(map[string]struct{})
@@ -309,7 +310,8 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		episodeKey := EpisodeKey(tool.ID, proc.Pid, proc.CreateTime)
 		s.observeProcessCPU(episodeKey, proc.CPUTime, now)
 		observedProcesses[episodeKey] = struct{}{}
-		if !s.presenceEligible(proc, episodeKey, now) {
+		featuredEligible := s.presenceEligible(proc, episodeKey, now)
+		if !featuredEligible && !inactiveCollectionEligible(proc) {
 			continue
 		}
 
@@ -317,7 +319,6 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		eligibleEpisodes[episodeKey] = struct{}{}
 		episodesChanged = episodesChanged || changed
 
-		cpuTotals[tool.ID] += proc.CPUTime
 		candidate := toolCandidate{
 			FeaturedTool: FeaturedTool{
 				Tool:      tool,
@@ -327,7 +328,15 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			CreateTime: proc.CreateTime,
 		}
 
-		current, exists := candidates[tool.ID]
+		current, exists := collectionCandidates[tool.ID]
+		if !exists || isBetterInstance(candidate, current) {
+			collectionCandidates[tool.ID] = candidate
+		}
+		if !featuredEligible {
+			continue
+		}
+		cpuTotals[tool.ID] += proc.CPUTime
+		current, exists = candidates[tool.ID]
 		if !exists || isBetterInstance(candidate, current) {
 			candidates[tool.ID] = candidate
 		}
@@ -372,7 +381,13 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	featured := s.selectFeatured(candidates, now)
 	s.previousFeatured = featured.Tool.ID
 
-	others := s.sortedOthers(candidates, featured.Tool.ID)
+	for id, candidate := range collectionCandidates {
+		if featuredCandidate, ok := candidates[id]; ok {
+			candidate.Activity = featuredCandidate.Activity
+			collectionCandidates[id] = candidate
+		}
+	}
+	others := s.sortedOthers(collectionCandidates, featured.Tool.ID)
 	return detectionFromFeatured(featured, others)
 }
 
