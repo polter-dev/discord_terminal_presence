@@ -261,6 +261,7 @@ func TestBuildLaunchAgentPlist(t *testing.T) {
 		"<string>" + Label + "</string>",
 		"<string>/opt/Term Presence/termp</string>",
 		"<string>start</string>",
+		"<string>--foreground</string>",
 		"<key>RunAtLoad</key>\n\t<true/>",
 		"<key>KeepAlive</key>\n\t<true/>",
 		"<key>StandardOutPath</key>",
@@ -327,8 +328,10 @@ func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "<string>/bin/termp</string>") || !strings.Contains(text, "<string>start</string>") {
-		t.Fatalf("plist missing executable/start:\n%s", text)
+	if !strings.Contains(text, "<string>/bin/termp</string>") ||
+		!strings.Contains(text, "<string>start</string>") ||
+		!strings.Contains(text, "<string>--foreground</string>") {
+		t.Fatalf("plist missing foreground start invocation:\n%s", text)
 	}
 	if len(runner.calls) == 0 {
 		t.Fatal("runner was not called")
@@ -405,7 +408,8 @@ func TestDarwinInstallReplacesPlistWhenAlreadyUnloaded(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if !strings.Contains(string(got), "<string>/new/termp</string>") {
+	if !strings.Contains(string(got), "<string>/new/termp</string>") ||
+		!strings.Contains(string(got), "<string>--foreground</string>") {
 		t.Fatalf("plist was not replaced after benign absent result:\n%s", got)
 	}
 	if hasCall(runner.calls, "launchctl unload -w "+path) {

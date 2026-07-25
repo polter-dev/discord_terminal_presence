@@ -281,6 +281,7 @@ func BuildLaunchAgentPlist(exe, logPath string) ([]byte, error) {
 	<array>
 		<string>%s</string>
 		<string>start</string>
+		<string>--foreground</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

@@ -24,16 +24,16 @@ func TestApplySetupReconcilesAutostartState(t *testing.T) {
 			wantInstall: 1, wantExecutable: 1, wantAutostart: "installed",
 		},
 		{
-			name: "unchanged enabled is already enabled", original: true, desired: true, installed: true,
-			wantAutostart: "already enabled",
+			name: "unchanged enabled reapplies installed service", original: true, desired: true, installed: true,
+			wantInstall: 1, wantExecutable: 1, wantAutostart: "installed",
 		},
 		{
 			name: "changed enabled installs when missing", original: false, desired: true,
 			wantInstall: 1, wantExecutable: 1, wantAutostart: "installed",
 		},
 		{
-			name: "changed enabled does not reinstall", original: false, desired: true, installed: true,
-			wantAutostart: "already enabled",
+			name: "changed enabled reapplies installed service", original: false, desired: true, installed: true,
+			wantInstall: 1, wantExecutable: 1, wantAutostart: "installed",
 		},
 		{
 			name: "unchanged disabled removes installed service", original: false, desired: false, installed: true,

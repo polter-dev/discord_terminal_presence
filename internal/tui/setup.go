@@ -366,7 +366,8 @@ func applySetup(original, desired config.Config, save SetupSaveFunc, install Set
 		isInstalled, statusErr = installed()
 	}
 	stateKnown := installed != nil && statusErr == nil
-	installRequired := desired.StartAtLogin && (!stateKnown || !isInstalled)
+	// Reapply enabled autostart so setup also reconciles updated service definitions.
+	installRequired := desired.StartAtLogin
 	uninstallRequired := !desired.StartAtLogin && (!stateKnown || isInstalled)
 
 	resolvedExe := ""
