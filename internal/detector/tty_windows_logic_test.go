@@ -128,10 +128,10 @@ func TestWindowsTTYResolveMapsHWND(t *testing.T) {
 	}
 }
 
-func TestWindowsTTYResolveConPTYFailsOpen(t *testing.T) {
+func TestWindowsTTYResolveHiddenConPTYWindowFailsOpen(t *testing.T) {
 	resolver := windowsTTYResolver{
 		consoleHWNDForPID: func(int32) (uintptr, bool, error) {
-			return 0, true, nil
+			return 1234, true, nil
 		},
 	}
 

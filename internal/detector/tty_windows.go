@@ -20,6 +20,7 @@ var (
 	procGetConsoleWindow = kernel32.NewProc("GetConsoleWindow")
 	procGetLastInputInfo = user32.NewProc("GetLastInputInfo")
 	procGetTickCount     = kernel32.NewProc("GetTickCount")
+	procIsWindowVisible  = user32.NewProc("IsWindowVisible")
 
 	consoleAttachMu sync.Mutex
 )
@@ -72,7 +73,7 @@ func realWindowsConsoleHWNDForPID(pid int32) (hwnd uintptr, conPTY bool, retErr 
 		return 0, false, fmt.Errorf("attach candidate console: %w", err)
 	}
 	hwnd = getConsoleWindow()
-	if hwnd == 0 {
+	if hwnd == 0 || !isWindowVisible(hwnd) {
 		return 0, true, nil
 	}
 	return hwnd, false, nil
@@ -97,6 +98,11 @@ func freeConsole() error {
 func getConsoleWindow() uintptr {
 	r1, _, _ := procGetConsoleWindow.Call()
 	return r1
+}
+
+func isWindowVisible(hwnd uintptr) bool {
+	r1, _, _ := procIsWindowVisible.Call(hwnd)
+	return r1 != 0
 }
 
 type lastInputInfo struct {
