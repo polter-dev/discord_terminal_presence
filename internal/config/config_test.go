@@ -593,7 +593,7 @@ func TestLoadValidAccentColor(t *testing.T) {
 		in   string
 		want string
 	}{
-		{name: "short hex", in: "#abc", want: "#abc"},
+		{name: "short hex", in: "#0af", want: "#0af"},
 		{name: "long hex", in: "#abcdef", want: "#abcdef"},
 		{name: "mixed-case long hex", in: "#12AbEF", want: "#12AbEF"},
 		{name: "empty uses default palette", in: "", want: ""},
@@ -620,14 +620,31 @@ accent_color = %q
 	}
 }
 
+func TestLoadUnsetAccentColorUsesDefaultPalette(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `enabled = true`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UI.AccentColor != DefaultAccentColor {
+		t.Fatalf("ui.accent_color = %q, want default %q", cfg.UI.AccentColor, DefaultAccentColor)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", cfg.Warnings)
+	}
+}
+
 func TestInvalidAccentColorWarnsAndUsesDefault(t *testing.T) {
 	tests := []struct {
 		name  string
 		value string
 	}{
 		{name: "unsupported name", value: "cyan"},
-		{name: "malformed hex", value: "#12345"},
-		{name: "unknown word", value: "ultraviolet"},
+		{name: "too short hex", value: "#12"},
+		{name: "non-hex digits", value: "#gggggg"},
+		{name: "four-digit hex", value: "#1234"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
