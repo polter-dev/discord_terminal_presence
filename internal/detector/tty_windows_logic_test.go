@@ -12,7 +12,6 @@ func TestWindowsTTYAtimeOwnerBasedForegroundComparison(t *testing.T) {
 	const (
 		h1 uintptr = 100
 		w  uintptr = 300
-		x  uintptr = 400
 	)
 	tests := []struct {
 		name       string
@@ -22,9 +21,7 @@ func TestWindowsTTYAtimeOwnerBasedForegroundComparison(t *testing.T) {
 		wantAge    time.Duration
 	}{
 		{"ConPTY focused terminal is recent", h1, w, map[uintptr]uintptr{h1: w, w: w}, 250 * time.Millisecond},
-		{"ConPTY unfocused terminal is old", h1, x, map[uintptr]uintptr{h1: w, w: w, x: x}, windowsInactiveAge},
 		{"classic console focused is recent regression guard for issue 183", h1, h1, map[uintptr]uintptr{h1: h1}, 250 * time.Millisecond},
-		{"classic console unfocused is old", h1, x, map[uintptr]uintptr{h1: h1, x: x}, windowsInactiveAge},
 		{"zero owner lookup falls back to raw handle", h1, h1, map[uintptr]uintptr{}, 250 * time.Millisecond},
 	}
 
@@ -44,6 +41,141 @@ func TestWindowsTTYAtimeOwnerBasedForegroundComparison(t *testing.T) {
 				t.Fatalf("age = %v, want %v", age, tt.wantAge)
 			}
 		})
+	}
+}
+
+func TestWindowsTTYAtimeLossOfFocusStartsIdleClock(t *testing.T) {
+	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	current := base
+	foreground := uintptr(300)
+	owners := map[uintptr]uintptr{100: 300, 300: 300, 400: 400}
+	source := windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return foreground },
+		rootOwnerWindow:  func(hwnd uintptr) uintptr { return owners[hwnd] },
+		lastInputMillis:  func() (uint32, bool) { return 0, true },
+		now:              func() time.Time { return current },
+	}
+
+	if _, err := source.Atime("win:hwnd:100"); err != nil {
+		t.Fatalf("focused Atime returned error: %v", err)
+	}
+	current = current.Add(3 * time.Second)
+	foreground = 400
+	atime, err := source.Atime("win:hwnd:100")
+	if err != nil {
+		t.Fatalf("unfocused Atime returned error: %v", err)
+	}
+	if age := current.Sub(atime); age != 3*time.Second {
+		t.Fatalf("age just after focus loss = %v, want %v", age, 3*time.Second)
+	}
+}
+
+func TestWindowsTTYAtimeFirstUnfocusedObservationGetsFullGracePeriod(t *testing.T) {
+	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	source := windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return 400 },
+		rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
+		lastInputMillis: func() (uint32, bool) {
+			t.Fatal("lastInputMillis called for unfocused window")
+			return 0, false
+		},
+		now: func() time.Time { return base },
+	}
+
+	atime, err := source.Atime("win:hwnd:100")
+	if err != nil {
+		t.Fatalf("Atime returned error: %v", err)
+	}
+	if !atime.Equal(base) {
+		t.Fatalf("Atime = %v, want first observation time %v", atime, base)
+	}
+}
+
+func TestWindowsTTYAtimeZeroEpisodeAtimeFallsBackToNow(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	source := windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return 200 },
+		rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
+		lastInputMillis: func() (uint32, bool) {
+			t.Fatal("lastInputMillis called for unfocused window")
+			return 0, false
+		},
+		now: func() time.Time { return now },
+	}
+
+	atime, err := source.AtimeWithEpisode("win:hwnd:100", time.Time{}, true)
+	if err != nil {
+		t.Fatalf("AtimeWithEpisode returned error: %v", err)
+	}
+	if age := now.Sub(atime); age != 0 {
+		t.Fatalf("age = %v, want full grace period with age 0", age)
+	}
+}
+
+func TestWindowsTTYAtimeClassicConhostOwnerComparisonRetainsFocusTime(t *testing.T) {
+	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	foreground := uintptr(100)
+	source := windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return foreground },
+		rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
+		lastInputMillis:  func() (uint32, bool) { return 0, true },
+		now:              func() time.Time { return base },
+	}
+
+	if _, err := source.Atime("win:hwnd:100"); err != nil {
+		t.Fatalf("focused Atime returned error: %v", err)
+	}
+	foreground = 400
+	atime, err := source.Atime("win:hwnd:100")
+	if err != nil {
+		t.Fatalf("unfocused Atime returned error: %v", err)
+	}
+	if !atime.Equal(base) {
+		t.Fatalf("Atime = %v, want last classic-conhost focus time %v", atime, base)
+	}
+}
+
+func TestWindowsTTYAtimeUnfocusedPastIdleTimeoutClearsPresence(t *testing.T) {
+	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	const timeout = 20 * time.Minute
+	clock := &fakeClock{now: base}
+	foreground := uintptr(100)
+	source := &windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return foreground },
+		rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
+		lastInputMillis:  func() (uint32, bool) { return 0, true },
+		now:              clock.Now,
+	}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:       timeout,
+		CorroborateIdleWithCPU: true,
+		ActivitySwitching:      true,
+	}, clock)
+	enricher := presenceEnricher(
+		fakeTTYResolver{resolutions: map[int32]TTYResolution{
+			1: {Path: "win:hwnd:100"},
+		}},
+		fakeTmuxSnapshot{},
+		source,
+	)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		CPUTime:    10,
+	}
+
+	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {
+		t.Fatal("focused process should be eligible")
+	}
+	foreground = 400
+	clock.Advance(timeout - time.Second)
+	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {
+		t.Fatal("recently unfocused process should remain eligible during grace period")
+	}
+	clock.Advance(2 * time.Second)
+	if detection := selector.SelectWithEnricher([]Process{process}, enricher); !detection.None {
+		t.Fatalf("detection = %#v, want none after idle timeout", detection)
 	}
 }
 
@@ -95,12 +227,12 @@ func TestWindowsTTYAtimeFailuresFailOpen(t *testing.T) {
 	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name   string
-		source windowsTTYAtimeSource
+		source *windowsTTYAtimeSource
 		path   string
 	}{
 		{
 			name: "bad path",
-			source: windowsTTYAtimeSource{
+			source: &windowsTTYAtimeSource{
 				foregroundWindow: func() uintptr { return 1234 },
 				rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
 				lastInputMillis:  func() (uint32, bool) { return 0, true },
@@ -110,7 +242,7 @@ func TestWindowsTTYAtimeFailuresFailOpen(t *testing.T) {
 		},
 		{
 			name: "no foreground",
-			source: windowsTTYAtimeSource{
+			source: &windowsTTYAtimeSource{
 				foregroundWindow: func() uintptr { return 0 },
 				rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
 				lastInputMillis:  func() (uint32, bool) { return 0, true },
@@ -120,7 +252,7 @@ func TestWindowsTTYAtimeFailuresFailOpen(t *testing.T) {
 		},
 		{
 			name: "no root owner resolver",
-			source: windowsTTYAtimeSource{
+			source: &windowsTTYAtimeSource{
 				foregroundWindow: func() uintptr { return 1234 },
 				lastInputMillis:  func() (uint32, bool) { return 0, true },
 				now:              func() time.Time { return base },
@@ -129,7 +261,7 @@ func TestWindowsTTYAtimeFailuresFailOpen(t *testing.T) {
 		},
 		{
 			name: "last input failure",
-			source: windowsTTYAtimeSource{
+			source: &windowsTTYAtimeSource{
 				foregroundWindow: func() uintptr { return 1234 },
 				rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
 				lastInputMillis:  func() (uint32, bool) { return 0, false },
@@ -145,6 +277,40 @@ func TestWindowsTTYAtimeFailuresFailOpen(t *testing.T) {
 				t.Fatal("Atime returned nil error")
 			}
 		})
+	}
+}
+
+func TestWindowsTTYAtimeFocusStateIsPrunedAndBounded(t *testing.T) {
+	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	current := base
+	alive := make(map[uintptr]bool)
+	source := windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return 999999 },
+		rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
+		windowExists:     func(hwnd uintptr) bool { return alive[hwnd] },
+		lastInputMillis:  func() (uint32, bool) { return 0, true },
+		now:              func() time.Time { return current },
+	}
+
+	for hwnd := uintptr(1); hwnd <= windowsFocusStateLimit+1; hwnd++ {
+		alive[hwnd] = true
+		current = current.Add(time.Millisecond)
+		path := "win:hwnd:" + strconv.FormatUint(uint64(hwnd), 10)
+		if _, err := source.Atime(path); err != nil {
+			t.Fatalf("Atime(%d) returned error: %v", hwnd, err)
+		}
+	}
+	if got := len(source.focusState); got != windowsFocusStateLimit {
+		t.Fatalf("focus state size = %d, want hard limit %d", got, windowsFocusStateLimit)
+	}
+
+	dead := uintptr(windowsFocusStateLimit + 1)
+	alive[dead] = false
+	if _, err := source.Atime("win:hwnd:2"); err != nil {
+		t.Fatalf("Atime after window removal returned error: %v", err)
+	}
+	if _, ok := source.focusState[dead]; ok {
+		t.Fatalf("focus state retained nonexistent window %d", dead)
 	}
 }
 

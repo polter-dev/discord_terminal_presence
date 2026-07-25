@@ -29,11 +29,16 @@ type TTYAtimeSource interface {
 	Atime(tty string) (time.Time, error)
 }
 
+type episodeTTYAtimeSource interface {
+	AtimeWithEpisode(tty string, lastAtime time.Time, episodeExists bool) (time.Time, error)
+}
+
 type presenceProcessEnricher struct {
 	base     ProcessEnricher
 	resolver TTYResolver
 	tmux     TmuxPaneSnapshot
 	atime    TTYAtimeSource
+	episodes *EpisodeStore
 }
 
 func newPresenceProcessEnricher(base ProcessEnricher, resolver TTYResolver, tmux TmuxPaneSnapshot, atime TTYAtimeSource) ProcessEnricher {
@@ -41,6 +46,14 @@ func newPresenceProcessEnricher(base ProcessEnricher, resolver TTYResolver, tmux
 }
 
 func (e *presenceProcessEnricher) Enrich(process Process) Process {
+	return e.enrich(process, "")
+}
+
+func (e *presenceProcessEnricher) EnrichMatched(process Process, toolID string) Process {
+	return e.enrich(process, toolID)
+}
+
+func (e *presenceProcessEnricher) enrich(process Process, toolID string) Process {
 	if e.base != nil {
 		process = e.base.Enrich(process)
 	}
@@ -66,7 +79,17 @@ func (e *presenceProcessEnricher) Enrich(process Process) Process {
 		}
 	}
 	if e.atime != nil {
-		if atime, err := e.atime.Atime(process.TTY.Path); err == nil {
+		var (
+			atime time.Time
+			err   error
+		)
+		if source, ok := e.atime.(episodeTTYAtimeSource); ok && e.episodes != nil && toolID != "" {
+			lastAtime, episodeExists := e.episodes.LastAtime(EpisodeKey(toolID, process.Pid, process.CreateTime))
+			atime, err = source.AtimeWithEpisode(process.TTY.Path, lastAtime, episodeExists)
+		} else {
+			atime, err = e.atime.Atime(process.TTY.Path)
+		}
+		if err == nil {
 			process.TTY.Atime = atime
 			process.TTY.AtimeKnown = true
 		}

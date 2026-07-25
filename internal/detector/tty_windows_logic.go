@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	windowsTTYPathPrefix = "win:hwnd:"
-	windowsInactiveAge   = 24 * time.Hour
+	windowsTTYPathPrefix   = "win:hwnd:"
+	windowsFocusStateLimit = 1024
 )
 
 type windowsTTYResolver struct {
@@ -46,11 +47,24 @@ func (r windowsTTYResolver) Resolve(pid int32) (TTYResolution, error) {
 type windowsTTYAtimeSource struct {
 	foregroundWindow func() uintptr
 	rootOwnerWindow  func(uintptr) uintptr
+	windowExists     func(uintptr) bool
 	lastInputMillis  func() (uint32, bool)
 	now              func() time.Time
+
+	focusMu    sync.Mutex
+	focusState map[uintptr]windowsFocusObservation
 }
 
-func (s windowsTTYAtimeSource) Atime(path string) (time.Time, error) {
+type windowsFocusObservation struct {
+	lastForeground time.Time
+	lastSeen       time.Time
+}
+
+func (s *windowsTTYAtimeSource) Atime(path string) (time.Time, error) {
+	return s.AtimeWithEpisode(path, time.Time{}, false)
+}
+
+func (s *windowsTTYAtimeSource) AtimeWithEpisode(path string, lastAtime time.Time, episodeExists bool) (time.Time, error) {
 	hwnd, err := parseWindowsTTYPath(path)
 	if err != nil {
 		return time.Time{}, err
@@ -81,13 +95,63 @@ func (s windowsTTYAtimeSource) Atime(path string) (time.Time, error) {
 	}
 	current := now()
 	if ownerOf(foreground) != ownerOf(hwnd) {
-		return current.Add(-windowsInactiveAge), nil
+		return s.observeFocus(hwnd, current, false, lastAtime, episodeExists), nil
 	}
+	s.observeFocus(hwnd, current, true, time.Time{}, false)
 	idleMillis, ok := s.lastInputMillis()
 	if !ok {
 		return time.Time{}, errors.New("windows last input unavailable")
 	}
 	return current.Add(-time.Duration(idleMillis) * time.Millisecond), nil
+}
+
+func (s *windowsTTYAtimeSource) observeFocus(hwnd uintptr, current time.Time, focused bool, lastAtime time.Time, episodeExists bool) time.Time {
+	s.focusMu.Lock()
+	defer s.focusMu.Unlock()
+
+	if s.focusState == nil {
+		s.focusState = make(map[uintptr]windowsFocusObservation)
+	}
+	if s.windowExists != nil {
+		for tracked := range s.focusState {
+			if !s.windowExists(tracked) {
+				delete(s.focusState, tracked)
+			}
+		}
+	}
+
+	observation, ok := s.focusState[hwnd]
+	if !ok || focused {
+		observation.lastForeground = current
+		if !ok && !focused && episodeExists && !lastAtime.IsZero() {
+			// Preserve the existing idle clock across daemon restarts. An
+			// episode is exact to the matched tool process, not merely HWND.
+			observation.lastForeground = lastAtime
+		}
+	}
+	observation.lastSeen = current
+	s.focusState[hwnd] = observation
+
+	for len(s.focusState) > windowsFocusStateLimit {
+		var (
+			oldestHWND uintptr
+			oldest     time.Time
+		)
+		for tracked, candidate := range s.focusState {
+			if tracked == hwnd {
+				continue
+			}
+			if oldestHWND == 0 || candidate.lastSeen.Before(oldest) {
+				oldestHWND = tracked
+				oldest = candidate.lastSeen
+			}
+		}
+		if oldestHWND == 0 {
+			break
+		}
+		delete(s.focusState, oldestHWND)
+	}
+	return observation.lastForeground
 }
 
 func parseWindowsTTYPath(path string) (uintptr, error) {

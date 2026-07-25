@@ -31,7 +31,7 @@ func newSystemTTYResolver() TTYResolver {
 }
 
 func newSystemTTYAtimeSource() TTYAtimeSource {
-	return windowsTTYAtimeSource{
+	return &windowsTTYAtimeSource{
 		foregroundWindow: func() uintptr {
 			return uintptr(windows.GetForegroundWindow())
 		},
@@ -39,6 +39,9 @@ func newSystemTTYAtimeSource() TTYAtimeSource {
 			const gaRootOwner = 3
 			rootOwner, _, _ := procGetAncestor.Call(hwnd, gaRootOwner)
 			return rootOwner
+		},
+		windowExists: func(hwnd uintptr) bool {
+			return windows.IsWindow(windows.HWND(hwnd))
 		},
 		lastInputMillis: realWindowsLastInputMillis,
 	}

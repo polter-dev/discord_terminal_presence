@@ -2,16 +2,29 @@ package detector
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	psprocess "github.com/shirou/gopsutil/v4/process"
 )
 
 // GopsutilLister reads processes through gopsutil.
-type GopsutilLister struct{}
+type GopsutilLister struct {
+	atimeOnce sync.Once
+	atime     TTYAtimeSource
+
+	episodesMu sync.RWMutex
+	episodes   *EpisodeStore
+}
+
+// NewGopsutilLister returns a process lister whose terminal activity state is
+// shared across scans.
+func NewGopsutilLister() *GopsutilLister {
+	return &GopsutilLister{}
+}
 
 // List returns a best-effort process snapshot. Individual fields may be unavailable.
-func (GopsutilLister) List() ([]Process, error) {
+func (*GopsutilLister) List() ([]Process, error) {
 	processes, err := psprocess.Processes()
 	if err != nil {
 		return nil, err
@@ -31,7 +44,7 @@ func (GopsutilLister) List() ([]Process, error) {
 }
 
 // ListIdentities returns only fields needed for registry matching.
-func (GopsutilLister) ListIdentities() ([]Process, error) {
+func (*GopsutilLister) ListIdentities() ([]Process, error) {
 	processes, err := psprocess.Processes()
 	if err != nil {
 		return nil, err
@@ -49,7 +62,7 @@ func (GopsutilLister) ListIdentities() ([]Process, error) {
 }
 
 // Enrich resolves fields needed only after a process matches a known tool.
-func (GopsutilLister) Enrich(process Process) Process {
+func (*GopsutilLister) Enrich(process Process) Process {
 	proc, err := psprocess.NewProcess(process.Pid)
 	if err != nil {
 		return process
@@ -58,8 +71,32 @@ func (GopsutilLister) Enrich(process Process) Process {
 }
 
 // NewScanProcessEnricher shares tty and tmux snapshots across matched processes.
-func (l GopsutilLister) NewScanProcessEnricher() ProcessEnricher {
-	return newPresenceProcessEnricher(l, newSystemTTYResolver(), queryTmuxPanes(), newSystemTTYAtimeSource())
+func (l *GopsutilLister) NewScanProcessEnricher() ProcessEnricher {
+	enricher := &presenceProcessEnricher{
+		base:     l,
+		resolver: newSystemTTYResolver(),
+		tmux:     queryTmuxPanes(),
+		atime:    l.ttyAtimeSource(),
+	}
+	l.episodesMu.RLock()
+	enricher.episodes = l.episodes
+	l.episodesMu.RUnlock()
+	return enricher
+}
+
+// setEpisodeStore supplies the daemon's loaded episode history to per-scan
+// enrichers. The lister only reads it for first-observation focus fallback.
+func (l *GopsutilLister) setEpisodeStore(episodes *EpisodeStore) {
+	l.episodesMu.Lock()
+	l.episodes = episodes
+	l.episodesMu.Unlock()
+}
+
+func (l *GopsutilLister) ttyAtimeSource() TTYAtimeSource {
+	l.atimeOnce.Do(func() {
+		l.atime = newSystemTTYAtimeSource()
+	})
+	return l.atime
 }
 
 func processIdentity(proc *psprocess.Process) Process {

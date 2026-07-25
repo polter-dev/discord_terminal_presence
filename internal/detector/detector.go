@@ -64,6 +64,14 @@ type ProcessEnricher interface {
 	Enrich(Process) Process
 }
 
+type matchedProcessEnricher interface {
+	EnrichMatched(Process, string) Process
+}
+
+type episodeStoreConsumer interface {
+	setEpisodeStore(*EpisodeStore)
+}
+
 // ScanProcessEnricherFactory builds an enricher whose expensive snapshots are
 // shared by all matched processes in one scan.
 type ScanProcessEnricherFactory interface {
@@ -211,6 +219,9 @@ func ActiveDetectionWithPresence(reg *registry.Registry, lister ProcessLister, c
 		return Detection{}, err
 	}
 	episodes, _ := LoadEpisodeStore(EpisodeStatePath())
+	if consumer, ok := lister.(episodeStoreConsumer); ok {
+		consumer.setEpisodeStore(episodes)
+	}
 	selector := newSelectorWithEpisodes(detector.registry, detector.config, systemClock{}, episodes, nil)
 	return selector.SelectWithEnricher(processes, processEnricher(lister)), nil
 }
@@ -305,7 +316,11 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			continue
 		}
 		if enricher != nil {
-			proc = enricher.Enrich(proc)
+			if matched, ok := enricher.(matchedProcessEnricher); ok {
+				proc = matched.EnrichMatched(proc, tool.ID)
+			} else {
+				proc = enricher.Enrich(proc)
+			}
 		}
 		episodeKey := EpisodeKey(tool.ID, proc.Pid, proc.CreateTime)
 		s.observeProcessCPU(episodeKey, proc.CPUTime, now)
@@ -546,6 +561,9 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 	)
 	statePath := d.presenceStatePath
 	episodes, _ := LoadEpisodeStore(statePath)
+	if consumer, ok := d.lister.(episodeStoreConsumer); ok {
+		consumer.setEpisodeStore(episodes)
+	}
 	saveEpisodes := func(store *EpisodeStore) { _ = SaveEpisodeStore(statePath, store) }
 	selector := newSelectorWithEpisodes(d.registry, d.config, systemClock{}, episodes, saveEpisodes)
 	defer saveEpisodes(episodes)

@@ -143,6 +143,17 @@ func NewEpisodeStore() *EpisodeStore {
 	}
 }
 
+// LastAtime returns the last terminal activity timestamp for an episode.
+func (s *EpisodeStore) LastAtime(key string) (time.Time, bool) {
+	if s == nil {
+		return time.Time{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	episode, ok := s.Episodes[key]
+	return episode.LastAtime, ok
+}
+
 // Observe returns the episode anchor and whether the store should be persisted.
 // A loaded episode is preserved only when its tty identity and atime history make
 // continuity clear. Atime-only saves are throttled against the last saved snapshot.
