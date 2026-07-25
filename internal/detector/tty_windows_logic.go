@@ -36,6 +36,7 @@ func (r windowsTTYResolver) Resolve(pid int32) (TTYResolution, error) {
 
 type windowsTTYAtimeSource struct {
 	foregroundWindow func() uintptr
+	rootOwnerWindow  func(uintptr) uintptr
 	lastInputMillis  func() (uint32, bool)
 	now              func() time.Time
 }
@@ -48,6 +49,9 @@ func (s windowsTTYAtimeSource) Atime(path string) (time.Time, error) {
 	if s.foregroundWindow == nil {
 		return time.Time{}, errors.New("windows foreground window resolver unavailable")
 	}
+	if s.rootOwnerWindow == nil {
+		return time.Time{}, errors.New("windows root owner window resolver unavailable")
+	}
 	if s.lastInputMillis == nil {
 		return time.Time{}, errors.New("windows last input resolver unavailable")
 	}
@@ -59,8 +63,15 @@ func (s windowsTTYAtimeSource) Atime(path string) (time.Time, error) {
 	if foreground == 0 {
 		return time.Time{}, errors.New("windows foreground window unavailable")
 	}
+	ownerOf := func(window uintptr) uintptr {
+		owner := s.rootOwnerWindow(window)
+		if owner == 0 {
+			return window
+		}
+		return owner
+	}
 	current := now()
-	if foreground != hwnd {
+	if ownerOf(foreground) != ownerOf(hwnd) {
 		return current.Add(-windowsInactiveAge), nil
 	}
 	idleMillis, ok := s.lastInputMillis()
