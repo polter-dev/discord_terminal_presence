@@ -18,8 +18,8 @@ const maxInstallCTAWidth = 80
 type autostartActionHandler func([]string) error
 
 type autostartManager interface {
-	Install(string) (service.State, error)
-	Uninstall() (service.State, error)
+	Install(string, bool) (service.State, error)
+	Uninstall(bool) (service.State, error)
 	Disable() (service.State, error)
 	Enable() (service.State, error)
 	Status() service.State
@@ -72,7 +72,7 @@ func autostartUsage() {
 
 func install(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
-	force := fs.Bool("force", false, "install even when the executable path is unstable")
+	force := fs.Bool("force", false, "install from an unstable path or take over another installation's task")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func install(args []string) error {
 	if err != nil {
 		return err
 	}
-	state, err := newAutostartManager().Install(exe)
+	state, err := newAutostartManager().Install(exe, *force)
 	if errors.Is(err, service.ErrUnsupported) {
 		fmt.Println(state.Message)
 		return err
@@ -148,13 +148,14 @@ func installOutputWidth(output *os.File) int {
 
 func uninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	force := fs.Bool("force", false, "remove a task belonging to another installation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	manager := newAutostartManager()
 	preState := manager.Status()
-	wasInstalled := preState.Installed
-	state, err := manager.Uninstall()
+	wasInstalled := preState.Installed || preState.ForeignTask
+	state, err := manager.Uninstall(*force)
 	if errors.Is(err, service.ErrUnsupported) {
 		fmt.Println(state.Message)
 		return err

@@ -39,17 +39,17 @@ type fakeSetupServiceManager struct {
 	installed      bool
 }
 
-func (m *fakeSetupServiceManager) Install(exe string) (service.State, error) {
+func (m *fakeSetupServiceManager) Install(exe string, _ bool) (service.State, error) {
 	m.installedExe = exe
 	return service.State{Supported: true, Installed: true}, nil
 }
 
-func (m *fakeSetupServiceManager) InstallDefinition(exe string) (service.State, error) {
+func (m *fakeSetupServiceManager) InstallDefinition(exe string, _ bool) (service.State, error) {
 	m.definitionExe = exe
 	return service.State{Supported: true, Installed: true}, nil
 }
 
-func (m *fakeSetupServiceManager) Uninstall() (service.State, error) {
+func (m *fakeSetupServiceManager) Uninstall(_ bool) (service.State, error) {
 	m.uninstallCalls++
 	return service.State{Supported: true}, nil
 }

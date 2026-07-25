@@ -21,20 +21,20 @@ func TestWindowsSchtasksIntegration(t *testing.T) {
 		// The task normally exits promptly, but explicitly end it so Windows
 		// releases the helper binary before TempDir cleanup removes it.
 		_, _ = manager.Runner.Run("schtasks", "/End", "/TN", TaskName)
-		if _, err := manager.Uninstall(); err != nil {
+		if _, err := manager.Uninstall(false); err != nil {
 			t.Errorf("cleanup Uninstall() error = %v", err)
 		}
 	})
 
 	// Remove a task left behind by an interrupted earlier run before asserting
 	// the complete lifecycle from a known state.
-	state, err := manager.Uninstall()
+	state, err := manager.Uninstall(false)
 	if err != nil {
 		t.Fatalf("initial Uninstall() error = %v", err)
 	}
 	assertWindowsIntegrationState(t, "initial uninstall", state, false, "false", "false")
 
-	state, err = manager.Install(exe)
+	state, err = manager.Install(exe, false)
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
 	}
@@ -58,7 +58,7 @@ func TestWindowsSchtasksIntegration(t *testing.T) {
 	}
 	assertWindowsIntegrationState(t, "enable", state, true, "true", "unknown", "true")
 
-	state, err = manager.Uninstall()
+	state, err = manager.Uninstall(false)
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
 	}
