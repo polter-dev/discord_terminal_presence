@@ -128,6 +128,22 @@ func TestWindowsTTYResolveMapsHWND(t *testing.T) {
 	}
 }
 
+func TestWindowsTTYResolveConPTYFailsOpen(t *testing.T) {
+	resolver := windowsTTYResolver{
+		consoleHWNDForPID: func(int32) (uintptr, bool, error) {
+			return 0, true, nil
+		},
+	}
+
+	resolved, err := resolver.Resolve(42)
+	if err == nil {
+		t.Fatal("Resolve returned nil error")
+	}
+	if resolved.NoTTY {
+		t.Fatal("Resolve returned NoTTY")
+	}
+}
+
 func TestWindowsTTYResolveHiddenConPTYWindowFailsOpen(t *testing.T) {
 	resolver := windowsTTYResolver{
 		consoleHWNDForPID: func(int32) (uintptr, bool, error) {
