@@ -12,11 +12,11 @@ type darwinService struct {
 	runner Runner
 }
 
-func (s darwinService) Install(exe string) (State, error) {
-	return s.install(exe, true)
+func (s darwinService) Install(exe string, force bool) (State, error) {
+	return s.install(exe, true, force)
 }
 
-func (s darwinService) install(exe string, launch bool) (State, error) {
+func (s darwinService) install(exe string, launch, _ bool) (State, error) {
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true}, err
@@ -51,7 +51,7 @@ func (s darwinService) install(exe string, launch bool) (State, error) {
 	return s.Status(), nil
 }
 
-func (s darwinService) Uninstall() (State, error) {
+func (s darwinService) Uninstall(_ bool) (State, error) {
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true}, err

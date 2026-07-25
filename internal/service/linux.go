@@ -12,11 +12,11 @@ type linuxService struct {
 	runner Runner
 }
 
-func (s linuxService) Install(exe string) (State, error) {
-	return s.install(exe, true)
+func (s linuxService) Install(exe string, force bool) (State, error) {
+	return s.install(exe, true, force)
 }
 
-func (s linuxService) install(exe string, launch bool) (State, error) {
+func (s linuxService) install(exe string, launch, _ bool) (State, error) {
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true}, err
@@ -45,7 +45,7 @@ func (s linuxService) install(exe string, launch bool) (State, error) {
 	return s.Status(), nil
 }
 
-func (s linuxService) Uninstall() (State, error) {
+func (s linuxService) Uninstall(_ bool) (State, error) {
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true}, err

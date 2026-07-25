@@ -9,19 +9,25 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"unicode/utf16"
 )
 
 type windowsService struct {
-	runner Runner
+	runner     Runner
+	executable string
 }
 
-func (s windowsService) Install(exe string) (State, error) {
-	return s.install(exe, true)
+func (s windowsService) Install(exe string, force bool) (State, error) {
+	return s.install(exe, true, force)
 }
 
-func (s windowsService) install(exe string, launch bool) (State, error) {
+func (s windowsService) install(exe string, launch, force bool) (State, error) {
+	status := s.Status()
+	if status.ForeignTask && !force {
+		return status, foreignTaskError(status.Message)
+	}
 	username := ""
 	if current, err := user.Current(); err == nil && current != nil {
 		username = strings.TrimSpace(current.Username)
@@ -116,7 +122,14 @@ func BuildWindowsTaskXML(exe, username string) ([]byte, error) {
 	return data, nil
 }
 
-func (s windowsService) Uninstall() (State, error) {
+func (s windowsService) Uninstall(force bool) (State, error) {
+	status := s.Status()
+	if status.ForeignTask && !force {
+		return status, foreignTaskError(status.Message)
+	}
+	if !status.Installed && !status.ForeignTask {
+		return status, nil
+	}
 	// A task definition can be deleted while an instance launched from it keeps
 	// running. Ending first makes uninstall stop the daemon as well. /End is
 	// intentionally best-effort because an idle or already-removed task is a
@@ -133,6 +146,9 @@ func (s windowsService) Uninstall() (State, error) {
 
 func (s windowsService) Disable() (State, error) {
 	status := s.Status()
+	if status.ForeignTask {
+		return status, foreignTaskError(status.Message)
+	}
 	if status.Message != "" {
 		return status, fmt.Errorf("%s", status.Message)
 	}
@@ -147,6 +163,9 @@ func (s windowsService) Disable() (State, error) {
 	}
 	_, _ = s.runner.Run("schtasks", "/End", "/TN", TaskName)
 	status = s.Status()
+	if status.ForeignTask {
+		return status, foreignTaskError(status.Message)
+	}
 	if status.Message != "" {
 		return status, fmt.Errorf("%s", status.Message)
 	}
@@ -155,6 +174,9 @@ func (s windowsService) Disable() (State, error) {
 
 func (s windowsService) Enable() (State, error) {
 	status := s.Status()
+	if status.ForeignTask {
+		return status, foreignTaskError(status.Message)
+	}
 	if status.Message != "" {
 		return status, fmt.Errorf("%s", status.Message)
 	}
@@ -171,6 +193,9 @@ func (s windowsService) Enable() (State, error) {
 		return State{Supported: true, Installed: true, Path: TaskName}, err
 	}
 	status = s.Status()
+	if status.ForeignTask {
+		return status, foreignTaskError(status.Message)
+	}
 	if status.Message != "" {
 		return status, fmt.Errorf("%s", status.Message)
 	}
@@ -196,13 +221,29 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 	}
 	state.Installed = true
 	var task struct {
-		XMLName  xml.Name `xml:"Task"`
+		XMLName xml.Name `xml:"Task"`
+		Actions struct {
+			Exec struct {
+				Command string `xml:"Command"`
+			} `xml:"Exec"`
+		} `xml:"Actions"`
 		Settings struct {
 			Enabled *bool `xml:"Enabled"`
 		} `xml:"Settings"`
 	}
 	if err := unmarshalTaskXML(out, &task); err != nil {
 		state.Message = fmt.Sprintf("schtasks query returned invalid XML: %v", err)
+		return state
+	}
+	if s.executable != "" && !sameWindowsExecutable(task.Actions.Exec.Command, s.executable) {
+		state.Installed = false
+		state.Loaded = "false"
+		state.Enabled = "false"
+		state.ForeignTask = true
+		state.Message = fmt.Sprintf(
+			"scheduled task %s belongs to a different installation: targets %q, running executable is %q",
+			TaskName, task.Actions.Exec.Command, s.executable,
+		)
 		return state
 	}
 	// Task Scheduler's schema defaults Settings/Enabled to true when the
@@ -216,6 +257,19 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 	// in the cross-platform sense: the OS scheduler has it and will launch it.
 	state.Loaded = state.Enabled
 	return state
+}
+
+func foreignTaskError(message string) error {
+	return fmt.Errorf("%s; re-run autostart install or uninstall with --force to take it over", message)
+}
+
+func sameWindowsExecutable(taskCommand, executable string) bool {
+	taskCommand = strings.Trim(strings.TrimSpace(taskCommand), `"`)
+	executable = strings.Trim(strings.TrimSpace(executable), `"`)
+	if taskCommand == "" || executable == "" {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(taskCommand), filepath.Clean(executable))
 }
 
 func unmarshalTaskXML(data []byte, value any) error {

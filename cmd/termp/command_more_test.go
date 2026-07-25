@@ -140,14 +140,13 @@ type fakeAutostartManager struct {
 	disableState   service.State
 }
 
-func (m fakeAutostartManager) Install(string) (service.State, error) {
+func (m fakeAutostartManager) Install(string, bool) (service.State, error) {
 	return service.State{}, nil
 }
 
-func (m fakeAutostartManager) Uninstall() (service.State, error) {
+func (m fakeAutostartManager) Uninstall(bool) (service.State, error) {
 	return m.uninstallState, nil
 }
-
 func (m fakeAutostartManager) Disable() (service.State, error) {
 	return m.disableState, nil
 }

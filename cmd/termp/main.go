@@ -381,9 +381,9 @@ func setup(args []string) error {
 }
 
 type setupServiceManager interface {
-	Install(string) (service.State, error)
-	InstallDefinition(string) (service.State, error)
-	Uninstall() (service.State, error)
+	Install(string, bool) (service.State, error)
+	InstallDefinition(string, bool) (service.State, error)
+	Uninstall(bool) (service.State, error)
 	Status() service.State
 }
 
@@ -392,7 +392,7 @@ func newSetupModel(cfg config.Config, save tui.SetupSaveFunc, manager setupServi
 		return installSetupAutostart(manager, path, currentDaemonPID() > 0)
 	}
 	uninstallAutostart := func() error {
-		_, err := manager.Uninstall()
+		_, err := manager.Uninstall(false)
 		return err
 	}
 	autostartInstalled := func() (bool, error) {
@@ -406,7 +406,7 @@ func installSetupAutostart(manager setupServiceManager, path string, daemonRunni
 	if daemonRunning {
 		install = manager.InstallDefinition
 	}
-	_, err := install(path)
+	_, err := install(path, false)
 	return err
 }
 

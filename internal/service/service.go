@@ -40,21 +40,24 @@ func (ExecRunner) RunContext(ctx context.Context, name string, args ...string) (
 }
 
 type Manager struct {
-	GOOS   string
-	Runner Runner
+	GOOS       string
+	Runner     Runner
+	Executable string
 }
 
 type State struct {
-	Supported bool
-	Installed bool
-	Loaded    string
-	Enabled   string
-	Path      string
-	Message   string
+	Supported   bool
+	Installed   bool
+	Loaded      string
+	Enabled     string
+	Path        string
+	Message     string
+	ForeignTask bool
 }
 
 func NewManager() Manager {
-	return Manager{GOOS: runtime.GOOS, Runner: ExecRunner{}}
+	exe, _ := ResolveExecutable()
+	return Manager{GOOS: runtime.GOOS, Runner: ExecRunner{}, Executable: exe}
 }
 
 func ResolveExecutable() (string, error) {
@@ -133,37 +136,37 @@ func pathWithin(path, root string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func (m Manager) Install(exe string) (State, error) {
-	return m.install(exe, true)
+func (m Manager) Install(exe string, force bool) (State, error) {
+	return m.install(exe, true, force)
 }
 
 // InstallDefinition reconciles the autostart definition without launching a
 // second copy of an already-running daemon.
-func (m Manager) InstallDefinition(exe string) (State, error) {
-	return m.install(exe, false)
+func (m Manager) InstallDefinition(exe string, force bool) (State, error) {
+	return m.install(exe, false, force)
 }
 
-func (m Manager) install(exe string, launch bool) (State, error) {
+func (m Manager) install(exe string, launch, force bool) (State, error) {
 	switch m.GOOS {
 	case "darwin":
-		return darwinService{runner: m.runner()}.install(exe, launch)
+		return darwinService{runner: m.runner()}.install(exe, launch, force)
 	case "linux":
-		return linuxService{runner: m.runner()}.install(exe, launch)
+		return linuxService{runner: m.runner()}.install(exe, launch, force)
 	case "windows":
-		return windowsService{runner: m.runner()}.install(exe, launch)
+		return windowsService{runner: m.runner(), executable: exe}.install(exe, launch, force)
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
 }
 
-func (m Manager) Uninstall() (State, error) {
+func (m Manager) Uninstall(force bool) (State, error) {
 	switch m.GOOS {
 	case "darwin":
-		return darwinService{runner: m.runner()}.Uninstall()
+		return darwinService{runner: m.runner()}.Uninstall(force)
 	case "linux":
-		return linuxService{runner: m.runner()}.Uninstall()
+		return linuxService{runner: m.runner()}.Uninstall(force)
 	case "windows":
-		return windowsService{runner: m.runner()}.Uninstall()
+		return windowsService{runner: m.runner(), executable: m.Executable}.Uninstall(force)
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
@@ -176,7 +179,7 @@ func (m Manager) Disable() (State, error) {
 	case "linux":
 		return linuxService{runner: m.runner()}.Disable()
 	case "windows":
-		return windowsService{runner: m.runner()}.Disable()
+		return windowsService{runner: m.runner(), executable: m.Executable}.Disable()
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
@@ -189,7 +192,7 @@ func (m Manager) Enable() (State, error) {
 	case "linux":
 		return linuxService{runner: m.runner()}.Enable()
 	case "windows":
-		return windowsService{runner: m.runner()}.Enable()
+		return windowsService{runner: m.runner(), executable: m.Executable}.Enable()
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
@@ -209,7 +212,7 @@ func (m Manager) StatusContext(ctx context.Context) State {
 	case "linux":
 		return linuxService{runner: m.runner()}.StatusContext(ctx)
 	case "windows":
-		return windowsService{runner: m.runner()}.StatusContext(ctx)
+		return windowsService{runner: m.runner(), executable: m.Executable}.StatusContext(ctx)
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}
 	}
