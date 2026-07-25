@@ -40,8 +40,9 @@ func (ExecRunner) RunContext(ctx context.Context, name string, args ...string) (
 }
 
 type Manager struct {
-	GOOS   string
-	Runner Runner
+	GOOS       string
+	Runner     Runner
+	Executable string
 }
 
 type State struct {
@@ -54,7 +55,8 @@ type State struct {
 }
 
 func NewManager() Manager {
-	return Manager{GOOS: runtime.GOOS, Runner: ExecRunner{}}
+	exe, _ := ResolveExecutable()
+	return Manager{GOOS: runtime.GOOS, Runner: ExecRunner{}, Executable: exe}
 }
 
 func ResolveExecutable() (string, error) {
@@ -150,7 +152,7 @@ func (m Manager) install(exe string, launch bool) (State, error) {
 	case "linux":
 		return linuxService{runner: m.runner()}.install(exe, launch)
 	case "windows":
-		return windowsService{runner: m.runner()}.install(exe, launch)
+		return windowsService{runner: m.runner(), executable: exe}.install(exe, launch)
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
@@ -163,7 +165,7 @@ func (m Manager) Uninstall() (State, error) {
 	case "linux":
 		return linuxService{runner: m.runner()}.Uninstall()
 	case "windows":
-		return windowsService{runner: m.runner()}.Uninstall()
+		return windowsService{runner: m.runner(), executable: m.Executable}.Uninstall()
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
@@ -176,7 +178,7 @@ func (m Manager) Disable() (State, error) {
 	case "linux":
 		return linuxService{runner: m.runner()}.Disable()
 	case "windows":
-		return windowsService{runner: m.runner()}.Disable()
+		return windowsService{runner: m.runner(), executable: m.Executable}.Disable()
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
@@ -189,7 +191,7 @@ func (m Manager) Enable() (State, error) {
 	case "linux":
 		return linuxService{runner: m.runner()}.Enable()
 	case "windows":
-		return windowsService{runner: m.runner()}.Enable()
+		return windowsService{runner: m.runner(), executable: m.Executable}.Enable()
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
@@ -209,7 +211,7 @@ func (m Manager) StatusContext(ctx context.Context) State {
 	case "linux":
 		return linuxService{runner: m.runner()}.StatusContext(ctx)
 	case "windows":
-		return windowsService{runner: m.runner()}.StatusContext(ctx)
+		return windowsService{runner: m.runner(), executable: m.Executable}.StatusContext(ctx)
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}
 	}

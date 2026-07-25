@@ -28,6 +28,7 @@ type windowsInstallRunner struct {
 	calls   [][]string
 	xmlPath string
 	xmlData []byte
+	created bool
 }
 
 func (*blockingContextRunner) Run(string, ...string) ([]byte, error) {
@@ -46,6 +47,11 @@ func (r *recordingRunner) Run(name string, args ...string) ([]byte, error) {
 	if err := r.fail[call]; err != nil {
 		return []byte(r.out[call]), err
 	}
+	if name == "schtasks" && len(args) > 0 && args[0] == "/Delete" {
+		query := "schtasks /Query /TN " + TaskName + " /XML"
+		r.fail[query] = errors.New("exit status 1")
+		r.out[query] = "ERROR: The specified task name does not exist in the system.\n"
+	}
 	return []byte(r.out[call]), nil
 }
 
@@ -53,6 +59,7 @@ func (r *windowsInstallRunner) Run(name string, args ...string) ([]byte, error) 
 	call := append([]string{name}, args...)
 	r.calls = append(r.calls, call)
 	if name == "schtasks" && len(args) > 0 && args[0] == "/Create" {
+		r.created = true
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "/XML" {
 				r.xmlPath = args[i+1]
@@ -66,7 +73,10 @@ func (r *windowsInstallRunner) Run(name string, args ...string) ([]byte, error) 
 		}
 	}
 	if name == "schtasks" && len(args) > 0 && args[0] == "/Query" {
-		return []byte(windowsEnabledTaskXML), nil
+		if !r.created {
+			return []byte("ERROR: The specified task name does not exist in the system.\n"), errors.New("exit status 1")
+		}
+		return []byte(`<Task><Actions><Exec><Command>C:\Program Files &amp; Tools\&lt;termp&gt;\termp.exe</Command></Exec></Actions><Settings><Enabled>true</Enabled></Settings></Task>`), nil
 	}
 	return nil, nil
 }
@@ -821,8 +831,8 @@ func TestStatusContextBoundsHungServiceCommands(t *testing.T) {
 }
 
 const (
-	windowsEnabledTaskXML  = `<Task><Settings><Enabled>true</Enabled></Settings></Task>`
-	windowsDisabledTaskXML = `<Task><Settings><Enabled>false</Enabled></Settings></Task>`
+	windowsEnabledTaskXML  = `<Task><Actions><Exec><Command>C:\termp.exe</Command></Exec></Actions><Settings><Enabled>true</Enabled></Settings></Task>`
+	windowsDisabledTaskXML = `<Task><Actions><Exec><Command>C:\termp.exe</Command></Exec></Actions><Settings><Enabled>false</Enabled></Settings></Task>`
 )
 
 func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) {
@@ -838,7 +848,7 @@ func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) 
 	if len(runner.calls) < 1 {
 		t.Fatal("runner was not called")
 	}
-	create := runner.calls[0]
+	create := runner.calls[1]
 	for _, want := range []string{"schtasks", "/Create", "/TN", TaskName, "/XML", "/F"} {
 		if !hasArg(create, want) {
 			t.Fatalf("create call missing %q:\n%#v", want, create)
@@ -959,11 +969,9 @@ func TestWindowsDisableAndEnableToggleTaskWithoutRealSchtasks(t *testing.T) {
 
 func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 	runner := &recordingRunner{
-		fail: map[string]error{
-			"schtasks /Query /TN " + TaskName + " /XML": errors.New("exit status 1"),
-		},
+		fail: map[string]error{},
 		out: map[string]string{
-			"schtasks /Query /TN " + TaskName + " /XML": "ERROR: The system cannot find the file specified.\n",
+			"schtasks /Query /TN " + TaskName + " /XML": windowsEnabledTaskXML,
 		},
 	}
 	manager := Manager{GOOS: "windows", Runner: runner}
@@ -974,13 +982,13 @@ func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 	if state.Installed || state.Enabled != "false" || state.Loaded != "false" {
 		t.Fatalf("state = %+v, want not installed enabled false loaded false", state)
 	}
-	if len(runner.calls) < 2 {
-		t.Fatalf("Uninstall calls = %#v, want end then delete", runner.calls)
+	if len(runner.calls) < 3 {
+		t.Fatalf("Uninstall calls = %#v, want query, end, then delete", runner.calls)
 	}
-	if want := "schtasks /End /TN " + TaskName; runner.calls[0] != want {
-		t.Fatalf("first Uninstall call = %q, want %q", runner.calls[0], want)
+	if want := "schtasks /End /TN " + TaskName; runner.calls[1] != want {
+		t.Fatalf("second Uninstall call = %q, want %q", runner.calls[1], want)
 	}
-	delete := runner.calls[1]
+	delete := runner.calls[2]
 	for _, want := range []string{
 		"schtasks /Delete",
 		"/TN " + TaskName,
@@ -995,8 +1003,14 @@ func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 func TestWindowsUninstallTreatsMissingTaskAsSuccess(t *testing.T) {
 	deleteCall := "schtasks /Delete /TN " + TaskName + " /F"
 	runner := &recordingRunner{
-		fail: map[string]error{deleteCall: errors.New("exit status 1")},
-		out:  map[string]string{deleteCall: "ERROR: The specified task name does not exist in the system.\n"},
+		fail: map[string]error{
+			"schtasks /Query /TN " + TaskName + " /XML": errors.New("exit status 1"),
+			deleteCall: errors.New("exit status 1"),
+		},
+		out: map[string]string{
+			"schtasks /Query /TN " + TaskName + " /XML": "ERROR: The specified task name does not exist in the system.\n",
+			deleteCall: "ERROR: The specified task name does not exist in the system.\n",
+		},
 	}
 
 	state, err := (Manager{GOOS: "windows", Runner: runner}).Uninstall()
@@ -1006,9 +1020,8 @@ func TestWindowsUninstallTreatsMissingTaskAsSuccess(t *testing.T) {
 	if state.Installed || state.Loaded != "false" || state.Enabled != "false" {
 		t.Fatalf("Uninstall() = %+v, want clean absent state", state)
 	}
-	endCall := "schtasks /End /TN " + TaskName
-	if len(runner.calls) != 2 || runner.calls[0] != endCall || runner.calls[1] != deleteCall {
-		t.Fatalf("Uninstall calls = %#v, want best-effort end then idempotent delete", runner.calls)
+	if len(runner.calls) != 1 || runner.calls[0] != "schtasks /Query /TN "+TaskName+" /XML" {
+		t.Fatalf("Uninstall calls = %#v, want only absent-state query", runner.calls)
 	}
 }
 
@@ -1109,6 +1122,103 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 			}
 			if tt.wantMessage && !strings.Contains(state.Message, "Access is denied") {
 				t.Fatalf("Status().Message = %q, want schtasks output", state.Message)
+			}
+		})
+	}
+}
+
+func TestWindowsStatusVerifiesTaskExecutable(t *testing.T) {
+	query := "schtasks /Query /TN " + TaskName + " /XML"
+	tests := []struct {
+		name          string
+		executable    string
+		wantInstalled bool
+		wantMessage   string
+	}{
+		{
+			name:          "same executable",
+			executable:    `c:\TERMP.exe`,
+			wantInstalled: true,
+		},
+		{
+			name:        "different executable",
+			executable:  `C:\staged\termp.exe`,
+			wantMessage: `belongs to a different installation`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingRunner{
+				fail: map[string]error{},
+				out:  map[string]string{query: windowsEnabledTaskXML},
+			}
+			manager := Manager{GOOS: "windows", Runner: runner, Executable: tt.executable}
+			state := manager.Status()
+			if state.Installed != tt.wantInstalled {
+				t.Fatalf("Status().Installed = %t, want %t; state=%+v", state.Installed, tt.wantInstalled, state)
+			}
+			if !strings.Contains(state.Message, tt.wantMessage) {
+				t.Fatalf("Status().Message = %q, want substring %q", state.Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestWindowsInstallReconcilesTaskForSameExecutable(t *testing.T) {
+	query := "schtasks /Query /TN " + TaskName + " /XML"
+	runner := &recordingRunner{
+		fail: map[string]error{},
+		out:  map[string]string{query: windowsEnabledTaskXML},
+	}
+
+	if _, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`); err != nil {
+		t.Fatal(err)
+	}
+	if !slicesContainsPrefix(runner.calls, "schtasks /Create /TN "+TaskName+" ") {
+		t.Fatalf("Install calls = %#v, want existing same-executable task reconciled", runner.calls)
+	}
+}
+
+func TestWindowsMutationsRefuseForeignTask(t *testing.T) {
+	query := "schtasks /Query /TN " + TaskName + " /XML"
+	t.Run("install", func(t *testing.T) {
+		runner := &recordingRunner{
+			fail: map[string]error{},
+			out:  map[string]string{query: windowsEnabledTaskXML},
+		}
+		_, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\other\termp.exe`)
+		if err == nil || !strings.Contains(err.Error(), "different installation") {
+			t.Fatalf("Install error = %v, want ownership refusal", err)
+		}
+		if len(runner.calls) != 1 || runner.calls[0] != query {
+			t.Fatalf("Install calls = %#v, want ownership query only", runner.calls)
+		}
+	})
+
+	for _, action := range []struct {
+		name string
+		run  func(Manager) (State, error)
+	}{
+		{name: "uninstall", run: Manager.Uninstall},
+		{name: "disable", run: Manager.Disable},
+		{name: "enable", run: Manager.Enable},
+	} {
+		t.Run(action.name, func(t *testing.T) {
+			runner := &recordingRunner{
+				fail: map[string]error{},
+				out:  map[string]string{query: windowsEnabledTaskXML},
+			}
+			_, err := action.run(Manager{
+				GOOS:       "windows",
+				Runner:     runner,
+				Executable: `C:\other\termp.exe`,
+			})
+			if err == nil || !strings.Contains(err.Error(), "different installation") {
+				t.Fatalf("%s error = %v, want ownership refusal", action.name, err)
+			}
+			if len(runner.calls) != 1 || runner.calls[0] != query {
+				t.Fatalf("%s calls = %#v, want ownership query only", action.name, runner.calls)
 			}
 		})
 	}
@@ -1343,6 +1453,15 @@ func userID() string {
 func hasCall(calls []string, want string) bool {
 	for _, call := range calls {
 		if call == want {
+			return true
+		}
+	}
+	return false
+}
+
+func slicesContainsPrefix(calls []string, prefix string) bool {
+	for _, call := range calls {
+		if strings.HasPrefix(call, prefix) {
 			return true
 		}
 	}

@@ -16,6 +16,7 @@ func TestWindowsSchtasksIntegration(t *testing.T) {
 	}
 
 	exe := buildWindowsIntegrationHelper(t)
+	manager.Executable = exe
 	t.Cleanup(func() {
 		// The task normally exits promptly, but explicitly end it so Windows
 		// releases the helper binary before TempDir cleanup removes it.

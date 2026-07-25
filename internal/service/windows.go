@@ -9,12 +9,14 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"unicode/utf16"
 )
 
 type windowsService struct {
-	runner Runner
+	runner     Runner
+	executable string
 }
 
 func (s windowsService) Install(exe string) (State, error) {
@@ -22,6 +24,10 @@ func (s windowsService) Install(exe string) (State, error) {
 }
 
 func (s windowsService) install(exe string, launch bool) (State, error) {
+	status := s.Status()
+	if status.Message != "" {
+		return status, fmt.Errorf("%s", status.Message)
+	}
 	username := ""
 	if current, err := user.Current(); err == nil && current != nil {
 		username = strings.TrimSpace(current.Username)
@@ -117,6 +123,13 @@ func BuildWindowsTaskXML(exe, username string) ([]byte, error) {
 }
 
 func (s windowsService) Uninstall() (State, error) {
+	status := s.Status()
+	if status.Message != "" {
+		return status, fmt.Errorf("%s", status.Message)
+	}
+	if !status.Installed {
+		return status, nil
+	}
 	// A task definition can be deleted while an instance launched from it keeps
 	// running. Ending first makes uninstall stop the daemon as well. /End is
 	// intentionally best-effort because an idle or already-removed task is a
@@ -196,13 +209,28 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 	}
 	state.Installed = true
 	var task struct {
-		XMLName  xml.Name `xml:"Task"`
+		XMLName xml.Name `xml:"Task"`
+		Actions struct {
+			Exec struct {
+				Command string `xml:"Command"`
+			} `xml:"Exec"`
+		} `xml:"Actions"`
 		Settings struct {
 			Enabled *bool `xml:"Enabled"`
 		} `xml:"Settings"`
 	}
 	if err := unmarshalTaskXML(out, &task); err != nil {
 		state.Message = fmt.Sprintf("schtasks query returned invalid XML: %v", err)
+		return state
+	}
+	if s.executable != "" && !sameWindowsExecutable(task.Actions.Exec.Command, s.executable) {
+		state.Installed = false
+		state.Loaded = "false"
+		state.Enabled = "false"
+		state.Message = fmt.Sprintf(
+			"scheduled task %s belongs to a different installation: targets %q, running executable is %q; this installation will not modify it",
+			TaskName, task.Actions.Exec.Command, s.executable,
+		)
 		return state
 	}
 	// Task Scheduler's schema defaults Settings/Enabled to true when the
@@ -216,6 +244,15 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 	// in the cross-platform sense: the OS scheduler has it and will launch it.
 	state.Loaded = state.Enabled
 	return state
+}
+
+func sameWindowsExecutable(taskCommand, executable string) bool {
+	taskCommand = strings.Trim(strings.TrimSpace(taskCommand), `"`)
+	executable = strings.Trim(strings.TrimSpace(executable), `"`)
+	if taskCommand == "" || executable == "" {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(taskCommand), filepath.Clean(executable))
 }
 
 func unmarshalTaskXML(data []byte, value any) error {
