@@ -805,6 +805,32 @@ func TestReadFreshDaemonDiscordStateAcceptsBoundaryAndRejectsOlder(t *testing.T)
 	}
 }
 
+func TestDaemonDiscordStateConnectedRequiresConnectedMatchingPID(t *testing.T) {
+	if !daemonDiscordStateConnected(42, daemonDiscordState{Connected: true, PID: 42}) {
+		t.Fatal("matching connected daemon state was rejected")
+	}
+	if daemonDiscordStateConnected(42, daemonDiscordState{Connected: false, PID: 42}) {
+		t.Fatal("disconnected daemon state was accepted")
+	}
+	if daemonDiscordStateConnected(42, daemonDiscordState{Connected: true, PID: 43}) {
+		t.Fatal("state from another daemon was accepted")
+	}
+}
+
+func TestDiscordConnectedFromStateOrProbeUsesFreshDaemonConnection(t *testing.T) {
+	probes := 0
+	connected := discordConnectedFromStateOrProbe(42, daemonDiscordState{Connected: true, PID: 42}, true, func() error {
+		probes++
+		return errors.New("handshake timed out")
+	})
+	if !connected {
+		t.Fatal("fresh daemon connection was reported disconnected")
+	}
+	if probes != 0 {
+		t.Fatalf("direct probe calls = %d, want 0", probes)
+	}
+}
+
 func TestWriteDaemonDiscordStateUses0600(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "discord.json")
 	state := daemonDiscordState{
