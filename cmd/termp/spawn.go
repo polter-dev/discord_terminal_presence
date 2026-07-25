@@ -68,12 +68,17 @@ func waitForDetachedStart(path string, childPID int, timeout, pollInterval time.
 		ownerPID, err := read(path)
 		if err == nil {
 			if ownerPID != childPID {
-				return fmt.Errorf("daemon PID file is owned by pid %d instead of spawned pid %d", ownerPID, childPID)
+				if alive(ownerPID) && looksLikeTermp(ownerPID) {
+					return fmt.Errorf("daemon PID file is owned by pid %d instead of spawned pid %d", ownerPID, childPID)
+				}
+				if !alive(childPID) {
+					return fmt.Errorf("detached daemon pid %d exited before owning the PID file", childPID)
+				}
 			}
-			if !alive(childPID) {
+			if ownerPID == childPID && !alive(childPID) {
 				return fmt.Errorf("detached daemon pid %d exited during startup", childPID)
 			}
-			if looksLikeTermp(childPID) {
+			if ownerPID == childPID && looksLikeTermp(childPID) {
 				return nil
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {

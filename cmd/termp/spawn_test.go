@@ -48,20 +48,79 @@ func TestWaitForDetachedStartReportsChildExit(t *testing.T) {
 	}
 }
 
-func TestWaitForDetachedStartReportsOtherPIDFileOwner(t *testing.T) {
+func TestWaitForDetachedStartIgnoresDeadStaleOwner(t *testing.T) {
+	reads := 0
+	err := waitForDetachedStart("termp.pid", 1234, time.Second, 25*time.Millisecond, func(string) (int, error) {
+		reads++
+		if reads == 1 {
+			return 5678, nil
+		}
+		return 1234, nil
+	}, func(pid int) bool {
+		return pid == 1234
+	}, func(pid int) bool {
+		return pid == 1234
+	}, func(time.Duration) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 {
+		t.Fatalf("PID file reads = %d, want 2", reads)
+	}
+}
+
+func TestWaitForDetachedStartIgnoresLiveNonTermpStaleOwner(t *testing.T) {
+	reads := 0
+	err := waitForDetachedStart("termp.pid", 1234, time.Second, 25*time.Millisecond, func(string) (int, error) {
+		reads++
+		if reads == 1 {
+			return 5678, nil
+		}
+		return 1234, nil
+	}, func(pid int) bool {
+		return pid == 1234 || pid == 5678
+	}, func(pid int) bool {
+		return pid == 1234
+	}, func(time.Duration) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 {
+		t.Fatalf("PID file reads = %d, want 2", reads)
+	}
+}
+
+func TestWaitForDetachedStartReportsLiveCompetingTermpOwner(t *testing.T) {
 	err := waitForDetachedStart("termp.pid", 1234, time.Second, 25*time.Millisecond, func(string) (int, error) {
 		return 5678, nil
-	}, func(int) bool {
-		t.Fatal("checked child after finding another owner")
-		return false
-	}, func(int) bool {
-		t.Fatal("checked process identity after finding another owner")
-		return false
+	}, func(pid int) bool {
+		return pid == 5678
+	}, func(pid int) bool {
+		return pid == 5678
 	}, func(time.Duration) {
-		t.Fatal("slept after finding another owner")
+		t.Fatal("slept after finding live competing owner")
 	})
 	if err == nil || !strings.Contains(err.Error(), "owned by pid 5678 instead of spawned pid 1234") {
 		t.Fatalf("waitForDetachedStart() error = %v, want actual owner", err)
+	}
+}
+
+func TestWaitForDetachedStartStaleOwnerTimesOutBoundedly(t *testing.T) {
+	var slept time.Duration
+	err := waitForDetachedStart("termp.pid", 1234, 60*time.Millisecond, 25*time.Millisecond, func(string) (int, error) {
+		return 5678, nil
+	}, func(pid int) bool {
+		return pid == 1234
+	}, func(int) bool {
+		return false
+	}, func(delay time.Duration) {
+		slept += delay
+	})
+	if err == nil || !strings.Contains(err.Error(), "startup could not be confirmed within 60ms") {
+		t.Fatalf("waitForDetachedStart() error = %v, want timeout", err)
+	}
+	if slept != 60*time.Millisecond {
+		t.Fatalf("readiness wait slept %s, want bounded 60ms", slept)
 	}
 }
 
