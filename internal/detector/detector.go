@@ -384,11 +384,12 @@ func (s *Selector) presenceEligible(proc Process, episodeKey string, now time.Ti
 	if proc.TTY.State == TTYNone || proc.TTY.DetachedTmux {
 		return false
 	}
-	if proc.TTY.State != TTYResolved || s.config.IdleClearTimeout <= 0 || !proc.TTY.AtimeKnown {
+	if s.config.IdleClearTimeout <= 0 {
 		return true
 	}
-	age := now.Sub(proc.TTY.Atime)
-	if age >= s.config.IdleClearTimeout {
+
+	atimeKnown := proc.TTY.State == TTYResolved && proc.TTY.AtimeKnown
+	if atimeKnown && now.Sub(proc.TTY.Atime) >= s.config.IdleClearTimeout {
 		return false
 	}
 	if !s.config.CorroborateIdleWithCPU {

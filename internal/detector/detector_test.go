@@ -666,6 +666,134 @@ func TestSelectorCPUIdleCorroborationKeepsMovingProcessEligible(t *testing.T) {
 	}
 }
 
+func TestSelectorUnresolvedTTYCPUIdleCorroborationExcludesFlatProcessAfterTimeout(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:       20 * time.Minute,
+		CorroborateIdleWithCPU: true,
+		ActivitySwitching:      true,
+	}, clock)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		CPUTime:    10,
+		TTY:        TTYInfo{State: TTYUnknown},
+	}
+
+	if detection := selector.Select([]Process{process}); detection.None {
+		t.Fatal("freshly observed unresolved process must not be judged idle immediately")
+	}
+	clock.Advance(20 * time.Minute)
+	if detection := selector.Select([]Process{process}); !detection.None {
+		t.Fatalf("flat unresolved process detection = %#v, want none after timeout", detection)
+	}
+}
+
+func TestSelectorUnresolvedTTYCPUIdleCorroborationKeepsMovingProcessEligible(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:       20 * time.Minute,
+		CorroborateIdleWithCPU: true,
+		ActivitySwitching:      true,
+	}, clock)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		TTY:        TTYInfo{State: TTYUnknown},
+	}
+
+	for scan := 0; scan < 4; scan++ {
+		process.CPUTime += 0.1
+		if detection := selector.Select([]Process{process}); detection.None {
+			t.Fatalf("scan %d: CPU-moving unresolved process should remain eligible", scan)
+		}
+		clock.Advance(10 * time.Minute)
+	}
+}
+
+func TestSelectorUnresolvedTTYFailOpenExceptions(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	tests := []struct {
+		name   string
+		config Config
+		tty    TTYInfo
+	}{
+		{
+			name: "CPU corroboration disabled",
+			config: Config{
+				IdleClearTimeout:       20 * time.Minute,
+				CorroborateIdleWithCPU: false,
+			},
+			tty: TTYInfo{State: TTYUnknown},
+		},
+		{
+			name: "idle clear disabled",
+			config: Config{
+				IdleClearTimeout:       0,
+				CorroborateIdleWithCPU: true,
+			},
+			tty: TTYInfo{State: TTYUnknown},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clock := &fakeClock{now: base}
+			tt.config.ActivitySwitching = true
+			selector := NewSelector(testRegistry(t), tt.config, clock)
+			process := Process{
+				Pid:        1,
+				Name:       "claude",
+				CreateTime: base.Add(-time.Hour),
+				CPUTime:    10,
+				TTY:        tt.tty,
+			}
+
+			if detection := selector.Select([]Process{process}); detection.None {
+				t.Fatal("fresh process should be eligible")
+			}
+			clock.Advance(time.Hour)
+			if detection := selector.Select([]Process{process}); detection.None {
+				t.Fatalf("flat unresolved process detection = %#v, want eligible", detection)
+			}
+		})
+	}
+}
+
+func TestSelectorTTYHardExclusionsOverrideCPUIdleSettings(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, tt := range []struct {
+		name string
+		tty  TTYInfo
+	}{
+		{name: "no TTY", tty: TTYInfo{State: TTYNone}},
+		{name: "detached tmux", tty: TTYInfo{State: TTYUnknown, DetachedTmux: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			selector := NewSelector(testRegistry(t), Config{
+				IdleClearTimeout:       0,
+				CorroborateIdleWithCPU: true,
+				ActivitySwitching:      true,
+			}, &fakeClock{now: base})
+			process := Process{
+				Pid:        1,
+				Name:       "claude",
+				CreateTime: base,
+				CPUTime:    10,
+				TTY:        tt.tty,
+			}
+
+			if detection := selector.Select([]Process{process}); !detection.None {
+				t.Fatalf("detection = %#v, want hard exclusion", detection)
+			}
+		})
+	}
+}
+
 func TestSelectorFreshAndFutureAtimeArePresent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("presence detection unimplemented on Windows — see #183")
