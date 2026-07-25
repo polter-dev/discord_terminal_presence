@@ -6,9 +6,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 const detachedChildFlag = "internal-detached-child"
+
+const (
+	detachedStartTimeout      = 2 * time.Second
+	detachedStartPollInterval = 25 * time.Millisecond
+)
 
 func detachedChildArgs(enableVerbose bool) []string {
 	args := []string{"start", "--" + detachedChildFlag}
@@ -50,7 +56,48 @@ func spawnDetachedStart(enableVerbose bool) (int, string, error) {
 	}
 	pid := command.Process.Pid
 	_ = command.Process.Release()
+	if err := waitForDetachedStart(pidFilePath(), pid, detachedStartTimeout, detachedStartPollInterval, readPID, processAlive, processLooksLikeTermp, time.Sleep); err != nil {
+		return 0, "", fmt.Errorf("%w; logs: %s", err, logPath)
+	}
 	return pid, logPath, nil
+}
+
+func waitForDetachedStart(path string, childPID int, timeout, pollInterval time.Duration, read func(string) (int, error), alive, looksLikeTermp func(int) bool, sleep func(time.Duration)) error {
+	var lastReadErr error
+	for waited := time.Duration(0); ; {
+		ownerPID, err := read(path)
+		if err == nil {
+			if ownerPID != childPID {
+				if alive(ownerPID) && looksLikeTermp(ownerPID) {
+					return fmt.Errorf("daemon PID file is owned by pid %d instead of spawned pid %d", ownerPID, childPID)
+				}
+				if !alive(childPID) {
+					return fmt.Errorf("detached daemon pid %d exited before owning the PID file", childPID)
+				}
+			}
+			if ownerPID == childPID && !alive(childPID) {
+				return fmt.Errorf("detached daemon pid %d exited during startup", childPID)
+			}
+			if ownerPID == childPID && looksLikeTermp(childPID) {
+				return nil
+			}
+		} else {
+			lastReadErr = err
+			if !alive(childPID) {
+				return fmt.Errorf("detached daemon pid %d exited before owning the PID file", childPID)
+			}
+		}
+
+		if timeout <= 0 || pollInterval <= 0 || waited >= timeout {
+			if lastReadErr != nil {
+				return fmt.Errorf("startup could not be confirmed within %s: read daemon PID file: %w", timeout, lastReadErr)
+			}
+			return fmt.Errorf("startup could not be confirmed within %s", timeout)
+		}
+		delay := min(pollInterval, timeout-waited)
+		sleep(delay)
+		waited += delay
+	}
 }
 
 func detachedLogPath() (string, error) {
