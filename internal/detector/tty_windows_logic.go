@@ -61,6 +61,10 @@ type windowsFocusObservation struct {
 }
 
 func (s *windowsTTYAtimeSource) Atime(path string) (time.Time, error) {
+	return s.AtimeWithEpisode(path, time.Time{}, false)
+}
+
+func (s *windowsTTYAtimeSource) AtimeWithEpisode(path string, lastAtime time.Time, episodeExists bool) (time.Time, error) {
 	hwnd, err := parseWindowsTTYPath(path)
 	if err != nil {
 		return time.Time{}, err
@@ -91,9 +95,9 @@ func (s *windowsTTYAtimeSource) Atime(path string) (time.Time, error) {
 	}
 	current := now()
 	if ownerOf(foreground) != ownerOf(hwnd) {
-		return s.observeFocus(hwnd, current, false), nil
+		return s.observeFocus(hwnd, current, false, lastAtime, episodeExists), nil
 	}
-	s.observeFocus(hwnd, current, true)
+	s.observeFocus(hwnd, current, true, time.Time{}, false)
 	idleMillis, ok := s.lastInputMillis()
 	if !ok {
 		return time.Time{}, errors.New("windows last input unavailable")
@@ -101,7 +105,7 @@ func (s *windowsTTYAtimeSource) Atime(path string) (time.Time, error) {
 	return current.Add(-time.Duration(idleMillis) * time.Millisecond), nil
 }
 
-func (s *windowsTTYAtimeSource) observeFocus(hwnd uintptr, current time.Time, focused bool) time.Time {
+func (s *windowsTTYAtimeSource) observeFocus(hwnd uintptr, current time.Time, focused bool, lastAtime time.Time, episodeExists bool) time.Time {
 	s.focusMu.Lock()
 	defer s.focusMu.Unlock()
 
@@ -118,9 +122,12 @@ func (s *windowsTTYAtimeSource) observeFocus(hwnd uintptr, current time.Time, fo
 
 	observation, ok := s.focusState[hwnd]
 	if !ok || focused {
-		// An unseen background window gets a full grace period: there is no
-		// evidence that it lost focus before this observation.
 		observation.lastForeground = current
+		if !ok && !focused && episodeExists && !lastAtime.IsZero() {
+			// Preserve the existing idle clock across daemon restarts. An
+			// episode is exact to the matched tool process, not merely HWND.
+			observation.lastForeground = lastAtime
+		}
 	}
 	observation.lastSeen = current
 	s.focusState[hwnd] = observation

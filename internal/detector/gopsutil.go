@@ -12,6 +12,9 @@ import (
 type GopsutilLister struct {
 	atimeOnce sync.Once
 	atime     TTYAtimeSource
+
+	episodesMu sync.RWMutex
+	episodes   *EpisodeStore
 }
 
 // NewGopsutilLister returns a process lister whose terminal activity state is
@@ -69,7 +72,24 @@ func (*GopsutilLister) Enrich(process Process) Process {
 
 // NewScanProcessEnricher shares tty and tmux snapshots across matched processes.
 func (l *GopsutilLister) NewScanProcessEnricher() ProcessEnricher {
-	return newPresenceProcessEnricher(l, newSystemTTYResolver(), queryTmuxPanes(), l.ttyAtimeSource())
+	enricher := &presenceProcessEnricher{
+		base:     l,
+		resolver: newSystemTTYResolver(),
+		tmux:     queryTmuxPanes(),
+		atime:    l.ttyAtimeSource(),
+	}
+	l.episodesMu.RLock()
+	enricher.episodes = l.episodes
+	l.episodesMu.RUnlock()
+	return enricher
+}
+
+// setEpisodeStore supplies the daemon's loaded episode history to per-scan
+// enrichers. The lister only reads it for first-observation focus fallback.
+func (l *GopsutilLister) setEpisodeStore(episodes *EpisodeStore) {
+	l.episodesMu.Lock()
+	l.episodes = episodes
+	l.episodesMu.Unlock()
 }
 
 func (l *GopsutilLister) ttyAtimeSource() TTYAtimeSource {
