@@ -826,11 +826,12 @@ func applyConfigChange(current detectionRuntime, nextCfg config.Config) (detecti
 
 func detectorConfig(cfg config.Config) detector.Config {
 	return detector.Config{
-		ScanInterval:         cfg.ScanIntervalDuration(),
-		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
-		Pin:                  cfg.Pin,
-		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
-		ActivitySwitching:    cfg.ActivitySwitching,
+		ScanInterval:           cfg.ScanIntervalDuration(),
+		IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
+		Pin:                    cfg.Pin,
+		HeadlinerIdleTimeout:   cfg.HeadlinerIdleTimeoutDuration(),
+		CorroborateIdleWithCPU: detector.DefaultCorroborateIdleWithCPU,
+		ActivitySwitching:      cfg.ActivitySwitching,
 	}
 }
 
@@ -1003,11 +1004,12 @@ func status(args []string) error {
 				return detector.Detection{}, err
 			}
 			return detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
-				ScanInterval:         cfg.ScanIntervalDuration(),
-				IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
-				Pin:                  cfg.Pin,
-				HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
-				ActivitySwitching:    cfg.ActivitySwitching,
+				ScanInterval:           cfg.ScanIntervalDuration(),
+				IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
+				Pin:                    cfg.Pin,
+				HeadlinerIdleTimeout:   cfg.HeadlinerIdleTimeoutDuration(),
+				CorroborateIdleWithCPU: detector.DefaultCorroborateIdleWithCPU,
+				ActivitySwitching:      cfg.ActivitySwitching,
 			})
 		},
 	})
@@ -1414,11 +1416,12 @@ func watch(args []string) error {
 		return err
 	}
 	det, err := detector.New(reg, detector.GopsutilLister{}, detector.Config{
-		ScanInterval:         cfg.ScanIntervalDuration(),
-		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
-		Pin:                  cfg.Pin,
-		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
-		ActivitySwitching:    cfg.ActivitySwitching,
+		ScanInterval:           cfg.ScanIntervalDuration(),
+		IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
+		Pin:                    cfg.Pin,
+		HeadlinerIdleTimeout:   cfg.HeadlinerIdleTimeoutDuration(),
+		CorroborateIdleWithCPU: detector.DefaultCorroborateIdleWithCPU,
+		ActivitySwitching:      cfg.ActivitySwitching,
 	})
 	if err != nil {
 		return err
@@ -1446,11 +1449,12 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 		return "", nil, err
 	}
 	detection, err := detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
-		ScanInterval:         cfg.ScanIntervalDuration(),
-		IdleClearTimeout:     cfg.IdleClearTimeoutDuration(),
-		Pin:                  cfg.Pin,
-		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeoutDuration(),
-		ActivitySwitching:    cfg.ActivitySwitching,
+		ScanInterval:           cfg.ScanIntervalDuration(),
+		IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
+		Pin:                    cfg.Pin,
+		HeadlinerIdleTimeout:   cfg.HeadlinerIdleTimeoutDuration(),
+		CorroborateIdleWithCPU: detector.DefaultCorroborateIdleWithCPU,
+		ActivitySwitching:      cfg.ActivitySwitching,
 	})
 	if err != nil {
 		debugf("watch snapshot scan skipped: %v", err)

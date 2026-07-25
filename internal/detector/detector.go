@@ -90,12 +90,13 @@ type Detection struct {
 
 // Config controls detector polling and debounce behavior.
 type Config struct {
-	ScanInterval         time.Duration
-	DebounceCycles       int
-	Pin                  string
-	HeadlinerIdleTimeout time.Duration
-	IdleClearTimeout     time.Duration
-	ActivitySwitching    bool
+	ScanInterval           time.Duration
+	DebounceCycles         int
+	Pin                    string
+	HeadlinerIdleTimeout   time.Duration
+	IdleClearTimeout       time.Duration
+	CorroborateIdleWithCPU bool
+	ActivitySwitching      bool
 }
 
 // Detector owns the process scan loop.
@@ -225,8 +226,14 @@ type Selector struct {
 	previousFeatured string
 	previousCPU      map[string]float64
 	idleSince        map[string]time.Time
+	processCPU       map[string]processCPUObservation
 	episodes         *EpisodeStore
 	saveEpisodes     func(*EpisodeStore)
+}
+
+type processCPUObservation struct {
+	total       float64
+	lastChanged time.Time
 }
 
 // NewSelector creates a stateful selector for repeated snapshots.
@@ -258,6 +265,7 @@ func newSelectorWithEpisodes(reg *registry.Registry, config Config, clock Clock,
 		clock:        clock,
 		previousCPU:  make(map[string]float64),
 		idleSince:    make(map[string]time.Time),
+		processCPU:   make(map[string]processCPUObservation),
 		episodes:     episodes,
 		saveEpisodes: save,
 	}
@@ -274,6 +282,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	cpuTotals := make(map[string]float64)
 	now := s.clock.Now()
 	eligibleEpisodes := make(map[string]struct{})
+	observedProcesses := make(map[string]struct{})
 	episodesChanged := false
 	for _, proc := range processes {
 		tool, ok := s.registry.MatchProcess(registry.ProcessInfo{
@@ -288,11 +297,13 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		if enricher != nil {
 			proc = enricher.Enrich(proc)
 		}
-		if !s.presenceEligible(proc, now) {
+		episodeKey := EpisodeKey(tool.ID, proc.Pid, proc.CreateTime)
+		s.observeProcessCPU(episodeKey, proc.CPUTime, now)
+		observedProcesses[episodeKey] = struct{}{}
+		if !s.presenceEligible(proc, episodeKey, now) {
 			continue
 		}
 
-		episodeKey := EpisodeKey(tool.ID, proc.Pid, proc.CreateTime)
 		startedAt, changed := s.episodes.Observe(episodeKey, proc.TTY, now, s.config.IdleClearTimeout)
 		eligibleEpisodes[episodeKey] = struct{}{}
 		episodesChanged = episodesChanged || changed
@@ -310,6 +321,11 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		current, exists := candidates[tool.ID]
 		if !exists || isBetterInstance(candidate, current) {
 			candidates[tool.ID] = candidate
+		}
+	}
+	for key := range s.processCPU {
+		if _, observed := observedProcesses[key]; !observed {
+			delete(s.processCPU, key)
 		}
 	}
 	episodesChanged = s.episodes.EndAbsent(eligibleEpisodes) || episodesChanged
@@ -351,7 +367,20 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	return detectionFromFeatured(featured, others)
 }
 
-func (s *Selector) presenceEligible(proc Process, now time.Time) bool {
+func (s *Selector) observeProcessCPU(key string, total float64, now time.Time) {
+	observation, ok := s.processCPU[key]
+	if !ok {
+		s.processCPU[key] = processCPUObservation{total: total, lastChanged: now}
+		return
+	}
+	if total > observation.total {
+		observation.lastChanged = now
+	}
+	observation.total = total
+	s.processCPU[key] = observation
+}
+
+func (s *Selector) presenceEligible(proc Process, episodeKey string, now time.Time) bool {
 	if proc.TTY.State == TTYNone || proc.TTY.DetachedTmux {
 		return false
 	}
@@ -359,7 +388,14 @@ func (s *Selector) presenceEligible(proc Process, now time.Time) bool {
 		return true
 	}
 	age := now.Sub(proc.TTY.Atime)
-	return age < 0 || age < s.config.IdleClearTimeout
+	if age >= s.config.IdleClearTimeout {
+		return false
+	}
+	if !s.config.CorroborateIdleWithCPU {
+		return true
+	}
+	cpuAge := now.Sub(s.processCPU[episodeKey].lastChanged)
+	return cpuAge < 0 || cpuAge < s.config.IdleClearTimeout
 }
 
 func (s *Selector) selectFeatured(candidates map[string]toolCandidate, now time.Time) FeaturedTool {

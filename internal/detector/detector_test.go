@@ -589,6 +589,83 @@ func TestSelectorIdleClearDisabledNeverClears(t *testing.T) {
 	}
 }
 
+func TestSelectorCPUIdleCorroborationDisabledPreservesAtimeBehavior(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:       20 * time.Minute,
+		CorroborateIdleWithCPU: false,
+		ActivitySwitching:      true,
+	}, clock)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		CPUTime:    10,
+		TTY:        TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
+	}
+
+	if detection := selector.Select([]Process{process}); detection.None {
+		t.Fatal("new process with fresh atime should be eligible")
+	}
+	clock.Advance(time.Hour)
+	process.TTY.Atime = clock.Now()
+	if detection := selector.Select([]Process{process}); detection.None {
+		t.Fatal("flat CPU must not affect eligibility when corroboration is disabled")
+	}
+}
+
+func TestSelectorCPUIdleCorroborationExcludesFlatProcessAfterTimeout(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:       20 * time.Minute,
+		CorroborateIdleWithCPU: true,
+		ActivitySwitching:      true,
+	}, clock)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		CPUTime:    10,
+		TTY:        TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
+	}
+
+	if detection := selector.Select([]Process{process}); detection.None {
+		t.Fatal("new process must not be judged idle immediately")
+	}
+	clock.Advance(20 * time.Minute)
+	process.TTY.Atime = clock.Now()
+	if detection := selector.Select([]Process{process}); !detection.None {
+		t.Fatalf("flat process detection = %#v, want none after timeout", detection)
+	}
+}
+
+func TestSelectorCPUIdleCorroborationKeepsMovingProcessEligible(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:       20 * time.Minute,
+		CorroborateIdleWithCPU: true,
+		ActivitySwitching:      true,
+	}, clock)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		TTY:        TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
+	}
+
+	for scan := 0; scan < 4; scan++ {
+		process.CPUTime += 0.1
+		process.TTY.Atime = clock.Now()
+		if detection := selector.Select([]Process{process}); detection.None {
+			t.Fatalf("scan %d: CPU-moving process should remain eligible", scan)
+		}
+		clock.Advance(10 * time.Minute)
+	}
+}
+
 func TestSelectorFreshAndFutureAtimeArePresent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("presence detection unimplemented on Windows — see #183")
