@@ -210,7 +210,7 @@ termp config init --force  # replace an existing config
 | `update_check` | bool | `true` | Checks GitHub Releases in `termp status` and `termp version`; set false to disable. |
 | `auto_update` | bool | `false` | Silently installs newer releases when `termp start` launches; the update takes effect next start. |
 | `scan_interval` | duration | `"3s"` | How often termp scans running tools. Invalid or zero values fall back to 3 seconds. |
-| `idle_clear_timeout` | duration | `"20m"` | Clears presence after all matched tools show no CPU activity for this long. Set `"0"` to disable; quiet work can appear idle. |
+| `idle_clear_timeout` | duration | `"20m"` | Clears presence after terminal inactivity lasts this long. On Windows, losing foreground starts that clock and CPU inactivity corroborates it. Set `"0"` to disable; quiet work can appear idle. |
 | `pin` | string | `""` | ID of a running tool that should always take the spotlight. |
 | `headliner_idle_timeout` | duration | `"60s"` | How long the spotlighted tool must be idle before another can replace it. |
 | `activity_switching` | bool | `true` | Allows a busier tool to take the spotlight after the current tool becomes idle. |

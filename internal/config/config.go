@@ -286,7 +286,7 @@ start_at_login = %t         # Start termp automatically when you log in.
 update_check = %t           # Check GitHub Releases for updates; NO_UPDATE_CHECK also disables this.
 auto_update = %t            # Silently install newer releases on daemon start. Off by default.
 scan_interval = %q        # How often termp scans local processes.
-idle_clear_timeout = %q       # Clear presence after this much CPU-idle time; "0" disables idle clear.
+idle_clear_timeout = %q       # Clear presence after this much terminal inactivity; "0" disables idle clear.
 #                              On Windows, a system-wide input timer means injected input can prevent idle clear.
 pin = %q                    # Prefer this tool ID as the headliner when it is running.
 headliner_idle_timeout = %q # How long the current headliner must be idle before switching.

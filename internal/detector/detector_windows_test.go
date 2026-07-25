@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+func TestGopsutilListerRetainsWindowsAtimeStateAcrossScans(t *testing.T) {
+	lister := NewGopsutilLister()
+	first := lister.ttyAtimeSource()
+	second := lister.ttyAtimeSource()
+	if first != second {
+		t.Fatal("GopsutilLister created a new Windows atime source between scans")
+	}
+}
+
 func TestSelectorIncludesToolInUnfocusedWindowAsOther(t *testing.T) {
 	base := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: base}
@@ -21,7 +30,7 @@ func TestSelectorIncludesToolInUnfocusedWindowAsOther(t *testing.T) {
 			2: {Path: "win:hwnd:200"},
 		}},
 		fakeTmuxSnapshot{},
-		windowsTTYAtimeSource{
+		&windowsTTYAtimeSource{
 			foregroundWindow: func() uintptr { return 200 },
 			rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
 			lastInputMillis:  func() (uint32, bool) { return 0, true },

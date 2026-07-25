@@ -278,7 +278,7 @@ func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
 		"auto_update = false",
 		"scan_interval = \"3s\"",
 		"idle_clear_timeout = \"20m\"",
-		"Clear presence after this much CPU-idle time",
+		"Clear presence after this much terminal inactivity",
 		"headliner_idle_timeout = \"60s\"",
 		"activity_switching = true",
 		"details_format = \"Using {tool}\"",

@@ -689,7 +689,7 @@ func run(ctx context.Context, manager *config.Manager) error {
 	if err != nil {
 		return err
 	}
-	det, err := detector.New(applied.registry, detector.GopsutilLister{}, applied.detectorConfig)
+	det, err := detector.New(applied.registry, detector.NewGopsutilLister(), applied.detectorConfig)
 	if err != nil {
 		return err
 	}
@@ -1036,7 +1036,7 @@ func status(args []string) error {
 			if err := ctx.Err(); err != nil {
 				return detector.Detection{}, err
 			}
-			return detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
+			return detector.ActiveDetectionWithPresence(reg, detector.NewGopsutilLister(), detector.Config{
 				ScanInterval:           cfg.ScanIntervalDuration(),
 				IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
 				Pin:                    cfg.Pin,
@@ -1471,7 +1471,7 @@ func watch(args []string) error {
 	if err != nil {
 		return err
 	}
-	det, err := detector.New(reg, detector.GopsutilLister{}, detector.Config{
+	det, err := detector.New(reg, detector.NewGopsutilLister(), detector.Config{
 		ScanInterval:           cfg.ScanIntervalDuration(),
 		IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
 		Pin:                    cfg.Pin,
@@ -1504,7 +1504,7 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	detection, err := detector.ActiveDetectionWithPresence(reg, detector.GopsutilLister{}, detector.Config{
+	detection, err := detector.ActiveDetectionWithPresence(reg, detector.NewGopsutilLister(), detector.Config{
 		ScanInterval:           cfg.ScanIntervalDuration(),
 		IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
 		Pin:                    cfg.Pin,
