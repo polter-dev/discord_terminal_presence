@@ -19,6 +19,7 @@ var (
 	procFreeConsole      = kernel32.NewProc("FreeConsole")
 	procGetConsoleWindow = kernel32.NewProc("GetConsoleWindow")
 	procGetLastInputInfo = user32.NewProc("GetLastInputInfo")
+	procGetAncestor      = user32.NewProc("GetAncestor")
 	procGetTickCount     = kernel32.NewProc("GetTickCount")
 
 	consoleAttachMu sync.Mutex
@@ -32,6 +33,11 @@ func newSystemTTYAtimeSource() TTYAtimeSource {
 	return windowsTTYAtimeSource{
 		foregroundWindow: func() uintptr {
 			return uintptr(windows.GetForegroundWindow())
+		},
+		rootOwnerWindow: func(hwnd uintptr) uintptr {
+			const gaRootOwner = 3
+			rootOwner, _, _ := procGetAncestor.Call(hwnd, gaRootOwner)
+			return rootOwner
 		},
 		lastInputMillis: realWindowsLastInputMillis,
 	}
