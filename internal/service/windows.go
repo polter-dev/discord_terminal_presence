@@ -18,6 +18,10 @@ type windowsService struct {
 }
 
 func (s windowsService) Install(exe string) (State, error) {
+	return s.install(exe, true)
+}
+
+func (s windowsService) install(exe string, launch bool) (State, error) {
 	username := ""
 	if current, err := user.Current(); err == nil && current != nil {
 		username = strings.TrimSpace(current.Username)
@@ -65,8 +69,10 @@ func (s windowsService) Install(exe string) (State, error) {
 	); err != nil {
 		return State{Supported: true, Path: TaskName}, fmt.Errorf("schtasks create failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if err := s.runTask(); err != nil {
-		return State{Supported: true, Installed: true, Path: TaskName}, err
+	if launch {
+		if err := s.runTask(); err != nil {
+			return State{Supported: true, Installed: true, Path: TaskName}, err
+		}
 	}
 	return s.Status(), nil
 }

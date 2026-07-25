@@ -875,6 +875,22 @@ func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) 
 	}
 }
 
+func TestWindowsInstallDefinitionDoesNotRunTask(t *testing.T) {
+	runner := &windowsInstallRunner{}
+	manager := Manager{GOOS: "windows", Runner: runner}
+	if _, err := manager.InstallDefinition(`C:\Program Files\termp\termp.exe`); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) == 0 || !hasArg(runner.calls[0], "/Create") ||
+		!hasArg(runner.calls[0], "/TN") || !hasArg(runner.calls[0], TaskName) ||
+		!hasArg(runner.calls[0], "/XML") || !hasArg(runner.calls[0], "/F") {
+		t.Fatalf("InstallDefinition calls = %#v, want task definition reconciliation", runner.calls)
+	}
+	if hasArgCall(runner.calls, "schtasks", "/Run", "/TN", TaskName) {
+		t.Fatalf("InstallDefinition calls = %#v, must not launch duplicate daemon", runner.calls)
+	}
+}
+
 func TestBuildWindowsTaskXMLWritesUTF16WithBOM(t *testing.T) {
 	data, err := BuildWindowsTaskXML(`C:\termp.exe`, `DOMAIN\user`)
 	if err != nil {

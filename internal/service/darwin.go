@@ -13,6 +13,10 @@ type darwinService struct {
 }
 
 func (s darwinService) Install(exe string) (State, error) {
+	return s.install(exe, true)
+}
+
+func (s darwinService) install(exe string, launch bool) (State, error) {
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true}, err
@@ -27,8 +31,10 @@ func (s darwinService) Install(exe string) (State, error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return State{Supported: true, Path: path}, err
 	}
-	if err := s.unload(path); err != nil {
-		return State{Supported: true, Path: path}, fmt.Errorf("cannot replace launch agent before unloading the existing job: %w", err)
+	if launch {
+		if err := s.unload(path); err != nil {
+			return State{Supported: true, Path: path}, fmt.Errorf("cannot replace launch agent before unloading the existing job: %w", err)
+		}
 	}
 	content, err := BuildLaunchAgentPlist(exe, logPath)
 	if err != nil {
@@ -37,8 +43,10 @@ func (s darwinService) Install(exe string) (State, error) {
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		return State{Supported: true, Path: path}, err
 	}
-	if err := s.load(path); err != nil {
-		return State{Supported: true, Installed: true, Path: path}, err
+	if launch {
+		if err := s.load(path); err != nil {
+			return State{Supported: true, Installed: true, Path: path}, err
+		}
 	}
 	return s.Status(), nil
 }
