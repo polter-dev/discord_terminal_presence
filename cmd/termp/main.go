@@ -1092,7 +1092,7 @@ func runStatusProbes(ctx context.Context, probes statusProbeFuncs) statusProbeRe
 	go func() {
 		if probes.daemonRunning && probes.discordState != nil {
 			if state, ok := probes.discordState(now()); ok {
-				if state.Connected && (probes.daemonPID <= 0 || state.PID == probes.daemonPID) {
+				if daemonDiscordStateConnected(probes.daemonPID, state) {
 					resultCh <- statusStageResult{stage: "discord", discord: "connected"}
 					return
 				}
@@ -1468,7 +1468,9 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 		debugf("watch snapshot scan skipped: %v", err)
 		detection = detector.Detection{None: true}
 	}
-	connected := presence.Probe(presence.DefaultAppID) == nil
+	connected := watchDiscordConnected(now, func() error {
+		return presence.Probe(presence.DefaultAppID)
+	})
 	activity := buildActivity(cfg, detection)
 	recent := []tui.RecentDetection(nil)
 	if activity != nil && detection.Tool.DisplayName != "" {
@@ -1517,7 +1519,10 @@ func bridgeWatchActivities(ctx context.Context, manager *config.Manager, detecti
 
 func bridgeWatchConnection(ctx context.Context, program *tea.Program, interval time.Duration) {
 	send := func() {
-		program.Send(tui.ConnMsg(presence.Probe(presence.DefaultAppID) == nil))
+		connected := watchDiscordConnected(time.Now(), func() error {
+			return presence.Probe(presence.DefaultAppID)
+		})
+		program.Send(tui.ConnMsg(connected))
 	}
 	send()
 	ticker := time.NewTicker(interval)
@@ -1530,6 +1535,26 @@ func bridgeWatchConnection(ctx context.Context, program *tea.Program, interval t
 			return
 		}
 	}
+}
+
+func watchDiscordConnected(now time.Time, probe func() error) bool {
+	pid, err := readPID(pidFilePath())
+	if err == nil && processAlive(pid) && processLooksLikeTermp(pid) {
+		state, ok := readFreshDaemonDiscordState(daemonDiscordStatePath(), now, daemonDiscordStateStaleAfter)
+		return discordConnectedFromStateOrProbe(pid, state, ok, probe)
+	}
+	return probe() == nil
+}
+
+func daemonDiscordStateConnected(daemonPID int, state daemonDiscordState) bool {
+	return state.Connected && (daemonPID <= 0 || state.PID == daemonPID)
+}
+
+func discordConnectedFromStateOrProbe(daemonPID int, state daemonDiscordState, fresh bool, probe func() error) bool {
+	if fresh && daemonDiscordStateConnected(daemonPID, state) {
+		return true
+	}
+	return probe() == nil
 }
 
 func openInBrowser(url string) error {

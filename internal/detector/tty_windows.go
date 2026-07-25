@@ -17,6 +17,7 @@ var (
 
 	procAttachConsole    = kernel32.NewProc("AttachConsole")
 	procFreeConsole      = kernel32.NewProc("FreeConsole")
+	procGetConsolePIDs   = kernel32.NewProc("GetConsoleProcessList")
 	procGetConsoleWindow = kernel32.NewProc("GetConsoleWindow")
 	procGetLastInputInfo = user32.NewProc("GetLastInputInfo")
 	procGetAncestor      = user32.NewProc("GetAncestor")
@@ -57,7 +58,13 @@ func realWindowsConsoleHWNDForPID(pid int32) (hwnd uintptr, conPTY bool, retErr 
 	ownPID := windows.GetCurrentProcessId()
 	originalHWND := getConsoleWindow()
 	hadConsole := originalHWND != 0
+	restorePID := uint32(0)
 	if hadConsole {
+		var err error
+		restorePID, err = consolePeerPID(ownPID)
+		if err != nil {
+			return 0, false, fmt.Errorf("identify original console peer: %w", err)
+		}
 		if err := freeConsole(); err != nil {
 			return 0, false, fmt.Errorf("detach current console: %w", err)
 		}
@@ -68,7 +75,7 @@ func realWindowsConsoleHWNDForPID(pid int32) (hwnd uintptr, conPTY bool, retErr 
 	defer func() {
 		_ = freeConsole()
 		if hadConsole {
-			if err := attachConsole(ownPID); err != nil && retErr == nil {
+			if err := attachConsole(restorePID); err != nil && retErr == nil {
 				retErr = fmt.Errorf("restore original console: %w", err)
 			}
 		}
@@ -82,6 +89,27 @@ func realWindowsConsoleHWNDForPID(pid int32) (hwnd uintptr, conPTY bool, retErr 
 		return 0, true, nil
 	}
 	return hwnd, false, nil
+}
+
+func consolePeerPID(ownPID uint32) (uint32, error) {
+	pids := make([]uint32, 16)
+	for {
+		count, _, err := procGetConsolePIDs.Call(
+			uintptr(unsafe.Pointer(&pids[0])),
+			uintptr(len(pids)),
+		)
+		if count == 0 {
+			return 0, err
+		}
+		if int(count) > len(pids) {
+			pids = make([]uint32, count)
+			continue
+		}
+		if pid, ok := selectConsolePeer(pids[:count], ownPID); ok {
+			return pid, nil
+		}
+		return 0, errors.New("original console has no peer process")
+	}
 }
 
 func attachConsole(pid uint32) error {
