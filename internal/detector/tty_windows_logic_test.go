@@ -174,8 +174,133 @@ func TestWindowsTTYAtimeUnfocusedPastIdleTimeoutClearsPresence(t *testing.T) {
 		t.Fatal("recently unfocused process should remain eligible during grace period")
 	}
 	clock.Advance(2 * time.Second)
+	process.CPUTime++
 	if detection := selector.SelectWithEnricher([]Process{process}, enricher); !detection.None {
-		t.Fatalf("detection = %#v, want none after idle timeout", detection)
+		t.Fatalf("detection = %#v, want none after idle timeout despite CPU movement", detection)
+	}
+}
+
+func TestWindowsFocusedWorkingProcessDoesNotRequireUserInput(t *testing.T) {
+	base := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	const timeout = 20 * time.Minute
+	clock := &fakeClock{now: base}
+	source := &windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return 300 },
+		rootOwnerWindow: func(hwnd uintptr) uintptr {
+			if hwnd == 100 {
+				return 300
+			}
+			return hwnd
+		},
+		lastInputMillis: func() (uint32, bool) {
+			return uint32((time.Hour).Milliseconds()), true
+		},
+		now: clock.Now,
+	}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:       timeout,
+		CorroborateIdleWithCPU: true,
+		ActivitySwitching:      true,
+	}, clock)
+	enricher := presenceEnricher(
+		fakeTTYResolver{resolutions: map[int32]TTYResolution{
+			1: {Path: "win:hwnd:100"},
+		}},
+		fakeTmuxSnapshot{},
+		source,
+	)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		CPUTime:    10,
+	}
+
+	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {
+		t.Fatal("new focused process should be eligible without recent user input")
+	}
+	clock.Advance(timeout)
+	process.CPUTime++
+	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {
+		t.Fatal("CPU-moving focused process should remain eligible without recent user input")
+	}
+}
+
+func TestWindowsFocusedProcessWithoutInputOrCPUEventuallyIdles(t *testing.T) {
+	base := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	const timeout = 20 * time.Minute
+	clock := &fakeClock{now: base}
+	source := &windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return 100 },
+		rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
+		lastInputMillis: func() (uint32, bool) {
+			return uint32((time.Hour).Milliseconds()), true
+		},
+		now: clock.Now,
+	}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:       timeout,
+		CorroborateIdleWithCPU: true,
+		ActivitySwitching:      true,
+	}, clock)
+	enricher := presenceEnricher(
+		fakeTTYResolver{resolutions: map[int32]TTYResolution{
+			1: {Path: "win:hwnd:100"},
+		}},
+		fakeTmuxSnapshot{},
+		source,
+	)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		CPUTime:    10,
+	}
+
+	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {
+		t.Fatal("new focused process should be seeded as recently active")
+	}
+	clock.Advance(timeout)
+	if detection := selector.SelectWithEnricher([]Process{process}, enricher); !detection.None {
+		t.Fatalf("detection = %#v, want flat focused process to idle after timeout", detection)
+	}
+}
+
+func TestWindowsFocusedPinnedInputStillRequiresCPUCorroboration(t *testing.T) {
+	base := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	const timeout = 20 * time.Minute
+	clock := &fakeClock{now: base}
+	source := &windowsTTYAtimeSource{
+		foregroundWindow: func() uintptr { return 100 },
+		rootOwnerWindow:  func(hwnd uintptr) uintptr { return hwnd },
+		lastInputMillis:  func() (uint32, bool) { return 0, true },
+		now:              clock.Now,
+	}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout:       timeout,
+		CorroborateIdleWithCPU: true,
+		ActivitySwitching:      true,
+	}, clock)
+	enricher := presenceEnricher(
+		fakeTTYResolver{resolutions: map[int32]TTYResolution{
+			1: {Path: "win:hwnd:100"},
+		}},
+		fakeTmuxSnapshot{},
+		source,
+	)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		CPUTime:    10,
+	}
+
+	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {
+		t.Fatal("new focused process should be seeded as recently active")
+	}
+	clock.Advance(timeout)
+	if detection := selector.SelectWithEnricher([]Process{process}, enricher); !detection.None {
+		t.Fatalf("detection = %#v, want #221 flat-CPU process to idle despite pinned input", detection)
 	}
 }
 
