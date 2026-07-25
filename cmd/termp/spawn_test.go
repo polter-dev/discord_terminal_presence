@@ -143,18 +143,55 @@ func TestWaitForDetachedStartTimesOutBoundedly(t *testing.T) {
 	}
 }
 
-func TestWaitForDetachedStartReportsPIDFileReadError(t *testing.T) {
+func TestWaitForDetachedStartRetriesPIDFileReadError(t *testing.T) {
 	readErr := errors.New("permission denied")
+	reads := 0
 	err := waitForDetachedStart("termp.pid", 1234, time.Second, 25*time.Millisecond, func(string) (int, error) {
+		reads++
+		if reads == 1 {
+			return 0, readErr
+		}
+		return 1234, nil
+	}, func(int) bool {
+		return true
+	}, func(int) bool {
+		return true
+	}, func(time.Duration) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 {
+		t.Fatalf("PID file reads = %d, want 2", reads)
+	}
+}
+
+func TestWaitForDetachedStartReadErrorTimesOutWithCause(t *testing.T) {
+	readErr := errors.New("permission denied")
+	err := waitForDetachedStart("termp.pid", 1234, 60*time.Millisecond, 25*time.Millisecond, func(string) (int, error) {
 		return 0, readErr
 	}, func(int) bool {
 		return true
 	}, func(int) bool {
 		return true
+	}, func(time.Duration) {})
+	if !errors.Is(err, readErr) || !strings.Contains(err.Error(), "startup could not be confirmed within 60ms") {
+		t.Fatalf("waitForDetachedStart() error = %v, want timeout wrapping read error", err)
+	}
+}
+
+func TestWaitForDetachedStartReadErrorPrefersChildExit(t *testing.T) {
+	readErr := errors.New("permission denied")
+	err := waitForDetachedStart("termp.pid", 1234, time.Second, 25*time.Millisecond, func(string) (int, error) {
+		return 0, readErr
+	}, func(int) bool {
+		return false
+	}, func(int) bool {
+		t.Fatal("checked process identity after child exit")
+		return false
 	}, func(time.Duration) {
-		t.Fatal("slept after PID file read error")
+		t.Fatal("slept after child exit")
 	})
-	if !errors.Is(err, readErr) {
-		t.Fatalf("waitForDetachedStart() error = %v, want wrapped read error", err)
+	if err == nil || errors.Is(err, readErr) || !strings.Contains(err.Error(), "pid 1234 exited before owning the PID file") {
+		t.Fatalf("waitForDetachedStart() error = %v, want child-exit error", err)
 	}
 }

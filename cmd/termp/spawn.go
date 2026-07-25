@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,6 +63,7 @@ func spawnDetachedStart(enableVerbose bool) (int, string, error) {
 }
 
 func waitForDetachedStart(path string, childPID int, timeout, pollInterval time.Duration, read func(string) (int, error), alive, looksLikeTermp func(int) bool, sleep func(time.Duration)) error {
+	var lastReadErr error
 	for waited := time.Duration(0); ; {
 		ownerPID, err := read(path)
 		if err == nil {
@@ -81,13 +81,17 @@ func waitForDetachedStart(path string, childPID int, timeout, pollInterval time.
 			if ownerPID == childPID && looksLikeTermp(childPID) {
 				return nil
 			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("read daemon PID file: %w", err)
-		} else if !alive(childPID) {
-			return fmt.Errorf("detached daemon pid %d exited before owning the PID file", childPID)
+		} else {
+			lastReadErr = err
+			if !alive(childPID) {
+				return fmt.Errorf("detached daemon pid %d exited before owning the PID file", childPID)
+			}
 		}
 
 		if timeout <= 0 || pollInterval <= 0 || waited >= timeout {
+			if lastReadErr != nil {
+				return fmt.Errorf("startup could not be confirmed within %s: read daemon PID file: %w", timeout, lastReadErr)
+			}
 			return fmt.Errorf("startup could not be confirmed within %s", timeout)
 		}
 		delay := min(pollInterval, timeout-waited)
