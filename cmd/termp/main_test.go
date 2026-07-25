@@ -34,12 +34,18 @@ type failingReleaseSource struct {
 
 type fakeSetupServiceManager struct {
 	installedExe   string
+	definitionExe  string
 	uninstallCalls int
 	installed      bool
 }
 
 func (m *fakeSetupServiceManager) Install(exe string) (service.State, error) {
 	m.installedExe = exe
+	return service.State{Supported: true, Installed: true}, nil
+}
+
+func (m *fakeSetupServiceManager) InstallDefinition(exe string) (service.State, error) {
+	m.definitionExe = exe
 	return service.State{Supported: true, Installed: true}, nil
 }
 
@@ -82,6 +88,16 @@ func TestNewSetupModelWiresServiceUninstall(t *testing.T) {
 	}
 	if saved.StartAtLogin || model.SetupConfig().StartAtLogin || !model.Applied() {
 		t.Fatalf("setup result = saved:%t model:%t applied:%t", saved.StartAtLogin, model.SetupConfig().StartAtLogin, model.Applied())
+	}
+}
+
+func TestSetupReconcilesDefinitionWithoutLaunchingWhenDaemonRunning(t *testing.T) {
+	manager := &fakeSetupServiceManager{}
+	if err := installSetupAutostart(manager, `C:\bin\termp.exe`, true); err != nil {
+		t.Fatal(err)
+	}
+	if manager.definitionExe != `C:\bin\termp.exe` || manager.installedExe != "" {
+		t.Fatalf("definition/install calls = %q/%q, want definition only", manager.definitionExe, manager.installedExe)
 	}
 }
 
@@ -358,6 +374,48 @@ func TestStopDaemonSucceedsWhenDaemonRemovesPIDFile(t *testing.T) {
 	}, func(time.Duration) {})
 	if err != nil || pid != 1234 {
 		t.Fatalf("stopDaemon() = %d, %v; want 1234, nil", pid, err)
+	}
+}
+
+func TestStopDaemonAndPublisherStopsOrphanNotNamedByPIDFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 2222); err != nil {
+		t.Fatal(err)
+	}
+	live := map[int]bool{1111: true, 2222: true}
+	var signaled []int
+	pid, err := stopDaemonAndPublisher(path, 1111, time.Second, time.Millisecond,
+		func(pid int) bool { return live[pid] },
+		func(pid int) error {
+			signaled = append(signaled, pid)
+			live[pid] = false
+			return nil
+		},
+		func(time.Duration) {},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid != 1111 || !reflect.DeepEqual(signaled, []int{1111, 2222}) {
+		t.Fatalf("stop result pid/signals = %d/%v, want 1111/[1111 2222]", pid, signaled)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("PID file remains: %v", err)
+	}
+}
+
+func TestKnownDaemonPIDFindsLivePublisherNotNamedByPIDFile(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(pidPath, 2222); err != nil {
+		t.Fatal(err)
+	}
+	statePath := writeDaemonDiscordStateFixture(t, daemonDiscordState{Connected: true, PID: 1111})
+	got := knownDaemonPID(pidPath, statePath,
+		func(pid int) bool { return pid == 1111 },
+		func(pid int) bool { return pid == 1111 },
+	)
+	if got != 1111 {
+		t.Fatalf("knownDaemonPID() = %d, want orphaned publisher 1111", got)
 	}
 }
 
@@ -805,15 +863,43 @@ func TestReadFreshDaemonDiscordStateAcceptsBoundaryAndRejectsOlder(t *testing.T)
 	}
 }
 
-func TestDaemonDiscordStateConnectedRequiresConnectedMatchingPID(t *testing.T) {
+func TestDaemonDiscordStateConnectedTrustsConnectedPublisherDespitePIDMismatch(t *testing.T) {
 	if !daemonDiscordStateConnected(42, daemonDiscordState{Connected: true, PID: 42}) {
 		t.Fatal("matching connected daemon state was rejected")
 	}
 	if daemonDiscordStateConnected(42, daemonDiscordState{Connected: false, PID: 42}) {
 		t.Fatal("disconnected daemon state was accepted")
 	}
-	if daemonDiscordStateConnected(42, daemonDiscordState{Connected: true, PID: 43}) {
-		t.Fatal("state from another daemon was accepted")
+	if !daemonDiscordStateConnected(42, daemonDiscordState{Connected: true, PID: 43}) {
+		t.Fatal("truthful state from orphaned publisher was rejected")
+	}
+}
+
+func TestRunStatusProbesReportsPublisherPIDMismatchWithoutDirectProbe(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	probeCalls := 0
+	got := runStatusProbes(ctx, statusProbeFuncs{
+		daemonRunning: true,
+		daemonPID:     2222,
+		discordState: func(time.Time) (daemonDiscordState, bool) {
+			return daemonDiscordState{Connected: true, PID: 1111}, true
+		},
+		discord: func(context.Context) error {
+			probeCalls++
+			return presence.ErrDiscordIPCHandshakeTimeout
+		},
+		service: func(context.Context) service.State { return service.State{} },
+		tool: func(context.Context) (detector.Detection, error) {
+			return detector.Detection{None: true}, nil
+		},
+	})
+	if probeCalls != 0 {
+		t.Fatalf("direct Discord probe calls = %d, want 0", probeCalls)
+	}
+	if !strings.Contains(got.discord, "another termp daemon owns Discord") ||
+		!strings.Contains(got.discord, "pid 1111") || !strings.Contains(got.discord, "names 2222") {
+		t.Fatalf("discord status = %q, want truthful PID mismatch", got.discord)
 	}
 }
 

@@ -382,14 +382,14 @@ func setup(args []string) error {
 
 type setupServiceManager interface {
 	Install(string) (service.State, error)
+	InstallDefinition(string) (service.State, error)
 	Uninstall() (service.State, error)
 	Status() service.State
 }
 
 func newSetupModel(cfg config.Config, save tui.SetupSaveFunc, manager setupServiceManager, exe tui.SetupExeFunc) tui.SetupModel {
 	installAutostart := func(path string) error {
-		_, err := manager.Install(path)
-		return err
+		return installSetupAutostart(manager, path, currentDaemonPID() > 0)
 	}
 	uninstallAutostart := func() error {
 		_, err := manager.Uninstall()
@@ -399,6 +399,19 @@ func newSetupModel(cfg config.Config, save tui.SetupSaveFunc, manager setupServi
 		return manager.Status().Installed, nil
 	}
 	return tui.NewSetupModel(cfg, save, installAutostart, uninstallAutostart, exe, autostartInstalled)
+}
+
+func installSetupAutostart(manager setupServiceManager, path string, daemonRunning bool) error {
+	install := manager.Install
+	if daemonRunning {
+		install = manager.InstallDefinition
+	}
+	_, err := install(path)
+	return err
+}
+
+func currentDaemonPID() int {
+	return knownDaemonPID(pidFilePath(), daemonDiscordStatePath(), processAlive, processLooksLikeTermp)
 }
 
 func completion(args []string) error {
@@ -589,7 +602,7 @@ func start(args []string) error {
 	verbose = options.verbose
 
 	pidPath := pidFilePath()
-	if pid, err := readPID(pidPath); err == nil && processAlive(pid) && processLooksLikeTermp(pid) {
+	if pid := knownDaemonPID(pidPath, daemonDiscordStatePath(), processAlive, processLooksLikeTermp); pid > 0 {
 		return fmt.Errorf("daemon already running with pid %d", pid)
 	}
 	background := !options.foreground
@@ -939,7 +952,12 @@ func stop(args []string) error {
 		return err
 	}
 	pidPath := pidFilePath()
-	pid, err := stopDaemon(pidPath, stopTimeout, stopPollInterval, processAlive, signalTermpProcess, time.Sleep)
+	publisherPID := 0
+	if state, ok := readDaemonDiscordState(daemonDiscordStatePath()); ok &&
+		state.PID > 0 && processAlive(state.PID) && processLooksLikeTermp(state.PID) {
+		publisherPID = state.PID
+	}
+	pid, err := stopDaemonAndPublisher(pidPath, publisherPID, stopTimeout, stopPollInterval, processAlive, signalTermpProcess, time.Sleep)
 	if err != nil {
 		return err
 	}
@@ -988,6 +1006,13 @@ func status(args []string) error {
 		running = processAlive(pid) && processLooksLikeTermp(pid)
 		if running {
 			daemonPID = pid
+		}
+	}
+	if !running {
+		if state, ok := readFreshDaemonDiscordState(daemonDiscordStatePath(), time.Now(), daemonDiscordStateStaleAfter); ok &&
+			state.PID > 0 && processAlive(state.PID) && processLooksLikeTermp(state.PID) {
+			running = true
+			daemonPID = state.PID
 		}
 	}
 
@@ -1092,8 +1117,12 @@ func runStatusProbes(ctx context.Context, probes statusProbeFuncs) statusProbeRe
 	go func() {
 		if probes.daemonRunning && probes.discordState != nil {
 			if state, ok := probes.discordState(now()); ok {
-				if daemonDiscordStateConnected(probes.daemonPID, state) {
-					resultCh <- statusStageResult{stage: "discord", discord: "connected"}
+				if state.Connected {
+					discord := "connected"
+					if probes.daemonPID > 0 && state.PID > 0 && state.PID != probes.daemonPID {
+						discord = fmt.Sprintf("connected (another termp daemon owns Discord: pid %d; PID file names %d)", state.PID, probes.daemonPID)
+					}
+					resultCh <- statusStageResult{stage: "discord", discord: discord}
 					return
 				}
 			}
@@ -1225,6 +1254,17 @@ func writeDaemonDiscordState(path string, state daemonDiscordState) error {
 }
 
 func readFreshDaemonDiscordState(path string, now time.Time, staleAfter time.Duration) (daemonDiscordState, bool) {
+	state, ok := readDaemonDiscordState(path)
+	if !ok {
+		return daemonDiscordState{}, false
+	}
+	if state.UpdatedAt.IsZero() || staleAfter <= 0 || now.Sub(state.UpdatedAt) > staleAfter {
+		return daemonDiscordState{}, false
+	}
+	return state, true
+}
+
+func readDaemonDiscordState(path string) (daemonDiscordState, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return daemonDiscordState{}, false
@@ -1233,10 +1273,18 @@ func readFreshDaemonDiscordState(path string, now time.Time, staleAfter time.Dur
 	if err := json.Unmarshal(data, &state); err != nil {
 		return daemonDiscordState{}, false
 	}
-	if state.UpdatedAt.IsZero() || staleAfter <= 0 || now.Sub(state.UpdatedAt) > staleAfter {
-		return daemonDiscordState{}, false
-	}
 	return state, true
+}
+
+func knownDaemonPID(pidPath, discordStatePath string, alive, looksLikeTermp func(int) bool) int {
+	if pid, err := readPID(pidPath); err == nil && alive(pid) && looksLikeTermp(pid) {
+		return pid
+	}
+	if state, ok := readDaemonDiscordState(discordStatePath); ok &&
+		state.PID > 0 && alive(state.PID) && looksLikeTermp(state.PID) {
+		return state.PID
+	}
+	return 0
 }
 
 func formatDiscordStatus(err error) string {
@@ -1547,7 +1595,7 @@ func watchDiscordConnected(now time.Time, probe func() error) bool {
 }
 
 func daemonDiscordStateConnected(daemonPID int, state daemonDiscordState) bool {
-	return state.Connected && (daemonPID <= 0 || state.PID == daemonPID)
+	return state.Connected
 }
 
 func discordConnectedFromStateOrProbe(daemonPID int, state daemonDiscordState, fresh bool, probe func() error) bool {
@@ -1862,6 +1910,54 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int
 		return 0, errors.New("daemon exited, but PID file changed ownership and was not removed")
 	}
 	return pid, nil
+}
+
+func stopDaemonAndPublisher(path string, publisherPID int, timeout, pollInterval time.Duration, alive func(int) bool, signal func(int) error, sleep func(time.Duration)) (int, error) {
+	pid, info, readErr := readPIDRecord(path)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return 0, readErr
+	}
+
+	targets := make([]int, 0, 2)
+	if publisherPID > 0 && alive(publisherPID) {
+		targets = append(targets, publisherPID)
+	}
+	if readErr == nil && alive(pid) && pid != publisherPID {
+		targets = append(targets, pid)
+	}
+	if len(targets) == 0 {
+		if readErr == nil {
+			removed, removeErr := removePIDIfOwned(path, pid, info)
+			if removeErr != nil {
+				return 0, fmt.Errorf("remove stale PID file: %w", removeErr)
+			}
+			if !removed {
+				return 0, errors.New("stale PID file changed before it could be removed")
+			}
+		}
+		return 0, errors.New("daemon is not running")
+	}
+
+	for _, target := range targets {
+		if err := signal(target); err != nil {
+			return 0, fmt.Errorf("refusing to signal pid %d: %w", target, err)
+		}
+	}
+	for _, target := range targets {
+		if !waitForProcessExit(target, timeout, pollInterval, alive, sleep) {
+			return 0, fmt.Errorf("timed out after %s waiting for daemon pid %d to exit; PID file was not removed", timeout, target)
+		}
+	}
+	if readErr == nil {
+		result, err := removePIDIfOwnedResult(path, pid, info)
+		if err != nil {
+			return 0, fmt.Errorf("remove PID file: %w", err)
+		}
+		if result == pidRemovalChanged {
+			return 0, errors.New("daemon exited, but PID file changed ownership and was not removed")
+		}
+	}
+	return targets[0], nil
 }
 
 func waitForProcessExit(pid int, timeout, pollInterval time.Duration, alive func(int) bool, sleep func(time.Duration)) bool {

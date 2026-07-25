@@ -13,6 +13,10 @@ type linuxService struct {
 }
 
 func (s linuxService) Install(exe string) (State, error) {
+	return s.install(exe, true)
+}
+
+func (s linuxService) install(exe string, launch bool) (State, error) {
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true}, err
@@ -30,7 +34,12 @@ func (s linuxService) Install(exe string) (State, error) {
 	if out, err := s.runner.Run("systemctl", "--user", "daemon-reload"); err != nil {
 		return State{Supported: true, Installed: true, Path: path}, fmt.Errorf("systemctl daemon-reload failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := s.runner.Run("systemctl", "--user", "enable", "--now", ServiceName); err != nil {
+	enableArgs := []string{"--user", "enable"}
+	if launch {
+		enableArgs = append(enableArgs, "--now")
+	}
+	enableArgs = append(enableArgs, ServiceName)
+	if out, err := s.runner.Run("systemctl", enableArgs...); err != nil {
 		return State{Supported: true, Installed: true, Path: path}, fmt.Errorf("systemctl enable failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return s.Status(), nil

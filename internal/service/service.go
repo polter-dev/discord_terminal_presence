@@ -134,13 +134,23 @@ func pathWithin(path, root string) bool {
 }
 
 func (m Manager) Install(exe string) (State, error) {
+	return m.install(exe, true)
+}
+
+// InstallDefinition reconciles the autostart definition without launching a
+// second copy of an already-running daemon.
+func (m Manager) InstallDefinition(exe string) (State, error) {
+	return m.install(exe, false)
+}
+
+func (m Manager) install(exe string, launch bool) (State, error) {
 	switch m.GOOS {
 	case "darwin":
-		return darwinService{runner: m.runner()}.Install(exe)
+		return darwinService{runner: m.runner()}.install(exe, launch)
 	case "linux":
-		return linuxService{runner: m.runner()}.Install(exe)
+		return linuxService{runner: m.runner()}.install(exe, launch)
 	case "windows":
-		return windowsService{runner: m.runner()}.Install(exe)
+		return windowsService{runner: m.runner()}.install(exe, launch)
 	default:
 		return State{Supported: false, Message: fmt.Sprintf("auto-start not supported on %s yet", m.GOOS)}, ErrUnsupported
 	}
