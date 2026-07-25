@@ -20,6 +20,9 @@ type SetupInstallFunc func(exe string) error
 // SetupUninstallFunc removes autostart.
 type SetupUninstallFunc func() error
 
+// SetupInstalledFunc reports whether autostart is currently installed.
+type SetupInstalledFunc func() (bool, error)
+
 // SetupExeFunc resolves the executable path used for autostart.
 type SetupExeFunc func() (string, error)
 
@@ -37,6 +40,7 @@ type SetupModel struct {
 	save         SetupSaveFunc
 	install      SetupInstallFunc
 	uninstall    SetupUninstallFunc
+	installed    SetupInstalledFunc
 	exe          SetupExeFunc
 	cfg          config.Config
 	path         string
@@ -59,8 +63,8 @@ type setupApplyResultMsg struct {
 }
 
 // NewSetupModel creates the onboarding wizard seeded from cfg.
-func NewSetupModel(cfg config.Config, save SetupSaveFunc, install SetupInstallFunc, uninstall SetupUninstallFunc, exe SetupExeFunc) SetupModel {
-	return SetupModel{
+func NewSetupModel(cfg config.Config, save SetupSaveFunc, install SetupInstallFunc, uninstall SetupUninstallFunc, exe SetupExeFunc, installed ...SetupInstalledFunc) SetupModel {
+	model := SetupModel{
 		cfg:       cfg,
 		save:      save,
 		install:   install,
@@ -92,6 +96,10 @@ func NewSetupModel(cfg config.Config, save SetupSaveFunc, install SetupInstallFu
 		styles:       defaultStyles(cfg.UI.AccentColor),
 		applyConfirm: NewConfirmDialog("Apply these settings?", ConfirmYes, cfg.UI.AccentColor),
 	}
+	if len(installed) > 0 {
+		model.installed = installed[0]
+	}
+	return model
 }
 
 // SetupConfig returns the config produced by the wizard.
@@ -348,14 +356,21 @@ func (m SetupModel) startApply() (tea.Model, tea.Cmd) {
 	m.applied = false
 	original := m.cfg
 	return m, func() tea.Msg {
-		return applySetup(original, cfg, m.save, m.install, m.uninstall, m.exe)
+		return applySetup(original, cfg, m.save, m.install, m.uninstall, m.exe, m.installed)
 	}
 }
 
-func applySetup(original, desired config.Config, save SetupSaveFunc, install SetupInstallFunc, uninstall SetupUninstallFunc, exe SetupExeFunc) setupApplyResultMsg {
+func applySetup(original, desired config.Config, save SetupSaveFunc, install SetupInstallFunc, uninstall SetupUninstallFunc, exe SetupExeFunc, installed SetupInstalledFunc) setupApplyResultMsg {
+	isInstalled, statusErr := false, error(nil)
+	if installed != nil {
+		isInstalled, statusErr = installed()
+	}
+	stateKnown := installed != nil && statusErr == nil
+	installRequired := desired.StartAtLogin && (!stateKnown || !isInstalled)
+	uninstallRequired := !desired.StartAtLogin && (!stateKnown || isInstalled)
+
 	resolvedExe := ""
-	changed := original.StartAtLogin != desired.StartAtLogin
-	if changed && desired.StartAtLogin && exe != nil {
+	if installRequired && exe != nil {
 		var err error
 		resolvedExe, err = exe()
 		if err != nil {
@@ -372,17 +387,17 @@ func applySetup(original, desired config.Config, save SetupSaveFunc, install Set
 		}
 	}
 
-	autostart := "unchanged (disabled)"
+	autostart := "already disabled"
 	if desired.StartAtLogin {
-		autostart = "unchanged (enabled)"
+		autostart = "already enabled"
 	}
 	var reconcileErr error
-	if changed && desired.StartAtLogin {
+	if installRequired {
 		autostart = "installed"
 		if install != nil {
 			reconcileErr = install(resolvedExe)
 		}
-	} else if changed {
+	} else if uninstallRequired {
 		autostart = "removed"
 		if uninstall != nil {
 			reconcileErr = uninstall()
