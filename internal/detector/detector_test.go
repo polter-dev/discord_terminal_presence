@@ -3,9 +3,11 @@ package detector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1118,6 +1120,41 @@ func TestRunDebouncesBeforeEmitting(t *testing.T) {
 	}
 	cancel()
 	for range ch {
+	}
+}
+
+func TestRunDebugfEmitsScanAndDetectionDiagnostics(t *testing.T) {
+	det, err := New(testRegistry(t), &fakeLister{}, Config{DebounceCycles: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	det.presenceStatePath = filepath.Join(t.TempDir(), "presence.json")
+	lines := make(chan string, 8)
+	det.SetDebugf(func(format string, args ...any) {
+		lines <- fmt.Sprintf(format, args...)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	detections := det.Run(ctx)
+	select {
+	case <-detections:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for detection")
+	}
+	cancel()
+	for range detections {
+	}
+	close(lines)
+
+	var output strings.Builder
+	for line := range lines {
+		output.WriteString(line)
+		output.WriteByte('\n')
+	}
+	for _, marker := range []string{"process scan:", "detection candidate changed:", "detection emitted:"} {
+		if !strings.Contains(output.String(), marker) {
+			t.Fatalf("debug output = %q, want marker %q", output.String(), marker)
+		}
 	}
 }
 

@@ -283,6 +283,14 @@ func TestDetachedChildConstructionAndMarker(t *testing.T) {
 	if !options.detachedChild || options.detach {
 		t.Fatalf("child options = %#v, want marker without detach", options)
 	}
+
+	options, err = parseStartOptions(detachedChildArgs(true)[1:], false, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.detachedChild || !options.verbose {
+		t.Fatalf("verbose child options = %#v, want marker and verbose", options)
+	}
 }
 
 func TestCommandsRejectInvalidArgumentsBeforeSideEffects(t *testing.T) {

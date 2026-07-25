@@ -680,6 +680,10 @@ func run(ctx context.Context, manager *config.Manager) error {
 	if err != nil {
 		return err
 	}
+	if verbose {
+		det.SetDebugf(debugf)
+	}
+	debugf("daemon started: scan_interval=%s", applied.detectorConfig.ScanInterval)
 
 	writerOptions := []presence.WriterOption{}
 	publishDiscordState := runDaemonDiscordStatePublisher(ctx, daemonDiscordStatePath(), daemonDiscordStateWriteInterval, os.Getpid())

@@ -104,6 +104,7 @@ type Detector struct {
 	registry          *registry.Registry
 	lister            ProcessLister
 	config            Config
+	debugf            func(string, ...any)
 	presenceStatePath string
 	reconfigure       chan reconfigureRequest
 }
@@ -127,9 +128,17 @@ func New(reg *registry.Registry, lister ProcessLister, config Config) (*Detector
 		registry:          reg,
 		lister:            lister,
 		config:            config,
+		debugf:            func(string, ...any) {},
 		presenceStatePath: EpisodeStatePath(),
 		reconfigure:       make(chan reconfigureRequest),
 	}, nil
+}
+
+// SetDebugf enables optional diagnostic logging for process scans and detection decisions.
+func (d *Detector) SetDebugf(debugf func(string, ...any)) {
+	if debugf != nil {
+		d.debugf = debugf
+	}
 }
 
 // Reconfigure applies a new registry and detector config to a running detector.
@@ -529,27 +538,33 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 	scan := func(forceEmit bool) bool {
 		processes, err := listProcesses(d.lister)
 		if err != nil {
+			d.debugf("process scan failed: %v", err)
 			return true
 		}
+		d.debugf("process scan: processes=%d", len(processes))
 		current := selector.SelectWithEnricher(processes, processEnricher(d.lister))
 
 		if !candidateSet || !sameDetection(current, candidate) {
 			candidate = current
 			candidateSet = true
 			streak = 1
+			d.debugf("detection candidate changed: %s", detectionSummary(current))
 		} else {
 			streak++
 		}
 
 		if !forceEmit && streak < d.config.DebounceCycles {
+			d.debugf("detection decision: debounce=%d/%d", streak, d.config.DebounceCycles)
 			return true
 		}
 		if !forceEmit && hasEmitted && sameDetection(candidate, emitted) {
+			d.debugf("detection decision: unchanged")
 			return true
 		}
 
 		select {
 		case out <- candidate:
+			d.debugf("detection emitted: %s", detectionSummary(candidate))
 			emitted = candidate
 			hasEmitted = true
 			return true
@@ -591,6 +606,13 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 			return
 		}
 	}
+}
+
+func detectionSummary(detection Detection) string {
+	if detection.None {
+		return "none"
+	}
+	return "featured=" + detection.Tool.ID
 }
 
 func listProcesses(lister ProcessLister) ([]Process, error) {
