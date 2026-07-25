@@ -33,6 +33,10 @@ type episodeTTYAtimeSource interface {
 	AtimeWithEpisode(tty string, lastAtime time.Time, episodeExists bool) (time.Time, error)
 }
 
+type focusedTTYAtimeSource interface {
+	AtimeWithFocus(tty string, lastAtime time.Time, episodeExists bool) (time.Time, bool, error)
+}
+
 type presenceProcessEnricher struct {
 	base     ProcessEnricher
 	resolver TTYResolver
@@ -80,11 +84,19 @@ func (e *presenceProcessEnricher) enrich(process Process, toolID string) Process
 	}
 	if e.atime != nil {
 		var (
-			atime time.Time
-			err   error
+			atime      time.Time
+			foreground bool
+			focusKnown bool
+			err        error
 		)
-		if source, ok := e.atime.(episodeTTYAtimeSource); ok && e.episodes != nil && toolID != "" {
-			lastAtime, episodeExists := e.episodes.LastAtime(EpisodeKey(toolID, process.Pid, process.CreateTime))
+		lastAtime, episodeExists := time.Time{}, false
+		if e.episodes != nil && toolID != "" {
+			lastAtime, episodeExists = e.episodes.LastAtime(EpisodeKey(toolID, process.Pid, process.CreateTime))
+		}
+		if source, ok := e.atime.(focusedTTYAtimeSource); ok {
+			atime, foreground, err = source.AtimeWithFocus(process.TTY.Path, lastAtime, episodeExists)
+			focusKnown = err == nil
+		} else if source, ok := e.atime.(episodeTTYAtimeSource); ok && e.episodes != nil && toolID != "" {
 			atime, err = source.AtimeWithEpisode(process.TTY.Path, lastAtime, episodeExists)
 		} else {
 			atime, err = e.atime.Atime(process.TTY.Path)
@@ -92,6 +104,8 @@ func (e *presenceProcessEnricher) enrich(process Process, toolID string) Process
 		if err == nil {
 			process.TTY.Atime = atime
 			process.TTY.AtimeKnown = true
+			process.TTY.Foreground = foreground
+			process.TTY.FocusKnown = focusKnown
 		}
 	}
 	return process

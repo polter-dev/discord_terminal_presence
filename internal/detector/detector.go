@@ -46,6 +46,8 @@ type TTYInfo struct {
 	Path         string
 	Atime        time.Time
 	AtimeKnown   bool
+	Foreground   bool
+	FocusKnown   bool
 	DetachedTmux bool
 }
 
@@ -426,6 +428,11 @@ func (s *Selector) presenceEligible(proc Process, episodeKey string, now time.Ti
 	if proc.TTY.State != TTYResolved || s.config.IdleClearTimeout <= 0 || !proc.TTY.AtimeKnown {
 		return true
 	}
+	cpuAge := now.Sub(s.processCPU[episodeKey].lastChanged)
+	cpuRecent := cpuAge < 0 || cpuAge < s.config.IdleClearTimeout
+	if s.config.CorroborateIdleWithCPU && proc.TTY.FocusKnown && proc.TTY.Foreground {
+		return cpuRecent
+	}
 	age := now.Sub(proc.TTY.Atime)
 	if age >= s.config.IdleClearTimeout {
 		return false
@@ -433,8 +440,7 @@ func (s *Selector) presenceEligible(proc Process, episodeKey string, now time.Ti
 	if !s.config.CorroborateIdleWithCPU {
 		return true
 	}
-	cpuAge := now.Sub(s.processCPU[episodeKey].lastChanged)
-	return cpuAge < 0 || cpuAge < s.config.IdleClearTimeout
+	return cpuRecent
 }
 
 func (s *Selector) selectFeatured(candidates map[string]toolCandidate, now time.Time) FeaturedTool {

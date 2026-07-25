@@ -65,18 +65,23 @@ func (s *windowsTTYAtimeSource) Atime(path string) (time.Time, error) {
 }
 
 func (s *windowsTTYAtimeSource) AtimeWithEpisode(path string, lastAtime time.Time, episodeExists bool) (time.Time, error) {
+	atime, _, err := s.AtimeWithFocus(path, lastAtime, episodeExists)
+	return atime, err
+}
+
+func (s *windowsTTYAtimeSource) AtimeWithFocus(path string, lastAtime time.Time, episodeExists bool) (time.Time, bool, error) {
 	hwnd, err := parseWindowsTTYPath(path)
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, false, err
 	}
 	if s.foregroundWindow == nil {
-		return time.Time{}, errors.New("windows foreground window resolver unavailable")
+		return time.Time{}, false, errors.New("windows foreground window resolver unavailable")
 	}
 	if s.rootOwnerWindow == nil {
-		return time.Time{}, errors.New("windows root owner window resolver unavailable")
+		return time.Time{}, false, errors.New("windows root owner window resolver unavailable")
 	}
 	if s.lastInputMillis == nil {
-		return time.Time{}, errors.New("windows last input resolver unavailable")
+		return time.Time{}, false, errors.New("windows last input resolver unavailable")
 	}
 	now := time.Now
 	if s.now != nil {
@@ -84,7 +89,7 @@ func (s *windowsTTYAtimeSource) AtimeWithEpisode(path string, lastAtime time.Tim
 	}
 	foreground := s.foregroundWindow()
 	if foreground == 0 {
-		return time.Time{}, errors.New("windows foreground window unavailable")
+		return time.Time{}, false, errors.New("windows foreground window unavailable")
 	}
 	ownerOf := func(window uintptr) uintptr {
 		owner := s.rootOwnerWindow(window)
@@ -95,14 +100,14 @@ func (s *windowsTTYAtimeSource) AtimeWithEpisode(path string, lastAtime time.Tim
 	}
 	current := now()
 	if ownerOf(foreground) != ownerOf(hwnd) {
-		return s.observeFocus(hwnd, current, false, lastAtime, episodeExists), nil
+		return s.observeFocus(hwnd, current, false, lastAtime, episodeExists), false, nil
 	}
 	s.observeFocus(hwnd, current, true, time.Time{}, false)
 	idleMillis, ok := s.lastInputMillis()
 	if !ok {
-		return time.Time{}, errors.New("windows last input unavailable")
+		return time.Time{}, false, errors.New("windows last input unavailable")
 	}
-	return current.Add(-time.Duration(idleMillis) * time.Millisecond), nil
+	return current.Add(-time.Duration(idleMillis) * time.Millisecond), true, nil
 }
 
 func (s *windowsTTYAtimeSource) observeFocus(hwnd uintptr, current time.Time, focused bool, lastAtime time.Time, episodeExists bool) time.Time {
