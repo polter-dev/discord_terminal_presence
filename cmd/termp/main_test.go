@@ -1429,7 +1429,7 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 		method updatepkg.InstallMethod
 		want   updatepkg.Command
 	}{
-		{method: updatepkg.InstallHomebrew, want: updatepkg.Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}},
+		{method: updatepkg.InstallHomebrew, want: updatepkg.Command{Name: "brew", Args: []string{"upgrade", "polter-dev/tap/termp"}}},
 		{method: updatepkg.InstallGo, want: updatepkg.Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@v1.1.0"}}},
 		{method: updatepkg.InstallGeneric, want: updatepkg.Command{Name: "sh", Args: []string{"-c", updatepkg.GenericCommand("v1.1.0")}}},
 	}

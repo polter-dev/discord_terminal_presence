@@ -66,3 +66,6 @@ The canonical `install.sh` fetches release archives through
 tag as the archive filename and checksum, and falls back to the tag-pinned GitHub asset
 on any failure. Checksums remain tag-pinned direct GitHub downloads and are verified
 unchanged.
+
+Automatic updates delegate Homebrew Formula installations to
+`brew upgrade polter-dev/tap/termp`; they do not use the Cask-only `--cask` flag.

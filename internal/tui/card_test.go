@@ -25,7 +25,7 @@ func TestRenderCard(t *testing.T) {
 				Now:       now,
 				Activity: &presence.Activity{
 					Details:        "Using nvim",
-					State:          "also: lazygit",
+					State:          "With lazygit",
 					LargeImage:     presence.Image{Text: "Neovim", Key: "nvim"},
 					SmallImage:     presence.Image{Text: "lazygit", Key: "lazygit"},
 					StartTimestamp: &start,
@@ -36,7 +36,7 @@ func TestRenderCard(t *testing.T) {
 				"● discord: connected",
 				"Neovim",
 				"[image: nvim]",
-				"also: lazygit",
+				"With lazygit",
 				"Using nvim",
 				"elapsed: 12:34",
 				"small image: [image: lazygit]",
@@ -67,7 +67,7 @@ func TestRenderCard(t *testing.T) {
 				},
 			},
 			want:    []string{"Codex CLI", "[image: codex]", "elapsed: 1:02:03"},
-			wantNot: []string{"[image: Codex CLI]", "https://example.test/codex.png", "also:"},
+			wantNot: []string{"[image: Codex CLI]", "https://example.test/codex.png", "With "},
 		},
 		{
 			name: "image key without display name",

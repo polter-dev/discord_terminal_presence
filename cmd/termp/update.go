@@ -79,7 +79,7 @@ func runAutomaticUpdate(ctx context.Context, cfg config.Config, current string, 
 	updateCtx, cancelUpdate := context.WithTimeout(ctx, automaticUpdateTimeout)
 	defer cancelUpdate()
 	// Homebrew owns Homebrew-installed binaries, so PerformUpdate delegates to
-	// `brew upgrade --cask` instead of replacing the executable directly.
+	// `brew upgrade polter-dev/tap/termp` instead of replacing the executable directly.
 	if err := updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, nil, io.Discard, io.Discard); err != nil {
 		debugf("automatic update skipped: %v", err)
 		return
