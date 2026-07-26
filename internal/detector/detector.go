@@ -109,6 +109,10 @@ type Config struct {
 	ActivitySwitching      bool
 }
 
+// ScanFailureClearThreshold is the number of consecutive process-list failures
+// tolerated before the detector clears a previously emitted presence.
+const ScanFailureClearThreshold = 3
+
 // Detector owns the process scan loop.
 type Detector struct {
 	registry          *registry.Registry
@@ -564,6 +568,7 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 		candidate    Detection
 		candidateSet bool
 		streak       int
+		scanFailures int
 	)
 	statePath := d.presenceStatePath
 	episodes, _ := LoadEpisodeStore(statePath)
@@ -577,8 +582,27 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 	scan := func(forceEmit bool) bool {
 		processes, err := listProcesses(d.lister)
 		if err != nil {
+			scanFailures++
 			d.debugf("process scan failed: %v", err)
-			return true
+			if scanFailures < ScanFailureClearThreshold || !hasEmitted || emitted.None {
+				return true
+			}
+			none := Detection{None: true}
+			select {
+			case out <- none:
+				d.debugf("detection emitted after %d consecutive scan failures: %s", scanFailures, detectionSummary(none))
+				emitted = none
+				candidate = none
+				candidateSet = true
+				streak = 0
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		if scanFailures > 0 {
+			d.debugf("process scan recovered after %d failure(s)", scanFailures)
+			scanFailures = 0
 		}
 		d.debugf("process scan: processes=%d", len(processes))
 		current := selector.SelectWithEnricher(processes, processEnricher(d.lister))

@@ -536,6 +536,65 @@ func TestDurationFallbacks(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsMalformedDurations(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "scan interval garbage", key: "scan_interval", value: "garbage"},
+		{name: "scan interval zero", key: "scan_interval", value: "0"},
+		{name: "idle clear garbage", key: "idle_clear_timeout", value: "garbage"},
+		{name: "idle clear negative", key: "idle_clear_timeout", value: "-1s"},
+		{name: "headliner timeout garbage", key: "headliner_idle_timeout", value: "garbage"},
+		{name: "headliner timeout zero", key: "headliner_idle_timeout", value: "0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := withConfigHome(t)
+			writeConfig(t, path, fmt.Sprintf("%s = %q", tt.key, tt.value))
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load() accepted %s = %q", tt.key, tt.value)
+			}
+			if !strings.Contains(err.Error(), tt.key) {
+				t.Fatalf("Load() error = %v, want field name %q", err, tt.key)
+			}
+		})
+	}
+}
+
+func TestManagerKeepsLastGoodOnInvalidDurationReload(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `
+scan_interval = "7s"
+idle_clear_timeout = "10m"
+headliner_idle_timeout = "45s"
+`)
+	manager := NewManagerPath(path)
+	if _, err := manager.Current(); err != nil {
+		t.Fatal(err)
+	}
+
+	writeConfig(t, path, `
+scan_interval = "7s"
+idle_clear_timeout = "not-a-duration"
+headliner_idle_timeout = "45s"
+`)
+	if err := manager.Reload(); err == nil {
+		t.Fatal("expected invalid duration reload error")
+	}
+	cfg, err := manager.Current()
+	if err == nil {
+		t.Fatal("expected LastError after invalid duration reload")
+	}
+	if cfg.ScanInterval != "7s" || cfg.IdleClearTimeout != "10m" || cfg.HeadlinerIdleTimeout != "45s" {
+		t.Fatalf("last-good durations not preserved: scan=%q idle=%q headliner=%q",
+			cfg.ScanInterval, cfg.IdleClearTimeout, cfg.HeadlinerIdleTimeout)
+	}
+}
+
 func TestResolutionOrder(t *testing.T) {
 	tool := registry.Tool{
 		ID:      "claude-code",

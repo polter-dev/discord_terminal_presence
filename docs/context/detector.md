@@ -18,3 +18,8 @@ both sets.
 
 On macOS and Linux, collection membership continues to use the same terminal
 activity eligibility as featured selection.
+
+Process-list failures retain the last presence for one or two consecutive
+scans. On the third consecutive failure, the detector emits `None` immediately
+so the writer clears stale Discord presence. A successful scan resets the
+failure counter, and normal detection debounce applies when presence recovers.

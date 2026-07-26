@@ -13,6 +13,11 @@ publisher. Process validation requires the same user and exact executable image
 path, so a development or staged binary cannot stop another installed copy of
 termp.
 
+`termp autostart disable` and `termp autostart uninstall` stop the tracked
+daemon after pausing or removing the OS login service, including a detached
+daemon started independently with `termp start`. They report a partial failure
+instead of success if the service action completes but the daemon survives.
+
 `termp connect` does not start a daemon. It returns exit status 1 with an
 instruction to run `termp start` when no validated daemon exists. It targets a
 fresh, validated `discord.json` publisher before the PID-file owner because the
@@ -50,6 +55,11 @@ Setup continues to rewrite enabled autostart definitions so existing users get
 corrected service definitions. When a daemon is already running, definition
 reconciliation does not immediately launch the service again; the explicit
 `termp autostart install` command retains its start-now behavior.
+
+On Windows, detached startup publishes the PID file only after the named
+shutdown event and its cleanup watcher have been created successfully. A parent
+therefore cannot observe startup readiness before graceful `termp stop`
+cancellation is available.
 
 The canonical `install.sh` fetches release archives through
 `https://termp.polter.sh/dl/curl/{os}/{arch}` by default and falls back to the
