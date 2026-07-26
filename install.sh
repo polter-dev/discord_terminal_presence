@@ -340,7 +340,7 @@ case $download_channel in
 curl | update) ;;
 *) err "invalid download channel: $download_channel" ;;
 esac
-worker_archive_url=${TERMP_DOWNLOAD_URL:-"https://termp.polter.sh/dl/$download_channel/$os/$arch"}
+worker_archive_url=${TERMP_DOWNLOAD_URL:-"https://termp.polter.sh/dl/$download_channel/$os/$arch/$tag"}
 if ! download "$worker_archive_url" "$archive_path"; then
 	download "$base_url/$archive_name" "$archive_path"
 fi

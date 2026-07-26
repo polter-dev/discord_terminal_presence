@@ -168,7 +168,7 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	}
 	wantEnv := []string{
 		"VERSION=v2.3.4",
-		"TERMP_DOWNLOAD_URL=https://termp.polter.sh/dl/update/" + runtime.GOOS + "/" + runtime.GOARCH,
+		"TERMP_DOWNLOAD_URL=https://termp.polter.sh/dl/update/" + runtime.GOOS + "/" + runtime.GOARCH + "/v2.3.4",
 	}
 	if install.Name != "sh" || len(install.Args) != 1 || !reflect.DeepEqual(install.Env, wantEnv) {
 		t.Fatalf("install command = %#v", install)
@@ -187,19 +187,19 @@ func TestUpdateArchiveURLMapsSupportedTargets(t *testing.T) {
 		goarch string
 		want   string
 	}{
-		{goos: "darwin", goarch: "amd64", want: "https://termp.polter.sh/dl/update/darwin/amd64"},
-		{goos: "darwin", goarch: "arm64", want: "https://termp.polter.sh/dl/update/darwin/arm64"},
-		{goos: "linux", goarch: "amd64", want: "https://termp.polter.sh/dl/update/linux/amd64"},
-		{goos: "linux", goarch: "arm64", want: "https://termp.polter.sh/dl/update/linux/arm64"},
+		{goos: "darwin", goarch: "amd64", want: "https://termp.polter.sh/dl/update/darwin/amd64/v2.3.4"},
+		{goos: "darwin", goarch: "arm64", want: "https://termp.polter.sh/dl/update/darwin/arm64/v2.3.4"},
+		{goos: "linux", goarch: "amd64", want: "https://termp.polter.sh/dl/update/linux/amd64/v2.3.4"},
+		{goos: "linux", goarch: "arm64", want: "https://termp.polter.sh/dl/update/linux/arm64/v2.3.4"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.goos+"/"+tt.goarch, func(t *testing.T) {
-			got, err := updateArchiveURL(tt.goos, tt.goarch)
+			got, err := updateArchiveURL(tt.goos, tt.goarch, "v2.3.4")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got != tt.want {
-				t.Fatalf("updateArchiveURL(%q, %q) = %q, want %q", tt.goos, tt.goarch, got, tt.want)
+				t.Fatalf("updateArchiveURL(%q, %q, %q) = %q, want %q", tt.goos, tt.goarch, "v2.3.4", got, tt.want)
 			}
 		})
 	}
@@ -207,9 +207,23 @@ func TestUpdateArchiveURLMapsSupportedTargets(t *testing.T) {
 
 func TestUpdateArchiveURLRejectsUnsupportedTargets(t *testing.T) {
 	for _, target := range [][2]string{{"windows", "amd64"}, {"linux", "386"}} {
-		if got, err := updateArchiveURL(target[0], target[1]); err == nil || got != "" {
-			t.Fatalf("updateArchiveURL(%q, %q) = (%q, %v), want error", target[0], target[1], got, err)
+		if got, err := updateArchiveURL(target[0], target[1], "v2.3.4"); err == nil || got != "" {
+			t.Fatalf("updateArchiveURL(%q, %q, %q) = (%q, %v), want error", target[0], target[1], "v2.3.4", got, err)
 		}
+	}
+}
+
+func TestHomebrewUpdateUsesFormulaCommand(t *testing.T) {
+	want := Command{Name: "brew", Args: []string{"upgrade", "polter-dev/tap/termp"}}
+	got, err := UpdateCommandForMethod(InstallHomebrew, "v2.3.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("UpdateCommandForMethod(InstallHomebrew) = %#v, want %#v", got, want)
+	}
+	if BrewCommand != "brew upgrade polter-dev/tap/termp" {
+		t.Fatalf("BrewCommand = %q, want Formula upgrade command", BrewCommand)
 	}
 }
 

@@ -24,9 +24,9 @@ const (
 	cacheLifetime    = 24 * time.Hour
 	maxReleaseBody   = 1 << 20
 
-	BrewCommand         = "brew upgrade --cask polter-dev/tap/termp"
+	BrewCommand         = "brew upgrade polter-dev/tap/termp"
 	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
-	workerDownloadURL   = "https://termp.polter.sh/dl/update/%s/%s"
+	workerDownloadURL   = "https://termp.polter.sh/dl/update/%s/%s/%s"
 )
 
 var removeTemporaryInstaller = os.Remove
@@ -446,7 +446,7 @@ func validReleaseTag(tag string) bool {
 	return ok
 }
 
-func updateArchiveURL(goos, goarch string) (string, error) {
+func updateArchiveURL(goos, goarch, tag string) (string, error) {
 	switch goos {
 	case "darwin", "linux":
 	default:
@@ -457,7 +457,7 @@ func updateArchiveURL(goos, goarch string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported update architecture %q", goarch)
 	}
-	return fmt.Sprintf(workerDownloadURL, goos, goarch), nil
+	return fmt.Sprintf(workerDownloadURL, goos, goarch, tag), nil
 }
 
 // CommandForMethod returns the supported update command for an install method.
@@ -476,7 +476,7 @@ func CommandForMethod(method InstallMethod, tag string) string {
 func UpdateCommandForMethod(method InstallMethod, tag string) (Command, error) {
 	switch method {
 	case InstallHomebrew:
-		return Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}, nil
+		return Command{Name: "brew", Args: []string{"upgrade", "polter-dev/tap/termp"}}, nil
 	case InstallGo:
 		if !validReleaseTag(tag) {
 			return Command{}, fmt.Errorf("invalid release tag %q", tag)
@@ -518,7 +518,7 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 	if err := genericUpdatePlatformError(runtime.GOOS, tag); err != nil {
 		return err
 	}
-	archiveURL, err := updateArchiveURL(runtime.GOOS, runtime.GOARCH)
+	archiveURL, err := updateArchiveURL(runtime.GOOS, runtime.GOARCH, tag)
 	if err != nil {
 		return err
 	}
