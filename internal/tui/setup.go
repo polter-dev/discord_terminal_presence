@@ -26,6 +26,9 @@ type SetupInstalledFunc func() (bool, error)
 // SetupExeFunc resolves the executable path used for autostart.
 type SetupExeFunc func() (string, error)
 
+// SetupCompletionInstallFunc installs shell completion and returns modified paths.
+type SetupCompletionInstallFunc func() ([]string, error)
+
 type setupChoice struct {
 	label string
 	value bool
@@ -34,32 +37,37 @@ type setupChoice struct {
 
 // SetupModel is the testable Bubble Tea onboarding wizard.
 type SetupModel struct {
-	choices      []setupChoice
-	cursor       int
-	step         int
-	save         SetupSaveFunc
-	install      SetupInstallFunc
-	uninstall    SetupUninstallFunc
-	installed    SetupInstalledFunc
-	exe          SetupExeFunc
-	cfg          config.Config
-	path         string
-	err          error
-	applied      bool
-	applying     bool
-	autostart    string
-	width        int
-	height       int
-	styles       styles
-	applyConfirm ConfirmDialog
-	exitConfirm  *ConfirmDialog
+	choices           []setupChoice
+	cursor            int
+	step              int
+	save              SetupSaveFunc
+	install           SetupInstallFunc
+	uninstall         SetupUninstallFunc
+	installed         SetupInstalledFunc
+	exe               SetupExeFunc
+	installCompletion SetupCompletionInstallFunc
+	completionChoice  int
+	completionNote    string
+	cfg               config.Config
+	path              string
+	err               error
+	applied           bool
+	applying          bool
+	autostart         string
+	completion        string
+	width             int
+	height            int
+	styles            styles
+	applyConfirm      ConfirmDialog
+	exitConfirm       *ConfirmDialog
 }
 
 type setupApplyResultMsg struct {
-	cfg       config.Config
-	path      string
-	autostart string
-	err       error
+	cfg        config.Config
+	path       string
+	autostart  string
+	completion string
+	err        error
 }
 
 // NewSetupModel creates the onboarding wizard seeded from cfg.
@@ -93,13 +101,30 @@ func NewSetupModel(cfg config.Config, save SetupSaveFunc, install SetupInstallFu
 				},
 			},
 		},
-		styles:       defaultStyles(cfg.UI.AccentColor),
-		applyConfirm: NewConfirmDialog("Apply these settings?", ConfirmYes, cfg.UI.AccentColor),
+		styles:           defaultStyles(cfg.UI.AccentColor),
+		applyConfirm:     NewConfirmDialog("Apply these settings?", ConfirmYes, cfg.UI.AccentColor),
+		completionChoice: -1,
 	}
 	if len(installed) > 0 {
 		model.installed = installed[0]
 	}
 	return model
+}
+
+// WithCompletion adds an explicit, default-off completion installation choice.
+// path is displayed before install is called.
+func (m SetupModel) WithCompletion(shell, path, note string, install SetupCompletionInstallFunc) SetupModel {
+	if shell == "" || path == "" || install == nil {
+		return m
+	}
+	m.completionChoice = len(m.choices)
+	m.installCompletion = install
+	m.completionNote = note
+	m.choices = append(m.choices, setupChoice{
+		label: fmt.Sprintf("Install shell completion for %s? (writes %s)", shell, path),
+		value: false,
+	})
+	return m
 }
 
 // SetupConfig returns the config produced by the wizard.
@@ -134,6 +159,7 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cfg = msg.cfg
 		m.path = msg.path
 		m.autostart = msg.autostart
+		m.completion = msg.completion
 		m.err = nil
 		m.applied = true
 		m.step = 2
@@ -355,8 +381,25 @@ func (m SetupModel) startApply() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.applied = false
 	original := m.cfg
+	installCompletion := m.installCompletion
+	completionSelected := m.completionChoice >= 0 && m.choices[m.completionChoice].value
+	completionNote := m.completionNote
 	return m, func() tea.Msg {
-		return applySetup(original, cfg, m.save, m.install, m.uninstall, m.exe, m.installed)
+		result := applySetup(original, cfg, m.save, m.install, m.uninstall, m.exe, m.installed)
+		if result.err != nil || !completionSelected {
+			result.completion = "not installed"
+			return result
+		}
+		paths, err := installCompletion()
+		if err != nil {
+			result.err = fmt.Errorf("install shell completion: %w", err)
+			return result
+		}
+		result.completion = "installed: " + strings.Join(paths, ", ")
+		if completionNote != "" {
+			result.completion += "\n" + completionNote
+		}
+		return result
 	}
 }
 
@@ -426,6 +469,9 @@ func (m SetupModel) summary() string {
 		b.WriteString("Config: " + m.path + "\n")
 	}
 	b.WriteString("Autostart: " + m.autostart + "\n")
+	if m.completion != "" {
+		b.WriteString("Completion: " + m.completion + "\n")
+	}
 	b.WriteString("Run now: termp start\n\n")
 	b.WriteString("You can disable autostart later with `termp uninstall`; re-run setup or edit config to change these choices.\n")
 	return b.String()

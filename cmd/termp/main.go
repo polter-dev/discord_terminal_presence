@@ -22,6 +22,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/polter-dev/discord_terminal_presence/internal/completioninstall"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
@@ -376,7 +377,7 @@ func setup(args []string) error {
 			return err
 		}
 		fmt.Printf("Wrote default config: %s\n", path)
-		fmt.Println("Non-interactive setup skipped autostart. Run `termp autostart install` to enable autostart, then `termp start` to run now.")
+		fmt.Println("Non-interactive setup skipped autostart and shell completion. Run `termp setup` in a terminal to opt in, or `termp autostart install` to enable autostart.")
 		return nil
 	}
 	model := newSetupModel(cfg, save, service.NewManager(), service.ResolveExecutable)
@@ -408,7 +409,19 @@ func newSetupModel(cfg config.Config, save tui.SetupSaveFunc, manager setupServi
 	autostartInstalled := func() (bool, error) {
 		return manager.Status().Installed, nil
 	}
-	return tui.NewSetupModel(cfg, save, installAutostart, uninstallAutostart, exe, autostartInstalled)
+	model := tui.NewSetupModel(cfg, save, installAutostart, uninstallAutostart, exe, autostartInstalled)
+	shell := completioninstall.DetectShell(os.Getenv("SHELL"))
+	path, err := completioninstall.TargetPath(shell, os.UserHomeDir)
+	if err != nil {
+		return model
+	}
+	script, err := completionScript(shell)
+	if err != nil {
+		return model
+	}
+	return model.WithCompletion(shell, path, completioninstall.Note(shell), func() ([]string, error) {
+		return completioninstall.Install(shell, script, os.UserHomeDir)
+	})
 }
 
 func installSetupAutostart(manager setupServiceManager, path string, daemonRunning bool) error {

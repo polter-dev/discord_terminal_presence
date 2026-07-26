@@ -91,6 +91,48 @@ func TestNewSetupModelWiresServiceUninstall(t *testing.T) {
 	}
 }
 
+func TestNewSetupModelWiresCompletionInstallWithTempHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/usr/local/bin/fish")
+	manager := &fakeSetupServiceManager{}
+	cfg := config.Default()
+	cfg.StartAtLogin = false
+	model := newSetupModel(cfg, nil, manager, nil)
+
+	for range 3 {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model = updated.(tui.SetupModel)
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model = updated.(tui.SetupModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(tui.SetupModel)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(tui.SetupModel)
+	if cmd == nil {
+		t.Fatal("completion confirmation did not return an apply command")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(tui.SetupModel)
+
+	path := filepath.Join(home, ".config", "fish", "completions", "termp.fish")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := completionScript("fish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("installed completion differs from `termp completion fish` output")
+	}
+	if !strings.Contains(model.View(), "Completion: installed: "+path) {
+		t.Fatalf("setup summary does not show installed path:\n%s", model.View())
+	}
+}
+
 func TestSetupReconcilesDefinitionWithoutLaunchingWhenDaemonRunning(t *testing.T) {
 	manager := &fakeSetupServiceManager{}
 	if err := installSetupAutostart(manager, `C:\bin\termp.exe`, true); err != nil {

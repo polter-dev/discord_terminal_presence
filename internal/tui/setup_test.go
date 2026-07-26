@@ -2,8 +2,10 @@ package tui
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 )
 
@@ -120,5 +122,71 @@ func TestApplySetupNilStatusInstallsDesiredEnabledService(t *testing.T) {
 
 	if result.err != nil || installCalls != 1 || result.autostart != "installed" {
 		t.Fatalf("result = %#v, install calls = %d", result, installCalls)
+	}
+}
+
+func TestSetupCompletionChoiceIsExplicitDefaultOffAndInstallsOnConfirm(t *testing.T) {
+	const completionPath = "/tmp/home/.config/fish/completions/termp.fish"
+	installCalls := 0
+	model := NewSetupModel(config.Default(), nil, nil, nil, nil).WithCompletion(
+		"fish",
+		completionPath,
+		"",
+		func() ([]string, error) {
+			installCalls++
+			return []string{completionPath}, nil
+		},
+	)
+
+	if model.completionChoice < 0 || model.choices[model.completionChoice].value {
+		t.Fatal("completion choice should exist and default to Off")
+	}
+	wantPrompt := "Install shell completion for fish? (writes " + completionPath + ")"
+	if !strings.Contains(model.View(), wantPrompt) {
+		t.Fatalf("setup view does not show exact completion destination %q:\n%s", wantPrompt, model.View())
+	}
+
+	model.cursor = model.completionChoice
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model = updated.(SetupModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(SetupModel)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(SetupModel)
+	if cmd == nil || installCalls != 0 {
+		t.Fatal("confirmation should return a command without installing inline")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(SetupModel)
+
+	if installCalls != 1 || !model.Applied() {
+		t.Fatalf("completion install calls = %d, applied = %t; want 1/true", installCalls, model.Applied())
+	}
+	if !strings.Contains(model.View(), "Completion: installed: "+completionPath) {
+		t.Fatalf("setup summary does not report modified completion path:\n%s", model.View())
+	}
+}
+
+func TestSetupCompletionChoiceSkipsInstallByDefault(t *testing.T) {
+	installCalls := 0
+	model := NewSetupModel(config.Default(), nil, nil, nil, nil).WithCompletion(
+		"bash",
+		"/tmp/home/.local/share/bash-completion/completions/termp",
+		"",
+		func() ([]string, error) {
+			installCalls++
+			return nil, nil
+		},
+	)
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(SetupModel)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(SetupModel)
+	updated, _ = model.Update(cmd())
+	model = updated.(SetupModel)
+
+	if installCalls != 0 || !strings.Contains(model.View(), "Completion: not installed") {
+		t.Fatalf("default-off completion state = calls:%d\n%s", installCalls, model.View())
 	}
 }
