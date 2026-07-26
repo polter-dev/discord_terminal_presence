@@ -12,10 +12,36 @@ import (
 const (
 	windowsTTYPathPrefix   = "win:hwnd:"
 	windowsFocusStateLimit = 1024
+	consoleProbeArg        = "--termp-internal-console-probe"
 )
 
 type windowsTTYResolver struct {
 	consoleHWNDForPID func(int32) (hwnd uintptr, conPTY bool, err error)
+	cache             *windowsConsoleProbeCache
+}
+
+type windowsConsoleProbeResult struct {
+	hwnd   uintptr
+	conPTY bool
+	err    error
+}
+
+type windowsConsoleProbeCache struct {
+	mu      sync.Mutex
+	results map[int32]windowsConsoleProbeResult
+}
+
+func newWindowsTTYResolver(probe func(int32) (uintptr, bool, error)) windowsTTYResolver {
+	return windowsTTYResolver{
+		consoleHWNDForPID: probe,
+		cache: &windowsConsoleProbeCache{
+			results: make(map[int32]windowsConsoleProbeResult),
+		},
+	}
+}
+
+func consoleProbeRequested(args []string, envPresent bool) bool {
+	return envPresent && len(args) == 2 && args[1] == consoleProbeArg
 }
 
 func selectConsolePeer(pids []uint32, ownPID uint32) (uint32, bool) {
@@ -31,7 +57,21 @@ func (r windowsTTYResolver) Resolve(pid int32) (TTYResolution, error) {
 	if r.consoleHWNDForPID == nil {
 		return TTYResolution{}, errors.New("windows console resolver unavailable")
 	}
-	hwnd, conPTY, err := r.consoleHWNDForPID(pid)
+	var hwnd uintptr
+	var conPTY bool
+	var err error
+	if r.cache == nil {
+		hwnd, conPTY, err = r.consoleHWNDForPID(pid)
+	} else {
+		r.cache.mu.Lock()
+		result, ok := r.cache.results[pid]
+		if !ok {
+			result.hwnd, result.conPTY, result.err = r.consoleHWNDForPID(pid)
+			r.cache.results[pid] = result
+		}
+		r.cache.mu.Unlock()
+		hwnd, conPTY, err = result.hwnd, result.conPTY, result.err
+	}
 	if err != nil {
 		return TTYResolution{}, err
 	}

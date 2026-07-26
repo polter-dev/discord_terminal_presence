@@ -461,6 +461,48 @@ func TestWindowsTTYResolveMapsHWND(t *testing.T) {
 	}
 }
 
+func TestWindowsConsoleProbeRequiresSentinelAndEnvironment(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		args       []string
+		envPresent bool
+		want       bool
+	}{
+		{name: "deliberate probe", args: []string{"termp", consoleProbeArg}, envPresent: true, want: true},
+		{name: "stray inherited environment", args: []string{"termp", "status"}, envPresent: true},
+		{name: "sentinel without environment", args: []string{"termp", consoleProbeArg}},
+		{name: "extra argument", args: []string{"termp", consoleProbeArg, "status"}, envPresent: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := consoleProbeRequested(tt.args, tt.envPresent); got != tt.want {
+				t.Fatalf("consoleProbeRequested() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWindowsTTYResolverCachesProbeResultPerPID(t *testing.T) {
+	calls := 0
+	resolver := newWindowsTTYResolver(func(pid int32) (uintptr, bool, error) {
+		calls++
+		return uintptr(pid), false, nil
+	})
+	for range 2 {
+		if _, err := resolver.Resolve(42); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("console probe calls = %d, want 1", calls)
+	}
+	if _, err := resolver.Resolve(43); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("console probe calls after new PID = %d, want 2", calls)
+	}
+}
+
 func TestWindowsTTYResolveConPTYFailsOpen(t *testing.T) {
 	resolver := windowsTTYResolver{
 		consoleHWNDForPID: func(int32) (uintptr, bool, error) {
