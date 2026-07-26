@@ -3,9 +3,15 @@
 package detector
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -17,7 +23,6 @@ var (
 
 	procAttachConsole    = kernel32.NewProc("AttachConsole")
 	procFreeConsole      = kernel32.NewProc("FreeConsole")
-	procGetConsolePIDs   = kernel32.NewProc("GetConsoleProcessList")
 	procGetConsoleWindow = kernel32.NewProc("GetConsoleWindow")
 	procGetLastInputInfo = user32.NewProc("GetLastInputInfo")
 	procGetAncestor      = user32.NewProc("GetAncestor")
@@ -25,6 +30,27 @@ var (
 
 	consoleAttachMu sync.Mutex
 )
+
+const consoleProbePIDEnv = "TERMP_INTERNAL_CONSOLE_PROBE_PID"
+
+func init() {
+	value, ok := os.LookupEnv(consoleProbePIDEnv)
+	if !ok {
+		return
+	}
+	pid, err := strconv.ParseUint(value, 10, 32)
+	if err != nil || pid == 0 {
+		fmt.Fprintln(os.Stderr, "invalid console probe pid")
+		os.Exit(2)
+	}
+	hwnd, conPTY, err := inspectWindowsConsole(uint32(pid))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	fmt.Fprintf(os.Stdout, "%d %t\n", hwnd, conPTY)
+	os.Exit(0)
+}
 
 func newSystemTTYResolver() TTYResolver {
 	return windowsTTYResolver{consoleHWNDForPID: realWindowsConsoleHWNDForPID}
@@ -56,35 +82,50 @@ func realWindowsConsoleHWNDForPID(pid int32) (hwnd uintptr, conPTY bool, retErr 
 	}
 
 	consoleAttachMu.Lock()
-	defer consoleAttachMu.Unlock()
-
-	ownPID := windows.GetCurrentProcessId()
-	originalHWND := getConsoleWindow()
-	hadConsole := originalHWND != 0
-	restorePID := uint32(0)
-	if hadConsole {
-		var err error
-		restorePID, err = consolePeerPID(ownPID)
-		if err != nil {
-			return 0, false, fmt.Errorf("identify original console peer: %w", err)
-		}
-		if err := freeConsole(); err != nil {
-			return 0, false, fmt.Errorf("detach current console: %w", err)
-		}
-	} else {
-		_ = freeConsole()
+	executable, err := os.Executable()
+	if err != nil {
+		consoleAttachMu.Unlock()
+		return 0, false, fmt.Errorf("resolve console probe executable: %w", err)
 	}
-
-	defer func() {
-		_ = freeConsole()
-		if hadConsole {
-			if err := attachConsole(restorePID); err != nil && retErr == nil {
-				retErr = fmt.Errorf("restore original console: %w", err)
-			}
+	cmd := exec.Command(executable)
+	cmd.Env = make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, consoleProbePIDEnv+"=") {
+			cmd.Env = append(cmd.Env, entry)
 		}
-	}()
+	}
+	cmd.Env = append(cmd.Env, consoleProbePIDEnv+"="+strconv.FormatInt(int64(pid), 10))
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	var output, stderr bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		consoleAttachMu.Unlock()
+		return 0, false, fmt.Errorf("start console probe: %w", err)
+	}
+	consoleAttachMu.Unlock()
 
-	if err := attachConsole(uint32(pid)); err != nil {
+	if err := cmd.Wait(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message != "" {
+			return 0, false, fmt.Errorf("console probe: %s", message)
+		}
+		return 0, false, fmt.Errorf("console probe: %w", err)
+	}
+	if _, err := fmt.Fscan(&output, &hwnd, &conPTY); err != nil {
+		return 0, false, fmt.Errorf("parse console probe result: %w", err)
+	}
+	return hwnd, conPTY, nil
+}
+
+func inspectWindowsConsole(pid uint32) (hwnd uintptr, conPTY bool, retErr error) {
+	// AttachConsole and FreeConsole reset a process's console control-handler
+	// table. Probe in this short-lived child so the daemon's Go runtime handler,
+	// and therefore signal.Notify Ctrl+C/close delivery, is never disturbed.
+	_ = freeConsole()
+	defer freeConsole()
+
+	if err := attachConsole(pid); err != nil {
 		return 0, false, fmt.Errorf("attach candidate console: %w", err)
 	}
 	hwnd = getConsoleWindow()
@@ -92,27 +133,6 @@ func realWindowsConsoleHWNDForPID(pid int32) (hwnd uintptr, conPTY bool, retErr 
 		return 0, true, nil
 	}
 	return hwnd, false, nil
-}
-
-func consolePeerPID(ownPID uint32) (uint32, error) {
-	pids := make([]uint32, 16)
-	for {
-		count, _, err := procGetConsolePIDs.Call(
-			uintptr(unsafe.Pointer(&pids[0])),
-			uintptr(len(pids)),
-		)
-		if count == 0 {
-			return 0, err
-		}
-		if int(count) > len(pids) {
-			pids = make([]uint32, count)
-			continue
-		}
-		if pid, ok := selectConsolePeer(pids[:count], ownPID); ok {
-			return pid, nil
-		}
-		return 0, errors.New("original console has no peer process")
-	}
 }
 
 func attachConsole(pid uint32) error {

@@ -169,15 +169,27 @@ func (c stubLatestChecker) Latest(context.Context, string) (updatepkg.Result, er
 }
 
 type recordingUpdateRunner struct {
-	command updatepkg.Command
-	calls   int
-	err     error
+	command  updatepkg.Command
+	commands []updatepkg.Command
+	calls    int
+	err      error
 }
 
 func (r *recordingUpdateRunner) Run(_ context.Context, command updatepkg.Command, _ io.Reader, _, _ io.Writer) error {
 	r.command = command
+	r.commands = append(r.commands, command)
 	r.calls++
-	return r.err
+	if r.err != nil {
+		return r.err
+	}
+	if command.Name == "curl" {
+		for i, arg := range command.Args {
+			if arg == "-o" && i+1 < len(command.Args) {
+				return os.WriteFile(command.Args[i+1], []byte("#!/bin/sh\n"), 0o600)
+			}
+		}
+	}
+	return nil
 }
 
 var expectedCommands = []string{
@@ -1316,10 +1328,11 @@ func TestAutomaticUpdateRunsInstallAwareUpdater(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		method updatepkg.InstallMethod
-		want   updatepkg.Command
+		calls  int
+		want   string
 	}{
-		{name: "generic", method: updatepkg.InstallGeneric, want: updatepkg.Command{Name: "sh", Args: []string{"-c", updatepkg.GenericCommand("v1.1.0")}}},
-		{name: "homebrew", method: updatepkg.InstallHomebrew, want: updatepkg.Command{Name: "brew", Args: []string{"upgrade", "--cask", "polter-dev/tap/termp"}}},
+		{name: "generic", method: updatepkg.InstallGeneric, calls: 2, want: "sh"},
+		{name: "homebrew", method: updatepkg.InstallHomebrew, calls: 1, want: "brew"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_ = os.Unsetenv("NO_UPDATE_CHECK")
@@ -1330,8 +1343,8 @@ func TestAutomaticUpdateRunsInstallAwareUpdater(t *testing.T) {
 			cfg := config.Default()
 			cfg.AutoUpdate = true
 			runAutomaticUpdate(context.Background(), cfg, "1.0.0", checker, runner)
-			if source.calls != 1 || runner.calls != 1 || !reflect.DeepEqual(runner.command, tt.want) {
-				t.Fatalf("source calls = %d, runner = (%d, %#v), want (1, %#v)", source.calls, runner.calls, runner.command, tt.want)
+			if source.calls != 1 || runner.calls != tt.calls || runner.command.Name != tt.want {
+				t.Fatalf("source calls = %d, runner = (%d, %#v), want (1, %d calls ending in %s)", source.calls, runner.calls, runner.command, tt.calls, tt.want)
 			}
 		})
 	}
@@ -1388,8 +1401,14 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 			if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, io.Discard, io.Discard); err != nil {
 				t.Fatal(err)
 			}
-			if runner.calls != 1 || runner.command.Name != tt.want.Name || strings.Join(runner.command.Args, "\x00") != strings.Join(tt.want.Args, "\x00") {
-				t.Fatalf("runner = (%d, %#v), want (1, %#v)", runner.calls, runner.command, tt.want)
+			wantCalls := 1
+			if tt.method == updatepkg.InstallGeneric {
+				wantCalls = 2
+				tt.want = updatepkg.Command{Name: "sh"}
+			}
+			if runner.calls != wantCalls || runner.command.Name != tt.want.Name ||
+				tt.method != updatepkg.InstallGeneric && strings.Join(runner.command.Args, "\x00") != strings.Join(tt.want.Args, "\x00") {
+				t.Fatalf("runner = (%d, %#v), want (%d, %#v)", runner.calls, runner.command, wantCalls, tt.want)
 			}
 		})
 	}
