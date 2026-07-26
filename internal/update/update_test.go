@@ -143,11 +143,19 @@ func TestGenericUpdateRejectsUnsafeReleaseTagsWithoutRunning(t *testing.T) {
 }
 
 func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("generic shell updater is unsupported on Windows")
-	}
 	runner := &recordingRunner{}
-	if err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", runner, nil, io.Discard, io.Discard); err != nil {
+	err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", runner, nil, io.Discard, io.Discard)
+	if runtime.GOOS == "windows" {
+		if err == nil || !strings.Contains(err.Error(), "not supported on Windows") ||
+			!strings.Contains(err.Error(), "go install") {
+			t.Fatalf("Windows generic update error = %v, want supported-path guidance", err)
+		}
+		if runner.calls != 0 {
+			t.Fatalf("unsupported Windows generic update invoked runner %d times", runner.calls)
+		}
+		return
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if runner.calls != 2 {

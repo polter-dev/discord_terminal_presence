@@ -1371,6 +1371,12 @@ func TestAutomaticUpdateRunsInstallAwareUpdater(t *testing.T) {
 			cfg := config.Default()
 			cfg.AutoUpdate = true
 			runAutomaticUpdate(context.Background(), cfg, "1.0.0", checker, runner)
+			if tt.method == updatepkg.InstallGeneric && runtime.GOOS == "windows" {
+				if source.calls != 1 || runner.calls != 0 {
+					t.Fatalf("source calls = %d, runner calls = %d, want (1, 0) for unsupported Windows generic update", source.calls, runner.calls)
+				}
+				return
+			}
 			if source.calls != 1 || runner.calls != tt.calls || runner.command.Name != tt.want {
 				t.Fatalf("source calls = %d, runner = (%d, %#v), want (1, %d calls ending in %s)", source.calls, runner.calls, runner.command, tt.calls, tt.want)
 			}
@@ -1398,8 +1404,13 @@ func TestAutomaticUpdateFailuresDoNotEscape(t *testing.T) {
 			if tt.name == "check" && tt.runner.calls != 0 {
 				t.Fatal("failed check ran updater")
 			}
-			if tt.name == "update" && tt.runner.calls != 1 {
-				t.Fatal("failed updater was not invoked")
+			if tt.name == "update" {
+				if runtime.GOOS == "windows" && tt.runner.calls != 0 {
+					t.Fatalf("unsupported Windows generic update invoked runner %d times", tt.runner.calls)
+				}
+				if runtime.GOOS != "windows" && tt.runner.calls != 1 {
+					t.Fatal("failed updater was not invoked")
+				}
 			}
 		})
 	}
@@ -1426,7 +1437,18 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 		t.Run(string(tt.method), func(t *testing.T) {
 			runner := &recordingUpdateRunner{}
 			checker := stubLatestChecker{result: updatepkg.Result{Current: "1.0.0", Latest: "v1.1.0", Method: tt.method}}
-			if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, io.Discard, io.Discard); err != nil {
+			err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, io.Discard, io.Discard)
+			if tt.method == updatepkg.InstallGeneric && runtime.GOOS == "windows" {
+				if err == nil || !strings.Contains(err.Error(), "not supported on Windows") ||
+					!strings.Contains(err.Error(), "go install") {
+					t.Fatalf("Windows generic update error = %v, want supported-path guidance", err)
+				}
+				if runner.calls != 0 {
+					t.Fatalf("unsupported Windows generic update invoked runner %d times", runner.calls)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
 			wantCalls := 1
