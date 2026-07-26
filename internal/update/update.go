@@ -117,6 +117,7 @@ type Result struct {
 type Command struct {
 	Name string
 	Args []string
+	Env  []string
 }
 
 // CommandRunner runs an update process with the caller's standard streams.
@@ -133,7 +134,27 @@ func (ExecRunner) Run(ctx context.Context, command Command, stdin io.Reader, std
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	if len(command.Env) > 0 {
+		cmd.Env = mergedEnvironment(os.Environ(), command.Env)
+	}
 	return cmd.Run()
+}
+
+func mergedEnvironment(base, overrides []string) []string {
+	keys := make(map[string]struct{}, len(overrides))
+	for _, entry := range overrides {
+		if key, _, ok := strings.Cut(entry, "="); ok {
+			keys[key] = struct{}{}
+		}
+	}
+	merged := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		key, _, _ := strings.Cut(entry, "=")
+		if _, overridden := keys[key]; !overridden {
+			merged = append(merged, entry)
+		}
+	}
+	return append(merged, overrides...)
 }
 
 // Checker limits release lookups to one per process and one per cacheLifetime.
@@ -398,7 +419,11 @@ func GenericCommand(tag string) string {
 	if !validReleaseTag(tag) {
 		return ""
 	}
-	return fmt.Sprintf("curl -fsSL "+genericInstallerURL+" | VERSION=%s sh", tag, tag)
+	return fmt.Sprintf(
+		`tmp=$(mktemp) && trap 'rm -f "$tmp"' EXIT HUP INT TERM && curl -fsSL `+genericInstallerURL+` -o "$tmp" && test -s "$tmp" && VERSION=%s sh "$tmp"`,
+		tag,
+		tag,
+	)
 }
 
 // GoCommand returns a go install command pinned to the validated release tag.
@@ -455,12 +480,50 @@ func PerformUpdate(ctx context.Context, method InstallMethod, tag string, runner
 	if runner == nil {
 		runner = ExecRunner{}
 	}
+	if method == InstallGeneric {
+		return performGenericUpdate(ctx, tag, runner, stdin, stdout, stderr)
+	}
 	command, err := UpdateCommandForMethod(method, tag)
 	if err != nil {
 		return err
 	}
 	if err := runner.Run(ctx, command, stdin, stdout, stderr); err != nil {
 		return fmt.Errorf("run %s: %w", CommandForMethod(method, tag), err)
+	}
+	return nil
+}
+
+func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {
+	if !validReleaseTag(tag) {
+		return fmt.Errorf("invalid release tag %q", tag)
+	}
+	tmp, err := os.CreateTemp("", "termp-install-*.sh")
+	if err != nil {
+		return fmt.Errorf("create temporary installer: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("create temporary installer: %w", err)
+	}
+	defer os.Remove(tmpPath)
+
+	url := fmt.Sprintf(genericInstallerURL, tag)
+	download := Command{Name: "curl", Args: []string{"-fsSL", url, "-o", tmpPath}}
+	if err := runner.Run(ctx, download, nil, stdout, stderr); err != nil {
+		return fmt.Errorf("download installer from %s: %w", url, err)
+	}
+	info, err := os.Stat(tmpPath)
+	if err != nil {
+		return fmt.Errorf("inspect downloaded installer: %w", err)
+	}
+	if info.Size() == 0 {
+		return errors.New("downloaded installer is empty")
+	}
+
+	install := Command{Name: "sh", Args: []string{tmpPath}, Env: []string{"VERSION=" + tag}}
+	if err := runner.Run(ctx, install, stdin, stdout, stderr); err != nil {
+		return fmt.Errorf("run %s: %w", GenericCommand(tag), err)
 	}
 	return nil
 }

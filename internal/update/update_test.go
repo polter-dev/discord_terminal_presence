@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -22,13 +23,26 @@ type fakeSource struct {
 }
 
 type recordingRunner struct {
-	command Command
-	calls   int
+	command  Command
+	commands []Command
+	calls    int
+	err      error
 }
 
 func (r *recordingRunner) Run(_ context.Context, command Command, _ io.Reader, _, _ io.Writer) error {
 	r.calls++
 	r.command = command
+	r.commands = append(r.commands, command)
+	if r.err != nil {
+		return r.err
+	}
+	if command.Name == "curl" {
+		for i, arg := range command.Args {
+			if arg == "-o" && i+1 < len(command.Args) {
+				return os.WriteFile(command.Args[i+1], []byte("#!/bin/sh\n"), 0o600)
+			}
+		}
+	}
 	return nil
 }
 
@@ -130,9 +144,33 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	if err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", runner, nil, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	want := Command{Name: "sh", Args: []string{"-c", GenericCommand("v2.3.4")}}
-	if runner.calls != 1 || runner.command.Name != want.Name || strings.Join(runner.command.Args, "\x00") != strings.Join(want.Args, "\x00") {
-		t.Fatalf("runner = (%d, %#v), want (1, %#v)", runner.calls, runner.command, want)
+	if runner.calls != 2 {
+		t.Fatalf("runner calls = %d, want 2", runner.calls)
+	}
+	download, install := runner.commands[0], runner.commands[1]
+	wantURL := "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/v2.3.4/install.sh"
+	if download.Name != "curl" || len(download.Args) != 4 || download.Args[1] != wantURL || download.Args[2] != "-o" {
+		t.Fatalf("download command = %#v", download)
+	}
+	if install.Name != "sh" || len(install.Args) != 1 || !reflect.DeepEqual(install.Env, []string{"VERSION=v2.3.4"}) {
+		t.Fatalf("install command = %#v", install)
+	}
+	if install.Args[0] != download.Args[3] {
+		t.Fatalf("installer path = %q, downloaded path = %q", install.Args[0], download.Args[3])
+	}
+	if _, err := os.Stat(download.Args[3]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary installer was not cleaned up: %v", err)
+	}
+}
+
+func TestPerformGenericUpdateReturnsDownloadFailure(t *testing.T) {
+	runner := &recordingRunner{err: errors.New("simulated fetch failure")}
+	err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", runner, nil, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "simulated fetch failure") {
+		t.Fatalf("PerformUpdate() error = %v, want fetch failure", err)
+	}
+	if runner.calls != 1 || runner.command.Name != "curl" {
+		t.Fatalf("runner = (%d, %#v), want one curl call", runner.calls, runner.command)
 	}
 }
 
