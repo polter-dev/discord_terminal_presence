@@ -54,6 +54,54 @@ map_arch() {
 	esac
 }
 
+valid_semver_tag() {
+	awk -v version="$1" '
+		function numeric(value) {
+			return value ~ /^[0-9]+$/ && (value == "0" || substr(value, 1, 1) != "0")
+		}
+		function identifiers(value, prerelease, parts, count, i) {
+			if (value == "") {
+				return 0
+			}
+			count = split(value, parts, ".")
+			for (i = 1; i <= count; i++) {
+				if (parts[i] == "" || parts[i] !~ /^[0-9A-Za-z-]+$/) {
+					return 0
+				}
+				if (prerelease && parts[i] ~ /^[0-9]+$/ && !numeric(parts[i])) {
+					return 0
+				}
+			}
+			return 1
+		}
+		BEGIN {
+			if (substr(version, 1, 1) == "v") {
+				version = substr(version, 2)
+			}
+			if (version == "") {
+				exit 1
+			}
+			build_count = split(version, build, "+")
+			if (build_count > 2 ||
+			    (build_count == 2 && !identifiers(build[2], 0))) {
+				exit 1
+			}
+			base = build[1]
+			dash = index(base, "-")
+			if (dash > 0) {
+				if (!identifiers(substr(base, dash + 1), 1)) {
+					exit 1
+				}
+				base = substr(base, 1, dash - 1)
+			}
+			if (split(base, core, ".") != 3 ||
+			    !numeric(core[1]) || !numeric(core[2]) || !numeric(core[3])) {
+				exit 1
+			}
+		}
+	'
+}
+
 verify_checksum() {
 	checksums=$1
 	archive=$2
@@ -273,11 +321,9 @@ if [ "${VERSION:-}" ]; then
 else
 	tag=$(fetch_latest_tag "$tmpdir/latest.json")
 fi
-case $tag in
-'' | *[!0-9A-Za-z.+-]*) err "invalid release tag: $tag" ;;
-v[0-9]*.[0-9]*.[0-9]* | [0-9]*.[0-9]*.[0-9]*) ;;
-*) err "invalid release tag: $tag" ;;
-esac
+if ! valid_semver_tag "$tag"; then
+	err "invalid release tag: $tag"
+fi
 version=${tag#v}
 
 archive_name="termp_${version}_${os}_${arch}.tar.gz"

@@ -173,7 +173,8 @@ func sanitizeTerminalText(value string) string {
 	var cleaned strings.Builder
 	cleaned.Grow(len(value))
 	for _, r := range value {
-		if r <= 0x1f || r == 0x7f || r >= 0x80 && r <= 0x9f {
+		if r <= 0x1f || r == 0x7f || r >= 0x80 && r <= 0x9f ||
+			r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 {
 			continue
 		}
 		cleaned.WriteRune(r)
