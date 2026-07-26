@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func processAlive(pid int) bool {
@@ -27,6 +28,21 @@ func processAlive(pid int) bool {
 
 func processLooksLikeTermp(pid int) bool {
 	return validateOtherProcess(pid) == nil
+}
+
+func processStartTime(pid int) (uint64, error) {
+	if pid <= 0 {
+		return 0, errors.New("invalid PID")
+	}
+	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	if err != nil {
+		return 0, err
+	}
+	startTime, err := time.Parse("Mon Jan 2 15:04:05 2006", strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0, err
+	}
+	return uint64(startTime.Unix()), nil
 }
 
 func signalTermpProcess(pid int) error {

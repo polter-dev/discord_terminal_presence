@@ -38,6 +38,22 @@ func processLooksLikeTermp(pid int) bool {
 	return validateWindowsProcessHandle(handle) == nil
 }
 
+func processStartTime(pid int) (uint64, error) {
+	if pid <= 0 {
+		return 0, errors.New("invalid PID")
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return 0, fmt.Errorf("open process for start time: %w", err)
+	}
+	defer windows.CloseHandle(handle)
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(handle, &creation, &exit, &kernel, &user); err != nil {
+		return 0, fmt.Errorf("read process start time: %w", err)
+	}
+	return uint64(creation.HighDateTime)<<32 | uint64(creation.LowDateTime), nil
+}
+
 func signalTermpProcess(pid int) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")

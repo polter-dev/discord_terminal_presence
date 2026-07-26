@@ -122,6 +122,10 @@ func printDispatchUsageError(err error, w io.Writer) bool {
 		return false
 	}
 	fmt.Fprintln(w, err)
+	if suggestion := closestCommand(unknownCommandName(err), commandNames(), 2); suggestion != "" {
+		fmt.Fprintf(w, "Did you mean %q?\n", suggestion)
+		return true
+	}
 	usage(w)
 	return true
 }
@@ -131,6 +135,9 @@ func dispatchCommand(command string, args []string) error {
 }
 
 func dispatchCommandWithAutostartHandlers(command string, args []string, handlers map[string]autostartActionHandler) error {
+	if command != "help" && !knownCommand(command) {
+		return fmt.Errorf("%w %q", errUnknownCommand, command)
+	}
 	var err error
 	switch command {
 	case "install", "uninstall", "disable", "enable", "status":
@@ -159,13 +166,83 @@ func dispatchCommandWithAutostartHandlers(command string, args []string, handler
 		err = completion(args)
 	case "help":
 		usage(os.Stdout)
-	default:
-		return fmt.Errorf("%w %q", errUnknownCommand, command)
 	}
 	if errors.Is(err, flag.ErrHelp) && rootHelpRequested(args) {
 		return nil
 	}
 	return err
+}
+
+func commandNames() []string {
+	names := make([]string, 0, len(commandHelp))
+	for _, command := range commandHelp {
+		names = append(names, command.name)
+	}
+	return names
+}
+
+func knownCommand(name string) bool {
+	for _, command := range commandHelp {
+		if command.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func unknownCommandName(err error) string {
+	message := strings.TrimPrefix(err.Error(), errUnknownCommand.Error()+" ")
+	name, unquoteErr := strconv.Unquote(message)
+	if unquoteErr != nil {
+		return ""
+	}
+	return name
+}
+
+func closestCommand(input string, commands []string, maxDistance int) string {
+	best := ""
+	bestDistance := maxDistance + 1
+	for _, command := range commands {
+		distance := levenshteinDistance(input, command)
+		if distance < bestDistance {
+			best = command
+			bestDistance = distance
+		}
+	}
+	if bestDistance > maxDistance {
+		return ""
+	}
+	return best
+}
+
+func levenshteinDistance(a, b string) int {
+	aRunes := []rune(a)
+	bRunes := []rune(b)
+	previous := make([]int, len(bRunes)+1)
+	for i := range previous {
+		previous[i] = i
+	}
+	for i, aRune := range aRunes {
+		current := make([]int, len(previous))
+		current[0] = i + 1
+		for j, bRune := range bRunes {
+			cost := 0
+			if aRune != bRune {
+				cost = 1
+			}
+			current[j+1] = min(current[j]+1, previous[j+1]+1, previous[j]+cost)
+		}
+		previous = current
+	}
+	return previous[len(previous)-1]
+}
+
+func rejectUnexpectedArgs(fs *flag.FlagSet, usageLine string) error {
+	if fs.NArg() == 0 {
+		return nil
+	}
+	fmt.Fprintf(fs.Output(), "usage: %s\n", usageLine)
+	return fmt.Errorf("%w: unexpected argument %q", errCommandUsage, fs.Arg(0))
 }
 
 func usage(w io.Writer) {
@@ -228,6 +305,9 @@ func versionCommand(args []string) error {
 	fs := flag.NewFlagSet("version", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, "termp version [--verbose]"); err != nil {
 		return err
 	}
 	fmt.Print(formatVersion(currentVersionInfo()))
@@ -362,6 +442,9 @@ func setup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, "termp setup [--verbose]"); err != nil {
 		return err
 	}
 	cfg, err := config.Load()
@@ -672,6 +755,9 @@ func start(args []string) error {
 		return err
 	}
 	verbose = options.verbose
+	if !options.detachedChild {
+		maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
+	}
 
 	pidPath := pidFilePath()
 	if pid := knownDaemonPID(pidPath, daemonDiscordStatePath(), processAlive, processLooksLikeTermp); pid > 0 {
@@ -757,6 +843,9 @@ func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (st
 		fmt.Fprintln(output, "Use \"termp autostart install\" to start automatically at login.")
 	}
 	if err := fs.Parse(args); err != nil {
+		return startOptions{}, err
+	}
+	if err := rejectUnexpectedArgs(fs, "termp start [--foreground] [--detach] [--verbose]"); err != nil {
 		return startOptions{}, err
 	}
 	return options, nil
@@ -1040,10 +1129,13 @@ func stop(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := rejectUnexpectedArgs(fs, "termp stop [--verbose]"); err != nil {
+		return err
+	}
 	pidPath := pidFilePath()
 	publisherPID := 0
 	if state, ok := readDaemonDiscordState(daemonDiscordStatePath()); ok &&
-		state.PID > 0 && processAlive(state.PID) && processLooksLikeTermp(state.PID) {
+		processIdentityMatches(state.PID, state.StartTime, processAlive, processLooksLikeTermp) {
 		publisherPID = state.PID
 	}
 	serviceState := service.NewManager().Status()
@@ -1084,6 +1176,9 @@ func status(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := rejectUnexpectedArgs(fs, "termp status [--verbose]"); err != nil {
+		return err
+	}
 	maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
 
 	statusCtx, cancelStatus := context.WithTimeout(context.Background(), statusTimeout)
@@ -1093,15 +1188,15 @@ func status(args []string) error {
 	pidPath := pidFilePath()
 	running := false
 	daemonPID := 0
-	if pid, err := readPID(pidPath); err == nil {
-		running = processAlive(pid) && processLooksLikeTermp(pid)
+	if record, _, err := readPIDIdentity(pidPath); err == nil {
+		running = processIdentityMatches(record.PID, record.StartTime, processAlive, processLooksLikeTermp)
 		if running {
-			daemonPID = pid
+			daemonPID = record.PID
 		}
 	}
 	if !running {
 		if state, ok := readFreshDaemonDiscordState(daemonDiscordStatePath(), time.Now(), daemonDiscordStateStaleAfter); ok &&
-			state.PID > 0 && processAlive(state.PID) && processLooksLikeTermp(state.PID) {
+			processIdentityMatches(state.PID, state.StartTime, processAlive, processLooksLikeTermp) {
 			running = true
 			daemonPID = state.PID
 		}
@@ -1260,6 +1355,7 @@ type daemonDiscordState struct {
 	Connected bool      `json:"connected"`
 	UpdatedAt time.Time `json:"updated_at"`
 	PID       int       `json:"pid"`
+	StartTime uint64    `json:"start_time,omitempty"`
 }
 
 func daemonDiscordStatePath() string {
@@ -1268,12 +1364,14 @@ func daemonDiscordStatePath() string {
 
 func runDaemonDiscordStatePublisher(ctx context.Context, path string, interval time.Duration, pid int) func(bool) {
 	updates := make(chan bool, 1)
+	startTime, _ := processStartTime(pid)
 	go func() {
 		connected := false
 		writeDaemonDiscordState(path, daemonDiscordState{
 			Connected: connected,
 			UpdatedAt: time.Now(),
 			PID:       pid,
+			StartTime: startTime,
 		})
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -1284,12 +1382,14 @@ func runDaemonDiscordStatePublisher(ctx context.Context, path string, interval t
 					Connected: connected,
 					UpdatedAt: time.Now(),
 					PID:       pid,
+					StartTime: startTime,
 				})
 			case <-ticker.C:
 				writeDaemonDiscordState(path, daemonDiscordState{
 					Connected: connected,
 					UpdatedAt: time.Now(),
 					PID:       pid,
+					StartTime: startTime,
 				})
 			case <-ctx.Done():
 				return
@@ -1368,14 +1468,26 @@ func readDaemonDiscordState(path string) (daemonDiscordState, bool) {
 }
 
 func knownDaemonPID(pidPath, discordStatePath string, alive, looksLikeTermp func(int) bool) int {
-	if pid, err := readPID(pidPath); err == nil && alive(pid) && looksLikeTermp(pid) {
-		return pid
+	if record, _, err := readPIDIdentity(pidPath); err == nil &&
+		processIdentityMatches(record.PID, record.StartTime, alive, looksLikeTermp) {
+		return record.PID
 	}
 	if state, ok := readDaemonDiscordState(discordStatePath); ok &&
-		state.PID > 0 && alive(state.PID) && looksLikeTermp(state.PID) {
+		processIdentityMatches(state.PID, state.StartTime, alive, looksLikeTermp) {
 		return state.PID
 	}
 	return 0
+}
+
+func processIdentityMatches(pid int, expectedStartTime uint64, alive, looksLikeTermp func(int) bool) bool {
+	if pid <= 0 || !alive(pid) || !looksLikeTermp(pid) {
+		return false
+	}
+	if expectedStartTime == 0 {
+		return true
+	}
+	actualStartTime, err := processStartTime(pid)
+	return err == nil && actualStartTime == expectedStartTime
 }
 
 func formatDiscordStatus(err error) string {
@@ -1494,6 +1606,9 @@ func settings(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := rejectUnexpectedArgs(fs, "termp settings [--verbose]"); err != nil {
+		return err
+	}
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 		fmt.Fprintln(os.Stderr, "termp settings requires an interactive terminal (TTY)")
 		return errors.New("settings requires a TTY")
@@ -1523,6 +1638,9 @@ func watch(args []string) error {
 	addVerboseFlag(fs)
 	once := fs.Bool("once", false, "render one preview snapshot and exit")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, "termp watch [--once] [--verbose]"); err != nil {
 		return err
 	}
 	maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
@@ -1678,10 +1796,10 @@ func bridgeWatchConnection(ctx context.Context, program *tea.Program, interval t
 }
 
 func watchDiscordConnected(now time.Time, probe func() error) bool {
-	pid, err := readPID(pidFilePath())
-	if err == nil && processAlive(pid) && processLooksLikeTermp(pid) {
+	record, _, err := readPIDIdentity(pidFilePath())
+	if err == nil && processIdentityMatches(record.PID, record.StartTime, processAlive, processLooksLikeTermp) {
 		state, ok := readFreshDaemonDiscordState(daemonDiscordStatePath(), now, daemonDiscordStateStaleAfter)
-		return discordConnectedFromStateOrProbe(pid, state, ok, probe)
+		return discordConnectedFromStateOrProbe(record.PID, state, ok, probe)
 	}
 	return probe() == nil
 }
@@ -1723,32 +1841,70 @@ func readPID(path string) (int, error) {
 	return pid, err
 }
 
+func readPIDStartTime(path string, expectedPID int) uint64 {
+	record, _, err := readPIDIdentity(path)
+	if err != nil || record.PID != expectedPID {
+		return 0
+	}
+	return record.StartTime
+}
+
+type daemonPIDRecord struct {
+	PID       int    `json:"pid"`
+	StartTime uint64 `json:"start_time,omitempty"`
+}
+
 func readPIDRecord(path string) (int, os.FileInfo, error) {
+	record, info, err := readPIDIdentity(path)
+	return record.PID, info, err
+}
+
+func readPIDIdentity(path string) (daemonPIDRecord, os.FileInfo, error) {
 	file, err := openValidatedPIDFile(path)
 	if err != nil {
-		return 0, nil, err
+		return daemonPIDRecord{}, nil, err
 	}
 	defer file.Close()
-	return readPIDRecordFromFile(file)
+	return readPIDIdentityFromFile(file)
 }
 
 func readPIDRecordFromFile(file *os.File) (int, os.FileInfo, error) {
+	record, info, err := readPIDIdentityFromFile(file)
+	return record.PID, info, err
+}
+
+func readPIDIdentityFromFile(file *os.File) (daemonPIDRecord, os.FileInfo, error) {
 	data, err := io.ReadAll(file)
 	if err != nil {
-		return 0, nil, err
+		return daemonPIDRecord{}, nil, err
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	record, err := parsePIDRecord(data)
 	if err != nil {
-		return 0, nil, err
-	}
-	if pid <= 0 {
-		return 0, nil, fmt.Errorf("invalid PID %d", pid)
+		return daemonPIDRecord{}, nil, err
 	}
 	info, err := file.Stat()
 	if err != nil {
-		return 0, nil, err
+		return daemonPIDRecord{}, nil, err
 	}
-	return pid, info, nil
+	return record, info, nil
+}
+
+func parsePIDRecord(data []byte) (daemonPIDRecord, error) {
+	trimmed := strings.TrimSpace(string(data))
+	if pid, err := strconv.Atoi(trimmed); err == nil {
+		if pid <= 0 {
+			return daemonPIDRecord{}, fmt.Errorf("invalid PID %d", pid)
+		}
+		return daemonPIDRecord{PID: pid}, nil
+	}
+	var record daemonPIDRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return daemonPIDRecord{}, err
+	}
+	if record.PID <= 0 {
+		return daemonPIDRecord{}, fmt.Errorf("invalid PID %d", record.PID)
+	}
+	return record, nil
 }
 
 func writePID(path string, pid int) error {
@@ -1781,6 +1937,13 @@ func writePIDOwnedWithHook(path string, pid int, initializingHook func()) (os.Fi
 	if err := ensurePIDDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
+	record := daemonPIDRecord{PID: pid}
+	record.StartTime, _ = processStartTime(pid)
+	recordData, err := json.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+	recordData = append(recordData, '\n')
 
 	for {
 		file, pendingPath, err := createPendingPIDFile(path)
@@ -1805,7 +1968,7 @@ func writePIDOwnedWithHook(path string, pid int, initializingHook func()) (os.Fi
 		if initializingHook != nil {
 			initializingHook()
 		}
-		if _, err := io.WriteString(file, strconv.Itoa(pid)+"\n"); err != nil {
+		if _, err := file.Write(recordData); err != nil {
 			cleanup()
 			return nil, err
 		}
@@ -1837,20 +2000,15 @@ func writePIDOwnedWithHook(path string, pid int, initializingHook func()) (os.Fi
 			existing.Close()
 			return nil, fmt.Errorf("PID file is busy: %w", lockErr)
 		}
-		existingData, readErr := io.ReadAll(existing)
+		existingRecord, _, readErr := readPIDIdentityFromFile(existing)
 		existingInfo, statErr := existing.Stat()
-		if readErr != nil {
-			existing.Close()
-			return nil, readErr
-		}
 		if statErr != nil {
 			existing.Close()
 			return nil, statErr
 		}
-		if existingPID, parseErr := strconv.Atoi(strings.TrimSpace(string(existingData))); parseErr == nil &&
-			existingPID > 0 && processAlive(existingPID) && processLooksLikeTermp(existingPID) {
+		if readErr == nil && processIdentityMatches(existingRecord.PID, existingRecord.StartTime, processAlive, processLooksLikeTermp) {
 			existing.Close()
-			return nil, fmt.Errorf("daemon already running with pid %d", existingPID)
+			return nil, fmt.Errorf("daemon already running with pid %d", existingRecord.PID)
 		}
 		currentInfo, lstatErr := os.Lstat(path)
 		if lstatErr != nil {
@@ -1971,14 +2129,15 @@ func removePIDIfOwned(path string, expectedPID int, expectedInfo os.FileInfo) (b
 }
 
 func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, signal func(int) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
-	pid, info, err := readPIDRecord(path)
+	record, info, err := readPIDIdentity(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, errors.New("daemon is not running")
 		}
 		return 0, err
 	}
-	if !alive(pid) {
+	pid := record.PID
+	if !processIdentityMatches(pid, record.StartTime, alive, looksLikeTermp) {
 		removed, removeErr := removePIDIfOwned(path, pid, info)
 		if removeErr != nil {
 			return 0, fmt.Errorf("remove stale PID file: %w", removeErr)
@@ -2008,16 +2167,17 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLi
 }
 
 func stopDaemonAndPublisher(path string, publisherPID int, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, signal func(int) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
-	pid, info, readErr := readPIDRecord(path)
+	record, info, readErr := readPIDIdentity(path)
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return 0, readErr
 	}
+	pid := record.PID
 
 	targets := make([]int, 0, 2)
 	if publisherPID > 0 && alive(publisherPID) {
 		targets = append(targets, publisherPID)
 	}
-	if readErr == nil && alive(pid) && pid != publisherPID {
+	if readErr == nil && processIdentityMatches(pid, record.StartTime, alive, looksLikeTermp) && pid != publisherPID {
 		targets = append(targets, pid)
 	}
 	if len(targets) == 0 {
@@ -2059,8 +2219,9 @@ func stopDaemonAndPublisher(path string, publisherPID int, timeout, pollInterval
 }
 
 func pidFileOwnedByRelaunchedDaemon(path string, stoppedPID int, alive, looksLikeTermp func(int) bool) bool {
-	relaunchedPID, _, err := readPIDRecord(path)
-	return err == nil && relaunchedPID != stoppedPID && alive(relaunchedPID) && looksLikeTermp(relaunchedPID)
+	record, _, err := readPIDIdentity(path)
+	return err == nil && record.PID != stoppedPID &&
+		processIdentityMatches(record.PID, record.StartTime, alive, looksLikeTermp)
 }
 
 func waitForProcessExit(pid int, timeout, pollInterval time.Duration, alive func(int) bool, sleep func(time.Duration)) bool {
@@ -2090,7 +2251,7 @@ func isTerminal(file *os.File) bool {
 }
 
 func maybePrintFirstRunCTA(w io.Writer, configPath string, terminal bool) {
-	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+	if !configMissing(configPath) {
 		return
 	}
 	if !terminal {
@@ -2106,4 +2267,13 @@ func maybePrintFirstRunCTA(w io.Writer, configPath string, terminal bool) {
 		"Discord stays blank until you do.",
 	}, "\n")
 	fmt.Fprintln(w, styles.Card.Render(body))
+}
+
+func configMissing(path string) bool {
+	_, err := os.Stat(path)
+	return isConfigMissingError(err)
+}
+
+func isConfigMissingError(err error) bool {
+	return errors.Is(err, os.ErrNotExist)
 }

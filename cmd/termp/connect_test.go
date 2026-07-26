@@ -12,12 +12,13 @@ import (
 
 func baseConnectDeps(now time.Time) connectCommandDeps {
 	return connectCommandDeps{
-		now:       func() time.Time { return now },
-		readState: func(string) (daemonDiscordState, bool) { return daemonDiscordState{}, false },
-		readFresh: func(string, time.Time, time.Duration) (daemonDiscordState, bool) { return daemonDiscordState{}, false },
-		readPID:   func(string) (int, error) { return 0, errors.New("missing") },
-		alive:     func(int) bool { return false },
-		looksLike: func(int) bool { return false },
+		now:          func() time.Time { return now },
+		readState:    func(string) (daemonDiscordState, bool) { return daemonDiscordState{}, false },
+		readFresh:    func(string, time.Time, time.Duration) (daemonDiscordState, bool) { return daemonDiscordState{}, false },
+		readPID:      func(string) (int, error) { return 0, errors.New("missing") },
+		readPIDStart: func(string, int) uint64 { return 0 },
+		alive:        func(int) bool { return false },
+		looksLike:    func(int) bool { return false },
 		send: func(context.Context, int, controlRequest) (controlResponse, error) {
 			return controlResponse{}, errors.New("unexpected send")
 		},
@@ -37,6 +38,24 @@ func TestConnectCommandFailsWithStartInstructionWhenNoDaemonRuns(t *testing.T) {
 	}
 	if output.Len() != 0 {
 		t.Fatalf("connect output = %q, want none", output.String())
+	}
+}
+
+func TestConnectCommandPrintsFirstRunCTAAfterValidArguments(t *testing.T) {
+	deps := baseConnectDeps(time.Now())
+	ctas := 0
+	deps.firstRunCTA = func() { ctas++ }
+	var output bytes.Buffer
+
+	_ = connectCommandWith(nil, &output, &output, deps)
+	if ctas != 1 {
+		t.Fatalf("valid connect CTA calls = %d, want 1", ctas)
+	}
+
+	ctas = 0
+	_ = connectCommandWith([]string{"production"}, &output, &output, deps)
+	if ctas != 0 {
+		t.Fatalf("invalid connect CTA calls = %d, want 0", ctas)
 	}
 }
 

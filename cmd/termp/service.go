@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 
 	"github.com/charmbracelet/lipgloss"
@@ -56,9 +57,22 @@ func dispatchAutostartAction(action string, args []string, handlers map[string]a
 	handler, ok := handlers[action]
 	if !ok {
 		autostartUsage()
-		return fmt.Errorf("unknown autostart action %q", action)
+		err := fmt.Errorf("unknown autostart action %q", action)
+		if suggestion := closestCommand(action, autostartActionNames(handlers), 2); suggestion != "" {
+			return fmt.Errorf("%w; Did you mean %q?", err, suggestion)
+		}
+		return err
 	}
 	return handler(args)
+}
+
+func autostartActionNames(handlers map[string]autostartActionHandler) []string {
+	names := make([]string, 0, len(handlers))
+	for name := range handlers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func autostartUsage() {
@@ -74,6 +88,9 @@ func install(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	force := fs.Bool("force", false, "install from an unstable path or take over another installation's task")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, "termp autostart install [--force]"); err != nil {
 		return err
 	}
 	exe, err := service.ResolveExecutable()
@@ -105,7 +122,7 @@ func formatInstallSuccess(installedPath, configPath string) string {
 			{label: "Remove autostart", value: "termp autostart uninstall"},
 		},
 	}}
-	if _, err := os.Stat(configPath); err != nil {
+	if configMissing(configPath) {
 		sections = append(sections,
 			outputSection{
 				header: "Config",
@@ -152,6 +169,9 @@ func uninstall(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := rejectUnexpectedArgs(fs, "termp autostart uninstall [--force]"); err != nil {
+		return err
+	}
 	manager := newAutostartManager()
 	preState := manager.Status()
 	wasInstalled := preState.Installed || preState.ForeignTask
@@ -180,6 +200,9 @@ func disable(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := rejectUnexpectedArgs(fs, "termp autostart disable"); err != nil {
+		return err
+	}
 	state, err := newAutostartManager().Disable()
 	if errors.Is(err, service.ErrUnsupported) {
 		fmt.Println(state.Message)
@@ -203,6 +226,9 @@ func disable(args []string) error {
 func enable(args []string) error {
 	fs := flag.NewFlagSet("enable", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, "termp autostart enable"); err != nil {
 		return err
 	}
 	state, err := newAutostartManager().Enable()

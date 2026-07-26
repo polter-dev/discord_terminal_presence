@@ -459,7 +459,7 @@ func TestStopDaemonAndPublisherAcceptsAutostartRelaunch(t *testing.T) {
 	live := map[int]bool{1234: true, 5678: false}
 	pid, err := stopDaemonAndPublisher(path, 0, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
-		func(pid int) bool { return pid == 5678 },
+		func(pid int) bool { return pid == 1234 || pid == 5678 },
 		func(pid int) error {
 			live[pid] = false
 			live[5678] = true
@@ -495,7 +495,7 @@ func TestStopDaemonAndPublisherRejectsUnexpectedPIDFileTakeover(t *testing.T) {
 	live := map[int]bool{1234: true, 5678: false}
 	_, err := stopDaemonAndPublisher(path, 0, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
-		func(int) bool { return false },
+		func(pid int) bool { return pid == 1234 },
 		func(pid int) error {
 			live[pid] = false
 			live[5678] = true

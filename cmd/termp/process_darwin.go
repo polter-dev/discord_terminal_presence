@@ -34,6 +34,20 @@ func processLooksLikeTermp(pid int) bool {
 	return err == nil
 }
 
+func processStartTime(pid int) (uint64, error) {
+	if pid <= 0 {
+		return 0, errors.New("invalid PID")
+	}
+	kinfo, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return 0, fmt.Errorf("read process start time: %w", err)
+	}
+	if kinfo.Proc.P_starttime.Sec < 0 || kinfo.Proc.P_starttime.Usec < 0 {
+		return 0, errors.New("invalid process start time")
+	}
+	return uint64(kinfo.Proc.P_starttime.Sec)*1_000_000 + uint64(kinfo.Proc.P_starttime.Usec), nil
+}
+
 func signalTermpProcess(pid int) error {
 	first, err := validatedDarwinIdentity(pid)
 	if err != nil {

@@ -99,15 +99,37 @@ install_binary() {
 	fi
 
 	if [ -w "$bindir" ]; then
-		cp "$src" "$dest"
-		chmod 0755 "$dest"
+		install_tmp=$(mktemp "$bindir/.termp.tmp.XXXXXX")
+		if ! cp "$src" "$install_tmp"; then
+			rm -f "$install_tmp"
+			err "failed to stage termp in $bindir"
+		fi
+		if ! chmod 0755 "$install_tmp"; then
+			rm -f "$install_tmp"
+			err "failed to make staged termp executable"
+		fi
+		if ! mv -f "$install_tmp" "$dest"; then
+			rm -f "$install_tmp"
+			err "failed to install termp to $dest"
+		fi
 	else
 		if ! have sudo; then
 			err "$bindir is not writable and sudo is not available"
 		fi
 		printf 'Installing termp to %s with sudo because the directory is not writable.\n' "$bindir"
-		sudo cp "$src" "$dest"
-		sudo chmod 0755 "$dest"
+		install_tmp=$(sudo mktemp "$bindir/.termp.tmp.XXXXXX")
+		if ! sudo cp "$src" "$install_tmp"; then
+			sudo rm -f "$install_tmp"
+			err "failed to stage termp in $bindir"
+		fi
+		if ! sudo chmod 0755 "$install_tmp"; then
+			sudo rm -f "$install_tmp"
+			err "failed to make staged termp executable"
+		fi
+		if ! sudo mv -f "$install_tmp" "$dest"; then
+			sudo rm -f "$install_tmp"
+			err "failed to install termp to $dest"
+		fi
 	fi
 }
 
@@ -293,7 +315,7 @@ else
 	config_path=
 fi
 
-if [ -n "$config_path" ] && [ -f "$config_path" ]; then
+if [ -n "$config_path" ] && [ -e "$config_path" ]; then
 	printf 'Next steps:\n'
 	printf '  termp start    # run the daemon in the foreground\n'
 	printf '  termp install  # install and start the login autostart service\n'
