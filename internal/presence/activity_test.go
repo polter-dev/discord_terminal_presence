@@ -53,7 +53,7 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 	if activity.Name != "Claude Code" {
 		t.Fatalf("name = %q, want featured tool display name", activity.Name)
 	}
-	if activity.Details != "also using lazygit · Neovim" {
+	if activity.Details != "With lazygit · Neovim" {
 		t.Fatalf("details = %q, want collection summary", activity.Details)
 	}
 	if activity.State != "" {
@@ -136,8 +136,8 @@ func TestActivityFromDetectionDefaultDetailsCascade(t *testing.T) {
 		wantDetails string
 		wantState   string
 	}{
-		{name: "secondaries and directory", secondaries: true, directory: true, wantDetails: "also using Codex CLI", wantState: "📁 dev/myrepo"},
-		{name: "secondaries only", secondaries: true, wantDetails: "also using Codex CLI"},
+		{name: "secondaries and directory", secondaries: true, directory: true, wantDetails: "With Codex CLI", wantState: "📁 dev/myrepo"},
+		{name: "secondaries only", secondaries: true, wantDetails: "With Codex CLI"},
 		{name: "directory only", directory: true, wantDetails: "📁 dev/myrepo"},
 		{name: "fallback", wantDetails: "Fixed fallback"},
 	}
@@ -183,7 +183,7 @@ func TestActivityFromDetectionCollectionCanBeDisabledAndCapsList(t *testing.T) {
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
-	if activity.Details != "also using one · two · three" {
+	if activity.Details != "With one · two · three" {
 		t.Fatalf("details = %q, want capped collection", activity.Details)
 	}
 

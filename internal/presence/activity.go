@@ -149,11 +149,11 @@ func customizedDetailsFormat(format string) bool {
 
 // CollectionState summarizes the other running tools for Discord's details line.
 func CollectionState(others []registry.Tool) string {
-	return collectionState("also using ", others)
+	return collectionState("With ", others)
 }
 
 func legacyCollectionState(others []registry.Tool) string {
-	return collectionState("also: ", others)
+	return collectionState("With ", others)
 }
 
 func collectionState(prefix string, others []registry.Tool) string {
