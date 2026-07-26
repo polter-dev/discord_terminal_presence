@@ -1,6 +1,7 @@
 package presence
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -43,18 +44,20 @@ func TestActivityFromDetectionDefaultOptions(t *testing.T) {
 		},
 	}
 
-	activity, ok := ActivityFromDetection(detection, DefaultDisplayOptions())
+	options := DefaultDisplayOptions()
+	options.FallbackMessage = "Fixed fallback"
+	activity, ok := ActivityFromDetection(detection, options)
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
 	if activity.Name != "Claude Code" {
 		t.Fatalf("name = %q, want featured tool display name", activity.Name)
 	}
-	if activity.Details != "Using Claude Code" {
-		t.Fatalf("details = %q, want %q", activity.Details, "Using Claude Code")
+	if activity.Details != "also using lazygit · Neovim" {
+		t.Fatalf("details = %q, want collection summary", activity.Details)
 	}
-	if activity.State != "also: lazygit · Neovim" {
-		t.Fatalf("state = %q, want collection summary", activity.State)
+	if activity.State != "" {
+		t.Fatalf("state = %q, want empty without directory", activity.State)
 	}
 	if activity.LargeImage.Key != "claude-code" || activity.LargeImage.URL != "" || activity.LargeImage.Text != "Claude Code" {
 		t.Fatalf("large image = %#v, want key claude-code with display text", activity.LargeImage)
@@ -83,14 +86,20 @@ func TestActivityFromDetectionDetailsFormat(t *testing.T) {
 	detection := detector.Detection{
 		Tool: registry.Tool{DisplayName: "Codex CLI"},
 		Cwd:  "/Users/marcus/work/termp",
+		Others: []registry.Tool{
+			{DisplayName: "Claude Code"},
+		},
 	}
 
 	activity, ok := ActivityFromDetection(detection, options)
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
-	if activity.Details != "Codex CLI @ termp" {
+	if activity.Details != "Codex CLI @ 📁 termp" {
 		t.Fatalf("details = %q, want custom format with directory", activity.Details)
+	}
+	if activity.State != "📁 termp" {
+		t.Fatalf("state = %q, want directory to retain prior State priority", activity.State)
 	}
 
 	options.ToolName = false
@@ -119,6 +128,46 @@ func TestActivityFromDetectionBlankDetailsFormatRendersEmpty(t *testing.T) {
 	}
 }
 
+func TestActivityFromDetectionDefaultDetailsCascade(t *testing.T) {
+	tests := []struct {
+		name        string
+		secondaries bool
+		directory   bool
+		wantDetails string
+		wantState   string
+	}{
+		{name: "secondaries and directory", secondaries: true, directory: true, wantDetails: "also using Codex CLI", wantState: "📁 dev/myrepo"},
+		{name: "secondaries only", secondaries: true, wantDetails: "also using Codex CLI"},
+		{name: "directory only", directory: true, wantDetails: "📁 dev/myrepo"},
+		{name: "fallback", wantDetails: "Fixed fallback"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			options := DefaultDisplayOptions()
+			options.FallbackMessage = "Fixed fallback"
+			options.DirectoryBasenameOnly = false
+			detection := detector.Detection{
+				Tool: registry.Tool{DisplayName: "Claude Code"},
+			}
+			if tt.secondaries {
+				detection.Others = []registry.Tool{{DisplayName: "Codex CLI"}}
+			}
+			if tt.directory {
+				options.ShowDirectory = true
+				detection.Cwd = "/Users/me/dev/myrepo"
+			}
+
+			activity, ok := ActivityFromDetection(detection, options)
+			if !ok {
+				t.Fatal("expected active detection to produce activity")
+			}
+			if activity.Details != tt.wantDetails || activity.State != tt.wantState {
+				t.Fatalf("details/state = %q/%q, want %q/%q", activity.Details, activity.State, tt.wantDetails, tt.wantState)
+			}
+		})
+	}
+}
+
 func TestActivityFromDetectionCollectionCanBeDisabledAndCapsList(t *testing.T) {
 	detection := detector.Detection{
 		Tool: registry.Tool{DisplayName: "Claude Code", ImageKey: "claude-code"},
@@ -134,59 +183,54 @@ func TestActivityFromDetectionCollectionCanBeDisabledAndCapsList(t *testing.T) {
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
-	if activity.State != "also: one · two · three" {
-		t.Fatalf("state = %q, want capped collection", activity.State)
+	if activity.Details != "also using one · two · three" {
+		t.Fatalf("details = %q, want capped collection", activity.Details)
 	}
 
 	options := DefaultDisplayOptions()
 	options.Collection = false
+	options.FallbackMessage = "Fixed fallback"
 	activity, ok = ActivityFromDetection(detection, options)
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
-	if activity.State != "" {
-		t.Fatalf("state = %q, want empty collection when disabled", activity.State)
+	if activity.Details != "Fixed fallback" || activity.State != "" {
+		t.Fatalf("details/state = %q/%q, want fallback and empty state", activity.Details, activity.State)
 	}
 }
 
-func TestActivityFromDetectionDirectoryBasename(t *testing.T) {
-	options := DefaultDisplayOptions()
-	options.ShowDirectory = true
-	detection := detector.Detection{
-		Tool: registry.Tool{
-			DisplayName: "Gemini CLI",
-			ImageURL:    "https://example.com/gemini.png",
-		},
-		Cwd: "/Users/marcus/work/termp",
+func TestActivityFromDetectionDirectoryRenderingPrivacyCap(t *testing.T) {
+	tests := []struct {
+		name         string
+		cwd          string
+		basenameOnly bool
+		want         string
+	}{
+		{name: "basename only", cwd: "/Users/marcus/work/termp", basenameOnly: true, want: "📁 termp"},
+		{name: "last two segments", cwd: "/Users/marcus/work/termp", want: "📁 work/termp"},
+		{name: "single segment", cwd: "termp", want: "📁 termp"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			options := DefaultDisplayOptions()
+			options.ShowDirectory = true
+			options.DirectoryBasenameOnly = tt.basenameOnly
+			detection := detector.Detection{
+				Tool: registry.Tool{DisplayName: "Gemini CLI", ImageURL: "https://example.com/gemini.png"},
+				Cwd:  tt.cwd,
+			}
 
-	activity, ok := ActivityFromDetection(detection, options)
-	if !ok {
-		t.Fatal("expected active detection to produce activity")
-	}
-	if activity.State != "termp" {
-		t.Fatalf("state = %q, want basename", activity.State)
-	}
-	if activity.LargeImage.URL != "https://example.com/gemini.png" || activity.LargeImage.Key != "" {
-		t.Fatalf("large image = %#v, want image URL", activity.LargeImage)
-	}
-}
-
-func TestActivityFromDetectionDirectoryFullPath(t *testing.T) {
-	options := DefaultDisplayOptions()
-	options.ShowDirectory = true
-	options.DirectoryBasenameOnly = false
-	detection := detector.Detection{
-		Tool: registry.Tool{DisplayName: "Codex CLI", ImageKey: "codex-cli"},
-		Cwd:  "/Users/marcus/work/termp",
-	}
-
-	activity, ok := ActivityFromDetection(detection, options)
-	if !ok {
-		t.Fatal("expected active detection to produce activity")
-	}
-	if activity.State != "/Users/marcus/work/termp" {
-		t.Fatalf("state = %q, want full path", activity.State)
+			activity, ok := ActivityFromDetection(detection, options)
+			if !ok {
+				t.Fatal("expected active detection to produce activity")
+			}
+			if activity.Details != tt.want || activity.State != "" {
+				t.Fatalf("details/state = %q/%q, want %q/empty", activity.Details, activity.State, tt.want)
+			}
+			if strings.Contains(activity.Details, "/Users/marcus") {
+				t.Fatalf("details leaked private absolute path: %q", activity.Details)
+			}
+		})
 	}
 }
 

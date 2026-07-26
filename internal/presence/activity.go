@@ -14,10 +14,13 @@ import (
 // commit — it is not a secret and requires no bot token.
 const DefaultAppID = "1523168764793847918"
 
+const defaultDetailsFormat = "Using {tool}"
+
 // DisplayOptions is the M2 stand-in for future config-driven display/privacy settings.
 type DisplayOptions struct {
 	ToolName              bool
 	DetailsFormat         string
+	FallbackMessage       string
 	ElapsedTimer          bool
 	SmallImage            bool
 	Collection            bool
@@ -30,7 +33,8 @@ type DisplayOptions struct {
 func DefaultDisplayOptions() DisplayOptions {
 	return DisplayOptions{
 		ToolName:              true,
-		DetailsFormat:         "Using {tool}",
+		DetailsFormat:         defaultDetailsFormat,
+		FallbackMessage:       "Working on something",
 		ElapsedTimer:          true,
 		SmallImage:            true,
 		Collection:            true,
@@ -86,12 +90,30 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 	directory := ""
 	if options.ShowDirectory && detection.Cwd != "" {
 		directory = directoryState(detection.Cwd, options.DirectoryBasenameOnly)
-		activity.State = directory
-	} else if options.Collection {
-		activity.State = CollectionState(detection.Others)
 	}
-	if options.ToolName {
-		activity.Details = renderDetails(options.DetailsFormat, tool.DisplayName, directory)
+	if customizedDetailsFormat(options.DetailsFormat) {
+		if directory != "" {
+			activity.State = directory
+		} else if options.Collection {
+			activity.State = legacyCollectionState(detection.Others)
+		}
+		if options.ToolName {
+			activity.Details = renderDetails(options.DetailsFormat, tool.DisplayName, directory)
+		}
+	} else if options.ToolName {
+		collection := ""
+		if options.Collection {
+			collection = CollectionState(detection.Others)
+		}
+		switch {
+		case collection != "":
+			activity.Details = collection
+			activity.State = directory
+		case directory != "":
+			activity.Details = directory
+		default:
+			activity.Details = options.FallbackMessage
+		}
 	}
 	if options.SmallImage && len(detection.Others) > 0 {
 		other := detection.Others[0]
@@ -114,15 +136,27 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 
 func renderDetails(format, toolName, directory string) string {
 	if format == "" {
-		format = "Using {tool}"
+		format = defaultDetailsFormat
 	}
 	details := strings.ReplaceAll(format, "{tool}", toolName)
 	details = strings.ReplaceAll(details, "{dir}", directory)
 	return strings.TrimSpace(details)
 }
 
-// CollectionState summarizes the other running tools for Discord's single state line.
+func customizedDetailsFormat(format string) bool {
+	return format != "" && format != defaultDetailsFormat
+}
+
+// CollectionState summarizes the other running tools for Discord's details line.
 func CollectionState(others []registry.Tool) string {
+	return collectionState("also using ", others)
+}
+
+func legacyCollectionState(others []registry.Tool) string {
+	return collectionState("also: ", others)
+}
+
+func collectionState(prefix string, others []registry.Tool) string {
 	const maxTools = 3
 	if len(others) == 0 {
 		return ""
@@ -131,7 +165,7 @@ func CollectionState(others []registry.Tool) string {
 	if count > maxTools {
 		count = maxTools
 	}
-	state := "also: " + others[0].DisplayName
+	state := prefix + others[0].DisplayName
 	for _, tool := range others[1:count] {
 		state += " · " + tool.DisplayName
 	}
@@ -139,13 +173,19 @@ func CollectionState(others []registry.Tool) string {
 }
 
 func directoryState(cwd string, basenameOnly bool) string {
-	if !basenameOnly {
-		return cwd
+	clean := filepath.Clean(cwd)
+	base := filepath.Base(clean)
+	if base == "." || base == string(filepath.Separator) || base == filepath.VolumeName(clean)+string(filepath.Separator) {
+		return ""
 	}
-	if base := filepath.Base(cwd); base != "." && base != string(filepath.Separator) {
-		return base
+	if basenameOnly {
+		return "📁 " + base
 	}
-	return cwd
+	parent := filepath.Base(filepath.Dir(clean))
+	if parent == "." || parent == string(filepath.Separator) || parent == filepath.VolumeName(clean)+string(filepath.Separator) {
+		return "📁 " + base
+	}
+	return "📁 " + parent + "/" + base
 }
 
 func buttonsFromTool(tool registry.Tool) []Button {

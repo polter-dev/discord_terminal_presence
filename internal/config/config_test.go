@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -241,6 +242,9 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	if cfg.IdleClearTimeout != "20m" || cfg.DetailsFormat != "Using {tool}" {
 		t.Fatalf("unexpected polish defaults: %#v", cfg)
 	}
+	if !reflect.DeepEqual(cfg.FallbackMessages, []string{"Working on something", "In the terminal"}) {
+		t.Fatalf("fallback_messages default = %#v", cfg.FallbackMessages)
+	}
 	if cfg.FeedbackURL != DefaultFeedbackURL {
 		t.Fatalf("feedback_url default = %q, want %q", cfg.FeedbackURL, DefaultFeedbackURL)
 	}
@@ -282,6 +286,7 @@ func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
 		"headliner_idle_timeout = \"60s\"",
 		"activity_switching = true",
 		"details_format = \"Using {tool}\"",
+		"fallback_messages = [\"Working on something\", \"In the terminal\"]",
 		"[ui]",
 		"accent_color = \"purple\"",
 		"[display]",
@@ -299,6 +304,43 @@ func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
 	}
 	if cfg.ScanInterval != Default().ScanInterval || cfg.CTA.Label != Default().CTA.Label {
 		t.Fatalf("loaded config = %#v, want defaults", cfg)
+	}
+}
+
+func TestFallbackMessagesLoadAndRoundTrip(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{name: "absent uses default", content: `enabled = true`, want: []string{"Working on something", "In the terminal"}},
+		{name: "empty uses default", content: `fallback_messages = []`, want: []string{"Working on something", "In the terminal"}},
+		{name: "custom preserved", content: `fallback_messages = ["Shipping code", "Reviewing changes"]`, want: []string{"Shipping code", "Reviewing changes"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			writeConfig(t, path, tt.content)
+			cfg, err := LoadPath(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(cfg.FallbackMessages, tt.want) {
+				t.Fatalf("loaded fallback_messages = %#v, want %#v", cfg.FallbackMessages, tt.want)
+			}
+
+			savedPath := filepath.Join(t.TempDir(), "saved.toml")
+			if err := Save(cfg, savedPath); err != nil {
+				t.Fatal(err)
+			}
+			roundTripped, err := LoadPath(savedPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(roundTripped.FallbackMessages, tt.want) {
+				t.Fatalf("round-tripped fallback_messages = %#v, want %#v", roundTripped.FallbackMessages, tt.want)
+			}
+		})
 	}
 }
 
@@ -842,6 +884,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	cfg.HeadlinerIdleTimeout = "2m"
 	cfg.ActivitySwitching = false
 	cfg.DetailsFormat = "{tool} in {dir}"
+	cfg.FallbackMessages = []string{"Building quietly", "Pairing"}
 	cfg.FeedbackURL = "https://example.test/feedback"
 	cfg.Display.ToolName = false
 	cfg.Display.Collection = false
@@ -881,6 +924,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if loaded.IdleClearTimeout != "6h" || loaded.DetailsFormat != "{tool} in {dir}" {
 		t.Fatalf("polish settings did not round-trip: %#v", loaded)
+	}
+	if !reflect.DeepEqual(loaded.FallbackMessages, cfg.FallbackMessages) {
+		t.Fatalf("fallback_messages = %#v, want %#v", loaded.FallbackMessages, cfg.FallbackMessages)
 	}
 	if loaded.FeedbackURL != "https://example.test/feedback" {
 		t.Fatalf("feedback_url did not round-trip: %#v", loaded)

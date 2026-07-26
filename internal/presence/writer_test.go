@@ -67,7 +67,7 @@ func TestWriterReconnectsAndReappliesActivity(t *testing.T) {
 	if len(activities) != 1 {
 		t.Fatalf("set activities len = %d, want 1", len(activities))
 	}
-	if activities[0].Details != "Using Claude Code" {
+	if activities[0].Details != "Working on something" {
 		t.Fatalf("details = %q, want Claude activity", activities[0].Details)
 	}
 	if activities[0].StartTimestamp == nil || !activities[0].StartTimestamp.Equal(startedAt) {

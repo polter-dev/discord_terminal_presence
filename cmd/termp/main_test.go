@@ -1645,7 +1645,7 @@ func TestCompletionScriptsContainCommands(t *testing.T) {
 
 func TestBuildActivityAddsCTAWhenToolHasNoButtons(t *testing.T) {
 	cfg := config.Default()
-	activity := buildActivity(cfg, detectionWithButtons(nil))
+	activity := buildActivity(cfg, detectionWithButtons(nil), "Fixed fallback")
 	if activity == nil {
 		t.Fatal("activity = nil, want activity")
 	}
@@ -1663,7 +1663,7 @@ func TestBuildActivityDoesNotExceedTwoButtons(t *testing.T) {
 	activity := buildActivity(cfg, detectionWithButtons([]registry.Button{
 		{Label: "One", URL: "https://example.test/one"},
 		{Label: "Two", URL: "https://example.test/two"},
-	}))
+	}), "Fixed fallback")
 	if activity == nil {
 		t.Fatal("activity = nil, want activity")
 	}
@@ -1679,7 +1679,7 @@ func TestBuildActivityDoesNotExceedTwoButtons(t *testing.T) {
 func TestBuildActivitySkipsDisabledCTA(t *testing.T) {
 	cfg := config.Default()
 	cfg.CTA.Enabled = false
-	activity := buildActivity(cfg, detectionWithButtons(nil))
+	activity := buildActivity(cfg, detectionWithButtons(nil), "Fixed fallback")
 	if activity == nil {
 		t.Fatal("activity = nil, want activity")
 	}
@@ -1693,7 +1693,7 @@ func TestBuildActivitySkipsAllButtonsWhenDisabled(t *testing.T) {
 	cfg.Display.Buttons = false
 	activity := buildActivity(cfg, detectionWithButtons([]registry.Button{
 		{Label: "One", URL: "https://example.test/one"},
-	}))
+	}), "Fixed fallback")
 	if activity == nil {
 		t.Fatal("activity = nil, want activity")
 	}

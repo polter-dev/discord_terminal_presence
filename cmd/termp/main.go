@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -722,6 +723,7 @@ func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (st
 
 func run(ctx context.Context, manager *config.Manager, control *daemonControl) error {
 	cfg, _ := manager.Current()
+	fallbackMessage := selectFallbackMessage(cfg.FallbackMessages)
 	applied, err := newDetectionRuntime(cfg)
 	if err != nil {
 		return err
@@ -801,7 +803,7 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 					recordUsage(usageStore, detection, time.Now())
 					saveUsage(false)
 				}
-				if !send(buildActivity(applied.config, detection)) {
+				if !send(buildActivity(applied.config, detection, fallbackMessage)) {
 					return
 				}
 			case nextCfg := <-manager.Changes():
@@ -821,7 +823,7 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 				applied = next
 				debugf("config reloaded")
 				if haveLast && !change.detector {
-					if !send(buildActivity(applied.config, last)) {
+					if !send(buildActivity(applied.config, last, fallbackMessage)) {
 						return
 					}
 				}
@@ -920,7 +922,7 @@ func otherToolIDs(tools []registry.Tool) string {
 // buttons are decided here so the privacy allowlist and per-tool button
 // overrides in internal/config are honored; internal/presence stays
 // config-agnostic.
-func buildActivity(cfg config.Config, detection detector.Detection) *presence.Activity {
+func buildActivity(cfg config.Config, detection detector.Detection, fallbackMessage string) *presence.Activity {
 	if detection.None {
 		return nil
 	}
@@ -939,6 +941,7 @@ func buildActivity(cfg config.Config, detection detector.Detection) *presence.Ac
 	opts := presence.DisplayOptions{
 		ToolName:              resolved.ToolName,
 		DetailsFormat:         cfg.DetailsFormat,
+		FallbackMessage:       fallbackMessage,
 		ElapsedTimer:          resolved.ElapsedTimer,
 		SmallImage:            resolved.SmallImage,
 		Collection:            cfg.Display.Collection,
@@ -953,6 +956,13 @@ func buildActivity(cfg config.Config, detection detector.Detection) *presence.Ac
 		activity.Buttons = activityButtons(resolved.Buttons, cfg.CTA)
 	}
 	return &activity
+}
+
+func selectFallbackMessage(messages []string) string {
+	if len(messages) == 0 {
+		return config.BuiltInFallbackMessage
+	}
+	return messages[rand.IntN(len(messages))]
 }
 
 func enabledOthers(cfg config.Config, others []registry.Tool) []registry.Tool {
@@ -1528,7 +1538,7 @@ func watch(args []string) error {
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	detections := det.Run(ctx)
 
-	go bridgeWatchActivities(ctx, manager, detections, program)
+	go bridgeWatchActivities(ctx, manager, detections, program, selectFallbackMessage(cfg.FallbackMessages))
 	go bridgeWatchConnection(ctx, program, 5*time.Second)
 
 	_, err = program.Run()
@@ -1560,7 +1570,7 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 	connected := watchDiscordConnected(now, func() error {
 		return presence.Probe(presence.DefaultAppID)
 	})
-	activity := buildActivity(cfg, detection)
+	activity := buildActivity(cfg, detection, selectFallbackMessage(cfg.FallbackMessages))
 	recent := []tui.RecentDetection(nil)
 	if activity != nil && detection.Tool.DisplayName != "" {
 		recent = []tui.RecentDetection{{Name: detection.Tool.DisplayName, At: now}}
@@ -1573,13 +1583,13 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 	}, tui.DefaultCardStyles(cfg.UI.AccentColor)), cfg.Warnings, nil
 }
 
-func bridgeWatchActivities(ctx context.Context, manager *config.Manager, detections <-chan detector.Detection, program *tea.Program) {
+func bridgeWatchActivities(ctx context.Context, manager *config.Manager, detections <-chan detector.Detection, program *tea.Program, fallbackMessage string) {
 	var (
 		last     detector.Detection
 		haveLast bool
 	)
 	send := func(cfg config.Config, detection detector.Detection) {
-		activity := buildActivity(cfg, detection)
+		activity := buildActivity(cfg, detection, fallbackMessage)
 		name := ""
 		if activity != nil {
 			name = detection.Tool.DisplayName

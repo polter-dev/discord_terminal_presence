@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,10 @@ const (
 	// DefaultFeedbackURL deep-links to the live feedback form via the page's only stable anchor, the Turnstile container.
 	DefaultFeedbackURL = "https://termp.polter.sh/#feedback-turnstile"
 )
+
+const BuiltInFallbackMessage = "Working on something"
+
+var defaultFallbackMessages = []string{BuiltInFallbackMessage, "In the terminal"}
 
 // DefaultAccentColor preserves the original adaptive purple TUI palette.
 const DefaultAccentColor = "purple"
@@ -82,6 +87,7 @@ type Config struct {
 	HeadlinerIdleTimeout string                  `toml:"headliner_idle_timeout"`
 	ActivitySwitching    bool                    `toml:"activity_switching"`
 	DetailsFormat        string                  `toml:"details_format"`
+	FallbackMessages     []string                `toml:"fallback_messages"`
 	FeedbackURL          string                  `toml:"feedback_url"`
 	UI                   UI                      `toml:"ui"`
 	Display              Display                 `toml:"display"`
@@ -113,6 +119,7 @@ type fileConfig struct {
 	HeadlinerIdleTimeout string                  `toml:"headliner_idle_timeout"`
 	ActivitySwitching    bool                    `toml:"activity_switching"`
 	DetailsFormat        string                  `toml:"details_format"`
+	FallbackMessages     []string                `toml:"fallback_messages"`
 	FeedbackURL          string                  `toml:"feedback_url"`
 	UI                   UI                      `toml:"ui"`
 	Display              Display                 `toml:"display"`
@@ -166,6 +173,7 @@ func Default() Config {
 		HeadlinerIdleTimeout: "60s",
 		ActivitySwitching:    true,
 		DetailsFormat:        "Using {tool}",
+		FallbackMessages:     append([]string(nil), defaultFallbackMessages...),
 		FeedbackURL:          DefaultFeedbackURL,
 		UI: UI{
 			AccentColor: DefaultAccentColor,
@@ -291,7 +299,8 @@ idle_clear_timeout = %q       # Clear presence after this much terminal inactivi
 pin = %q                    # Prefer this tool ID as the headliner when it is running.
 headliner_idle_timeout = %q # How long the current headliner must be idle before switching.
 activity_switching = %t     # Let recent activity switch the headliner after the idle timeout.
-details_format = %q # Details text; {tool} expands to the display name.
+details_format = %q # Set a custom template to override the default card cascade; supports {tool} and {dir}.
+fallback_messages = %s # Random fallback details; one is chosen once per daemon session.
 feedback_url = %q # URL opened by the settings feedback action.
 
 [ui]
@@ -301,13 +310,13 @@ accent_color = %q          # TUI accent: purple, blue, green, orange, pink, red,
 tool_name = %t              # Show the tool display name in Discord details.
 elapsed_timer = %t          # Show Discord's elapsed timer for the session.
 small_image = %t            # Show an optional small image for another running tool.
-collection = %t             # Show other running tools in the state line when no directory is shown.
+collection = %t             # Show other running tools on the card.
 buttons = %t                # Show Discord activity buttons when available.
 
 [privacy]
 show_directory = %t         # Show the working directory on Discord. Off by default.
 directory_allowlist = []    # Optional path prefixes allowed when show_directory is true.
-directory_basename_only = %t # Show only the final directory name instead of the full path.
+directory_basename_only = %t # Show only the final directory name; false shows at most the last two segments.
 
 [cta]
 enabled = %t                # Show the "What is this?" button when fewer than two tool buttons exist.
@@ -322,10 +331,18 @@ url = %q       # URL for the CTA button.
 # image_url = "https://example.com/lazygit.png" # Logo URL used by Discord.
 # priority = 10              # Higher priority wins when multiple tools match.
 `, cfg.Enabled, cfg.StartAtLogin, cfg.UpdateCheck, cfg.AutoUpdate, cfg.ScanInterval, cfg.IdleClearTimeout, cfg.Pin, cfg.HeadlinerIdleTimeout,
-		cfg.ActivitySwitching, cfg.DetailsFormat, cfg.FeedbackURL, cfg.UI.AccentColor,
+		cfg.ActivitySwitching, cfg.DetailsFormat, tomlStringArray(cfg.FallbackMessages), cfg.FeedbackURL, cfg.UI.AccentColor,
 		cfg.Display.ToolName, cfg.Display.ElapsedTimer, cfg.Display.SmallImage, cfg.Display.Collection, cfg.Display.Buttons,
 		cfg.Privacy.ShowDirectory, cfg.Privacy.DirectoryBasenameOnly,
 		cfg.CTA.Enabled, cfg.CTA.Label, cfg.CTA.URL)
+}
+
+func tomlStringArray(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, strconv.Quote(value))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 // InitFile writes the annotated default config, refusing to overwrite unless force is true.
@@ -405,6 +422,7 @@ func LoadPath(path string) (Config, error) {
 		HeadlinerIdleTimeout: cfg.HeadlinerIdleTimeout,
 		ActivitySwitching:    cfg.ActivitySwitching,
 		DetailsFormat:        cfg.DetailsFormat,
+		FallbackMessages:     append([]string(nil), cfg.FallbackMessages...),
 		FeedbackURL:          cfg.FeedbackURL,
 		UI:                   cfg.UI,
 		Display:              cfg.Display,
@@ -426,6 +444,7 @@ func LoadPath(path string) (Config, error) {
 	cfg.HeadlinerIdleTimeout = raw.HeadlinerIdleTimeout
 	cfg.ActivitySwitching = raw.ActivitySwitching
 	cfg.DetailsFormat = raw.DetailsFormat
+	cfg.FallbackMessages = append([]string(nil), raw.FallbackMessages...)
 	cfg.FeedbackURL = raw.FeedbackURL
 	cfg.UI = raw.UI
 	cfg.Display = raw.Display
@@ -569,7 +588,7 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 	return false
 }
 
-// DisplayDirectory returns the directory string allowed for presence state.
+// DisplayDirectory returns the directory string allowed for presence rendering.
 func (r ResolvedTool) DisplayDirectory(path string) (string, bool) {
 	if !r.DirectoryAllowed(path) {
 		return "", false
@@ -581,6 +600,17 @@ func (r ResolvedTool) DisplayDirectory(path string) (string, bool) {
 }
 
 func validate(cfg *Config) error {
+	fallbackMessages := cfg.FallbackMessages[:0]
+	for _, message := range cfg.FallbackMessages {
+		if strings.TrimSpace(message) != "" {
+			fallbackMessages = append(fallbackMessages, message)
+		}
+	}
+	cfg.FallbackMessages = fallbackMessages
+	if len(cfg.FallbackMessages) == 0 {
+		cfg.FallbackMessages = append([]string(nil), defaultFallbackMessages...)
+	}
+
 	if !validAccentColor(cfg.UI.AccentColor) {
 		cfg.Warnings = append(cfg.Warnings, fmt.Sprintf(
 			"invalid config value: ui.accent_color %q; using %q",
@@ -625,6 +655,7 @@ func saveDocument(cfg Config) map[string]any {
 		"headliner_idle_timeout": cfg.HeadlinerIdleTimeout,
 		"activity_switching":     cfg.ActivitySwitching,
 		"details_format":         cfg.DetailsFormat,
+		"fallback_messages":      append([]string(nil), cfg.FallbackMessages...),
 		"feedback_url":           cfg.FeedbackURL,
 		"ui":                     saveUI(cfg.UI),
 		"display":                saveDisplay(cfg.Display),
@@ -821,6 +852,7 @@ func canonicalPrivacyPath(path string) string {
 }
 
 func cloneConfig(cfg Config) Config {
+	cfg.FallbackMessages = append([]string(nil), cfg.FallbackMessages...)
 	cfg.Privacy.DirectoryAllowlist = append([]string(nil), cfg.Privacy.DirectoryAllowlist...)
 	cfg.Warnings = append([]string(nil), cfg.Warnings...)
 	if cfg.Tools != nil {
