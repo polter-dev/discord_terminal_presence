@@ -12,13 +12,12 @@ import (
 
 func baseConnectDeps(now time.Time) connectCommandDeps {
 	return connectCommandDeps{
-		now:          func() time.Time { return now },
-		readState:    func(string) (daemonDiscordState, bool) { return daemonDiscordState{}, false },
-		readFresh:    func(string, time.Time, time.Duration) (daemonDiscordState, bool) { return daemonDiscordState{}, false },
-		readPID:      func(string) (int, error) { return 0, errors.New("missing") },
-		readPIDStart: func(string, int) uint64 { return 0 },
-		alive:        func(int) bool { return false },
-		looksLike:    func(int) bool { return false },
+		now:       func() time.Time { return now },
+		readState: func(string) (daemonDiscordState, bool) { return daemonDiscordState{}, false },
+		readFresh: func(string, time.Time, time.Duration) (daemonDiscordState, bool) { return daemonDiscordState{}, false },
+		readPID:   func(string) (daemonPIDRecord, error) { return daemonPIDRecord{}, errors.New("missing") },
+		alive:     func(int) bool { return false },
+		looksLike: func(int) bool { return false },
 		send: func(context.Context, int, controlRequest) (controlResponse, error) {
 			return controlResponse{}, errors.New("unexpected send")
 		},
@@ -65,7 +64,7 @@ func TestConnectCommandTargetsPublisherAndWaitsForNewConnectedState(t *testing.T
 	deps.readFresh = func(string, time.Time, time.Duration) (daemonDiscordState, bool) {
 		return daemonDiscordState{PID: 22, UpdatedAt: now}, true
 	}
-	deps.readPID = func(string) (int, error) { return 11, nil }
+	deps.readPID = func(string) (daemonPIDRecord, error) { return daemonPIDRecord{PID: 11}, nil }
 	deps.alive = func(pid int) bool { return pid == 11 || pid == 22 }
 	deps.looksLike = deps.alive
 	states := []daemonDiscordState{
@@ -104,7 +103,7 @@ func TestConnectCommandTargetsPublisherAndWaitsForNewConnectedState(t *testing.T
 func TestConnectCommandSurfacesReconnectFailureWithoutSuccess(t *testing.T) {
 	now := time.Now()
 	deps := baseConnectDeps(now)
-	deps.readPID = func(string) (int, error) { return 42, nil }
+	deps.readPID = func(string) (daemonPIDRecord, error) { return daemonPIDRecord{PID: 42}, nil }
 	deps.alive = func(pid int) bool { return pid == 42 }
 	deps.looksLike = deps.alive
 	deps.send = func(context.Context, int, controlRequest) (controlResponse, error) {
@@ -126,7 +125,7 @@ func TestConnectCommandTimeoutDoesNotReportSuccess(t *testing.T) {
 	deps := baseConnectDeps(now)
 	deps.timeout = 50 * time.Millisecond
 	deps.pollInterval = 25 * time.Millisecond
-	deps.readPID = func(string) (int, error) { return 42, nil }
+	deps.readPID = func(string) (daemonPIDRecord, error) { return daemonPIDRecord{PID: 42}, nil }
 	deps.alive = func(pid int) bool { return pid == 42 }
 	deps.looksLike = deps.alive
 	deps.readState = func(string) (daemonDiscordState, bool) {
@@ -149,7 +148,7 @@ func TestConnectCommandTimeoutDoesNotReportSuccess(t *testing.T) {
 func TestConnectCommandReportsAlreadyConnected(t *testing.T) {
 	now := time.Now()
 	deps := baseConnectDeps(now)
-	deps.readPID = func(string) (int, error) { return 42, nil }
+	deps.readPID = func(string) (daemonPIDRecord, error) { return daemonPIDRecord{PID: 42}, nil }
 	deps.alive = func(pid int) bool { return pid == 42 }
 	deps.looksLike = deps.alive
 	deps.send = func(_ context.Context, _ int, request controlRequest) (controlResponse, error) {

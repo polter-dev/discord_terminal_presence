@@ -35,7 +35,8 @@ const consoleProbePIDEnv = "TERMP_INTERNAL_CONSOLE_PROBE_PID"
 
 func init() {
 	value, ok := os.LookupEnv(consoleProbePIDEnv)
-	if !ok {
+	_ = os.Unsetenv(consoleProbePIDEnv)
+	if !consoleProbeRequested(os.Args, ok) {
 		return
 	}
 	pid, err := strconv.ParseUint(value, 10, 32)
@@ -53,7 +54,7 @@ func init() {
 }
 
 func newSystemTTYResolver() TTYResolver {
-	return windowsTTYResolver{consoleHWNDForPID: realWindowsConsoleHWNDForPID}
+	return newWindowsTTYResolver(realWindowsConsoleHWNDForPID)
 }
 
 func newSystemTTYAtimeSource() TTYAtimeSource {
@@ -87,7 +88,7 @@ func realWindowsConsoleHWNDForPID(pid int32) (hwnd uintptr, conPTY bool, retErr 
 		consoleAttachMu.Unlock()
 		return 0, false, fmt.Errorf("resolve console probe executable: %w", err)
 	}
-	cmd := exec.Command(executable)
+	cmd := exec.Command(executable, consoleProbeArg)
 	cmd.Env = make([]string, 0, len(os.Environ())+1)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, consoleProbePIDEnv+"=") {

@@ -152,6 +152,7 @@ func TestSanitizeTerminalText(t *testing.T) {
 		{name: "OSC title", input: "safe\x1b]0;title\x07 text", want: "safe text"},
 		{name: "CSI color", input: "\x1b[31mred\x1b[0m", want: "red"},
 		{name: "bare control", input: "bad\x03value", want: "badvalue"},
+		{name: "bidi overrides", input: "safe\u202eevil\u202c\u2066text\u2069", want: "safeeviltext"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -18,8 +18,7 @@ type connectCommandDeps struct {
 	now          func() time.Time
 	readState    func(string) (daemonDiscordState, bool)
 	readFresh    func(string, time.Time, time.Duration) (daemonDiscordState, bool)
-	readPID      func(string) (int, error)
-	readPIDStart func(string, int) uint64
+	readPID      func(string) (daemonPIDRecord, error)
 	alive        func(int) bool
 	looksLike    func(int) bool
 	send         func(context.Context, int, controlRequest) (controlResponse, error)
@@ -33,11 +32,13 @@ type connectCommandDeps struct {
 
 func defaultConnectCommandDeps() connectCommandDeps {
 	return connectCommandDeps{
-		now:          time.Now,
-		readState:    readDaemonDiscordState,
-		readFresh:    readFreshDaemonDiscordState,
-		readPID:      readPID,
-		readPIDStart: readPIDStartTime,
+		now:       time.Now,
+		readState: readDaemonDiscordState,
+		readFresh: readFreshDaemonDiscordState,
+		readPID: func(path string) (daemonPIDRecord, error) {
+			record, _, err := readPIDIdentity(path)
+			return record, err
+		},
 		alive:        processAlive,
 		looksLike:    processLooksLikeTermp,
 		send:         sendControlRequest,
@@ -66,11 +67,8 @@ func connectCommandWith(args []string, output, errorOutput io.Writer, deps conne
 		fmt.Fprintln(errorOutput, "  --force       reconnect even when already connected")
 		fmt.Fprintln(errorOutput, "  -v, --verbose enable verbose logging")
 	}
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return err
-		}
-		return fmt.Errorf("%w: %v", errCommandUsage, err)
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
 	}
 	if fs.NArg() != 0 {
 		fs.Usage()
@@ -87,9 +85,9 @@ func connectCommandWith(args []string, output, errorOutput io.Writer, deps conne
 		targetPID = state.PID
 	}
 	if targetPID == 0 {
-		if pid, err := deps.readPID(deps.pidPath); err == nil &&
-			processIdentityMatches(pid, deps.readPIDStart(deps.pidPath, pid), deps.alive, deps.looksLike) {
-			targetPID = pid
+		if record, err := deps.readPID(deps.pidPath); err == nil &&
+			processIdentityMatches(record.PID, record.StartTime, deps.alive, deps.looksLike) {
+			targetPID = record.PID
 		}
 	}
 	if targetPID == 0 {

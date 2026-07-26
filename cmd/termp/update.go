@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -114,11 +113,11 @@ func eligibleForUpdateAlert(command string, args []string, interactive bool) boo
 func updateCommand(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	addVerboseFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return errors.New("usage: termp update")
+		return fmt.Errorf("%w: unexpected argument %q", errCommandUsage, fs.Arg(0))
 	}
 	checkCtx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
 	defer cancel()

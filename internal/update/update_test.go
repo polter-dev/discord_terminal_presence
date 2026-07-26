@@ -1,11 +1,14 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -141,7 +144,18 @@ func TestGenericUpdateRejectsUnsafeReleaseTagsWithoutRunning(t *testing.T) {
 
 func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	runner := &recordingRunner{}
-	if err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", runner, nil, io.Discard, io.Discard); err != nil {
+	err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", runner, nil, io.Discard, io.Discard)
+	if runtime.GOOS == "windows" {
+		if err == nil || !strings.Contains(err.Error(), "not supported on Windows") ||
+			!strings.Contains(err.Error(), "go install") {
+			t.Fatalf("Windows generic update error = %v, want supported-path guidance", err)
+		}
+		if runner.calls != 0 {
+			t.Fatalf("unsupported Windows generic update invoked runner %d times", runner.calls)
+		}
+		return
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if runner.calls != 2 {
@@ -164,6 +178,9 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 }
 
 func TestPerformGenericUpdateReturnsDownloadFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("generic shell updater is unsupported on Windows")
+	}
 	runner := &recordingRunner{err: errors.New("simulated fetch failure")}
 	err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", runner, nil, io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "simulated fetch failure") {
@@ -171,6 +188,62 @@ func TestPerformGenericUpdateReturnsDownloadFailure(t *testing.T) {
 	}
 	if runner.calls != 1 || runner.command.Name != "curl" {
 		t.Fatalf("runner = (%d, %#v), want one curl call", runner.calls, runner.command)
+	}
+}
+
+func TestPerformGenericUpdateLogsTemporaryInstallerCleanupFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("generic shell updater is unsupported on Windows")
+	}
+	originalRemove := removeTemporaryInstaller
+	originalLogOutput := log.Writer()
+	t.Cleanup(func() {
+		removeTemporaryInstaller = originalRemove
+		log.SetOutput(originalLogOutput)
+	})
+
+	removeTemporaryInstaller = func(path string) error {
+		_ = os.Remove(path)
+		return errors.New("simulated cleanup failure")
+	}
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+
+	if err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", &recordingRunner{}, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "simulated cleanup failure") {
+		t.Fatalf("cleanup failure was not logged: %q", logs.String())
+	}
+}
+
+func TestGenericUpdateSupportRejectsStandardWindows(t *testing.T) {
+	err := genericUpdatePlatformError("windows", "v2.3.4")
+	if err == nil || !strings.Contains(err.Error(), "not supported on Windows") ||
+		!strings.Contains(err.Error(), "go install") {
+		t.Fatalf("Windows generic update error = %v, want supported-path guidance", err)
+	}
+	for _, goos := range []string{"darwin", "linux"} {
+		if err := genericUpdatePlatformError(goos, "v2.3.4"); err != nil {
+			t.Fatalf("generic updater unexpectedly rejects %s: %v", goos, err)
+		}
+	}
+}
+
+func TestInstallerRejectsMalformedSemverTags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh is not used on Windows")
+	}
+	script := filepath.Join("..", "..", "install.sh")
+	for _, tag := range []string{"v1.2.3foo", "1.2.3.4", "1.02.3", "1.2.3-01"} {
+		t.Run(tag, func(t *testing.T) {
+			cmd := exec.Command("sh", script)
+			cmd.Env = append(os.Environ(), "VERSION="+tag, "BINDIR="+t.TempDir())
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "invalid release tag") {
+				t.Fatalf("install.sh VERSION=%q = %v, output %q; want invalid release tag", tag, err, output)
+			}
+		})
 	}
 }
 
