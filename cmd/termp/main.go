@@ -979,11 +979,12 @@ func stop(args []string) error {
 		state.PID > 0 && processAlive(state.PID) && processLooksLikeTermp(state.PID) {
 		publisherPID = state.PID
 	}
-	pid, err := stopDaemonAndPublisher(pidPath, publisherPID, stopTimeout, stopPollInterval, processAlive, signalTermpProcess, time.Sleep)
+	serviceState := service.NewManager().Status()
+	pid, err := stopDaemonAndPublisher(pidPath, publisherPID, stopTimeout, stopPollInterval, processAlive, processLooksLikeTermp, signalTermpProcess, time.Sleep, serviceWillRelaunch(serviceState))
 	if err != nil {
 		return err
 	}
-	printStopSuccess(pid, service.NewManager().Status())
+	printStopSuccess(pid, serviceState)
 	return nil
 }
 
@@ -1900,7 +1901,7 @@ func removePIDIfOwned(path string, expectedPID int, expectedInfo os.FileInfo) (b
 	return result == pidRemovalRemoved, err
 }
 
-func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int) bool, signal func(int) error, sleep func(time.Duration)) (int, error) {
+func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, signal func(int) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
 	pid, info, err := readPIDRecord(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1929,12 +1930,15 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int
 		return 0, fmt.Errorf("remove PID file: %w", err)
 	}
 	if result == pidRemovalChanged {
+		if autostartWillRelaunch && pidFileOwnedByRelaunchedDaemon(path, pid, alive, looksLikeTermp) {
+			return pid, nil
+		}
 		return 0, errors.New("daemon exited, but PID file changed ownership and was not removed")
 	}
 	return pid, nil
 }
 
-func stopDaemonAndPublisher(path string, publisherPID int, timeout, pollInterval time.Duration, alive func(int) bool, signal func(int) error, sleep func(time.Duration)) (int, error) {
+func stopDaemonAndPublisher(path string, publisherPID int, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, signal func(int) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
 	pid, info, readErr := readPIDRecord(path)
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return 0, readErr
@@ -1976,10 +1980,18 @@ func stopDaemonAndPublisher(path string, publisherPID int, timeout, pollInterval
 			return 0, fmt.Errorf("remove PID file: %w", err)
 		}
 		if result == pidRemovalChanged {
+			if autostartWillRelaunch && pidFileOwnedByRelaunchedDaemon(path, pid, alive, looksLikeTermp) {
+				return targets[0], nil
+			}
 			return 0, errors.New("daemon exited, but PID file changed ownership and was not removed")
 		}
 	}
 	return targets[0], nil
+}
+
+func pidFileOwnedByRelaunchedDaemon(path string, stoppedPID int, alive, looksLikeTermp func(int) bool) bool {
+	relaunchedPID, _, err := readPIDRecord(path)
+	return err == nil && relaunchedPID != stoppedPID && alive(relaunchedPID) && looksLikeTermp(relaunchedPID)
 }
 
 func waitForProcessExit(pid int, timeout, pollInterval time.Duration, alive func(int) bool, sleep func(time.Duration)) bool {

@@ -342,7 +342,7 @@ func TestStopDaemonWaitsForExitThenRemovesPIDFile(t *testing.T) {
 	var slept time.Duration
 	sleep := func(delay time.Duration) { slept += delay }
 
-	pid, err := stopDaemon(path, time.Second, 10*time.Millisecond, alive, signal, sleep)
+	pid, err := stopDaemon(path, time.Second, 10*time.Millisecond, alive, func(int) bool { return true }, signal, sleep, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,6 +362,8 @@ func TestStopDaemonSucceedsWhenDaemonRemovesPIDFile(t *testing.T) {
 	alive := true
 	pid, err := stopDaemon(path, time.Second, time.Millisecond, func(int) bool {
 		return alive
+	}, func(int) bool {
+		return true
 	}, func(pid int) error {
 		if pid != 1234 {
 			t.Fatalf("signal PID = %d, want 1234", pid)
@@ -371,7 +373,7 @@ func TestStopDaemonSucceedsWhenDaemonRemovesPIDFile(t *testing.T) {
 		}
 		alive = false
 		return nil
-	}, func(time.Duration) {})
+	}, func(time.Duration) {}, false)
 	if err != nil || pid != 1234 {
 		t.Fatalf("stopDaemon() = %d, %v; want 1234, nil", pid, err)
 	}
@@ -386,12 +388,14 @@ func TestStopDaemonAndPublisherStopsOrphanNotNamedByPIDFile(t *testing.T) {
 	var signaled []int
 	pid, err := stopDaemonAndPublisher(path, 1111, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
+		func(int) bool { return true },
 		func(pid int) error {
 			signaled = append(signaled, pid)
 			live[pid] = false
 			return nil
 		},
 		func(time.Duration) {},
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -401,6 +405,64 @@ func TestStopDaemonAndPublisherStopsOrphanNotNamedByPIDFile(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("PID file remains: %v", err)
+	}
+}
+
+func TestStopDaemonAndPublisherAcceptsAutostartRelaunch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 1234); err != nil {
+		t.Fatal(err)
+	}
+	live := map[int]bool{1234: true, 5678: false}
+	pid, err := stopDaemonAndPublisher(path, 0, time.Second, time.Millisecond,
+		func(pid int) bool { return live[pid] },
+		func(pid int) bool { return pid == 5678 },
+		func(pid int) error {
+			live[pid] = false
+			live[5678] = true
+			return writePID(path, 5678)
+		},
+		func(time.Duration) {},
+		true,
+	)
+	if err != nil || pid != 1234 {
+		t.Fatalf("stopDaemonAndPublisher() = %d, %v; want 1234, nil", pid, err)
+	}
+
+	out, err := captureStdout(t, func() error {
+		printStopSuccess(pid, service.State{Installed: true, Loaded: "active"})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "stopped (pid 1234)") || !strings.Contains(out, "termp autostart disable") {
+		t.Fatalf("stop output missing relaunch guidance: %q", out)
+	}
+	if relaunchedPID, readErr := readPID(path); readErr != nil || relaunchedPID != 5678 {
+		t.Fatalf("relaunched PID file = %d, %v; want 5678, nil", relaunchedPID, readErr)
+	}
+}
+
+func TestStopDaemonAndPublisherRejectsUnexpectedPIDFileTakeover(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 1234); err != nil {
+		t.Fatal(err)
+	}
+	live := map[int]bool{1234: true, 5678: false}
+	_, err := stopDaemonAndPublisher(path, 0, time.Second, time.Millisecond,
+		func(pid int) bool { return live[pid] },
+		func(int) bool { return false },
+		func(pid int) error {
+			live[pid] = false
+			live[5678] = true
+			return writePID(path, 5678)
+		},
+		func(time.Duration) {},
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "daemon exited, but PID file changed ownership and was not removed") {
+		t.Fatalf("stopDaemonAndPublisher() error = %v, want changed-ownership error", err)
 	}
 }
 
@@ -451,10 +513,10 @@ func TestStopDaemonRemovesStalePIDFile(t *testing.T) {
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
 	}
-	_, err := stopDaemon(path, time.Second, time.Millisecond, func(int) bool { return false }, func(int) error {
+	_, err := stopDaemon(path, time.Second, time.Millisecond, func(int) bool { return false }, func(int) bool { return true }, func(int) error {
 		t.Fatal("stale PID was signaled")
 		return nil
-	}, func(time.Duration) { t.Fatal("stale PID wait slept") })
+	}, func(time.Duration) { t.Fatal("stale PID wait slept") }, false)
 	if err == nil || !strings.Contains(err.Error(), "stale PID file removed") {
 		t.Fatalf("stopDaemon() error = %v, want stale-file message", err)
 	}
@@ -469,9 +531,9 @@ func TestStopDaemonTimeoutKeepsPIDFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	var slept time.Duration
-	_, err := stopDaemon(path, 25*time.Millisecond, 10*time.Millisecond, func(int) bool { return true }, func(int) error {
+	_, err := stopDaemon(path, 25*time.Millisecond, 10*time.Millisecond, func(int) bool { return true }, func(int) bool { return true }, func(int) error {
 		return nil
-	}, func(delay time.Duration) { slept += delay })
+	}, func(delay time.Duration) { slept += delay }, false)
 	if err == nil || !strings.Contains(err.Error(), "PID file was not removed") {
 		t.Fatalf("stopDaemon() error = %v, want retained-file timeout", err)
 	}
