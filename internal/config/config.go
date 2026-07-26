@@ -600,6 +600,16 @@ func (r ResolvedTool) DisplayDirectory(path string) (string, bool) {
 }
 
 func validate(cfg *Config) error {
+	if err := validateDuration("scan_interval", cfg.ScanInterval, false); err != nil {
+		return err
+	}
+	if err := validateDuration("idle_clear_timeout", cfg.IdleClearTimeout, true); err != nil {
+		return err
+	}
+	if err := validateDuration("headliner_idle_timeout", cfg.HeadlinerIdleTimeout, false); err != nil {
+		return err
+	}
+
 	fallbackMessages := cfg.FallbackMessages[:0]
 	for _, message := range cfg.FallbackMessages {
 		if strings.TrimSpace(message) != "" {
@@ -639,6 +649,21 @@ func validate(cfg *Config) error {
 		if strings.TrimSpace(customTool.ImageKey) == "" && strings.TrimSpace(customTool.ImageURL) == "" && strings.TrimSpace(customTool.IconSlug) == "" {
 			return fmt.Errorf("custom_tools[%d]: image_key, image_url, or icon_slug is required", i)
 		}
+	}
+	return nil
+}
+
+func validateDuration(name, value string, allowZero bool) error {
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return fmt.Errorf("%s: invalid duration %q: %w", name, value, err)
+	}
+	if duration < 0 || (!allowZero && duration == 0) {
+		requirement := "greater than zero"
+		if allowZero {
+			requirement = "zero or greater"
+		}
+		return fmt.Errorf("%s: duration must be %s, got %q", name, requirement, value)
 	}
 	return nil
 }

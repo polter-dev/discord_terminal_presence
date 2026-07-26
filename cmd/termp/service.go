@@ -30,6 +30,8 @@ var newAutostartManager = func() autostartManager {
 	return service.NewManager()
 }
 
+var stopDaemonAfterAutostart = stopRunningDaemon
+
 func autostartActionHandlers() map[string]autostartActionHandler {
 	return map[string]autostartActionHandler{
 		"enable":    enable,
@@ -183,6 +185,13 @@ func uninstall(args []string) error {
 	if err != nil {
 		return err
 	}
+	stoppedPID, stopped, stopErr := stopDaemonAfterAutostart()
+	if stopErr != nil {
+		return fmt.Errorf("autostart was removed, but the daemon could not be stopped: %w", stopErr)
+	}
+	if stopped {
+		fmt.Printf("stopped daemon (pid %d)\n", stoppedPID)
+	}
 	if !wasInstalled {
 		fmt.Println("autostart not installed (nothing to remove)")
 		return nil
@@ -211,13 +220,16 @@ func disable(args []string) error {
 	if err != nil {
 		return err
 	}
+	stoppedPID, stopped, stopErr := stopDaemonAfterAutostart()
+	if stopErr != nil {
+		return fmt.Errorf("autostart was disabled, but the daemon could not be stopped: %w", stopErr)
+	}
+	if stopped {
+		fmt.Printf("stopped daemon (pid %d)\n", stoppedPID)
+	}
 	if !state.Installed {
 		fmt.Println("autostart not installed (nothing to disable); run: termp autostart install")
 		return nil
-	}
-	pidPath := pidFilePath()
-	if pid, info, err := readPIDRecord(pidPath); err == nil && !processAlive(pid) {
-		_, _ = removePIDIfOwned(pidPath, pid, info)
 	}
 	fmt.Println("disabled: autostart paused (re-enable with: termp autostart enable)")
 	return nil

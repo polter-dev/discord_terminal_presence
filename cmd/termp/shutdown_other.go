@@ -11,6 +11,6 @@ func shutdownEventName(pid int) string {
 	return `Local\TermpDaemonShutdown-` + strconv.Itoa(pid)
 }
 
-func installShutdownSignal(cancel context.CancelFunc) func() {
-	return func() {}
+func installShutdownSignal(cancel context.CancelFunc) (func(), error) {
+	return func() {}, nil
 }

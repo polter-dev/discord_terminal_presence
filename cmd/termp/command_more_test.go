@@ -271,6 +271,13 @@ func withFakeAutostartManager(t *testing.T, manager fakeAutostartManager) {
 	t.Cleanup(func() { newAutostartManager = old })
 }
 
+func withFakeAutostartStop(t *testing.T, stop func() (int, bool, error)) {
+	t.Helper()
+	old := stopDaemonAfterAutostart
+	stopDaemonAfterAutostart = stop
+	t.Cleanup(func() { stopDaemonAfterAutostart = old })
+}
+
 func TestAutostartUninstallNotInstalledMessage(t *testing.T) {
 	withFakeAutostartManager(t, fakeAutostartManager{
 		statusState:    service.State{Supported: true, Path: service.TaskName},
@@ -325,6 +332,69 @@ func TestAutostartDisableNotInstalledMessage(t *testing.T) {
 	}
 	if !strings.Contains(got, "termp autostart install") {
 		t.Fatalf("disable output missing install hint: %q", got)
+	}
+}
+
+func TestAutostartDisableStopsDetachedDaemonWhenTaskNotInstalled(t *testing.T) {
+	withFakeAutostartManager(t, fakeAutostartManager{
+		disableState: service.State{Supported: true, Path: service.TaskName},
+	})
+	withFakeAutostartStop(t, func() (int, bool, error) {
+		return 4321, true, nil
+	})
+
+	out, err := captureStdout(t, func() error {
+		return disable(nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"stopped daemon (pid 4321)", "autostart not installed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("disable output = %q, want %q", out, want)
+		}
+	}
+}
+
+func TestAutostartUninstallStopsDetachedDaemonWhenTaskNotInstalled(t *testing.T) {
+	withFakeAutostartManager(t, fakeAutostartManager{
+		statusState:    service.State{Supported: true, Path: service.TaskName},
+		uninstallState: service.State{Supported: true, Path: service.TaskName},
+	})
+	withFakeAutostartStop(t, func() (int, bool, error) {
+		return 4321, true, nil
+	})
+
+	out, err := captureStdout(t, func() error {
+		return uninstall(nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"stopped daemon (pid 4321)", "autostart not installed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("uninstall output = %q, want %q", out, want)
+		}
+	}
+}
+
+func TestAutostartUninstallReportsDaemonStopFailure(t *testing.T) {
+	withFakeAutostartManager(t, fakeAutostartManager{
+		statusState:    service.State{Supported: true, Installed: true, Path: service.TaskName},
+		uninstallState: service.State{Supported: true, Path: service.TaskName},
+	})
+	withFakeAutostartStop(t, func() (int, bool, error) {
+		return 0, false, errors.New("daemon survived")
+	})
+
+	out, err := captureStdout(t, func() error {
+		return uninstall(nil)
+	})
+	if err == nil || !strings.Contains(err.Error(), "autostart was removed") || !strings.Contains(err.Error(), "daemon survived") {
+		t.Fatalf("uninstall() error = %v, want accurate partial-failure error", err)
+	}
+	if strings.Contains(out, "removed autostart") {
+		t.Fatalf("uninstall output claims full success: %q", out)
 	}
 }
 

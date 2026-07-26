@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 
@@ -14,22 +15,19 @@ func shutdownEventName(pid int) string {
 	return `Local\TermpDaemonShutdown-` + strconv.Itoa(pid)
 }
 
-func installShutdownSignal(cancel context.CancelFunc) func() {
+func installShutdownSignal(cancel context.CancelFunc) (func(), error) {
 	name, err := windows.UTF16PtrFromString(shutdownEventName(os.Getpid()))
 	if err != nil {
-		debugf("shutdown event name invalid: %v", err)
-		return func() {}
+		return nil, fmt.Errorf("create shutdown event name: %w", err)
 	}
 	shutdownEvent, err := windows.CreateEvent(nil, 1, 0, name)
 	if err != nil {
-		debugf("shutdown event disabled: %v", err)
-		return func() {}
+		return nil, fmt.Errorf("create shutdown event: %w", err)
 	}
 	stopEvent, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
-		debugf("shutdown event cleanup disabled: %v", err)
 		_ = windows.CloseHandle(shutdownEvent)
-		return func() {}
+		return nil, fmt.Errorf("create shutdown cleanup event: %w", err)
 	}
 
 	done := make(chan struct{})
@@ -52,5 +50,5 @@ func installShutdownSignal(cancel context.CancelFunc) func() {
 		<-done
 		_ = windows.CloseHandle(stopEvent)
 		_ = windows.CloseHandle(shutdownEvent)
-	}
+	}, nil
 }

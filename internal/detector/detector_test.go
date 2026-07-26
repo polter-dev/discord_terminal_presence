@@ -1255,7 +1255,7 @@ func TestRunEmitsNoneAfterDebounce(t *testing.T) {
 	}
 }
 
-func TestRunScanErrorsRetainPresenceUntilSuccessfulEmptyDebounce(t *testing.T) {
+func TestRunScanErrorsClearPresenceAtThresholdAndRecoverWithDebounce(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	process := Process{Pid: 7, Name: "claude", CreateTime: base, Cwd: "/project"}
 	lister := newControlledLister()
@@ -1317,15 +1317,34 @@ func TestRunScanErrorsRetainPresenceUntilSuccessfulEmptyDebounce(t *testing.T) {
 	}
 	assertEpisodePresent("initial detection")
 
-	for scan := 1; scan <= 3; scan++ {
+	for scan := 1; scan < ScanFailureClearThreshold; scan++ {
 		completeScan(processListResult{err: errors.New("transient process scan failure")})
 		assertNoDetection("failed scan")
 		assertEpisodePresent("failed scan")
 	}
+	completeScan(processListResult{err: errors.New("persistent process scan failure")})
+	select {
+	case detection := <-ch:
+		if !detection.None {
+			t.Fatalf("threshold detection = %#v, want none", detection)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for none after repeated scan failures")
+	}
+	assertEpisodePresent("threshold failed scan")
 
 	completeScan(processListResult{processes: []Process{process}})
-	assertNoDetection("recovery scan")
+	assertNoDetection("first recovery scan")
 	assertEpisodePresent("recovery scan")
+	completeScan(processListResult{processes: []Process{process}})
+	select {
+	case detection := <-ch:
+		if detection.None || detection.Tool.ID != "claude-code" {
+			t.Fatalf("recovery detection = %#v, want active claude-code", detection)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for active detection after recovery debounce")
+	}
 
 	completeScan(processListResult{processes: []Process{}})
 	assertNoDetection("first successful empty scan")

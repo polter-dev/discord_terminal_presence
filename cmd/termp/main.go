@@ -49,6 +49,8 @@ const (
 	daemonDiscordStateStaleAfter    = 45 * time.Second
 )
 
+var errDaemonNotRunning = errors.New("daemon is not running")
+
 var commandHelp = []struct {
 	name        string
 	description string
@@ -805,6 +807,12 @@ func start(args []string) error {
 	}
 	defer stopControlServer()
 
+	stopShutdownWatch, err := installShutdownSignal(cancel)
+	if err != nil {
+		return err
+	}
+	defer stopShutdownWatch()
+
 	pidInfo, err := writePIDOwned(pidPath, os.Getpid())
 	if err != nil {
 		return err
@@ -822,8 +830,6 @@ func start(args []string) error {
 		log.Print(warning)
 	}
 
-	stopShutdownWatch := installShutdownSignal(cancel)
-	defer stopShutdownWatch()
 	// Updating is best-effort and asynchronous: it is triggered before the run
 	// loop, but can never delay or prevent daemon startup.
 	go runAutomaticUpdate(ctx, cfg, version, releaseChecker, updatepkg.ExecRunner{})
@@ -1168,6 +1174,33 @@ func stop(args []string) error {
 	}
 	printStopSuccess(pid, serviceState)
 	return nil
+}
+
+func stopRunningDaemon() (int, bool, error) {
+	pidPath := pidFilePath()
+	var publisher daemonPIDRecord
+	if state, ok := readDaemonDiscordState(daemonDiscordStatePath()); ok &&
+		processIdentityMatches(state.PID, state.StartTime, processAlive, processLooksLikeTermp) {
+		publisher = daemonPIDRecord{PID: state.PID, StartTime: state.StartTime}
+	}
+	pid, err := stopDaemonAndPublisher(
+		pidPath,
+		publisher,
+		stopTimeout,
+		stopPollInterval,
+		processAlive,
+		processLooksLikeTermp,
+		signalTermpProcess,
+		time.Sleep,
+		false,
+	)
+	if errors.Is(err, errDaemonNotRunning) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return pid, true, nil
 }
 
 func printStopSuccess(pid int, state service.State) {
@@ -2147,7 +2180,7 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLi
 	record, info, err := readPIDIdentity(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return 0, errors.New("daemon is not running")
+			return 0, errDaemonNotRunning
 		}
 		return 0, err
 	}
@@ -2208,7 +2241,7 @@ func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pol
 				return 0, errors.New("stale PID file changed before it could be removed")
 			}
 		}
-		return 0, errors.New("daemon is not running")
+		return 0, errDaemonNotRunning
 	}
 
 	for _, target := range targets {

@@ -104,6 +104,7 @@ func BuildWindowsTaskXML(exe, username string) ([]byte, error) {
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <StartWhenAvailable>true</StartWhenAvailable>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Enabled>true</Enabled>
   </Settings>
@@ -131,10 +132,11 @@ func (s windowsService) Uninstall(force bool) (State, error) {
 		return status, nil
 	}
 	// A task definition can be deleted while an instance launched from it keeps
-	// running. Ending first makes uninstall stop the daemon as well. /End is
-	// intentionally best-effort because an idle or already-removed task is a
-	// normal uninstall state.
-	_, _ = s.runner.Run("schtasks", "/End", "/TN", TaskName)
+	// running. Require /End to succeed before deleting the definition so
+	// uninstall cannot orphan a task-owned daemon.
+	if out, err := s.runner.Run("schtasks", "/End", "/TN", TaskName); err != nil {
+		return status, fmt.Errorf("schtasks end failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
 	if out, err := s.runner.Run("schtasks", "/Delete", "/TN", TaskName, "/F"); err != nil {
 		if isTaskNotFound(out, err) {
 			return State{Supported: true, Path: TaskName, Loaded: "false", Enabled: "false"}, nil
@@ -161,7 +163,9 @@ func (s windowsService) Disable() (State, error) {
 		}
 		return State{Supported: true, Installed: true, Path: TaskName}, fmt.Errorf("schtasks disable failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	_, _ = s.runner.Run("schtasks", "/End", "/TN", TaskName)
+	if out, err := s.runner.Run("schtasks", "/End", "/TN", TaskName); err != nil {
+		return State{Supported: true, Installed: true, Path: TaskName, Enabled: "false"}, fmt.Errorf("schtasks end failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
 	status = s.Status()
 	if status.ForeignTask {
 		return status, foreignTaskError(status.Message)

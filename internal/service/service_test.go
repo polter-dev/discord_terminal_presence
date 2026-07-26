@@ -975,6 +975,23 @@ func TestBuildWindowsTaskXMLEscapesInterpolatedValues(t *testing.T) {
 	}
 }
 
+func TestBuildWindowsTaskXMLRestartsConservativelyOnFailure(t *testing.T) {
+	data, err := BuildWindowsTaskXML(`C:\termp.exe`, `DOMAIN\user`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := decodeUTF16XML(t, data)
+	for _, want := range []string{
+		`<RestartOnFailure>`,
+		`<Interval>PT1M</Interval>`,
+		`<Count>3</Count>`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("task XML missing restart setting %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestWindowsDisableAndEnableToggleTaskWithoutRealSchtasks(t *testing.T) {
 	runner := &recordingRunner{
 		fail: map[string]error{},
@@ -1036,6 +1053,43 @@ func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 		if !strings.Contains(delete, want) {
 			t.Fatalf("delete call missing %q:\n%s", want, delete)
 		}
+	}
+}
+
+func TestWindowsDisableSurfacesEndFailure(t *testing.T) {
+	queryCall := "schtasks /Query /TN " + TaskName + " /XML"
+	endCall := "schtasks /End /TN " + TaskName
+	runner := &recordingRunner{
+		fail: map[string]error{endCall: errors.New("exit status 1")},
+		out: map[string]string{
+			queryCall: windowsEnabledTaskXML,
+			endCall:   "ERROR: The task could not be stopped.",
+		},
+	}
+
+	_, err := (Manager{GOOS: "windows", Runner: runner}).Disable()
+	if err == nil || !strings.Contains(err.Error(), "schtasks end failed") {
+		t.Fatalf("Disable() error = %v, want schtasks end failure", err)
+	}
+}
+
+func TestWindowsUninstallDoesNotDeleteAfterEndFailure(t *testing.T) {
+	queryCall := "schtasks /Query /TN " + TaskName + " /XML"
+	endCall := "schtasks /End /TN " + TaskName
+	runner := &recordingRunner{
+		fail: map[string]error{endCall: errors.New("exit status 1")},
+		out: map[string]string{
+			queryCall: windowsEnabledTaskXML,
+			endCall:   "ERROR: The task could not be stopped.",
+		},
+	}
+
+	_, err := (Manager{GOOS: "windows", Runner: runner}).Uninstall(false)
+	if err == nil || !strings.Contains(err.Error(), "schtasks end failed") {
+		t.Fatalf("Uninstall() error = %v, want schtasks end failure", err)
+	}
+	if hasCall(runner.calls, "schtasks /Delete /TN "+TaskName+" /F") {
+		t.Fatalf("Uninstall calls = %#v, must not delete after /End failure", runner.calls)
 	}
 }
 
