@@ -42,6 +42,48 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	return string(out), runErr
 }
 
+func TestMaybePrintFirstRunCTA(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+
+	var banner bytes.Buffer
+	maybePrintFirstRunCTA(&banner, configPath, true)
+	for _, want := range []string{
+		"╭",
+		"✨  Welcome to Terminal Presence",
+		"termp setup",
+		"Discord stays blank until you do.",
+		"╯",
+	} {
+		if !strings.Contains(banner.String(), want) {
+			t.Fatalf("first-run banner missing %q:\n%s", want, banner.String())
+		}
+	}
+
+	if err := os.WriteFile(configPath, []byte("configured"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var configured bytes.Buffer
+	maybePrintFirstRunCTA(&configured, configPath, true)
+	if configured.Len() != 0 {
+		t.Fatalf("configured user received first-run CTA: %q", configured.String())
+	}
+}
+
+func TestMaybePrintFirstRunCTAIsPlainWhenNotTerminal(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	var output bytes.Buffer
+
+	maybePrintFirstRunCTA(&output, configPath, false)
+
+	const want = "First run detected — run \"termp setup\" to configure.\n"
+	if got := output.String(); got != want {
+		t.Fatalf("plain first-run hint = %q, want %q", got, want)
+	}
+	if strings.Contains(output.String(), "\x1b") {
+		t.Fatalf("plain first-run hint contains ANSI: %q", output.String())
+	}
+}
+
 func TestParseRootMatrix(t *testing.T) {
 	oldVerbose := verbose
 	t.Cleanup(func() { verbose = oldVerbose })

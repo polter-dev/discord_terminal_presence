@@ -75,11 +75,14 @@ func main() {
 
 	command, args, showVersion, err := parseRoot(os.Args[1:])
 	if err != nil {
-		if errors.Is(err, flag.ErrHelp) && len(os.Args) == 1 && isTerminal(os.Stdin) && isTerminal(os.Stdout) {
-			if err := watch(nil); err != nil {
-				log.Fatal(err)
+		if errors.Is(err, flag.ErrHelp) && len(os.Args) == 1 {
+			if isTerminal(os.Stdin) && isTerminal(os.Stdout) {
+				if err := watch(nil); err != nil {
+					log.Fatal(err)
+				}
+				return
 			}
-			return
+			maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
 		}
 		if errors.Is(err, flag.ErrHelp) && rootHelpRequested(os.Args[1:]) {
 			usage(os.Stdout)
@@ -1017,6 +1020,7 @@ func status(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
 
 	statusCtx, cancelStatus := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancelStatus()
@@ -1457,6 +1461,7 @@ func watch(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
 	if *once {
 		card, warnings, err := watchSnapshot(time.Now())
 		if err != nil {
@@ -2018,4 +2023,23 @@ func isTerminal(file *os.File) bool {
 		return false
 	}
 	return info.Mode()&os.ModeCharDevice != 0
+}
+
+func maybePrintFirstRunCTA(w io.Writer, configPath string, terminal bool) {
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if !terminal {
+		fmt.Fprintln(w, `First run detected — run "termp setup" to configure.`)
+		return
+	}
+
+	styles := tui.DefaultCardStyles()
+	body := strings.Join([]string{
+		styles.Title.Render("✨  Welcome to Terminal Presence"),
+		"",
+		"Run:  " + styles.Accent.Render("termp setup"),
+		"Discord stays blank until you do.",
+	}, "\n")
+	fmt.Fprintln(w, styles.Card.Render(body))
 }
