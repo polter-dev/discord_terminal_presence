@@ -18,13 +18,13 @@ class Termp < Formula
 
   on_macos do
     on_intel do
-      url "https://termp.polter.sh/dl/brew/darwin/amd64"
+      url "https://termp.polter.sh/dl/brew/darwin/amd64/v#{version}"
       mirror "https://github.com/polter-dev/discord_terminal_presence/releases/download/v#{version}/termp_#{version}_darwin_amd64.tar.gz"
       sha256 "REPLACE_WITH_SHA256_darwin_amd64"
     end
 
     on_arm do
-      url "https://termp.polter.sh/dl/brew/darwin/arm64"
+      url "https://termp.polter.sh/dl/brew/darwin/arm64/v#{version}"
       mirror "https://github.com/polter-dev/discord_terminal_presence/releases/download/v#{version}/termp_#{version}_darwin_arm64.tar.gz"
       sha256 "REPLACE_WITH_SHA256_darwin_arm64"
     end
@@ -32,13 +32,13 @@ class Termp < Formula
 
   on_linux do
     on_intel do
-      url "https://termp.polter.sh/dl/brew/linux/amd64"
+      url "https://termp.polter.sh/dl/brew/linux/amd64/v#{version}"
       mirror "https://github.com/polter-dev/discord_terminal_presence/releases/download/v#{version}/termp_#{version}_linux_amd64.tar.gz"
       sha256 "REPLACE_WITH_SHA256_linux_amd64"
     end
 
     on_arm do
-      url "https://termp.polter.sh/dl/brew/linux/arm64"
+      url "https://termp.polter.sh/dl/brew/linux/arm64/v#{version}"
       mirror "https://github.com/polter-dev/discord_terminal_presence/releases/download/v#{version}/termp_#{version}_linux_arm64.tar.gz"
       sha256 "REPLACE_WITH_SHA256_linux_arm64"
     end

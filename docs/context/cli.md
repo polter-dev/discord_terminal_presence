@@ -52,6 +52,7 @@ reconciliation does not immediately launch the service again; the explicit
 `termp autostart install` command retains its start-now behavior.
 
 The canonical `install.sh` fetches release archives through
-`https://termp.polter.sh/dl/curl/{os}/{arch}` by default and falls back to the
-tag-pinned GitHub asset on any failure. Checksums remain tag-pinned direct GitHub
-downloads and are verified unchanged.
+`https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}` by default, using the same resolved
+tag as the archive filename and checksum, and falls back to the tag-pinned GitHub asset
+on any failure. Checksums remain tag-pinned direct GitHub downloads and are verified
+unchanged.

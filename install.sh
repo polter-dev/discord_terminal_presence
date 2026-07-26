@@ -340,12 +340,17 @@ case $download_channel in
 curl | update) ;;
 *) err "invalid download channel: $download_channel" ;;
 esac
-worker_archive_url=${TERMP_DOWNLOAD_URL:-"https://termp.polter.sh/dl/$download_channel/$os/$arch"}
+worker_archive_url=${TERMP_DOWNLOAD_URL:-"https://termp.polter.sh/dl/$download_channel/$os/$arch/$tag"}
+worker_archive_downloaded=true
 if ! download "$worker_archive_url" "$archive_path"; then
-	download "$base_url/$archive_name" "$archive_path"
+	worker_archive_downloaded=false
 fi
 download "$base_url/checksums.txt" "$checksums_path"
-verify_checksum "$checksums_path" "$archive_path" "$archive_name"
+if [ "$worker_archive_downloaded" = false ] ||
+	! (verify_checksum "$checksums_path" "$archive_path" "$archive_name"); then
+	download "$base_url/$archive_name" "$archive_path"
+	verify_checksum "$checksums_path" "$archive_path" "$archive_name"
+fi
 
 mkdir -p "$extract_dir"
 tar -xzf "$archive_path" -C "$extract_dir"
