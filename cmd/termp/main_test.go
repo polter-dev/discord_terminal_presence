@@ -138,7 +138,7 @@ func (r *recordingUpdateRunner) Run(_ context.Context, command updatepkg.Command
 }
 
 var expectedCommands = []string{
-	"install", "uninstall", "disable", "enable", "autostart", "start", "stop", "status",
+	"install", "uninstall", "disable", "enable", "autostart", "start", "stop", "connect", "status",
 	"settings", "watch", "version", "setup", "config", "completion",
 	"update",
 }

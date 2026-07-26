@@ -78,6 +78,63 @@ func TestWriterReconnectsAndReappliesActivity(t *testing.T) {
 	<-done
 }
 
+func TestWriterReconnectRequestIsOwnedByRunLoop(t *testing.T) {
+	client := newFakeClient(nil)
+	writer, err := NewWriter(client, "app-id", WithMinWriteInterval(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	already, err := writer.Reconnect(context.Background(), false)
+	if err != nil || already {
+		t.Fatalf("first reconnect = %t, %v; want false, nil", already, err)
+	}
+	already, err = writer.Reconnect(context.Background(), false)
+	if err != nil || !already {
+		t.Fatalf("second reconnect = %t, %v; want true, nil", already, err)
+	}
+	already, err = writer.Reconnect(context.Background(), true)
+	if err != nil || already {
+		t.Fatalf("forced reconnect = %t, %v; want false, nil", already, err)
+	}
+	if got := client.loginCount(); got != 2 {
+		t.Fatalf("login count = %d, want 2", got)
+	}
+	client.waitForLogout(t, 1)
+
+	cancel()
+	<-done
+}
+
+func TestWriterReconnectRequestSurfacesLoginFailure(t *testing.T) {
+	loginErr := errors.New("Discord unavailable")
+	client := newFakeClient([]error{loginErr})
+	writer, err := NewWriter(client, "app-id", WithRetryDelays(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	if _, err := writer.Reconnect(context.Background(), false); !errors.Is(err, loginErr) {
+		t.Fatalf("reconnect error = %v, want %v", err, loginErr)
+	}
+	cancel()
+	<-done
+}
+
 func TestWriterConnectionStateHookTracksTransitions(t *testing.T) {
 	client := newFakeClient([]error{errors.New("discord unavailable"), nil})
 	client.setSetErrors(errors.New("socket reset"), nil)

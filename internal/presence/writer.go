@@ -26,6 +26,8 @@ type Writer struct {
 	client Client
 	appID  string
 
+	reconnects chan reconnectRequest
+
 	options          DisplayOptions
 	retryDelay       retryDelay
 	minWriteInterval time.Duration
@@ -33,6 +35,17 @@ type Writer struct {
 	clock            writeClock
 	debugf           func(string, ...any)
 	connectionState  func(bool)
+}
+
+type reconnectRequest struct {
+	ctx    context.Context
+	force  bool
+	result chan reconnectResult
+}
+
+type reconnectResult struct {
+	alreadyConnected bool
+	err              error
 }
 
 // WriterOption configures a Writer.
@@ -103,6 +116,7 @@ func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, e
 	writer := &Writer{
 		client:           client,
 		appID:            appID,
+		reconnects:       make(chan reconnectRequest),
 		options:          DefaultDisplayOptions(),
 		retryDelay:       newRetryDelay(defaultRetryDelays),
 		minWriteInterval: defaultMinWriteInterval,
@@ -115,6 +129,28 @@ func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, e
 		option(writer)
 	}
 	return writer, nil
+}
+
+// Reconnect asks the writer goroutine that owns the Discord client to establish
+// a connection immediately. It returns true without reconnecting when the
+// client is already connected unless force is set.
+func (w *Writer) Reconnect(ctx context.Context, force bool) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result := make(chan reconnectResult, 1)
+	request := reconnectRequest{ctx: ctx, force: force, result: result}
+	select {
+	case w.reconnects <- request:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	select {
+	case outcome := <-result:
+		return outcome.alreadyConnected, outcome.err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
 }
 
 // Run consumes detector events until ctx is cancelled or detections is closed,
@@ -241,16 +277,16 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		}
 	}
 
-	applyDesired := func() {
+	applyDesired := func() error {
 		if desired == nil {
-			return
+			return nil
 		}
 		if !connected {
 			w.debugf("presence connect attempt")
 			if err := w.client.Login(w.appID); err != nil {
 				w.debugf("presence connect failed: %v", err)
 				scheduleRetry()
-				return
+				return err
 			}
 			setConnected(true)
 		}
@@ -261,7 +297,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 				setConnected(false)
 			}
 			scheduleRetry()
-			return
+			return err
 		}
 		w.debugf("presence push: details=%q state=%q", desired.Details, desired.State)
 		lastWrite = w.clock.Now()
@@ -271,6 +307,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		stopRetry()
 		w.retryDelay.Reset()
 		scheduleReapply()
+		return nil
 	}
 
 	requestApply := func() {
@@ -282,7 +319,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 			return
 		}
 		if w.minWriteInterval <= 0 || !wrote {
-			applyDesired()
+			_ = applyDesired()
 			return
 		}
 		elapsed := w.clock.Now().Sub(lastWrite)
@@ -319,17 +356,60 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		case <-retryC:
 			retry = nil
 			retryC = nil
-			applyDesired()
+			_ = applyDesired()
 		case <-writeC:
 			write = nil
 			writeC = nil
 			if pending {
-				applyDesired()
+				_ = applyDesired()
 			}
 		case <-reapplyC:
 			reapply = nil
 			reapplyC = nil
-			applyDesired()
+			_ = applyDesired()
+		case request := <-w.reconnects:
+			if err := request.ctx.Err(); err != nil {
+				request.result <- reconnectResult{err: err}
+				continue
+			}
+			if connected && !request.force {
+				request.result <- reconnectResult{alreadyConnected: true}
+				continue
+			}
+			stopRetry()
+			stopWrite()
+			stopReapply()
+			w.retryDelay.Reset()
+			if connected {
+				if err := w.client.Logout(); err != nil {
+					w.debugf("presence disconnect before reconnect failed: %v", err)
+				}
+				setConnected(false)
+			}
+			w.debugf("presence connect requested")
+			if err := w.client.Login(w.appID); err != nil {
+				w.debugf("presence connect failed: %v", err)
+				scheduleRetry()
+				request.result <- reconnectResult{err: err}
+				continue
+			}
+			setConnected(true)
+			if desired != nil {
+				if err := w.client.SetActivity(*desired); err != nil {
+					w.debugf("presence push failed: %v", err)
+					_ = w.client.Logout()
+					setConnected(false)
+					scheduleRetry()
+					request.result <- reconnectResult{err: err}
+					continue
+				}
+				w.debugf("presence push: details=%q state=%q", desired.Details, desired.State)
+				lastWrite = w.clock.Now()
+				wrote = true
+				pending = false
+				scheduleReapply()
+			}
+			request.result <- reconnectResult{}
 		case <-ctx.Done():
 			return
 		}
