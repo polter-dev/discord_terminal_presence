@@ -58,11 +58,37 @@ func Install(shell, script string, homeDir HomeDirFunc) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create completion directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("refuse to replace non-regular completion file %s", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect completion file %s: %w", path, err)
+	}
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temporary completion file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("set completion file permissions: %w", err)
+	}
+	if _, err := tmp.WriteString(script); err != nil {
+		_ = tmp.Close()
 		return nil, fmt.Errorf("write completion file %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, fmt.Errorf("write completion file %s: %w", path, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return nil, fmt.Errorf("replace completion file %s: %w", path, err)
 	}
 	return []string{path}, nil
 }

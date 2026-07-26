@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -66,6 +67,35 @@ func TestInstallAndUninstall(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInstallRefusesSymlink(t *testing.T) {
+	home := t.TempDir()
+	resolveHome := func() (string, error) { return home, nil }
+	path, err := TargetPath("zsh", resolveHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, ".zshrc")
+	const original = "# user configuration\n"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable on this account: %v", err)
+	}
+
+	paths, err := Install("zsh", "# malicious replacement\n", resolveHome)
+	if err == nil || !strings.Contains(err.Error(), "non-regular") {
+		t.Fatalf("Install() = (%#v, %v), want non-regular file error", paths, err)
+	}
+	if paths != nil {
+		t.Fatalf("Install() paths = %#v, want nil", paths)
+	}
+	assertFileContents(t, target, original)
 }
 
 func TestUninstallAll(t *testing.T) {
