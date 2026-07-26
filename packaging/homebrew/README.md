@@ -9,8 +9,8 @@ At release time:
    example, use `1.2.3` for tag `v1.2.3`).
 2. Copy the four SHA-256 values for the Darwin/Linux and amd64/arm64 archives from
    that GitHub release's `checksums.txt` into the matching placeholders.
-3. Confirm every formula URL downloads its named archive directly from
-   `github.com/polter-dev/discord_terminal_presence/releases/download/...`.
+3. Confirm every Worker URL redirects to its named GitHub release archive and
+   every direct GitHub `mirror` downloads the same bytes.
 4. Test the formula on the supported platforms before publishing it.
 
 To publish the tap, create the `polter-dev/homebrew-tap` repository and copy the
@@ -21,9 +21,10 @@ brew tap polter-dev/tap
 brew install termp
 ```
 
-Because the formula URLs point directly to assets on the `termp` GitHub release,
-successful Homebrew fetches contribute to GitHub's per-asset `download_count`.
-Do not mirror or move these archives to a separate download host.
+The primary URLs use `https://termp.polter.sh/dl/brew/{os}/{arch}` so successful
+Homebrew fetches are counted by the Worker. The Worker redirects to the GitHub
+release assets, and each formula stanza keeps the direct asset URL as its fallback
+mirror; the archive bytes and SHA-256 remain identical.
 
 A future submission to `homebrew-core` is a traction-gated follow-up and is out of
 scope for this launch draft.

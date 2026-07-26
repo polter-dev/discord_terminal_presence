@@ -335,7 +335,15 @@ extract_dir="$tmpdir/extract"
 # The archive is pinned to the exact release tag and verified against that
 # release's SHA-256 checksums.
 printf 'Downloading termp %s for %s/%s...\n' "$tag" "$os" "$arch"
-download "$base_url/$archive_name" "$archive_path"
+download_channel=${TERMP_DOWNLOAD_CHANNEL:-curl}
+case $download_channel in
+curl | update) ;;
+*) err "invalid download channel: $download_channel" ;;
+esac
+worker_archive_url=${TERMP_DOWNLOAD_URL:-"https://termp.polter.sh/dl/$download_channel/$os/$arch"}
+if ! download "$worker_archive_url" "$archive_path"; then
+	download "$base_url/$archive_name" "$archive_path"
+fi
 download "$base_url/checksums.txt" "$checksums_path"
 verify_checksum "$checksums_path" "$archive_path" "$archive_name"
 
