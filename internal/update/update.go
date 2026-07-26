@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -26,6 +27,8 @@ const (
 	BrewCommand         = "brew upgrade --cask polter-dev/tap/termp"
 	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
 )
+
+var removeTemporaryInstaller = os.Remove
 
 // InstallMethod identifies how the running binary was installed.
 type InstallMethod string
@@ -130,14 +133,14 @@ type CommandRunner interface {
 type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, command Command, stdin io.Reader, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
+	cmd := exec.Command(command.Name, command.Args...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if len(command.Env) > 0 {
 		cmd.Env = mergedEnvironment(os.Environ(), command.Env)
 	}
-	return cmd.Run()
+	return runUpdateCommand(ctx, cmd)
 }
 
 func mergedEnvironment(base, overrides []string) []string {
@@ -497,6 +500,9 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 	if !validReleaseTag(tag) {
 		return fmt.Errorf("invalid release tag %q", tag)
 	}
+	if err := genericUpdatePlatformError(runtime.GOOS, tag); err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp("", "termp-install-*.sh")
 	if err != nil {
 		return fmt.Errorf("create temporary installer: %w", err)
@@ -506,7 +512,11 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("create temporary installer: %w", err)
 	}
-	defer os.Remove(tmpPath)
+	defer func() {
+		if err := removeTemporaryInstaller(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("termp update: remove temporary installer %s: %v", tmpPath, err)
+		}
+	}()
 
 	url := fmt.Sprintf(genericInstallerURL, tag)
 	download := Command{Name: "curl", Args: []string{"-fsSL", url, "-o", tmpPath}}
@@ -524,6 +534,13 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 	install := Command{Name: "sh", Args: []string{tmpPath}, Env: []string{"VERSION=" + tag}}
 	if err := runner.Run(ctx, install, stdin, stdout, stderr); err != nil {
 		return fmt.Errorf("run %s: %w", GenericCommand(tag), err)
+	}
+	return nil
+}
+
+func genericUpdatePlatformError(goos, tag string) error {
+	if goos == "windows" {
+		return fmt.Errorf("generic self-update is not supported on Windows; update with %q or install the release archive manually", GoCommand(tag))
 	}
 	return nil
 }
