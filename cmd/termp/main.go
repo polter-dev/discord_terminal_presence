@@ -439,10 +439,15 @@ func currentDaemonPID() int {
 }
 
 func completion(args []string) error {
+	if len(args) > 0 && args[0] == "uninstall" {
+		return completionUninstall(args[1:])
+	}
+
 	fs := flag.NewFlagSet("completion", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: termp completion <bash|zsh|fish>")
+		fmt.Fprintln(os.Stderr, "       termp completion uninstall [bash|zsh|fish]")
 		fmt.Fprintln(os.Stderr, "bash: source <(termp completion bash)")
 		fmt.Fprintln(os.Stderr, "zsh:  termp completion zsh > ${fpath[1]}/_termp")
 		fmt.Fprintln(os.Stderr, "fish: termp completion fish > ~/.config/fish/completions/termp.fish")
@@ -459,6 +464,42 @@ func completion(args []string) error {
 		return err
 	}
 	fmt.Print(script)
+	return nil
+}
+
+func completionUninstall(args []string) error {
+	fs := flag.NewFlagSet("completion uninstall", flag.ContinueOnError)
+	addVerboseFlag(fs)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: termp completion uninstall [bash|zsh|fish]")
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return flag.ErrHelp
+	}
+
+	var (
+		paths []string
+		err   error
+	)
+	if fs.NArg() == 0 {
+		paths, err = completioninstall.UninstallAll(os.UserHomeDir)
+	} else {
+		paths, err = completioninstall.Uninstall(fs.Arg(0), os.UserHomeDir)
+	}
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		fmt.Println("No shell completion was installed.")
+		return nil
+	}
+	for _, path := range paths {
+		fmt.Printf("Removed shell completion: %s\n", path)
+	}
 	return nil
 }
 
@@ -495,7 +536,7 @@ _termp_complete() {
       fi
       ;;
     completion)
-      COMPREPLY=( $(compgen -W "bash zsh fish --verbose -v --help -h" -- "$cur") )
+      COMPREPLY=( $(compgen -W "bash zsh fish uninstall --verbose -v --help -h" -- "$cur") )
       ;;
     autostart)
       if [[ " ${COMP_WORDS[*]} " == *" install "* ]]; then
@@ -551,7 +592,7 @@ _termp() {
         fi
         ;;
       completion)
-        compadd -- bash zsh fish --verbose -v --help -h
+        compadd -- bash zsh fish uninstall --verbose -v --help -h
         ;;
       autostart)
         if [[ " ${words[*]} " == *" install "* ]]; then
@@ -607,7 +648,7 @@ compdef _termp termp
 		}
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from init' -a init\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from init' -l force -d 'overwrite an existing config'\n")
-		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish uninstall'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from autostart; and not __fish_seen_subcommand_from enable disable status install uninstall' -a 'enable disable status install uninstall'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from autostart; and __fish_seen_subcommand_from install' -l force -d 'install even when the executable path is unstable'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from autostart; and __fish_seen_subcommand_from status' -s v -l verbose -d 'enable verbose logging'\n")

@@ -83,6 +83,20 @@ func Uninstall(shell string, homeDir HomeDirFunc) ([]string, error) {
 	return []string{path}, nil
 }
 
+// UninstallAll removes the completion files managed by Install for every
+// supported shell. Files that are already absent are ignored.
+func UninstallAll(homeDir HomeDirFunc) ([]string, error) {
+	var removed []string
+	for _, shell := range [...]string{"bash", "zsh", "fish"} {
+		paths, err := Uninstall(shell, homeDir)
+		if err != nil {
+			return removed, err
+		}
+		removed = append(removed, paths...)
+	}
+	return removed, nil
+}
+
 // Note returns shell-specific activation guidance. No shell rc file is edited.
 func Note(shell string) string {
 	if shell == "zsh" {

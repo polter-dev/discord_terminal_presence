@@ -68,6 +68,41 @@ func TestInstallAndUninstall(t *testing.T) {
 	}
 }
 
+func TestUninstallAll(t *testing.T) {
+	home := t.TempDir()
+	resolveHome := func() (string, error) { return home, nil }
+	var wantPaths []string
+
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		paths, err := Install(shell, "# completion\n", resolveHome)
+		if err != nil {
+			t.Fatalf("Install(%q) error = %v", shell, err)
+		}
+		wantPaths = append(wantPaths, paths...)
+	}
+
+	paths, err := UninstallAll(resolveHome)
+	if err != nil {
+		t.Fatalf("UninstallAll() error = %v", err)
+	}
+	if !reflect.DeepEqual(paths, wantPaths) {
+		t.Fatalf("UninstallAll() paths = %#v, want %#v", paths, wantPaths)
+	}
+	for _, path := range wantPaths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("completion file %q still exists after UninstallAll: %v", path, err)
+		}
+	}
+
+	paths, err = UninstallAll(resolveHome)
+	if err != nil {
+		t.Fatalf("idempotent UninstallAll() error = %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("idempotent UninstallAll() paths = %#v, want none", paths)
+	}
+}
+
 func TestDetectShell(t *testing.T) {
 	for input, want := range map[string]string{
 		"/bin/bash":              "bash",

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/polter-dev/discord_terminal_presence/internal/completioninstall"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 	"github.com/polter-dev/discord_terminal_presence/internal/service"
@@ -457,6 +458,81 @@ func TestCompletionScriptRejectsUnknownShell(t *testing.T) {
 	}
 }
 
+func TestCompletionRoutesUninstallAndShellScript(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resolveHome := func() (string, error) { return home, nil }
+
+	installed := make(map[string]string)
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		paths, err := completioninstall.Install(shell, "# completion\n", resolveHome)
+		if err != nil {
+			t.Fatalf("Install(%q) error = %v", shell, err)
+		}
+		installed[shell] = paths[0]
+	}
+
+	out, err := captureStdout(t, func() error {
+		return completion([]string{"uninstall", "zsh"})
+	})
+	if err != nil {
+		t.Fatalf("completion uninstall zsh error = %v", err)
+	}
+	if !strings.Contains(out, installed["zsh"]) {
+		t.Fatalf("completion uninstall zsh output = %q, want removed path %q", out, installed["zsh"])
+	}
+	if _, err := os.Stat(installed["zsh"]); !os.IsNotExist(err) {
+		t.Fatalf("zsh completion still exists after uninstall: %v", err)
+	}
+	for _, shell := range []string{"bash", "fish"} {
+		if _, err := os.Stat(installed[shell]); err != nil {
+			t.Fatalf("%s completion removed by zsh uninstall: %v", shell, err)
+		}
+	}
+
+	out, err = captureStdout(t, func() error {
+		return completion([]string{"uninstall"})
+	})
+	if err != nil {
+		t.Fatalf("completion uninstall error = %v", err)
+	}
+	for _, shell := range []string{"bash", "fish"} {
+		if !strings.Contains(out, installed[shell]) {
+			t.Errorf("completion uninstall output = %q, want removed path %q", out, installed[shell])
+		}
+		if _, err := os.Stat(installed[shell]); !os.IsNotExist(err) {
+			t.Errorf("%s completion still exists after uninstall: %v", shell, err)
+		}
+	}
+	if strings.Contains(out, installed["zsh"]) {
+		t.Errorf("completion uninstall reported already-absent path %q: %q", installed["zsh"], out)
+	}
+
+	out, err = captureStdout(t, func() error {
+		return completion([]string{"uninstall"})
+	})
+	if err != nil {
+		t.Fatalf("idempotent completion uninstall error = %v", err)
+	}
+	if out != "No shell completion was installed.\n" {
+		t.Fatalf("idempotent completion uninstall output = %q", out)
+	}
+
+	out, err = captureStdout(t, func() error {
+		return completion([]string{"bash"})
+	})
+	if err != nil {
+		t.Fatalf("completion bash error = %v", err)
+	}
+	want, err := completionScript("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != want {
+		t.Fatal("completion bash no longer prints the generated script")
+	}
+}
+
 func TestCompletionScriptsExplainInstallationAndCoverCLI(t *testing.T) {
 	tests := []struct {
 		shell  string
@@ -508,7 +584,7 @@ func TestCompletionScriptsExplainInstallationAndCoverCLI(t *testing.T) {
 					t.Errorf("completion script missing command %q", command)
 				}
 			}
-			for _, want := range append(tt.flags, "init", "bash", "zsh", "fish") {
+			for _, want := range append(tt.flags, "init", "bash", "zsh", "fish", "bash zsh fish uninstall") {
 				if !strings.Contains(script, want) {
 					t.Errorf("completion script missing %q", want)
 				}
