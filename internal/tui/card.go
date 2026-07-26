@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 )
 
@@ -79,11 +80,12 @@ func RenderCard(s CardState, st CardStyles) string {
 		body.WriteString("\n\n")
 		body.WriteString(st.Accent.Render("recent detections"))
 		for _, recent := range s.Recent {
-			if recent.Name == "" {
+			name := sanitizeTerminalText(recent.Name)
+			if name == "" {
 				continue
 			}
 			body.WriteByte('\n')
-			body.WriteString(fmt.Sprintf("%s  %s", recent.Name, relativeTime(s.Now, recent.At)))
+			body.WriteString(fmt.Sprintf("%s  %s", name, relativeTime(s.Now, recent.At)))
 		}
 	}
 
@@ -91,7 +93,7 @@ func RenderCard(s CardState, st CardStyles) string {
 }
 
 func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Time, st CardStyles) {
-	name := activity.LargeImage.Text
+	name := sanitizeTerminalText(activity.LargeImage.Text)
 	if name == "" {
 		name = "unknown tool"
 	}
@@ -101,13 +103,13 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 		b.WriteByte('\n')
 		b.WriteString(st.Muted.Render(image))
 	}
-	if activity.State != "" {
+	if state := sanitizeTerminalText(activity.State); state != "" {
 		b.WriteByte('\n')
-		b.WriteString(activity.State)
+		b.WriteString(state)
 	}
-	if activity.Details != "" {
+	if details := sanitizeTerminalText(activity.Details); details != "" {
 		b.WriteByte('\n')
-		b.WriteString(activity.Details)
+		b.WriteString(details)
 	}
 	if activity.StartTimestamp != nil {
 		if elapsed := elapsedString(now, *activity.StartTimestamp); elapsed != "" {
@@ -122,8 +124,8 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 	if len(activity.Buttons) > 0 {
 		labels := make([]string, 0, len(activity.Buttons))
 		for _, button := range activity.Buttons {
-			if button.Label != "" {
-				labels = append(labels, button.Label)
+			if label := sanitizeTerminalText(button.Label); label != "" {
+				labels = append(labels, label)
 			}
 		}
 		if len(labels) > 0 {
@@ -134,13 +136,17 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 }
 
 func imageLabel(image presence.Image, cardTitle string) string {
-	if strings.TrimSpace(image.Key) == "" && strings.TrimSpace(image.URL) == "" {
+	key := sanitizeTerminalText(image.Key)
+	rawURL := sanitizeTerminalText(image.URL)
+	text := sanitizeTerminalText(image.Text)
+	cardTitle = sanitizeTerminalText(cardTitle)
+	if strings.TrimSpace(key) == "" && strings.TrimSpace(rawURL) == "" {
 		return ""
 	}
 
-	names := []string{image.Text, image.Key, imageNameFromURL(image.URL)}
+	names := []string{text, key, imageNameFromURL(rawURL)}
 	if cardTitle != "" {
-		names = []string{image.Key, imageNameFromURL(image.URL), image.Text}
+		names = []string{key, imageNameFromURL(rawURL), text}
 	}
 	for _, name := range names {
 		if name = strings.TrimSpace(name); name != "" && name != strings.TrimSpace(cardTitle) {
@@ -160,6 +166,19 @@ func imageNameFromURL(rawURL string) string {
 		return ""
 	}
 	return strings.TrimSuffix(name, path.Ext(name))
+}
+
+func sanitizeTerminalText(value string) string {
+	value = ansi.Strip(value)
+	var cleaned strings.Builder
+	cleaned.Grow(len(value))
+	for _, r := range value {
+		if r <= 0x1f || r == 0x7f || r >= 0x80 && r <= 0x9f {
+			continue
+		}
+		cleaned.WriteRune(r)
+	}
+	return cleaned.String()
 }
 
 func elapsedString(now, started time.Time) string {

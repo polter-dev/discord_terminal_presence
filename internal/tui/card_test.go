@@ -142,6 +142,26 @@ func TestRenderCard(t *testing.T) {
 	}
 }
 
+func TestSanitizeTerminalText(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "plain text", input: "Neovim 日本語", want: "Neovim 日本語"},
+		{name: "OSC title", input: "safe\x1b]0;title\x07 text", want: "safe text"},
+		{name: "CSI color", input: "\x1b[31mred\x1b[0m", want: "red"},
+		{name: "bare control", input: "bad\x03value", want: "badvalue"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeTerminalText(tt.input); got != tt.want {
+				t.Fatalf("sanitizeTerminalText(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }
