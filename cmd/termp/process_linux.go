@@ -26,6 +26,30 @@ func processLooksLikeTermp(pid int) bool {
 	return validateLinuxProcess(pid) == nil
 }
 
+func processStartTime(pid int) (uint64, error) {
+	if pid <= 0 {
+		return 0, errors.New("invalid PID")
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, fmt.Errorf("read process start time: %w", err)
+	}
+	end := strings.LastIndexByte(string(data), ')')
+	if end < 0 {
+		return 0, errors.New("cannot parse process start time")
+	}
+	fields := strings.Fields(string(data[end+1:]))
+	const startTimeIndexAfterCommand = 19
+	if len(fields) <= startTimeIndexAfterCommand {
+		return 0, errors.New("cannot parse process start time")
+	}
+	startTime, err := strconv.ParseUint(fields[startTimeIndexAfterCommand], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse process start time: %w", err)
+	}
+	return startTime, nil
+}
+
 func signalTermpProcess(pid int) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")

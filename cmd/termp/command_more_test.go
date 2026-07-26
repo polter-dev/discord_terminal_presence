@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -82,6 +83,21 @@ func TestMaybePrintFirstRunCTAIsPlainWhenNotTerminal(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "\x1b") {
 		t.Fatalf("plain first-run hint contains ANSI: %q", output.String())
+	}
+}
+
+func TestConfigMissingPredicate(t *testing.T) {
+	if !isConfigMissingError(os.ErrNotExist) {
+		t.Fatal("os.ErrNotExist was not treated as missing")
+	}
+	if !isConfigMissingError(fmt.Errorf("stat config: %w", os.ErrNotExist)) {
+		t.Fatal("wrapped os.ErrNotExist was not treated as missing")
+	}
+	if isConfigMissingError(nil) {
+		t.Fatal("nil error was treated as missing")
+	}
+	if isConfigMissingError(os.ErrPermission) {
+		t.Fatal("permission error was treated as missing")
 	}
 }
 
@@ -177,10 +193,50 @@ func TestUnknownCommandNamesOffendingToken(t *testing.T) {
 	}
 }
 
+func TestUnknownCommandSuggestsCloseMatch(t *testing.T) {
+	err := dispatchCommand("statuss", nil)
+	var stderr bytes.Buffer
+	if !printDispatchUsageError(err, &stderr) {
+		t.Fatal("printDispatchUsageError() = false, want true")
+	}
+	for _, want := range []string{`unknown command "statuss"`, `Did you mean "status"?`} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("unknown-command output missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestAutostartActionSuggestionAndValidDispatch(t *testing.T) {
+	calls := 0
+	handlers := map[string]autostartActionHandler{
+		"uninstall": func([]string) error {
+			calls++
+			return nil
+		},
+	}
+	err := dispatchAutostartCommand([]string{"uninstal"}, handlers)
+	if err == nil || !strings.Contains(err.Error(), `Did you mean "uninstall"?`) {
+		t.Fatalf("unknown autostart action error = %v, want uninstall suggestion", err)
+	}
+	if calls != 0 {
+		t.Fatalf("unknown action performed %d side effects", calls)
+	}
+
+	err = dispatchAutostartCommand([]string{"uninstall", "production"}, handlers)
+	if err != nil {
+		t.Fatalf("custom valid handler dispatch = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("valid action calls = %d, want 1", calls)
+	}
+}
+
 type fakeAutostartManager struct {
 	statusState    service.State
 	uninstallState service.State
 	disableState   service.State
+	statusCalls    *int
+	uninstallCalls *int
 }
 
 func (m fakeAutostartManager) Install(string, bool) (service.State, error) {
@@ -188,6 +244,9 @@ func (m fakeAutostartManager) Install(string, bool) (service.State, error) {
 }
 
 func (m fakeAutostartManager) Uninstall(bool) (service.State, error) {
+	if m.uninstallCalls != nil {
+		(*m.uninstallCalls)++
+	}
 	return m.uninstallState, nil
 }
 func (m fakeAutostartManager) Disable() (service.State, error) {
@@ -199,6 +258,9 @@ func (m fakeAutostartManager) Enable() (service.State, error) {
 }
 
 func (m fakeAutostartManager) Status() service.State {
+	if m.statusCalls != nil {
+		(*m.statusCalls)++
+	}
 	return m.statusState
 }
 
@@ -297,6 +359,34 @@ func TestParseStartOptions(t *testing.T) {
 	}
 }
 
+func TestParseStartOptionsRejectsStrayArgument(t *testing.T) {
+	var output bytes.Buffer
+	_, err := parseStartOptions([]string{"production"}, false, &output)
+	if !errors.Is(err, errCommandUsage) || !strings.Contains(err.Error(), `unexpected argument "production"`) {
+		t.Fatalf("parseStartOptions() error = %v, want unexpected-argument usage error", err)
+	}
+	if !strings.Contains(output.String(), "usage: termp start") {
+		t.Fatalf("start stray-argument output missing usage: %q", output.String())
+	}
+}
+
+func TestStartPrintsFirstRunCTA(t *testing.T) {
+	withTermpConfigHome(t)
+	runtimeDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	if err := writePID(pidFilePath(), os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := captureStdout(t, func() error { return start(nil) })
+	if err == nil || !strings.Contains(err.Error(), "daemon already running") {
+		t.Fatalf("start() error = %v, want already-running error", err)
+	}
+	if !strings.Contains(out, `First run detected — run "termp setup" to configure.`) {
+		t.Fatalf("start output missing first-run setup hint: %q", out)
+	}
+}
+
 func TestStartHelpExplainsBackgroundDefaultForegroundAndAutostart(t *testing.T) {
 	var output bytes.Buffer
 	_, err := parseStartOptions([]string{"--help"}, false, &output)
@@ -358,6 +448,26 @@ func TestCommandsRejectInvalidArgumentsBeforeSideEffects(t *testing.T) {
 				t.Fatal("error = nil, want argument error")
 			}
 		})
+	}
+}
+
+func TestAutostartUninstallRejectsStrayArgumentBeforeSideEffect(t *testing.T) {
+	statusCalls := 0
+	uninstallCalls := 0
+	manager := fakeAutostartManager{
+		statusState:    service.State{Installed: true},
+		uninstallState: service.State{Path: "should-not-run"},
+		statusCalls:    &statusCalls,
+		uninstallCalls: &uninstallCalls,
+	}
+	withFakeAutostartManager(t, manager)
+
+	err := uninstall([]string{"production"})
+	if !errors.Is(err, errCommandUsage) || !strings.Contains(err.Error(), `unexpected argument "production"`) {
+		t.Fatalf("uninstall() error = %v, want unexpected-argument usage error", err)
+	}
+	if statusCalls != 0 || uninstallCalls != 0 {
+		t.Fatalf("stray argument caused side effects: status=%d uninstall=%d", statusCalls, uninstallCalls)
 	}
 }
 
@@ -645,6 +755,49 @@ func TestPIDProcessAndRemovalHelpers(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("removed PID stat error = %v", err)
+	}
+}
+
+func TestPIDRecordPersistsProcessStartTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := readPIDIdentity(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.PID != os.Getpid() || record.StartTime == 0 {
+		t.Fatalf("PID identity = %+v, want pid %d with a start time", record, os.Getpid())
+	}
+}
+
+func TestStopDaemonRejectsMismatchedStartTime(t *testing.T) {
+	startTime, err := processStartTime(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	data := fmt.Sprintf("{\"pid\":%d,\"start_time\":%d}\n", os.Getpid(), startTime+1)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	signaled := false
+	_, err = stopDaemon(path, time.Second, time.Millisecond,
+		func(int) bool { return true },
+		func(int) bool { return true },
+		func(int) error {
+			signaled = true
+			return nil
+		},
+		func(time.Duration) {},
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "stale PID file removed") {
+		t.Fatalf("stopDaemon() error = %v, want stale-identity error", err)
+	}
+	if signaled {
+		t.Fatal("process with mismatched start time was signaled")
 	}
 }
 

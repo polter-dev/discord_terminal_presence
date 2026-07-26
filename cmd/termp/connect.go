@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"github.com/polter-dev/discord_terminal_presence/internal/config"
 )
 
 var errCommandUsage = errors.New("invalid command usage")
@@ -17,6 +19,7 @@ type connectCommandDeps struct {
 	readState    func(string) (daemonDiscordState, bool)
 	readFresh    func(string, time.Time, time.Duration) (daemonDiscordState, bool)
 	readPID      func(string) (int, error)
+	readPIDStart func(string, int) uint64
 	alive        func(int) bool
 	looksLike    func(int) bool
 	send         func(context.Context, int, controlRequest) (controlResponse, error)
@@ -25,6 +28,7 @@ type connectCommandDeps struct {
 	discordPath  string
 	timeout      time.Duration
 	pollInterval time.Duration
+	firstRunCTA  func()
 }
 
 func defaultConnectCommandDeps() connectCommandDeps {
@@ -33,6 +37,7 @@ func defaultConnectCommandDeps() connectCommandDeps {
 		readState:    readDaemonDiscordState,
 		readFresh:    readFreshDaemonDiscordState,
 		readPID:      readPID,
+		readPIDStart: readPIDStartTime,
 		alive:        processAlive,
 		looksLike:    processLooksLikeTermp,
 		send:         sendControlRequest,
@@ -41,6 +46,9 @@ func defaultConnectCommandDeps() connectCommandDeps {
 		discordPath:  daemonDiscordStatePath(),
 		timeout:      controlRequestTimeout,
 		pollInterval: controlPollInterval,
+		firstRunCTA: func() {
+			maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
+		},
 	}
 }
 
@@ -68,15 +76,19 @@ func connectCommandWith(args []string, output, errorOutput io.Writer, deps conne
 		fs.Usage()
 		return fmt.Errorf("%w: unexpected argument %q", errCommandUsage, fs.Arg(0))
 	}
+	if deps.firstRunCTA != nil {
+		deps.firstRunCTA()
+	}
 
 	now := deps.now()
 	targetPID := 0
 	if state, ok := deps.readFresh(deps.discordPath, now, daemonDiscordStateStaleAfter); ok &&
-		state.PID > 0 && deps.alive(state.PID) && deps.looksLike(state.PID) {
+		processIdentityMatches(state.PID, state.StartTime, deps.alive, deps.looksLike) {
 		targetPID = state.PID
 	}
 	if targetPID == 0 {
-		if pid, err := deps.readPID(deps.pidPath); err == nil && deps.alive(pid) && deps.looksLike(pid) {
+		if pid, err := deps.readPID(deps.pidPath); err == nil &&
+			processIdentityMatches(pid, deps.readPIDStart(deps.pidPath, pid), deps.alive, deps.looksLike) {
 			targetPID = pid
 		}
 	}
