@@ -310,7 +310,7 @@ func TestBuildSystemdUnit(t *testing.T) {
 		"[Unit]",
 		"Description=termp Discord Rich Presence daemon",
 		"[Service]",
-		`ExecStart="/opt/%%u Term Presence/termp" start`,
+		`ExecStart="/opt/%%u Term Presence/termp" start --foreground`,
 		"Restart=on-failure",
 		"[Install]",
 		"WantedBy=default.target",
@@ -702,7 +702,7 @@ func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "ExecStart=/bin/termp start") || !strings.Contains(text, "Restart=on-failure") {
+	if !strings.Contains(text, "ExecStart=/bin/termp start --foreground") || !strings.Contains(text, "Restart=on-failure") {
 		t.Fatalf("unit missing executable/restart:\n%s", text)
 	}
 }
@@ -881,7 +881,7 @@ func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) 
 		"InteractiveToken",
 		"LeastPrivilege",
 		`<Command>C:\Program Files &amp; Tools\&lt;termp&gt;\termp.exe</Command>`,
-		"<Arguments>start</Arguments>",
+		"<Arguments>start --foreground</Arguments>",
 	} {
 		if !strings.Contains(xmlText, want) {
 			t.Fatalf("task XML missing %q:\n%s", want, xmlText)
