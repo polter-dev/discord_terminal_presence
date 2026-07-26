@@ -62,8 +62,9 @@ status 2; use `termp watch --once` for a non-interactive snapshot.
 
 | Command | What it does |
 |---|---|
-| `termp start` | Starts the presence service in the background and returns immediately. Use `--foreground` (`-f`) to keep it attached. |
+| `termp start` | Starts the presence service in the background after confirming daemon readiness. Use `--foreground` (`-f`) to keep it attached. |
 | `termp stop` | Stops the running service and cleans up its process-ID file. |
+| `termp connect` | Asks the running daemon to re-establish Discord IPC now. Already connected is a no-op; use `--force` to reconnect anyway. Currently implemented on Windows only. |
 | `termp status` | Checks the service, Discord connection, start-at-login, config, warnings, and detected tool. |
 | `termp watch` | Opens a live terminal preview. Use `--once` for one snapshot. |
 | `termp autostart <install\|uninstall\|enable\|disable\|status>` | Manages start-at-login with grouped actions. |

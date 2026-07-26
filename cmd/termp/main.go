@@ -58,6 +58,7 @@ var commandHelp = []struct {
 	{"enable", "alias for \"termp autostart enable\""},
 	{"start", "run daemon (background by default; --foreground keeps it attached)"},
 	{"stop", "stop the running daemon (autostart controls login startup)"},
+	{"connect", "re-establish the daemon's Discord connection"},
 	{"status", "show daemon, Discord, autostart, and config status"},
 	{"settings", "open the interactive settings TUI"},
 	{"watch", "preview the live Discord card (--once prints one snapshot)"},
@@ -108,6 +109,10 @@ func main() {
 var errUnknownCommand = errors.New("unknown command")
 
 func printDispatchUsageError(err error, w io.Writer) bool {
+	if errors.Is(err, errCommandUsage) {
+		fmt.Fprintln(w, err)
+		return true
+	}
 	if !errors.Is(err, errUnknownCommand) {
 		return false
 	}
@@ -131,6 +136,8 @@ func dispatchCommandWithAutostartHandlers(command string, args []string, handler
 		err = start(args)
 	case "stop":
 		err = stop(args)
+	case "connect":
+		err = connectCommand(args)
 	case "settings":
 		err = settings(args)
 	case "watch":
@@ -439,7 +446,7 @@ func completion(args []string) error {
 }
 
 func completionScript(shell string) (string, error) {
-	commands := "start stop status install uninstall disable enable autostart settings watch version update setup config completion"
+	commands := "start stop connect status install uninstall disable enable autostart settings watch version update setup config completion"
 	switch shell {
 	case "bash":
 		return `# termp bash completion.
@@ -490,6 +497,9 @@ _termp_complete() {
       ;;
     start)
       COMPREPLY=( $(compgen -W "--foreground -f --detach -d --verbose -v --help -h" -- "$cur") )
+      ;;
+    connect)
+      COMPREPLY=( $(compgen -W "--force --verbose -v --help -h" -- "$cur") )
       ;;
     stop|status|settings|version|update|setup)
       COMPREPLY=( $(compgen -W "--verbose -v --help -h" -- "$cur") )
@@ -544,6 +554,9 @@ _termp() {
       start)
         compadd -- --foreground -f --detach -d --verbose -v --help -h
         ;;
+      connect)
+        compadd -- --force --verbose -v --help -h
+        ;;
       stop|status|settings|version|update|setup)
         compadd -- --verbose -v --help -h
         ;;
@@ -585,7 +598,8 @@ compdef _termp termp
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from watch' -l once -d 'render one preview snapshot and exit'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start' -s f -l foreground -d 'keep the daemon attached to the terminal'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start' -s d -l detach -d 'start the daemon in the background (default)'\n")
-		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start stop status settings watch version update setup completion' -s v -l verbose -d 'enable verbose logging'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from connect' -l force -d 'reconnect even when already connected'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start stop connect status settings watch version update setup completion' -s v -l verbose -d 'enable verbose logging'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from init' -s v -l verbose -d 'enable verbose logging'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from " + commands + "' -s h -l help -d 'show help'\n")
 		return b.String(), nil
@@ -615,6 +629,15 @@ func start(args []string) error {
 		return nil
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer cancel()
+	control := newDaemonControl()
+	stopControlServer, err := startControlServer(ctx, os.Getpid(), control.handle)
+	if err != nil {
+		return err
+	}
+	defer stopControlServer()
+
 	pidInfo, err := writePIDOwned(pidPath, os.Getpid())
 	if err != nil {
 		return err
@@ -632,8 +655,6 @@ func start(args []string) error {
 		log.Print(warning)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer cancel()
 	stopShutdownWatch := installShutdownSignal(cancel)
 	defer stopShutdownWatch()
 	// Updating is best-effort and asynchronous: it is triggered before the run
@@ -644,10 +665,10 @@ func start(args []string) error {
 		if err := manager.Watch(ctx); err != nil {
 			log.Printf("config watch disabled: %v", err)
 		}
-		return run(ctx, manager)
+		return run(ctx, manager, control)
 	}
 
-	return run(ctx, manager)
+	return run(ctx, manager, control)
 }
 
 type startOptions struct {
@@ -683,7 +704,7 @@ func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (st
 	return options, nil
 }
 
-func run(ctx context.Context, manager *config.Manager) error {
+func run(ctx context.Context, manager *config.Manager, control *daemonControl) error {
 	cfg, _ := manager.Current()
 	applied, err := newDetectionRuntime(cfg)
 	if err != nil {
@@ -708,6 +729,7 @@ func run(ctx context.Context, manager *config.Manager) error {
 	if err != nil {
 		return err
 	}
+	control.setReconnector(writer)
 
 	detections := det.Run(ctx)
 	usagePath := usagepkg.StatePath()
