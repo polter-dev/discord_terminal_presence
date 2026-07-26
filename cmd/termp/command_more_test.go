@@ -510,6 +510,30 @@ func TestConfigCommandInitAndForce(t *testing.T) {
 	}
 }
 
+func TestConfigInitRejectsStrayArgumentBeforeWrite(t *testing.T) {
+	withTermpConfigHome(t)
+	path := config.DefaultPath()
+
+	err := configCommand([]string{"init", "extra"})
+	if !errors.Is(err, errCommandUsage) || !strings.Contains(err.Error(), `unexpected argument "extra"`) {
+		t.Fatalf("config init error = %v, want unexpected-argument usage error", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("config init wrote %q despite stray argument: %v", path, statErr)
+	}
+}
+
+func TestWatchOnceSuppressesFirstRunCTA(t *testing.T) {
+	withTermpConfigHome(t)
+	out, err := captureStdout(t, func() error { return watch([]string{"--once"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "First run detected") || strings.Contains(out, "termp setup") {
+		t.Fatalf("watch --once output contains first-run CTA: %q", out)
+	}
+}
+
 func TestSetupNonInteractiveWritesDefaults(t *testing.T) {
 	withTermpConfigHome(t)
 	out, err := captureStdout(t, func() error { return setup(nil) })

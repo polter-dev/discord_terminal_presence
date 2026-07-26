@@ -43,7 +43,7 @@ func autostartActionHandlers() map[string]autostartActionHandler {
 func dispatchAutostartCommand(args []string, handlers map[string]autostartActionHandler) error {
 	fs := flag.NewFlagSet("autostart", flag.ContinueOnError)
 	fs.Usage = autostartUsage
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() == 0 {
@@ -57,7 +57,7 @@ func dispatchAutostartAction(action string, args []string, handlers map[string]a
 	handler, ok := handlers[action]
 	if !ok {
 		autostartUsage()
-		err := fmt.Errorf("unknown autostart action %q", action)
+		err := fmt.Errorf("%w: unknown autostart action %q", errCommandUsage, action)
 		if suggestion := closestCommand(action, autostartActionNames(handlers), 2); suggestion != "" {
 			return fmt.Errorf("%w; Did you mean %q?", err, suggestion)
 		}
@@ -87,7 +87,7 @@ func autostartUsage() {
 func install(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	force := fs.Bool("force", false, "install from an unstable path or take over another installation's task")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp autostart install [--force]"); err != nil {
@@ -166,7 +166,7 @@ func installOutputWidth(output *os.File) int {
 func uninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	force := fs.Bool("force", false, "remove a task belonging to another installation")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp autostart uninstall [--force]"); err != nil {
@@ -197,7 +197,7 @@ func uninstall(args []string) error {
 
 func disable(args []string) error {
 	fs := flag.NewFlagSet("disable", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp autostart disable"); err != nil {
@@ -225,7 +225,7 @@ func disable(args []string) error {
 
 func enable(args []string) error {
 	fs := flag.NewFlagSet("enable", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp autostart enable"); err != nil {

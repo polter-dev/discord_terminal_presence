@@ -401,11 +401,39 @@ func TestStopDaemonWaitsForExitThenRemovesPIDFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pid != 1234 || signalCalls != 1 || slept != 20*time.Millisecond {
+	if pid != 1234 || signalCalls != 1 || slept != 10*time.Millisecond {
 		t.Fatalf("stop result: pid=%d signals=%d slept=%s", pid, signalCalls, slept)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("PID file remains after exit: %v", err)
+	}
+}
+
+func TestStopDaemonRechecksIdentityImmediatelyBeforeSignal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := os.WriteFile(path, []byte("1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	identityChecks := 0
+	signaled := false
+	_, err := stopDaemon(path, time.Second, time.Millisecond,
+		func(int) bool { return true },
+		func(int) bool {
+			identityChecks++
+			return identityChecks == 1
+		},
+		func(int) error {
+			signaled = true
+			return nil
+		},
+		func(time.Duration) {},
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "identity changed before signaling") {
+		t.Fatalf("stopDaemon() error = %v, want changed-identity error", err)
+	}
+	if signaled {
+		t.Fatal("daemon was signaled after its identity changed")
 	}
 }
 
@@ -441,7 +469,7 @@ func TestStopDaemonAndPublisherStopsOrphanNotNamedByPIDFile(t *testing.T) {
 	}
 	live := map[int]bool{1111: true, 2222: true}
 	var signaled []int
-	pid, err := stopDaemonAndPublisher(path, 1111, time.Second, time.Millisecond,
+	pid, err := stopDaemonAndPublisher(path, daemonPIDRecord{PID: 1111}, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
 		func(int) bool { return true },
 		func(pid int) error {
@@ -469,7 +497,7 @@ func TestStopDaemonAndPublisherAcceptsAutostartRelaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := map[int]bool{1234: true, 5678: false}
-	pid, err := stopDaemonAndPublisher(path, 0, time.Second, time.Millisecond,
+	pid, err := stopDaemonAndPublisher(path, daemonPIDRecord{}, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
 		func(pid int) bool { return pid == 1234 || pid == 5678 },
 		func(pid int) error {
@@ -505,7 +533,7 @@ func TestStopDaemonAndPublisherRejectsUnexpectedPIDFileTakeover(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := map[int]bool{1234: true, 5678: false}
-	_, err := stopDaemonAndPublisher(path, 0, time.Second, time.Millisecond,
+	_, err := stopDaemonAndPublisher(path, daemonPIDRecord{}, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
 		func(pid int) bool { return pid == 1234 },
 		func(pid int) error {

@@ -114,6 +114,9 @@ func main() {
 var errUnknownCommand = errors.New("unknown command")
 
 func printDispatchUsageError(err error, w io.Writer) bool {
+	if errors.Is(err, flag.ErrHelp) {
+		return true
+	}
 	if errors.Is(err, errCommandUsage) {
 		fmt.Fprintln(w, err)
 		return true
@@ -245,6 +248,16 @@ func rejectUnexpectedArgs(fs *flag.FlagSet, usageLine string) error {
 	return fmt.Errorf("%w: unexpected argument %q", errCommandUsage, fs.Arg(0))
 }
 
+func parseCommandFlags(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return err
+		}
+		return fmt.Errorf("%w: %v", errCommandUsage, err)
+	}
+	return nil
+}
+
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "Terminal Presence (termp)")
 	fmt.Fprintln(w)
@@ -277,7 +290,7 @@ func parseRoot(args []string) (command string, commandArgs []string, showVersion
 	fs.BoolVar(&verbose, "v", false, "enable verbose logging")
 	fs.BoolVar(&showVersion, "version", false, "print version information")
 	fs.Usage = func() {}
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return "", nil, false, err
 	}
 	if showVersion {
@@ -304,7 +317,7 @@ func debugf(format string, args ...any) {
 func versionCommand(args []string) error {
 	fs := flag.NewFlagSet("version", flag.ContinueOnError)
 	addVerboseFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp version [--verbose]"); err != nil {
@@ -410,7 +423,7 @@ func configCommand(args []string) error {
 		return configInit(args[1:])
 	default:
 		configUsage()
-		return fmt.Errorf("unknown config action %q", args[0])
+		return fmt.Errorf("%w: unknown config action %q", errCommandUsage, args[0])
 	}
 }
 
@@ -422,7 +435,10 @@ func configInit(args []string) error {
 	fs := flag.NewFlagSet("config init", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	force := fs.Bool("force", false, "overwrite an existing config")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, "termp config init [--force]"); err != nil {
 		return err
 	}
 	path := config.DefaultPath()
@@ -441,7 +457,7 @@ func configInit(args []string) error {
 func setup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	addVerboseFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp setup [--verbose]"); err != nil {
@@ -535,7 +551,7 @@ func completion(args []string) error {
 		fmt.Fprintln(os.Stderr, "zsh:  termp completion zsh > ${fpath[1]}/_termp")
 		fmt.Fprintln(os.Stderr, "fish: termp completion fish > ~/.config/fish/completions/termp.fish")
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -544,7 +560,7 @@ func completion(args []string) error {
 	}
 	script, err := completionScript(fs.Arg(0))
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errCommandUsage, err)
 	}
 	fmt.Print(script)
 	return nil
@@ -556,12 +572,15 @@ func completionUninstall(args []string) error {
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: termp completion uninstall [bash|zsh|fish]")
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
 		return flag.ErrHelp
+	}
+	if fs.NArg() == 1 && !supportedCompletionShell(fs.Arg(0)) {
+		return fmt.Errorf("%w: unsupported shell %q (expected bash, zsh, or fish)", errCommandUsage, fs.Arg(0))
 	}
 
 	var (
@@ -584,6 +603,10 @@ func completionUninstall(args []string) error {
 		fmt.Printf("Removed shell completion: %s\n", path)
 	}
 	return nil
+}
+
+func supportedCompletionShell(shell string) bool {
+	return shell == "bash" || shell == "zsh" || shell == "fish"
 }
 
 func completionScript(shell string) (string, error) {
@@ -842,7 +865,7 @@ func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (st
 		fmt.Fprintln(output, "start/stop control the current daemon lifetime.")
 		fmt.Fprintln(output, "Use \"termp autostart install\" to start automatically at login.")
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return startOptions{}, err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp start [--foreground] [--detach] [--verbose]"); err != nil {
@@ -1126,20 +1149,20 @@ func activityButtons(buttons []registry.Button, cta config.CTA) []presence.Butto
 func stop(args []string) error {
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
 	addVerboseFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp stop [--verbose]"); err != nil {
 		return err
 	}
 	pidPath := pidFilePath()
-	publisherPID := 0
+	var publisher daemonPIDRecord
 	if state, ok := readDaemonDiscordState(daemonDiscordStatePath()); ok &&
 		processIdentityMatches(state.PID, state.StartTime, processAlive, processLooksLikeTermp) {
-		publisherPID = state.PID
+		publisher = daemonPIDRecord{PID: state.PID, StartTime: state.StartTime}
 	}
 	serviceState := service.NewManager().Status()
-	pid, err := stopDaemonAndPublisher(pidPath, publisherPID, stopTimeout, stopPollInterval, processAlive, processLooksLikeTermp, signalTermpProcess, time.Sleep, serviceWillRelaunch(serviceState))
+	pid, err := stopDaemonAndPublisher(pidPath, publisher, stopTimeout, stopPollInterval, processAlive, processLooksLikeTermp, signalTermpProcess, time.Sleep, serviceWillRelaunch(serviceState))
 	if err != nil {
 		return err
 	}
@@ -1173,7 +1196,7 @@ func serviceWillRelaunch(state service.State) bool {
 func status(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	addVerboseFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp status [--verbose]"); err != nil {
@@ -1603,7 +1626,7 @@ func abbreviateHome(path, homeDir string) string {
 func settings(args []string) error {
 	fs := flag.NewFlagSet("settings", flag.ContinueOnError)
 	addVerboseFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp settings [--verbose]"); err != nil {
@@ -1637,13 +1660,12 @@ func watch(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	once := fs.Bool("once", false, "render one preview snapshot and exit")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp watch [--once] [--verbose]"); err != nil {
 		return err
 	}
-	maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
 	if *once {
 		card, warnings, err := watchSnapshot(time.Now())
 		if err != nil {
@@ -1655,6 +1677,7 @@ func watch(args []string) error {
 		fmt.Println(card)
 		return nil
 	}
+	maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 		fmt.Fprintln(os.Stderr, "termp watch requires an interactive terminal (TTY); use --once for scripting")
 		return errors.New("watch requires a TTY")
@@ -1839,14 +1862,6 @@ func pidFilePath() string {
 func readPID(path string) (int, error) {
 	pid, _, err := readPIDRecord(path)
 	return pid, err
-}
-
-func readPIDStartTime(path string, expectedPID int) uint64 {
-	record, _, err := readPIDIdentity(path)
-	if err != nil || record.PID != expectedPID {
-		return 0
-	}
-	return record.StartTime
 }
 
 type daemonPIDRecord struct {
@@ -2147,6 +2162,9 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLi
 		}
 		return 0, errors.New("stale PID file removed; daemon is not running")
 	}
+	if !processIdentityMatches(pid, record.StartTime, alive, looksLikeTermp) {
+		return 0, fmt.Errorf("refusing to signal pid %d: process identity changed before signaling", pid)
+	}
 	if err := signal(pid); err != nil {
 		return 0, fmt.Errorf("refusing to signal pid %d: %w", pid, err)
 	}
@@ -2166,19 +2184,19 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLi
 	return pid, nil
 }
 
-func stopDaemonAndPublisher(path string, publisherPID int, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, signal func(int) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
+func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, signal func(int) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
 	record, info, readErr := readPIDIdentity(path)
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return 0, readErr
 	}
 	pid := record.PID
 
-	targets := make([]int, 0, 2)
-	if publisherPID > 0 && alive(publisherPID) {
-		targets = append(targets, publisherPID)
+	targets := make([]daemonPIDRecord, 0, 2)
+	if processIdentityMatches(publisher.PID, publisher.StartTime, alive, looksLikeTermp) {
+		targets = append(targets, publisher)
 	}
-	if readErr == nil && processIdentityMatches(pid, record.StartTime, alive, looksLikeTermp) && pid != publisherPID {
-		targets = append(targets, pid)
+	if readErr == nil && processIdentityMatches(pid, record.StartTime, alive, looksLikeTermp) && pid != publisher.PID {
+		targets = append(targets, record)
 	}
 	if len(targets) == 0 {
 		if readErr == nil {
@@ -2194,13 +2212,16 @@ func stopDaemonAndPublisher(path string, publisherPID int, timeout, pollInterval
 	}
 
 	for _, target := range targets {
-		if err := signal(target); err != nil {
-			return 0, fmt.Errorf("refusing to signal pid %d: %w", target, err)
+		if !processIdentityMatches(target.PID, target.StartTime, alive, looksLikeTermp) {
+			return 0, fmt.Errorf("refusing to signal pid %d: process identity changed before signaling", target.PID)
+		}
+		if err := signal(target.PID); err != nil {
+			return 0, fmt.Errorf("refusing to signal pid %d: %w", target.PID, err)
 		}
 	}
 	for _, target := range targets {
-		if !waitForProcessExit(target, timeout, pollInterval, alive, sleep) {
-			return 0, fmt.Errorf("timed out after %s waiting for daemon pid %d to exit; PID file was not removed", timeout, target)
+		if !waitForProcessExit(target.PID, timeout, pollInterval, alive, sleep) {
+			return 0, fmt.Errorf("timed out after %s waiting for daemon pid %d to exit; PID file was not removed", timeout, target.PID)
 		}
 	}
 	if readErr == nil {
@@ -2210,12 +2231,12 @@ func stopDaemonAndPublisher(path string, publisherPID int, timeout, pollInterval
 		}
 		if result == pidRemovalChanged {
 			if autostartWillRelaunch && pidFileOwnedByRelaunchedDaemon(path, pid, alive, looksLikeTermp) {
-				return targets[0], nil
+				return targets[0].PID, nil
 			}
 			return 0, errors.New("daemon exited, but PID file changed ownership and was not removed")
 		}
 	}
-	return targets[0], nil
+	return targets[0].PID, nil
 }
 
 func pidFileOwnedByRelaunchedDaemon(path string, stoppedPID int, alive, looksLikeTermp func(int) bool) bool {
