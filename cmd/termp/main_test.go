@@ -94,6 +94,7 @@ func TestNewSetupModelWiresServiceUninstall(t *testing.T) {
 func TestNewSetupModelWiresCompletionInstallWithTempHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("SHELL", "/usr/local/bin/fish")
 	manager := &fakeSetupServiceManager{}
 	cfg := config.Default()

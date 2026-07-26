@@ -461,6 +461,7 @@ func TestCompletionScriptRejectsUnknownShell(t *testing.T) {
 func TestCompletionRoutesUninstallAndShellScript(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	resolveHome := func() (string, error) { return home, nil }
 
 	installed := make(map[string]string)
