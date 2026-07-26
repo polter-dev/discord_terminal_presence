@@ -26,6 +26,7 @@ const (
 
 	BrewCommand         = "brew upgrade --cask polter-dev/tap/termp"
 	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
+	workerDownloadURL   = "https://termp.polter.sh/dl/update/%s/%s"
 )
 
 var removeTemporaryInstaller = os.Remove
@@ -423,7 +424,7 @@ func GenericCommand(tag string) string {
 		return ""
 	}
 	return fmt.Sprintf(
-		`tmp=$(mktemp) && trap 'rm -f "$tmp"' EXIT HUP INT TERM && curl -fsSL `+genericInstallerURL+` -o "$tmp" && test -s "$tmp" && VERSION=%s sh "$tmp"`,
+		`tmp=$(mktemp) && trap 'rm -f "$tmp"' EXIT HUP INT TERM && curl -fsSL `+genericInstallerURL+` -o "$tmp" && test -s "$tmp" && TERMP_DOWNLOAD_CHANNEL=update VERSION=%s sh "$tmp"`,
 		tag,
 		tag,
 	)
@@ -443,6 +444,20 @@ func validReleaseTag(tag string) bool {
 	}
 	_, ok := parseVersion(tag)
 	return ok
+}
+
+func updateArchiveURL(goos, goarch string) (string, error) {
+	switch goos {
+	case "darwin", "linux":
+	default:
+		return "", fmt.Errorf("unsupported update OS %q", goos)
+	}
+	switch goarch {
+	case "amd64", "arm64":
+	default:
+		return "", fmt.Errorf("unsupported update architecture %q", goarch)
+	}
+	return fmt.Sprintf(workerDownloadURL, goos, goarch), nil
 }
 
 // CommandForMethod returns the supported update command for an install method.
@@ -503,6 +518,10 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 	if err := genericUpdatePlatformError(runtime.GOOS, tag); err != nil {
 		return err
 	}
+	archiveURL, err := updateArchiveURL(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp("", "termp-install-*.sh")
 	if err != nil {
 		return fmt.Errorf("create temporary installer: %w", err)
@@ -531,7 +550,14 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 		return errors.New("downloaded installer is empty")
 	}
 
-	install := Command{Name: "sh", Args: []string{tmpPath}, Env: []string{"VERSION=" + tag}}
+	install := Command{
+		Name: "sh",
+		Args: []string{tmpPath},
+		Env: []string{
+			"VERSION=" + tag,
+			"TERMP_DOWNLOAD_URL=" + archiveURL,
+		},
+	}
 	if err := runner.Run(ctx, install, stdin, stdout, stderr); err != nil {
 		return fmt.Errorf("run %s: %w", GenericCommand(tag), err)
 	}

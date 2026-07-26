@@ -166,7 +166,11 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	if download.Name != "curl" || len(download.Args) != 4 || download.Args[1] != wantURL || download.Args[2] != "-o" {
 		t.Fatalf("download command = %#v", download)
 	}
-	if install.Name != "sh" || len(install.Args) != 1 || !reflect.DeepEqual(install.Env, []string{"VERSION=v2.3.4"}) {
+	wantEnv := []string{
+		"VERSION=v2.3.4",
+		"TERMP_DOWNLOAD_URL=https://termp.polter.sh/dl/update/" + runtime.GOOS + "/" + runtime.GOARCH,
+	}
+	if install.Name != "sh" || len(install.Args) != 1 || !reflect.DeepEqual(install.Env, wantEnv) {
 		t.Fatalf("install command = %#v", install)
 	}
 	if install.Args[0] != download.Args[3] {
@@ -174,6 +178,38 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	}
 	if _, err := os.Stat(download.Args[3]); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary installer was not cleaned up: %v", err)
+	}
+}
+
+func TestUpdateArchiveURLMapsSupportedTargets(t *testing.T) {
+	tests := []struct {
+		goos   string
+		goarch string
+		want   string
+	}{
+		{goos: "darwin", goarch: "amd64", want: "https://termp.polter.sh/dl/update/darwin/amd64"},
+		{goos: "darwin", goarch: "arm64", want: "https://termp.polter.sh/dl/update/darwin/arm64"},
+		{goos: "linux", goarch: "amd64", want: "https://termp.polter.sh/dl/update/linux/amd64"},
+		{goos: "linux", goarch: "arm64", want: "https://termp.polter.sh/dl/update/linux/arm64"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.goos+"/"+tt.goarch, func(t *testing.T) {
+			got, err := updateArchiveURL(tt.goos, tt.goarch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("updateArchiveURL(%q, %q) = %q, want %q", tt.goos, tt.goarch, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpdateArchiveURLRejectsUnsupportedTargets(t *testing.T) {
+	for _, target := range [][2]string{{"windows", "amd64"}, {"linux", "386"}} {
+		if got, err := updateArchiveURL(target[0], target[1]); err == nil || got != "" {
+			t.Fatalf("updateArchiveURL(%q, %q) = (%q, %v), want error", target[0], target[1], got, err)
+		}
 	}
 }
 

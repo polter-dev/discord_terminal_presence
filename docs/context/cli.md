@@ -50,3 +50,8 @@ Setup continues to rewrite enabled autostart definitions so existing users get
 corrected service definitions. When a daemon is already running, definition
 reconciliation does not immediately launch the service again; the explicit
 `termp autostart install` command retains its start-now behavior.
+
+The canonical `install.sh` fetches release archives through
+`https://termp.polter.sh/dl/curl/{os}/{arch}` by default and falls back to the
+tag-pinned GitHub asset on any failure. Checksums remain tag-pinned direct GitHub
+downloads and are verified unchanged.
