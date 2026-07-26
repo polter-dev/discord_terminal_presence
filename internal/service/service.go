@@ -318,7 +318,7 @@ func BuildSystemdUnit(exe string) ([]byte, error) {
 Description=termp Discord Rich Presence daemon
 
 [Service]
-ExecStart=%s start
+ExecStart=%s start --foreground
 Restart=on-failure
 
 [Install]

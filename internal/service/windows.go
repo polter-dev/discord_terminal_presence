@@ -108,7 +108,7 @@ func BuildWindowsTaskXML(exe, username string) ([]byte, error) {
     <Enabled>true</Enabled>
   </Settings>
   <Actions Context="Author">
-    <Exec><Command>%s</Command><Arguments>start</Arguments></Exec>
+    <Exec><Command>%s</Command><Arguments>start --foreground</Arguments></Exec>
   </Actions>
 </Task>
 `, esc(description), esc(username), esc(username), esc(exe))
