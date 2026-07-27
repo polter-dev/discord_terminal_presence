@@ -325,6 +325,7 @@ func TestGoUpdateRejectsInvalidReleaseTagsWithoutRunning(t *testing.T) {
 
 func TestInstallMethodDetection(t *testing.T) {
 	home := filepath.Join(string(filepath.Separator), "Users", "test")
+	goBin := filepath.Join(string(filepath.Separator), "Users", "test", "bin")
 	goPath := filepath.Join(string(filepath.Separator), "opt", "gopath")
 	tests := []struct {
 		name string
@@ -333,18 +334,56 @@ func TestInstallMethodDetection(t *testing.T) {
 	}{
 		{name: "Homebrew Cellar", path: filepath.Join("/opt/homebrew/Cellar/termp/1.2.3/bin/termp"), want: InstallHomebrew},
 		{name: "Homebrew Caskroom", path: filepath.Join("/usr/local/Caskroom/termp/1.2.3/termp"), want: InstallHomebrew},
+		{name: "GOBIN", path: filepath.Join(goBin, "termp"), want: InstallGo},
 		{name: "GOPATH bin", path: filepath.Join(goPath, "bin", "termp"), want: InstallGo},
 		{name: "default home Go bin", path: filepath.Join(home, "go", "bin", "termp"), want: InstallGo},
 		{name: "generic installer", path: filepath.Join("/usr/local/bin/termp"), want: InstallGeneric},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := detectInstall(tt.path, func(path string) (string, error) { return path, nil }, goPath, home)
+			got := detectInstall(tt.path, func(path string) (string, error) { return path, nil }, goBin, goPath, home)
 			if got != tt.want {
 				t.Fatalf("detectInstall(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
 	}
+}
+
+func TestParseGoEnvPaths(t *testing.T) {
+	t.Run("custom GOBIN and GOPATH", func(t *testing.T) {
+		goBin := filepath.Join(string(filepath.Separator), "custom", "bin")
+		goPath := filepath.Join(string(filepath.Separator), "custom", "gopath")
+		got := parseGoEnvPaths([]byte(goBin+"\n"+goPath+"\n"), nil)
+		if got != (goInstallPaths{goBin: goBin, goPath: goPath}) {
+			t.Fatalf("parseGoEnvPaths() = %#v", got)
+		}
+		if method := detectResolvedInstall(filepath.Join(goBin, "termp"), got.goBin, got.goPath, ""); method != InstallGo {
+			t.Fatalf("go env GOBIN install = %q, want %q", method, InstallGo)
+		}
+		if method := detectResolvedInstall(filepath.Join(goPath, "bin", "termp"), got.goBin, got.goPath, ""); method != InstallGo {
+			t.Fatalf("custom go env GOPATH install = %q, want %q", method, InstallGo)
+		}
+	})
+
+	t.Run("absent toolchain falls back safely", func(t *testing.T) {
+		got := parseGoEnvPaths(nil, exec.ErrNotFound)
+		if got != (goInstallPaths{}) {
+			t.Fatalf("parseGoEnvPaths() = %#v, want empty paths", got)
+		}
+		rawGoPath := filepath.Join(string(filepath.Separator), "fallback", "gopath")
+		if method := detectResolvedInstall(filepath.Join(rawGoPath, "bin", "termp"), got.goBin, rawGoPath, ""); method != InstallGo {
+			t.Fatalf("raw GOPATH fallback install = %q, want %q", method, InstallGo)
+		}
+		if method := detectResolvedInstall(filepath.Join(string(filepath.Separator), "usr", "local", "bin", "termp"), got.goBin, "", ""); method != InstallGeneric {
+			t.Fatalf("unknown install without toolchain = %q, want %q", method, InstallGeneric)
+		}
+	})
+
+	t.Run("empty output falls back safely", func(t *testing.T) {
+		if got := parseGoEnvPaths(nil, nil); got != (goInstallPaths{}) {
+			t.Fatalf("parseGoEnvPaths() = %#v, want empty paths", got)
+		}
+	})
 }
 
 func TestInstallDetectionResolvesSymlinkBeforeMatching(t *testing.T) {
@@ -365,7 +404,7 @@ func TestInstallDetectionResolvesSymlinkBeforeMatching(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if got := detectInstall(link, filepath.EvalSymlinks, "", root); got != InstallHomebrew {
+	if got := detectInstall(link, filepath.EvalSymlinks, "", "", root); got != InstallHomebrew {
 		t.Fatalf("symlinked Homebrew install = %q, want %q", got, InstallHomebrew)
 	}
 }
@@ -373,7 +412,7 @@ func TestInstallDetectionResolvesSymlinkBeforeMatching(t *testing.T) {
 func TestInstallDetectionFallsBackWhenResolutionFails(t *testing.T) {
 	got := detectInstall("/opt/homebrew/Cellar/termp/1.2.3/termp", func(string) (string, error) {
 		return "", errors.New("cannot resolve")
-	}, "", "")
+	}, "", "", "")
 	if got != InstallGeneric {
 		t.Fatalf("ambiguous install = %q, want generic", got)
 	}
