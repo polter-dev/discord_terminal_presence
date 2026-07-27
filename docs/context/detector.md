@@ -58,6 +58,8 @@ acknowledges the reload, and immediately re-scans before emitting.
 Gopsutil `CmdlineSlice` is preserved as structured argv; string cmdline remains a
 fallback. Episode-store load and save failures reach the detector debug callback. The
 detector continues with its in-memory store, preserving scan and elapsed-timer semantics.
+`RunReadOnly` loads and consumes the episode store without incremental or shutdown saves;
+live CLI watch uses it so only the daemon persists `presence.json`.
 
 **Depends on / used by:** Depends on `internal/registry` and gopsutil; produces snapshots
 for the daemon, status, presence mapping, watch, and usage recording.

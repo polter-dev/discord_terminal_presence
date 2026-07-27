@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
@@ -54,6 +55,9 @@ func defaultConnectCommandDeps() connectCommandDeps {
 }
 
 func connectCommand(args []string) error {
+	if !connectSupported {
+		return fmt.Errorf("termp connect is not yet supported on %s", runtime.GOOS)
+	}
 	return connectCommandWith(args, os.Stdout, os.Stderr, defaultConnectCommandDeps())
 }
 

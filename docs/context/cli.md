@@ -3,9 +3,9 @@
 **Purpose:** Owns command dispatch, daemon lifecycle, status/control output, setup
 wiring, update policy, installation guidance, and TUI startup.
 
-**Public surface:** The `termp` binary exposes start/stop/connect/status, autostart,
-settings/watch/setup, config, completion, version, and update commands. `install.sh` is
-the canonical generic release installer.
+**Public surface:** The `termp` binary exposes start/stop/status, autostart,
+settings/watch/setup, config, completion, version, and update commands. Windows also
+exposes `connect`. `install.sh` is the canonical generic release installer.
 
 **Key files:** `cmd/termp/main.go` owns dispatch, daemon operation, status, setup, and
 usage/config wiring. `cmd/termp/connect.go` and `control_*` own daemon control.
@@ -22,7 +22,9 @@ disable/uninstall stop the tracked daemon and report partial failure if it survi
 Connect never starts a daemon. It prefers the validated publisher, then the PID owner.
 Windows uses a current-user PID-addressed named pipe and verifies the server process.
 `--force` reconnects; ordinary already-connected calls are successful no-ops. Response
-and readiness share a bound. Non-Windows transport remains explicitly unsupported.
+and readiness share a bound. Non-Windows transport remains explicitly unsupported, so
+help and shell completions hide `connect` there and direct invocation reports that the
+command is not yet supported on the platform.
 Status trusts a fresh connected publisher instead of probing Discord and exposes
 concurrent PID/publisher faults.
 
@@ -69,6 +71,8 @@ policy and path-reduction helper as presence output, cap expanded paths at their
 two components, and report `hidden` when directory display is not allowed.
 Per-tool enablement is passed into detector selection, and hot reloads that change it
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
+Live watch loads the daemon's episode anchors for matching elapsed-time display but runs
+the detector read-only, leaving `presence.json` persistence exclusively to the daemon.
 
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.

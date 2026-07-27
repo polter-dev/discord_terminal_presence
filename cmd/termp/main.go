@@ -182,6 +182,9 @@ func dispatchCommandWithAutostartHandlers(command string, args []string, handler
 func commandNames() []string {
 	names := make([]string, 0, len(commandHelp))
 	for _, command := range commandHelp {
+		if command.name == "connect" && !connectSupported {
+			continue
+		}
 		names = append(names, command.name)
 	}
 	return names
@@ -269,6 +272,9 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
 	for _, command := range commandHelp {
+		if command.name == "connect" && !connectSupported {
+			continue
+		}
 		fmt.Fprintf(w, "  %-10s  %s\n", command.name, command.description)
 	}
 	fmt.Fprintln(w)
@@ -613,7 +619,14 @@ func supportedCompletionShell(shell string) bool {
 }
 
 func completionScript(shell string) (string, error) {
-	commands := "start stop connect status install uninstall disable enable autostart settings watch version update setup config completion"
+	commands := strings.Join(commandNames(), " ")
+	connectCase := ""
+	if connectSupported {
+		connectCase = `    connect)
+      COMPREPLY=( $(compgen -W "--force --verbose -v --help -h" -- "$cur") )
+      ;;
+`
+	}
 	switch shell {
 	case "bash":
 		return `# termp bash completion.
@@ -665,10 +678,7 @@ _termp_complete() {
     start)
       COMPREPLY=( $(compgen -W "--foreground -f --detach -d --verbose -v --help -h" -- "$cur") )
       ;;
-    connect)
-      COMPREPLY=( $(compgen -W "--force --verbose -v --help -h" -- "$cur") )
-      ;;
-    stop|status|settings|version|update|setup)
+` + connectCase + `    stop|status|settings|version|update|setup)
       COMPREPLY=( $(compgen -W "--verbose -v --help -h" -- "$cur") )
       ;;
     *)
@@ -679,6 +689,13 @@ _termp_complete() {
 complete -F _termp_complete termp
 `, nil
 	case "zsh":
+		connectCase = ""
+		if connectSupported {
+			connectCase = `      connect)
+        compadd -- --force --verbose -v --help -h
+        ;;
+`
+		}
 		return `#compdef termp
 # termp zsh completion.
 # Enable in the current session: source <(termp completion zsh)
@@ -721,10 +738,7 @@ _termp() {
       start)
         compadd -- --foreground -f --detach -d --verbose -v --help -h
         ;;
-      connect)
-        compadd -- --force --verbose -v --help -h
-        ;;
-      stop|status|settings|version|update|setup)
+` + connectCase + `      stop|status|settings|version|update|setup)
         compadd -- --verbose -v --help -h
         ;;
       *)
@@ -765,8 +779,10 @@ compdef _termp termp
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from watch' -l once -d 'render one preview snapshot and exit'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start' -s f -l foreground -d 'keep the daemon attached to the terminal'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start' -s d -l detach -d 'start the daemon in the background (default)'\n")
-		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from connect' -l force -d 'reconnect even when already connected'\n")
-		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start stop connect status settings watch version update setup completion' -s v -l verbose -d 'enable verbose logging'\n")
+		if connectSupported {
+			b.WriteString("complete -c termp -n '__fish_seen_subcommand_from connect' -l force -d 'reconnect even when already connected'\n")
+		}
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from " + commands + "' -s v -l verbose -d 'enable verbose logging'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from init' -s v -l verbose -d 'enable verbose logging'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from " + commands + "' -s h -l help -d 'show help'\n")
 		return b.String(), nil
@@ -1825,7 +1841,7 @@ func watch(args []string) error {
 
 	model := tui.NewWatchModel()
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
-	detections := det.Run(ctx)
+	detections := det.RunReadOnly(ctx)
 
 	go bridgeWatchActivities(ctx, manager, detections, program, selectFallbackMessage(cfg.FallbackMessages))
 	go bridgeWatchConnection(ctx, program, 5*time.Second)
