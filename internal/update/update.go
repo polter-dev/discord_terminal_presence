@@ -377,20 +377,47 @@ func isDevVersion(version string) bool {
 }
 
 type cacheEntry struct {
-	CheckedAt time.Time `json:"checked_at"`
-	Latest    string    `json:"latest_version,omitempty"`
+	CheckedAt       time.Time               `json:"checked_at"`
+	Latest          string                  `json:"latest_version,omitempty"`
+	AutomaticUpdate *AutomaticUpdateAttempt `json:"automatic_update,omitempty"`
+}
+
+// AutomaticUpdateAttempt records the outcome of the last automatic install
+// attempt so status can report failures after the daemon has started.
+type AutomaticUpdateAttempt struct {
+	AttemptedAt time.Time `json:"attempted_at"`
+	Target      string    `json:"target_version"`
+	Error       string    `json:"error,omitempty"`
+}
+
+// ReadAutomaticUpdateAttempt reads the last automatic install attempt from the
+// update cache. Missing or malformed cache data is treated as no attempt.
+func ReadAutomaticUpdateAttempt(path string) (AutomaticUpdateAttempt, bool) {
+	entry, ok := readCache(path)
+	if !ok || entry.AutomaticUpdate == nil || entry.AutomaticUpdate.AttemptedAt.IsZero() {
+		return AutomaticUpdateAttempt{}, false
+	}
+	return *entry.AutomaticUpdate, true
+}
+
+// RecordAutomaticUpdateAttempt replaces the last automatic install attempt
+// while retaining the release-check metadata stored in the same cache.
+func RecordAutomaticUpdateAttempt(path, target string, attemptedAt time.Time, updateErr error) error {
+	entry, _ := readCache(path)
+	attempt := &AutomaticUpdateAttempt{
+		AttemptedAt: attemptedAt,
+		Target:      target,
+	}
+	if updateErr != nil {
+		attempt.Error = updateErr.Error()
+	}
+	entry.AutomaticUpdate = attempt
+	return writeCache(path, entry)
 }
 
 func readFreshCache(path string, now time.Time) (cacheEntry, bool) {
-	if path == "" {
-		return cacheEntry{}, false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cacheEntry{}, false
-	}
-	var entry cacheEntry
-	if err := json.Unmarshal(data, &entry); err != nil || entry.CheckedAt.IsZero() {
+	entry, ok := readCache(path)
+	if !ok || entry.CheckedAt.IsZero() {
 		return cacheEntry{}, false
 	}
 	if !now.Before(entry.CheckedAt.Add(cacheLifetime)) {
@@ -399,9 +426,29 @@ func readFreshCache(path string, now time.Time) (cacheEntry, bool) {
 	return entry, true
 }
 
+func readCache(path string) (cacheEntry, bool) {
+	if path == "" {
+		return cacheEntry{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cacheEntry{}, false
+	}
+	var entry cacheEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return cacheEntry{}, false
+	}
+	return entry, true
+}
+
 func writeCache(path string, entry cacheEntry) error {
 	if path == "" {
 		return nil
+	}
+	if entry.AutomaticUpdate == nil {
+		if previous, ok := readCache(path); ok {
+			entry.AutomaticUpdate = previous.AutomaticUpdate
+		}
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
