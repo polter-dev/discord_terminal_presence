@@ -41,6 +41,34 @@ func TestStatusClientUsesShortTimeoutWithoutChangingDaemonDefault(t *testing.T) 
 	}
 }
 
+func TestStatusClientReadReturnsPromptlyWhenContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := newStatusClient(ctx)
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.readFrame(clientConn)
+		result <- err
+	}()
+
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("readFrame error = %v, want context canceled", err)
+		}
+		if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			t.Fatalf("readFrame returned after %v, want prompt cancellation", elapsed)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("readFrame did not observe cancellation before status timeout %v", statusIOTimeout)
+	}
+}
+
 func TestIPCFrameRoundTripHandlesShortWrites(t *testing.T) {
 	w := &shortWriter{limit: 3}
 	value := map[string]any{"evt": "READY", "count": 2}

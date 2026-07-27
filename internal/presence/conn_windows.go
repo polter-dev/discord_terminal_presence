@@ -3,6 +3,7 @@
 package presence
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -15,27 +16,41 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func dialDiscordIPC() (net.Conn, error) {
-	return dialDiscordIPCWith(os.Getenv("DISCORD_IPC_PATH"), winio.DialPipe, validatePipePeer)
+func dialDiscordIPC(ctx context.Context) (net.Conn, error) {
+	dial := func(ctx context.Context, path string, timeout time.Duration) (net.Conn, error) {
+		dialCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return winio.DialPipeContext(dialCtx, path)
+	}
+	return dialDiscordIPCWith(ctx, os.Getenv("DISCORD_IPC_PATH"), dial, validatePipePeer)
 }
 
-type dialPipeFunc func(string, *time.Duration) (net.Conn, error)
+type dialPipeFunc func(context.Context, string, time.Duration) (net.Conn, error)
 
-func dialDiscordIPCWith(override string, dial dialPipeFunc, verify func(net.Conn) error) (net.Conn, error) {
+func dialDiscordIPCWith(ctx context.Context, override string, dial dialPipeFunc, verify func(net.Conn) error) (net.Conn, error) {
 	var failures strings.Builder
 	if override != "" && !filepath.IsAbs(override) {
 		fmt.Fprintf(&failures, "  DISCORD_IPC_PATH %q is not absolute; override ignored\n", override)
 	}
 	endpointFound := false
 	for _, path := range discordIPCPipeCandidates(override) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if discordIPCPipeExists(path) {
 			endpointFound = true
 		}
-		timeout := 500 * time.Millisecond
-		conn, err := dial(path, &timeout)
+		conn, err := dial(ctx, path, 500*time.Millisecond)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			fmt.Fprintf(&failures, "  %s: %v\n", path, err)
 			continue
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			_ = conn.Close()
+			return nil, ctxErr
 		}
 		endpointFound = true
 		if err := verify(conn); err != nil {

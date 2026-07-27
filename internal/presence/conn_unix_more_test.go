@@ -3,9 +3,11 @@
 package presence
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,6 +100,59 @@ func TestDiscordIPCOverrideCandidates(t *testing.T) {
 		if got != want {
 			t.Errorf("directory override candidate %d = %q, want %q", i, got, want)
 		}
+	}
+}
+
+func TestStatusProbeReturnsPromptlyWhenContextCancelled(t *testing.T) {
+	socketDir, err := os.MkdirTemp("/tmp", "termp-status-probe-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "discord-ipc-0")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	t.Setenv("DISCORD_IPC_PATH", socketPath)
+
+	handshakeRead := make(chan error, 1)
+	releaseServer := make(chan struct{})
+	defer close(releaseServer)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			handshakeRead <- err
+			return
+		}
+		defer conn.Close()
+		_, err = readFrame(conn)
+		handshakeRead <- err
+		<-releaseServer
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- StatusProbe(ctx, "app-id")
+	}()
+	if err := <-handshakeRead; err != nil {
+		t.Fatalf("read handshake: %v", err)
+	}
+
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("StatusProbe error = %v, want context canceled", err)
+		}
+		if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			t.Fatalf("StatusProbe returned after %v, want prompt cancellation", elapsed)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("StatusProbe did not observe cancellation before status timeout %v", statusIOTimeout)
 	}
 }
 
