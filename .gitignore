@@ -1,9 +1,12 @@
 # ─────────────────────────────────────────────────────────────
-# Internal build harness & design docs — kept LOCAL, never pushed.
+# Internal build harness & design docs — kept LOCAL, never pushed,
+# except for the public context ledger.
 # Agents still read these on disk; they are intentionally excluded
 # from the public repository.
 # ─────────────────────────────────────────────────────────────
-/docs/
+/docs/*
+!/docs/context/
+!/docs/context/**
 /AGENTS.md
 /CLAUDE.md
 /ROADMAP.md

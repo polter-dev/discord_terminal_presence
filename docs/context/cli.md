@@ -1,115 +1,59 @@
-# CLI context
+# CLI (package `cmd/termp`)
 
-## Daemon lifecycle
+**Purpose:** Owns command dispatch, daemon lifecycle, status/control output, setup
+wiring, update policy, installation guidance, and TUI startup.
 
-`termp start` treats the PID file as the final startup arbiter and waits for a
-bounded parent/child readiness check before reporting success. It also checks
-the daemon-owned `discord.json`: a live publisher from the same executable path
-and user is an existing daemon even when the PID file is missing or names a
-different process.
+**Public surface:** The `termp` binary exposes start/stop/connect/status, autostart,
+settings/watch/setup, config, completion, version, and update commands. `install.sh` is
+the canonical generic release installer.
 
-`termp stop` stops both a valid PID-file owner and a different live Discord
-publisher. Process validation requires the same user and exact executable image
-path, so a development or staged binary cannot stop another installed copy of
-termp.
+**Key files:** `cmd/termp/main.go` owns dispatch, daemon operation, status, setup, and
+usage/config wiring. `cmd/termp/connect.go` and `control_*` own daemon control.
+`cmd/termp/update.go` owns manual notices and opt-in automatic updates. `spawn_*`,
+`pidfile_*`, and `shutdown_*` contain platform lifecycle behavior. `install.sh` installs
+tag-pinned archives. `.github/workflows/release.yml` and `.goreleaser.yaml` own releases.
 
-`termp autostart disable` and `termp autostart uninstall` stop the tracked
-daemon after pausing or removing the OS login service, including a detached
-daemon started independently with `termp start`. They report a partial failure
-instead of success if the service action completes but the daemon survives.
+**Invariants / gotchas:** Start treats the validated PID file as final arbiter, also
+recognizes a fresh same-user/same-executable `discord.json` publisher, and waits for
+bounded child readiness. Stop targets both a valid PID owner and a distinct valid
+publisher. Windows publishes readiness only after shutdown primitives exist. Autostart
+disable/uninstall stop the tracked daemon and report partial failure if it survives.
 
-`termp connect` does not start a daemon. It returns exit status 1 with an
-instruction to run `termp start` when no validated daemon exists. It targets a
-fresh, validated `discord.json` publisher before the PID-file owner because the
-publisher is the process that actually owns Discord IPC. When no publisher can
-be validated, the PID-file owner is the fallback.
+Connect never starts a daemon. It prefers the validated publisher, then the PID owner.
+Windows uses a current-user PID-addressed named pipe and verifies the server process.
+`--force` reconnects; ordinary already-connected calls are successful no-ops. Response
+and readiness share a bound. Non-Windows transport remains explicitly unsupported.
+Status trusts a fresh connected publisher instead of probing Discord and exposes
+concurrent PID/publisher faults.
 
-On Windows, connect uses a PID-addressed named pipe restricted to the current
-user. The client validates that the named-pipe server is the intended termp
-process before sending a JSON request. This request/response channel is
-preferred over a signal because it can carry command options, structured
-results, and future daemon commands; it is preferred over a watched control
-file because delivery, acknowledgement, and access control are direct.
+Setup rewrites enabled service definitions but does not relaunch an already-running
+daemon. Config/autostart success survives a completion-only failure and the summary
+reports that partial outcome. Completion removal attempts every shell; details live in
+[`completioninstall.md`](completioninstall.md).
 
-An ordinary connect is a successful no-op that prints `already connected (pid
-N)` when the writer is connected. `--force` closes and re-establishes Discord
-IPC even in that state. Otherwise the daemon attempts an immediate connection,
-bypassing reconnect backoff. It returns the actual login or activity replay
-error to the CLI. After a successful daemon response, the CLI polls for a newer,
-connected daemon state from the targeted PID and prints `connected (pid N)` only
-after confirmation. The request and readiness poll share a bounded timeout.
-Timeouts and operational failures exit 1 without success output; invalid command
-usage exits 2; confirmed and already-connected outcomes exit 0.
+Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
+installs preflight `BINDIR` (default `/usr/local/bin`) and record a skipped reason when it
+is not writable. Generic Windows installs record an unsupported-platform skip; Go and
+Homebrew installs remain eligible. Attempts are visible in `termp status`, and a later
+success clears the reported failure/skip. Interactive `termp update` is unchanged and
+may still use sudo/manual guidance.
 
-The daemon control transport is intentionally unimplemented on macOS and Linux
-pending implementation and live verification on those platforms. The command
-and exit behavior are platform-neutral, but a running non-Windows daemon returns
-an explicit unsupported-transport error.
+Homebrew automation currently runs `brew upgrade polter-dev/tap/termp` without `--cask`,
+but GoReleaser publishes a Cask. Issue #303 records this unresolved contradiction pending
+an empirical test release; do not change either stance without the owner decision.
 
-`termp status` uses a fresh, connected `discord.json` without making a direct
-Discord IPC probe. If its publisher PID differs from the PID-file owner, status
-reports both PIDs and identifies the concurrent-daemon fault instead of hiding
-it behind a handshake timeout.
+The installer resolves one tag for archive/checksum, prefers
+`https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}`, and falls back to the tag-pinned
+GitHub asset. Tag runs create a draft release (`release.draft: true`) and attach the
+generated Cask without writing the tap. Only `release.published` triggers a second job
+that verifies the release is public, downloads that exact Cask, and updates the tap.
 
-Setup continues to rewrite enabled autostart definitions so existing users get
-corrected service definitions. When a daemon is already running, definition
-reconciliation does not immediately launch the service again; the explicit
-`termp autostart install` command retains its start-now behavior.
+Config initialization safety is documented in [`config.md`](config.md), terminal
+rendering in [`tui.md`](tui.md), update cache/detection in [`update.md`](update.md), and
+usage retention in [`usage.md`](usage.md).
 
-Setup treats optional shell-completion installation as a separate outcome after
-config and autostart are applied. If completion installation fails, the summary
-reports that failure and its reason while retaining the persisted config in the
-model instead of reporting the entire setup as failed.
-Removing all shell completions attempts bash, zsh, and fish even when an earlier
-removal fails, returning successful paths together with all named failures.
+**Depends on / used by:** Composes every `internal/*` package and is the application
+entry point. Release automation depends on GitHub Actions and GoReleaser.
 
-Local tool-usage history is capped at 1,024 entries and a 1 MiB input file.
-Counters saturate at the platform maximum. Entries missing from the complete
-built-in and custom-tool registry are retained for 90 days before pruning;
-process-scan absence is never used to prune history.
-
-On Windows, detached startup publishes the PID file only after the named
-shutdown event and its cleanup watcher have been created successfully. A parent
-therefore cannot observe startup readiness before graceful `termp stop`
-cancellation is available.
-
-The canonical `install.sh` fetches release archives through
-`https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}` by default, using the same resolved
-tag as the archive filename and checksum, and falls back to the tag-pinned GitHub asset
-on any failure. Checksums remain tag-pinned direct GitHub downloads and are verified
-unchanged.
-
-Tag builds create a draft GitHub release and retain the generated Homebrew Cask as a release
-asset without updating the public tap. Publishing the approved release triggers the tap
-update from that exact cask only after the workflow verifies that the release is public.
-
-Automatic updates delegate Homebrew Formula installations to
-`brew upgrade polter-dev/tap/termp`; they do not use the Cask-only `--cask` flag.
-Automatic install failures remain fail-open and non-interactive, but the update
-cache records the attempt time, target version, and error. `termp status`
-reports the latest failure with an instruction to run `termp update` manually;
-a later successful automatic install replaces and clears the failure.
-On macOS and Linux, generic automatic updates preflight the installer's
-`BINDIR` (default `/usr/local/bin`) and skip before downloading when it is not
-writable. The cache distinguishes this elevation-required skip from an
-installer failure, while interactive `termp update` continues to allow sudo.
-On Windows, generic release-archive installs cannot use automatic updates.
-When enabled, the automatic path records an unsupported-platform skip before
-running an updater, and `termp status` reports the limitation even before a
-newer release is available. Go and Homebrew install methods remain eligible,
-and interactive `termp update` retains its existing manual-install guidance.
-
-`termp config init` refuses to replace symlinks and other non-regular config
-paths, including with `--force`. Config creation and forced replacement write a
-temporary file in the config directory and atomically rename it into place. New
-files use mode `0644` filtered through the process umask, while forced
-replacement preserves an existing regular file's permission bits.
-
-## TUI rendering safety
-
-Settings and setup sanitize externally derived text at their shared rendering
-boundaries. Table cells pass through a sanitizing Lip Gloss transform, and
-status, error, and setup-summary text is sanitized before styling or terminal
-output. ANSI escape sequences, C0/C1 controls, and bidirectional text controls
-from configuration, filesystem paths, tool metadata, and errors are therefore
-not emitted by these screens.
+**Open questions / TODO:** Resolve the Homebrew Formula/Cask contract in #303. Implement
+and live-verify non-Windows daemon control transport.

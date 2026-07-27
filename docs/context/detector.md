@@ -1,14 +1,20 @@
-# Detector context
+# detector (package `internal/detector`)
 
-The detector matches running processes to registered tools, then chooses one
-featured tool for Discord Rich Presence. Other detected tools are exposed in
-`Detection.Others` and rendered in the card's `also:` state line.
+**Purpose:** Scans processes, matches their identity through the registry, evaluates
+terminal presence, and selects a featured tool plus other present tools.
 
-Registry matching is limited to process identity: the executable/name/argv0 and,
-for known language-runtime wrappers, the script or package entrypoint. Catalog
-regexes do not inspect later command arguments. Exclusions use the same identity
-surface plus only the tool's immediate subcommand, so incidental argument text
-cannot create or suppress a public presence.
+**Public surface:** `Process`, `ProcessLister`, identity/enrichment interfaces, `Config`,
+`Detector`, `Selector`, `FeaturedTool`, and `Detection` form the scan/selection boundary.
+`NewGopsutilLister` is production process input. `ActiveDetection*` provide snapshots.
+`EpisodeStore` and its load/save helpers persist elapsed-session anchors.
+
+**Key files:** `internal/detector/detector.go` owns scan/debounce/selection and debug
+reporting. `gopsutil.go` preserves structured argv and enriches selected identities.
+`tty_*.go` and `idle_cpu_*.go` own platform presence. `episode.go` owns persistence.
+
+**Invariants / gotchas:** Registry matching is restricted to process identity:
+name/executable/argv0 and recognized runtime entrypoints. Catalog regexes never inspect
+later arguments; exclusions see identity plus only the immediate subcommand.
 
 Presence and featured eligibility differ on Windows. Losing foreground starts
 the terminal idle clock; the window's last foreground time is retained across
@@ -30,6 +36,11 @@ scans. On the third consecutive failure, the detector emits `None` immediately
 so the writer clears stale Discord presence. A successful scan resets the
 failure counter, and normal detection debounce applies when presence recovers.
 
-Episode-store load and save failures are reported through the detector's debug
-callback. The detector continues with its in-memory episode store so persistence
-failures do not change scan or elapsed-timer semantics.
+Gopsutil `CmdlineSlice` is preserved as structured argv; string cmdline remains a
+fallback. Episode-store load and save failures reach the detector debug callback. The
+detector continues with its in-memory store, preserving scan and elapsed-timer semantics.
+
+**Depends on / used by:** Depends on `internal/registry` and gopsutil; produces snapshots
+for the daemon, status, presence mapping, watch, and usage recording.
+
+**Open questions / TODO:** Windows tty-presence coverage remains tracked in #183.
