@@ -24,6 +24,7 @@ type Process struct {
 	Exe        string
 	Cmdline    string
 	Argv0      string
+	Argv       []string
 	Cwd        string
 	CreateTime time.Time
 	CPUTime    float64
@@ -317,6 +318,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			Exe:     proc.Exe,
 			Cmdline: proc.Cmdline,
 			Argv0:   proc.Argv0,
+			Argv:    proc.Argv,
 		})
 		if !ok {
 			continue

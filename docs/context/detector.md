@@ -4,6 +4,12 @@ The detector matches running processes to registered tools, then chooses one
 featured tool for Discord Rich Presence. Other detected tools are exposed in
 `Detection.Others` and rendered in the card's `also:` state line.
 
+Registry matching is limited to process identity: the executable/name/argv0 and,
+for known language-runtime wrappers, the script or package entrypoint. Catalog
+regexes do not inspect later command arguments. Exclusions use the same identity
+surface plus only the tool's immediate subcommand, so incidental argument text
+cannot create or suppress a public presence.
+
 Presence and featured eligibility differ on Windows. Losing foreground starts
 the terminal idle clock; the window's last foreground time is retained across
 scans, and `idle_clear_timeout` controls the resulting grace period. While the

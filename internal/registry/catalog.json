@@ -6,7 +6,7 @@
       "name": "claude",
       "regex": "(^|\\s|/)(claude|claude\\.exe|claude\\.js)(\\.exe)?(\\s|$)|(^|/)@anthropic-ai/claude-code/|(^|/)claude/versions/"
     },
-    "exclude": "(^|\\s)(bg-spare|bg-pty-host|daemon run)(\\s|$)",
+    "exclude": "^(bg-spare|bg-pty-host|daemon)$",
     "image_url": "https://termp.polter.sh/logos/claude-code.png",
     "icon_slug": "claude-color",
     "icon_source": "lobehub",

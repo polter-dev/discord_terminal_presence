@@ -44,6 +44,21 @@ var shellInterpreterNames = map[string]struct{}{
 	"pwsh":       {},
 }
 
+var toolInterpreterNames = map[string]struct{}{
+	"bun":     {},
+	"deno":    {},
+	"node":    {},
+	"nodejs":  {},
+	"perl":    {},
+	"php":     {},
+	"pypy":    {},
+	"pypy3":   {},
+	"python":  {},
+	"python2": {},
+	"python3": {},
+	"ruby":    {},
+}
+
 // Button is a Discord activity button definition owned by a tool entry.
 type Button struct {
 	Label string
@@ -64,6 +79,7 @@ type ProcessInfo struct {
 	Exe     string
 	Cmdline string
 	Argv0   string
+	Argv    []string
 }
 
 // Tool is a known terminal tool entry.
@@ -228,37 +244,98 @@ func (t Tool) matchesProcess(process ProcessInfo) bool {
 		return false
 	}
 
-	haystack := process.Exe + " " + process.Cmdline
-	if strings.TrimSpace(haystack) == "" {
-		haystack = process.Name
-	}
-	// Catalog regexes are written with Unix separators; normalize Windows paths for regex matching.
-	regexHaystack := strings.ReplaceAll(haystack, `\`, "/")
-	if t.compiledExclude != nil && t.compiledExclude.MatchString(regexHaystack) {
-		return false
-	}
+	identities, subcommand := processMatchIdentity(process)
+	matched := false
 
 	if t.Match.Name != "" {
 		matchName := normalizeName(t.Match.Name)
-		for _, candidate := range []string{process.Name, process.Argv0, process.Exe} {
+		for _, candidate := range identities {
 			if strings.EqualFold(normalizeName(candidate), matchName) {
-				return true
-			}
-		}
-
-		if process.Argv0 == "" {
-			if argv0 := argv0FromCmdline(process.Cmdline); strings.EqualFold(normalizeName(argv0), matchName) {
-				return true
+				matched = true
+				break
 			}
 		}
 	}
 
-	if t.Match.compiled != nil {
-		if t.Match.compiled.MatchString(regexHaystack) {
-			return true
+	if !matched && t.Match.compiled != nil {
+		for _, identity := range identities {
+			// Catalog regexes are written with Unix separators; normalize Windows paths.
+			if t.Match.compiled.MatchString(strings.ReplaceAll(identity, `\`, "/")) {
+				matched = true
+				break
+			}
 		}
 	}
-	return false
+	if !matched {
+		return false
+	}
+
+	if t.compiledExclude != nil {
+		excludeSurfaces := identities
+		if subcommand != "" {
+			excludeSurfaces = append(append([]string(nil), identities...), subcommand)
+		}
+		for _, surface := range excludeSurfaces {
+			if t.compiledExclude.MatchString(strings.ReplaceAll(surface, `\`, "/")) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func processMatchIdentity(process ProcessInfo) ([]string, string) {
+	argv := process.Argv
+	if len(argv) == 0 {
+		argv = argvFromCmdline(process.Cmdline)
+	}
+	identities := uniqueNonEmpty(process.Name, process.Argv0, process.Exe, argv0FromCmdline(process.Cmdline))
+	if len(argv) == 0 {
+		return identities, ""
+	}
+
+	entrypointIndex := 0
+	if isToolInterpreter(argv[0]) {
+		entrypointIndex = 1
+		if len(argv) > 2 && isPythonInterpreter(argv[0]) && argv[1] == "-m" {
+			entrypointIndex = 2
+		}
+		if entrypointIndex < len(argv) {
+			identities = uniqueNonEmpty(append(identities, argv[entrypointIndex])...)
+		}
+	}
+
+	subcommandIndex := entrypointIndex + 1
+	if subcommandIndex < len(argv) {
+		return identities, argv[subcommandIndex]
+	}
+	return identities, ""
+}
+
+func uniqueNonEmpty(values ...string) []string {
+	unique := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
+}
+
+func isToolInterpreter(candidate string) bool {
+	_, ok := toolInterpreterNames[strings.ToLower(normalizeName(candidate))]
+	return ok
+}
+
+func isPythonInterpreter(candidate string) bool {
+	return strings.HasPrefix(strings.ToLower(normalizeName(candidate)), "python") ||
+		strings.HasPrefix(strings.ToLower(normalizeName(candidate)), "pypy")
 }
 
 func isShellInterpreterProcess(process ProcessInfo) bool {
@@ -305,11 +382,53 @@ func normalizeName(name string) string {
 }
 
 func argv0FromCmdline(cmdline string) string {
-	fields := strings.Fields(cmdline)
-	if len(fields) == 0 {
+	argv := argvFromCmdline(cmdline)
+	if len(argv) == 0 {
 		return ""
 	}
-	return fields[0]
+	return argv[0]
+}
+
+func argvFromCmdline(cmdline string) []string {
+	var (
+		argv    []string
+		field   strings.Builder
+		quote   rune
+		started bool
+	)
+	flush := func() {
+		if !started {
+			return
+		}
+		argv = append(argv, field.String())
+		field.Reset()
+		started = false
+	}
+
+	for _, current := range cmdline {
+		if quote != 0 {
+			if current == quote {
+				quote = 0
+				continue
+			}
+			field.WriteRune(current)
+			started = true
+			continue
+		}
+
+		switch current {
+		case '\'', '"':
+			quote = current
+			started = true
+		case ' ', '\t', '\r', '\n':
+			flush()
+		default:
+			field.WriteRune(current)
+			started = true
+		}
+	}
+	flush()
+	return argv
 }
 
 func resolveIcon(tool *Tool) {

@@ -116,6 +116,62 @@ func TestRegistryMatchProcessClaudeInteractiveSessionIsNotExcluded(t *testing.T)
 	}
 }
 
+func TestRegistryMatchProcessDoesNotMatchIncidentalArguments(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		process ProcessInfo
+	}{
+		{
+			name: "package path passed to less",
+			process: ProcessInfo{
+				Name:    "less",
+				Exe:     "/usr/bin/less",
+				Cmdline: "less /project/node_modules/@openai/codex/README.md",
+			},
+		},
+		{
+			name: "bare codex word passed to grep",
+			process: ProcessInfo{
+				Name:    "grep",
+				Exe:     "/usr/bin/grep",
+				Cmdline: "grep codex notes.txt",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tool, ok := reg.MatchProcess(tt.process); ok {
+				t.Fatalf("MatchProcess(%#v) = %q, want no match", tt.process, tool.ID)
+			}
+		})
+	}
+}
+
+func TestRegistryExcludeDoesNotMatchIncidentalArguments(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tool, ok := reg.MatchProcess(ProcessInfo{
+		Name:    "2.1.211",
+		Exe:     "/Users/test/.local/share/claude/versions/2.1.211",
+		Cmdline: "claude --config /tmp/bg-spare",
+	})
+	if !ok {
+		t.Fatal("incidental excluded text suppressed a genuine Claude process")
+	}
+	if tool.ID != "claude-code" {
+		t.Fatalf("tool ID = %q, want claude-code", tool.ID)
+	}
+}
+
 func TestRegistryPriorityBreaksMatchTie(t *testing.T) {
 	reg, err := New(
 		Tool{
@@ -427,6 +483,87 @@ func TestEmbeddedCatalogSampleMatches(t *testing.T) {
 	}
 }
 
+func TestEmbeddedCatalogEveryBuiltInMatchesGenuineInvocation(t *testing.T) {
+	reg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{name: "claude", id: "claude-code"},
+		{name: "gemini", id: "gemini-cli"},
+		{name: "codex", id: "codex-cli"},
+		{name: "aider", id: "aider"},
+		{name: "ollama", id: "ollama"},
+		{name: "nvim", id: "nvim"},
+		{name: "vim", id: "vim"},
+		{name: "emacs", id: "emacs"},
+		{name: "hx", id: "helix"},
+		{name: "nano", id: "nano"},
+		{name: "micro", id: "micro"},
+		{name: "kak", id: "kakoune"},
+		{name: "tmux", id: "tmux"},
+		{name: "zellij", id: "zellij"},
+		{name: "screen", id: "screen"},
+		{name: "lazygit", id: "lazygit"},
+		{name: "gitui", id: "gitui"},
+		{name: "tig", id: "tig"},
+		{name: "yazi", id: "yazi"},
+		{name: "ranger", id: "ranger"},
+		{name: "nnn", id: "nnn"},
+		{name: "lf", id: "lf"},
+		{name: "mc", id: "mc"},
+		{name: "broot", id: "broot"},
+		{name: "htop", id: "htop"},
+		{name: "btop", id: "btop"},
+		{name: "glances", id: "glances"},
+		{name: "btm", id: "bottom"},
+		{name: "gtop", id: "gtop"},
+		{name: "bpytop", id: "bpytop"},
+		{name: "k9s", id: "k9s"},
+		{name: "lazydocker", id: "lazydocker"},
+		{name: "ctop", id: "ctop"},
+		{name: "kubectl-tui", id: "kubectl-tui"},
+		{name: "ncdu", id: "ncdu"},
+		{name: "gdu", id: "gdu"},
+		{name: "task", id: "taskwarrior"},
+		{name: "calcurse", id: "calcurse"},
+		{name: "neomutt", id: "neomutt"},
+		{name: "weechat", id: "weechat"},
+		{name: "irssi", id: "irssi"},
+		{name: "cmus", id: "cmus"},
+		{name: "ncmpcpp", id: "ncmpcpp"},
+		{name: "spt", id: "spotify-tui"},
+		{name: "spotify_player", id: "spotify-player"},
+		{name: "gping", id: "gping"},
+		{name: "bandwhich", id: "bandwhich"},
+		{name: "dust", id: "dust"},
+	}
+
+	if got, want := len(tests), len(reg.Tools()); got != want {
+		t.Fatalf("genuine invocation cases = %d, built-ins = %d", got, want)
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			tool, ok := reg.MatchProcess(ProcessInfo{
+				Name:    tt.name,
+				Exe:     "/usr/local/bin/" + tt.name,
+				Cmdline: tt.name,
+				Argv0:   tt.name,
+			})
+			if !ok {
+				t.Fatalf("expected %q to match", tt.name)
+			}
+			if tool.ID != tt.id {
+				t.Fatalf("MatchProcess(%q) ID = %q, want %q", tt.name, tool.ID, tt.id)
+			}
+		})
+	}
+}
+
 func TestEmbeddedCatalogWindowsExactNameMatches(t *testing.T) {
 	reg, err := New()
 	if err != nil {
@@ -543,7 +680,7 @@ func TestEmbeddedCatalogWindowsDoesNotMatchPrefixExecutable(t *testing.T) {
 	}
 }
 
-func TestRegistryWindowsRegexExcludeUsesNormalizedSeparators(t *testing.T) {
+func TestRegistryWindowsRegexExcludeIgnoresIncidentalArgumentPath(t *testing.T) {
 	reg, err := New(Tool{
 		ID:          "windows-regex-tool",
 		DisplayName: "Windows Regex Tool",
@@ -555,12 +692,16 @@ func TestRegistryWindowsRegexExcludeUsesNormalizedSeparators(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if tool, ok := reg.MatchProcess(ProcessInfo{
+	tool, ok := reg.MatchProcess(ProcessInfo{
 		Name:    "tool.exe",
 		Exe:     `C:\tools\tool.exe`,
 		Cmdline: `C:\tools\tool.exe --config C:\Users\me\helpers\config.json`,
-	}); ok {
-		t.Fatalf("MatchProcess with Windows helper path = %q, want no match", tool.ID)
+	})
+	if !ok {
+		t.Fatal("incidental Windows helper path suppressed a genuine tool process")
+	}
+	if tool.ID != "windows-regex-tool" {
+		t.Fatalf("tool ID = %q, want windows-regex-tool", tool.ID)
 	}
 }
 
@@ -711,6 +852,26 @@ func TestEmbeddedCatalogWrapperMatches(t *testing.T) {
 				Name:    "node",
 				Exe:     "/usr/bin/node",
 				Cmdline: "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js",
+			},
+			id: "codex-cli",
+		},
+		{
+			name: "codex package path with spaces",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/usr/bin/node",
+				Cmdline: `node "/opt/CLI Tools/node_modules/@openai/codex/bin/codex.js"`,
+			},
+			id: "codex-cli",
+		},
+		{
+			name: "codex structured argv",
+			process: ProcessInfo{
+				Name:    "node",
+				Exe:     "/usr/bin/node",
+				Cmdline: "node /opt/CLI Tools/node_modules/@openai/codex/bin/codex.js",
+				Argv0:   "node",
+				Argv:    []string{"node", "/opt/CLI Tools/node_modules/@openai/codex/bin/codex.js"},
 			},
 			id: "codex-cli",
 		},
