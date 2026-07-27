@@ -3,6 +3,7 @@
 package presence
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -187,9 +188,12 @@ func TestDialDiscordIPCRejectsReplacedPipeAndTriesNext(t *testing.T) {
 	trusted := &fakeWindowsConn{serverSID: owner}
 	dialCount := 0
 
-	dial := func(path string, timeout *time.Duration) (net.Conn, error) {
-		if *timeout != 500*time.Millisecond {
-			t.Fatalf("timeout for %s = %v, want 500ms", path, *timeout)
+	dial := func(ctx context.Context, path string, timeout time.Duration) (net.Conn, error) {
+		if timeout != 500*time.Millisecond {
+			t.Fatalf("timeout for %s = %v, want 500ms", path, timeout)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		dialCount++
 		switch dialCount {
@@ -206,7 +210,7 @@ func TestDialDiscordIPCRejectsReplacedPipeAndTriesNext(t *testing.T) {
 		return validatePeerSIDs(owner, candidate.serverSID)
 	}
 
-	conn, err := dialDiscordIPCWith("", dial, verify)
+	conn, err := dialDiscordIPCWith(context.Background(), "", dial, verify)
 	if err != nil {
 		t.Fatalf("dialDiscordIPCWith: %v", err)
 	}
@@ -224,7 +228,7 @@ func TestDialDiscordIPCRejectsReplacedPipeAndTriesNext(t *testing.T) {
 func TestDialDiscordIPCClosesConnectionOnInspectionFailure(t *testing.T) {
 	candidate := &fakeWindowsConn{}
 	dialCount := 0
-	dial := func(string, *time.Duration) (net.Conn, error) {
+	dial := func(context.Context, string, time.Duration) (net.Conn, error) {
 		dialCount++
 		if dialCount == 1 {
 			return candidate, nil
@@ -233,7 +237,7 @@ func TestDialDiscordIPCClosesConnectionOnInspectionFailure(t *testing.T) {
 	}
 	inspectionErr := errors.New("cannot query process")
 
-	conn, err := dialDiscordIPCWith("", dial, func(net.Conn) error { return inspectionErr })
+	conn, err := dialDiscordIPCWith(context.Background(), "", dial, func(net.Conn) error { return inspectionErr })
 	if conn != nil {
 		t.Fatalf("connection = %v, want nil", conn)
 	}
@@ -242,6 +246,35 @@ func TestDialDiscordIPCClosesConnectionOnInspectionFailure(t *testing.T) {
 	}
 	if !candidate.closed {
 		t.Fatal("unverified connection was not closed")
+	}
+}
+
+func TestDialDiscordIPCStopsWhenContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	dialStarted := make(chan struct{})
+	dial := func(ctx context.Context, _ string, timeout time.Duration) (net.Conn, error) {
+		if timeout != 500*time.Millisecond {
+			t.Fatalf("timeout = %v, want 500ms", timeout)
+		}
+		close(dialStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	go func() {
+		<-dialStarted
+		cancel()
+	}()
+
+	started := time.Now()
+	conn, err := dialDiscordIPCWith(ctx, "", dial, func(net.Conn) error { return nil })
+	if conn != nil {
+		t.Fatalf("connection = %v, want nil", conn)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("dial returned after %v, want prompt cancellation", elapsed)
 	}
 }
 

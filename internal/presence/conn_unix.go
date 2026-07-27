@@ -3,6 +3,7 @@
 package presence
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -17,7 +18,7 @@ import (
 
 const discordIPCDialBudget = 2 * time.Second
 
-func dialDiscordIPC() (net.Conn, error) {
+func dialDiscordIPC(ctx context.Context) (net.Conn, error) {
 	envNames := []string{"XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"}
 	baseDirs := make([]string, 0, len(envNames)+1)
 	for _, name := range envNames {
@@ -34,6 +35,9 @@ func dialDiscordIPC() (net.Conn, error) {
 	endpointFound := false
 	tryCandidates := func(paths []string) net.Conn {
 		for _, path := range paths {
+			if ctx.Err() != nil {
+				return nil
+			}
 			path = filepath.Clean(path)
 			if _, ok := seen[path]; ok {
 				continue
@@ -47,8 +51,14 @@ func dialDiscordIPC() (net.Conn, error) {
 				return nil
 			}
 			timeout := min(500*time.Millisecond, remaining)
-			conn, exists, err := dialDiscordIPCSocket(path, timeout)
+			dialCtx, cancel := context.WithTimeout(ctx, timeout)
+			conn, exists, err := dialDiscordIPCSocket(dialCtx, path)
+			cancel()
 			if err == nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					_ = conn.Close()
+					return nil
+				}
 				return conn
 			}
 			if exists {
@@ -83,6 +93,9 @@ func dialDiscordIPC() (net.Conn, error) {
 			return conn, nil
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	if !endpointFound {
 		return nil, fmt.Errorf("%w:\n%s", ErrDiscordIPCNotFound, failures.String())
@@ -90,12 +103,12 @@ func dialDiscordIPC() (net.Conn, error) {
 	return nil, fmt.Errorf("%w:\n%s", ErrDiscordIPCUnreachable, failures.String())
 }
 
-func dialDiscordIPCSocket(path string, timeout time.Duration) (net.Conn, bool, error) {
+func dialDiscordIPCSocket(ctx context.Context, path string) (net.Conn, bool, error) {
 	before, err := validateSocketCandidate(path, os.Geteuid())
 	if err != nil {
 		return nil, !errors.Is(err, os.ErrNotExist), err
 	}
-	conn, err := net.DialTimeout("unix", path, timeout)
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
 	if err != nil {
 		return nil, true, err
 	}

@@ -36,6 +36,7 @@ type RichClient struct {
 	mu        sync.Mutex
 	conn      net.Conn
 	ioTimeout time.Duration
+	ctx       context.Context
 }
 
 var _ Client = (*RichClient)(nil)
@@ -60,8 +61,15 @@ func (c *RichClient) Login(appID string) error {
 		c.conn = nil
 	}
 
-	conn, err := dialDiscordIPC()
+	ctx := c.context()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	conn, err := dialDiscordIPC(ctx)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
 	}
 	closeOnError := true
@@ -155,29 +163,72 @@ func (c *RichClient) timeout() time.Duration {
 	return defaultIOTimeout
 }
 
+func (c *RichClient) context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
+}
+
 func (c *RichClient) writeFrame(conn net.Conn, opcode uint32, value any) error {
-	if err := conn.SetWriteDeadline(time.Now().Add(c.timeout())); err != nil {
+	stopDeadline, err := c.armDeadline(conn.SetWriteDeadline)
+	if err != nil {
 		return fmt.Errorf("set write deadline: %w", err)
 	}
 	if err := writeJSONFrame(conn, opcode, value); err != nil {
+		_ = stopDeadline()
+		if ctxErr := c.context().Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
 	}
-	if err := conn.SetWriteDeadline(time.Time{}); err != nil {
+	if err := stopDeadline(); err != nil {
 		return fmt.Errorf("clear write deadline: %w", err)
 	}
 	return nil
 }
 
 func (c *RichClient) readFrame(conn net.Conn) (ipcFrame, error) {
-	if err := conn.SetReadDeadline(time.Now().Add(c.timeout())); err != nil {
+	stopDeadline, err := c.armDeadline(conn.SetReadDeadline)
+	if err != nil {
 		return ipcFrame{}, fmt.Errorf("set read deadline: %w", err)
 	}
+	defer func() { _ = stopDeadline() }()
 	frame, err := readFrame(conn)
 	if err != nil {
+		if ctxErr := c.context().Err(); ctxErr != nil {
+			return ipcFrame{}, ctxErr
+		}
 		return ipcFrame{}, err
 	}
-	_ = conn.SetReadDeadline(time.Time{})
 	return frame, nil
+}
+
+func (c *RichClient) armDeadline(setDeadline func(time.Time) error) (func() error, error) {
+	ctx := c.context()
+	deadline := time.Now().Add(c.timeout())
+	if err := setDeadline(deadline); err != nil {
+		return nil, err
+	}
+
+	if ctx.Done() == nil {
+		return func() error { return setDeadline(time.Time{}) }, nil
+	}
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		select {
+		case <-ctx.Done():
+			_ = setDeadline(time.Now())
+		case <-stop:
+		}
+	}()
+	return func() error {
+		close(stop)
+		<-stopped
+		return setDeadline(time.Time{})
+	}, nil
 }
 
 // Logout closes the Discord IPC connection. It is safe when not connected.
@@ -208,15 +259,7 @@ func StatusProbe(ctx context.Context, appID string) error {
 }
 
 func newStatusClient(ctx context.Context) *RichClient {
-	timeout := statusIOTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(deadline); remaining <= 0 {
-			timeout = time.Nanosecond
-		} else if remaining < timeout {
-			timeout = remaining
-		}
-	}
-	return &RichClient{ioTimeout: timeout}
+	return &RichClient{ioTimeout: statusIOTimeout, ctx: ctx}
 }
 
 func probeWith(client Client, appID string) error {
