@@ -41,6 +41,11 @@ activity signal, the newer process remains the fallback. This instance-level
 hysteresis prevents alternating sessions from changing the displayed directory
 and elapsed-session anchor every scan.
 
+Per-tool enablement is applied before matched processes are enriched or selected. A
+disabled tool cannot become featured or appear in `Others`; changing enablement
+reconfigures the running detector and immediately re-resolves the selection while
+preserving eligible tools' directories and episode anchors.
+
 Process-list failures retain the last presence for one or two consecutive
 scans. On the third consecutive failure, the detector emits `None` immediately
 so the writer clears stale Discord presence. A successful scan resets the

@@ -109,6 +109,7 @@ type Config struct {
 	IdleClearTimeout       time.Duration
 	CorroborateIdleWithCPU bool
 	ActivitySwitching      bool
+	DisabledTools          map[string]bool
 }
 
 // ScanFailureClearThreshold is the number of consecutive process-list failures
@@ -332,6 +333,9 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			Argv:    proc.Argv,
 		})
 		if !ok {
+			continue
+		}
+		if s.config.DisabledTools[tool.ID] {
 			continue
 		}
 		if enricher != nil {
