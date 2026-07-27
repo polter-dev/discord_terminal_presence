@@ -4,8 +4,31 @@ set -eu
 REPO="polter-dev/discord_terminal_presence"
 DEFAULT_BINDIR="/usr/local/bin"
 
+shell_quote() {
+	escaped=$(printf '%s' "$1" | sed "s/'/'\\\\''/g") || escaped=$1
+	printf "'%s'" "$escaped"
+}
+
+print_retry_command() {
+	printf 'termp install: retry with:'
+	if [ "${VERSION+x}" = x ]; then
+		printf ' VERSION='
+		shell_quote "$VERSION"
+	fi
+	if [ "${BINDIR+x}" = x ]; then
+		printf ' BINDIR='
+		shell_quote "$BINDIR"
+	fi
+	if [ "${TERMP_DOWNLOAD_CHANNEL+x}" = x ]; then
+		printf ' TERMP_DOWNLOAD_CHANNEL='
+		shell_quote "$TERMP_DOWNLOAD_CHANNEL"
+	fi
+	printf ' sh install.sh\n'
+}
+
 err() {
 	printf 'termp install: %s\n' "$*" >&2
+	print_retry_command >&2
 	exit 1
 }
 
@@ -30,7 +53,9 @@ fetch_latest_tag() {
 	api_url="https://api.github.com/repos/$REPO/releases/latest"
 	tmp_json=$1
 
-	download "$api_url" "$tmp_json"
+	if ! download "$api_url" "$tmp_json"; then
+		err "failed to download latest GitHub release metadata"
+	fi
 	tag=$(sed -n 's/^[[:space:]]*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp_json" | head -n 1)
 	if [ -z "$tag" ]; then
 		err "could not determine latest GitHub release tag"
@@ -102,6 +127,11 @@ valid_semver_tag() {
 	'
 }
 
+checksum_error() {
+	printf 'termp install: %s\n' "$*" >&2
+	return 1
+}
+
 verify_checksum() {
 	checksums=$1
 	archive=$2
@@ -109,31 +139,43 @@ verify_checksum() {
 
 	match_count=$(awk -v file="$archive_name" '$2 == file { count++ } END { print count+0 }' "$checksums")
 	if [ "$match_count" -ne 1 ]; then
-		err "expected exactly one checksum for $archive_name, found $match_count"
+		checksum_error "expected exactly one checksum for $archive_name, found $match_count"
+		return 1
 	fi
 	expected=$(awk -v file="$archive_name" '$2 == file { print $1 }' "$checksums")
 	if [ -z "$expected" ]; then
-		err "checksum for $archive_name not found"
+		checksum_error "checksum for $archive_name not found"
+		return 1
 	fi
 	case $expected in
 	*[!0-9a-fA-F]*)
-		err "invalid SHA-256 checksum for $archive_name"
+		checksum_error "invalid SHA-256 checksum for $archive_name"
+		return 1
 		;;
 	esac
 	if [ "${#expected}" -ne 64 ]; then
-		err "invalid SHA-256 checksum for $archive_name"
+		checksum_error "invalid SHA-256 checksum for $archive_name"
+		return 1
 	fi
 
 	if have sha256sum; then
-		actual=$(sha256sum "$archive" | awk '{ print $1 }')
+		if ! actual=$(sha256sum "$archive" | awk '{ print $1 }'); then
+			checksum_error "failed to calculate SHA-256 checksum for $archive_name"
+			return 1
+		fi
 	elif have shasum; then
-		actual=$(shasum -a 256 "$archive" | awk '{ print $1 }')
+		if ! actual=$(shasum -a 256 "$archive" | awk '{ print $1 }'); then
+			checksum_error "failed to calculate SHA-256 checksum for $archive_name"
+			return 1
+		fi
 	else
-		err "sha256sum or shasum is required to verify downloads"
+		checksum_error "sha256sum or shasum is required to verify downloads"
+		return 1
 	fi
 
 	if [ "$actual" != "$expected" ]; then
-		err "checksum mismatch for $archive_name"
+		checksum_error "checksum mismatch for $archive_name"
+		return 1
 	fi
 }
 
@@ -147,17 +189,19 @@ install_binary() {
 	fi
 
 	if [ -w "$bindir" ]; then
-		install_tmp=$(mktemp "$bindir/.termp.tmp.XXXXXX")
+		if ! install_tmp=$(mktemp "$bindir/.termp.tmp.XXXXXX"); then
+			err "failed to create staging file in $bindir"
+		fi
 		if ! cp "$src" "$install_tmp"; then
-			rm -f "$install_tmp"
+			rm -f "$install_tmp" || true
 			err "failed to stage termp in $bindir"
 		fi
 		if ! chmod 0755 "$install_tmp"; then
-			rm -f "$install_tmp"
+			rm -f "$install_tmp" || true
 			err "failed to make staged termp executable"
 		fi
 		if ! mv -f "$install_tmp" "$dest"; then
-			rm -f "$install_tmp"
+			rm -f "$install_tmp" || true
 			err "failed to install termp to $dest"
 		fi
 	else
@@ -165,17 +209,19 @@ install_binary() {
 			err "$bindir is not writable and sudo is not available"
 		fi
 		printf 'Installing termp to %s with sudo because the directory is not writable.\n' "$bindir"
-		install_tmp=$(sudo mktemp "$bindir/.termp.tmp.XXXXXX")
+		if ! install_tmp=$(sudo mktemp "$bindir/.termp.tmp.XXXXXX"); then
+			err "failed to create staging file in $bindir with sudo"
+		fi
 		if ! sudo cp "$src" "$install_tmp"; then
-			sudo rm -f "$install_tmp"
+			sudo rm -f "$install_tmp" || true
 			err "failed to stage termp in $bindir"
 		fi
 		if ! sudo chmod 0755 "$install_tmp"; then
-			sudo rm -f "$install_tmp"
+			sudo rm -f "$install_tmp" || true
 			err "failed to make staged termp executable"
 		fi
 		if ! sudo mv -f "$install_tmp" "$dest"; then
-			sudo rm -f "$install_tmp"
+			sudo rm -f "$install_tmp" || true
 			err "failed to install termp to $dest"
 		fi
 	fi
@@ -309,8 +355,10 @@ print_setup_cta() {
 	fi
 }
 
-tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/termp-install.XXXXXX")
-trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+if ! tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/termp-install.XXXXXX"); then
+	err "failed to create temporary directory"
+fi
+trap 'rm -rf "$tmpdir" || true' EXIT HUP INT TERM
 
 os=$(map_os)
 arch=$(map_arch)
@@ -345,15 +393,25 @@ worker_archive_downloaded=true
 if ! download "$worker_archive_url" "$archive_path"; then
 	worker_archive_downloaded=false
 fi
-download "$base_url/checksums.txt" "$checksums_path"
+if ! download "$base_url/checksums.txt" "$checksums_path"; then
+	err "failed to download checksums for $tag"
+fi
 if [ "$worker_archive_downloaded" = false ] ||
 	! (verify_checksum "$checksums_path" "$archive_path" "$archive_name"); then
-	download "$base_url/$archive_name" "$archive_path"
-	verify_checksum "$checksums_path" "$archive_path" "$archive_name"
+	if ! download "$base_url/$archive_name" "$archive_path"; then
+		err "failed to download $archive_name"
+	fi
+	if ! verify_checksum "$checksums_path" "$archive_path" "$archive_name"; then
+		err "failed to verify $archive_name"
+	fi
 fi
 
-mkdir -p "$extract_dir"
-tar -xzf "$archive_path" -C "$extract_dir"
+if ! mkdir -p "$extract_dir"; then
+	err "failed to create archive extraction directory"
+fi
+if ! tar -xzf "$archive_path" -C "$extract_dir"; then
+	err "failed to extract $archive_name"
+fi
 
 binary_path=$(find "$extract_dir" -type f -name termp -perm -111 | head -n 1)
 if [ -z "$binary_path" ]; then

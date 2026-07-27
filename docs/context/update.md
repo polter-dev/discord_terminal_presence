@@ -33,14 +33,13 @@ so check-cache writes preserve concurrent automatic-attempt records. Status repo
 failed/skipped attempts; recording a later success leaves no reportable error and clears that warning.
 All updater commands validate and pin the exact semver tag. Generic updates download the
 tagged installer and pass a tagged archive URL; Windows generic self-update is unsupported.
+Failed interactive updates display the retry command produced by
+`UpdateCommandForMethod`, keeping recovery guidance identical to executable selection.
 
-Homebrew-owned installs currently delegate to
-`brew upgrade polter-dev/tap/termp` without `--cask`, while `.goreleaser.yaml` publishes
-a Homebrew Cask. This known contradiction is tracked in #303 pending an empirical test
-release and owner decision; do not resolve it in this ledger.
+Homebrew-owned installs delegate to `brew upgrade polter-dev/tap/termp` without `--cask`;
+Homebrew resolves that fully qualified token to the Cask published by GoReleaser.
 
 **Depends on / used by:** Standard library only. `cmd/termp` uses it for status, version,
 interactive updates, notices, and opt-in daemon-start automation.
 
-**Open questions / TODO:** Resolve the Formula/Cask update contract in #303 after the
-test release.
+**Open questions / TODO:** None.

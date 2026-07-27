@@ -220,7 +220,7 @@ func TestUpdateArchiveURLRejectsUnsupportedTargets(t *testing.T) {
 	}
 }
 
-func TestHomebrewUpdateUsesFormulaCommand(t *testing.T) {
+func TestHomebrewUpdateUsesQualifiedCommand(t *testing.T) {
 	want := Command{Name: "brew", Args: []string{"upgrade", "polter-dev/tap/termp"}}
 	got, err := UpdateCommandForMethod(InstallHomebrew, "v2.3.4")
 	if err != nil {
@@ -230,7 +230,7 @@ func TestHomebrewUpdateUsesFormulaCommand(t *testing.T) {
 		t.Fatalf("UpdateCommandForMethod(InstallHomebrew) = %#v, want %#v", got, want)
 	}
 	if BrewCommand != "brew upgrade polter-dev/tap/termp" {
-		t.Fatalf("BrewCommand = %q, want Formula upgrade command", BrewCommand)
+		t.Fatalf("BrewCommand = %q, want fully qualified upgrade command", BrewCommand)
 	}
 }
 

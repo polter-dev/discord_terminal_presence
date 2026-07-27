@@ -183,9 +183,24 @@ func runUpdate(checkCtx, updateCtx context.Context, current string, checker late
 		fmt.Fprintf(stdout, "You're already on the latest version (%s).\n", result.Latest)
 		return nil
 	}
+	retryCommand, err := updatepkg.UpdateCommandForMethod(result.Method, result.Latest)
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(stdout, "Updating termp from %s to %s...\n", current, result.Latest)
 	// Generic installs use the exact-tag installer before replacing the binary.
-	return updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, stdin, stdout, stderr)
+	if err := updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, stdin, stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "termp update: retry with: %s\n", updateRetryCommand(retryCommand))
+		return err
+	}
+	return nil
+}
+
+func updateRetryCommand(command updatepkg.Command) string {
+	if command.Name == "sh" && len(command.Args) == 2 && command.Args[0] == "-c" {
+		return command.Args[1]
+	}
+	return strings.Join(append([]string{command.Name}, command.Args...), " ")
 }
 
 func formatUpdateNotice(result updatepkg.Result, renderer *lipgloss.Renderer, width int) string {
