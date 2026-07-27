@@ -57,9 +57,10 @@ install.
 
 The installer resolves one tag for archive/checksum, prefers
 `https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}`, and falls back to the tag-pinned
-GitHub asset. Every fatal installer path prints a local `sh install.sh` retry command
-that preserves explicitly supplied `VERSION`, `BINDIR`, and `TERMP_DOWNLOAD_CHANNEL`;
-atomic staging prevents failed installs from leaving a partial destination binary.
+GitHub asset. Every fatal installer path prints the advertised fetch-and-pipe retry
+command, with explicitly supplied `VERSION`, `BINDIR`, and `TERMP_DOWNLOAD_CHANNEL`
+preserved immediately before `sh`; atomic staging prevents failed installs from leaving
+a partial destination binary.
 Tag runs create a draft release (`release.draft: true`) and attach the generated Cask
 without writing the tap. Only `release.published` triggers a second job that verifies
 the release is public, downloads that exact Cask, and updates the tap.
