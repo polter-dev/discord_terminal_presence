@@ -1823,18 +1823,11 @@ func watch(args []string) error {
 		log.Printf("config watch disabled: %v", err)
 	}
 
-	reg, err := registry.NewWithCustom(cfg.CustomTools...)
+	applied, err := newDetectionRuntime(cfg)
 	if err != nil {
 		return err
 	}
-	det, err := detector.New(reg, detector.NewGopsutilLister(), detector.Config{
-		ScanInterval:           cfg.ScanIntervalDuration(),
-		IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
-		Pin:                    cfg.Pin,
-		HeadlinerIdleTimeout:   cfg.HeadlinerIdleTimeoutDuration(),
-		CorroborateIdleWithCPU: detector.DefaultCorroborateIdleWithCPU,
-		ActivitySwitching:      cfg.ActivitySwitching,
-	})
+	det, err := detector.New(applied.registry, detector.NewGopsutilLister(), applied.detectorConfig)
 	if err != nil {
 		return err
 	}
@@ -1843,7 +1836,7 @@ func watch(args []string) error {
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	detections := det.RunReadOnly(ctx)
 
-	go bridgeWatchActivities(ctx, manager, detections, program, selectFallbackMessage(cfg.FallbackMessages))
+	go bridgeWatchActivities(ctx, manager, det, applied, detections, program, selectFallbackMessage(cfg.FallbackMessages))
 	go bridgeWatchConnection(ctx, program, 5*time.Second)
 
 	_, err = program.Run()
@@ -1888,19 +1881,26 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 	}, tui.DefaultCardStyles(cfg.UI.AccentColor)), cfg.Warnings, nil
 }
 
-func bridgeWatchActivities(ctx context.Context, manager *config.Manager, detections <-chan detector.Detection, program *tea.Program, fallbackMessage string) {
-	var (
-		last     detector.Detection
-		haveLast bool
-	)
-	send := func(cfg config.Config, detection detector.Detection) {
+type detectorReconfigurer interface {
+	Reconfigure(context.Context, *registry.Registry, detector.Config) error
+}
+
+func bridgeWatchActivities(ctx context.Context, manager *config.Manager, det detectorReconfigurer, applied detectionRuntime, detections <-chan detector.Detection, program *tea.Program, fallbackMessage string) {
+	bridgeWatchActivityUpdates(ctx, manager.Changes(), det, applied, detections, func(cfg config.Config, detection detector.Detection) {
 		activity := buildActivity(cfg, detection, fallbackMessage)
 		name := ""
 		if activity != nil {
 			name = detection.Tool.DisplayName
 		}
 		program.Send(tui.ActivityMsg{Activity: activity, FeaturedName: name})
-	}
+	})
+}
+
+func bridgeWatchActivityUpdates(ctx context.Context, changes <-chan config.Config, det detectorReconfigurer, applied detectionRuntime, detections <-chan detector.Detection, send func(config.Config, detector.Detection)) {
+	var (
+		last     detector.Detection
+		haveLast bool
+	)
 	for {
 		select {
 		case detection, ok := <-detections:
@@ -1908,12 +1908,25 @@ func bridgeWatchActivities(ctx context.Context, manager *config.Manager, detecti
 				return
 			}
 			last, haveLast = detection, true
-			cfg, _ := manager.Current()
-			send(cfg, detection)
-		case <-manager.Changes():
-			if haveLast {
-				cfg, _ := manager.Current()
-				send(cfg, last)
+			send(applied.config, detection)
+		case nextCfg := <-changes:
+			next, change, err := applyConfigChange(applied, nextCfg)
+			if err != nil {
+				log.Printf("config reload rejected, keeping last-good behavior: %v", err)
+				continue
+			}
+			if change.detector {
+				if err := det.Reconfigure(ctx, next.registry, next.detectorConfig); err != nil {
+					if ctx.Err() == nil {
+						log.Printf("config reload rejected, keeping last-good behavior: %v", err)
+					}
+					continue
+				}
+			}
+			applied = next
+			debugf("config reloaded")
+			if haveLast && !change.detector {
+				send(applied.config, last)
 			}
 		case <-ctx.Done():
 			return

@@ -73,6 +73,8 @@ Per-tool enablement is passed into detector selection, and hot reloads that chan
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
 Live watch loads the daemon's episode anchors for matching elapsed-time display but runs
 the detector read-only, leaving `presence.json` persistence exclusively to the daemon.
+It shares the daemon's config-change transaction and hot-reconfigures detector settings;
+display-only changes re-render the last detection without forcing another scan.
 
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.
