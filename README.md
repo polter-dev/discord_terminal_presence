@@ -19,10 +19,12 @@ needs no Discord bot or token.
 
 ## See it in about 30 seconds
 
-There is not a published release yet, so for now you will need Go 1.24 or newer:
+Install with the one-line shell installer on macOS or Linux — see
+[Install](#install) below for Homebrew, Windows, and other options, including
+building from source — then run setup and start:
 
 ```sh
-go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
+curl -fsSL https://termp.polter.sh/install.sh | sh
 termp setup
 termp start
 ```
