@@ -91,13 +91,13 @@ printf '%064d  %s\n' 0 "$1"
 				t.Fatalf("installer succeeded unexpectedly:\n%s", output)
 			}
 
-			wantRetry := "termp install: retry with: VERSION='v1.2.3' BINDIR='" + binDir +
-				"' TERMP_DOWNLOAD_CHANNEL='update' sh install.sh"
+			wantRetry := "termp install: retry with: curl -fsSL https://termp.polter.sh/install.sh | " +
+				"VERSION='v1.2.3' BINDIR='" + binDir + "' TERMP_DOWNLOAD_CHANNEL='update' sh"
 			if got := string(output); !strings.Contains(got, wantRetry) {
 				t.Fatalf("installer output missing retry command %q:\n%s", wantRetry, got)
 			}
-			if strings.Contains(string(output), "| sh") {
-				t.Fatalf("retry guidance pipes a remote script into a shell:\n%s", output)
+			if strings.Contains(string(output), " sh install.sh") {
+				t.Fatalf("retry guidance refers to a local install.sh:\n%s", output)
 			}
 			if _, statErr := os.Stat(filepath.Join(binDir, "termp")); !os.IsNotExist(statErr) {
 				t.Fatalf("failed install left destination binary behind: %v", statErr)

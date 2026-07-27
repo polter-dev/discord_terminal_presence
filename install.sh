@@ -10,7 +10,7 @@ shell_quote() {
 }
 
 print_retry_command() {
-	printf 'termp install: retry with:'
+	printf 'termp install: retry with: curl -fsSL https://termp.polter.sh/install.sh |'
 	if [ "${VERSION+x}" = x ]; then
 		printf ' VERSION='
 		shell_quote "$VERSION"
@@ -23,7 +23,7 @@ print_retry_command() {
 		printf ' TERMP_DOWNLOAD_CHANNEL='
 		shell_quote "$TERMP_DOWNLOAD_CHANNEL"
 	fi
-	printf ' sh install.sh\n'
+	printf ' sh\n'
 }
 
 err() {
