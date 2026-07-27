@@ -20,10 +20,13 @@ import (
 )
 
 const (
-	latestReleaseURL = "https://api.github.com/repos/polter-dev/discord_terminal_presence/releases/latest"
-	cacheLifetime    = 24 * time.Hour
-	maxReleaseBody   = 1 << 20
-	goEnvTimeout     = 500 * time.Millisecond
+	latestReleaseURL  = "https://api.github.com/repos/polter-dev/discord_terminal_presence/releases/latest"
+	cacheLifetime     = 24 * time.Hour
+	maxReleaseBody    = 1 << 20
+	goEnvTimeout      = 500 * time.Millisecond
+	brewPrefixTimeout = 500 * time.Millisecond
+	cacheLockRetry    = 10 * time.Millisecond
+	cacheLockTimeout  = 2 * time.Second
 
 	BrewCommand         = "brew upgrade polter-dev/tap/termp"
 	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
@@ -44,6 +47,20 @@ var cachedGoInstallPaths = sync.OnceValue(func() goInstallPaths {
 	cmd.WaitDelay = goEnvTimeout
 	output, err := cmd.Output()
 	return parseGoEnvPaths(output, err)
+})
+
+var cachedHomebrewPrefixes = sync.OnceValue(func() []string {
+	prefixes := []string{"/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"}
+	ctx, cancel := context.WithTimeout(context.Background(), brewPrefixTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "brew", "--prefix")
+	cmd.WaitDelay = brewPrefixTimeout
+	if output, err := cmd.Output(); err == nil {
+		if prefix := strings.TrimSpace(string(output)); prefix != "" {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	return prefixes
 })
 
 // InstallMethod identifies how the running binary was installed.
@@ -299,21 +316,27 @@ func (c *Checker) check(ctx context.Context, current string) (Result, bool) {
 	if c.CachePath == "" {
 		return Result{}, false
 	}
-	releaseLock, ok := acquireCacheLock(c.CachePath, now)
-	if !ok {
+	var cached cacheEntry
+	var fresh bool
+	err := cacheTransaction(c.CachePath, func(entry cacheEntry) (cacheEntry, bool) {
+		if !entry.CheckedAt.IsZero() && now.Before(entry.CheckedAt.Add(cacheLifetime)) {
+			cached, fresh = entry, true
+			return entry, false
+		}
+		entry.CheckedAt = now
+		entry.Latest = ""
+		return entry, true
+	})
+	if err != nil {
 		return Result{}, false
 	}
-	defer releaseLock()
-	// Another process may have refreshed between our first read and lock.
-	if cached, ok := readFreshCache(c.CachePath, now); ok {
+	// Another process may have refreshed between our first read and transaction.
+	if fresh {
 		return c.resultFor(current, cached.Latest)
 	}
 
 	// Record an attempt before the request. Failures are cached too, preventing
 	// offline or rate-limited machines from retrying on every invocation.
-	if err := writeCache(c.CachePath, cacheEntry{CheckedAt: now}); err != nil {
-		return Result{}, false
-	}
 	latest, err := c.Source.Latest(ctx, current)
 	if err != nil {
 		return Result{}, false
@@ -404,7 +427,6 @@ func ReadAutomaticUpdateAttempt(path string) (AutomaticUpdateAttempt, bool) {
 // RecordAutomaticUpdateAttempt replaces the last automatic install attempt
 // while retaining the release-check metadata stored in the same cache.
 func RecordAutomaticUpdateAttempt(path, target string, attemptedAt time.Time, updateErr error) error {
-	entry, _ := readCache(path)
 	attempt := &AutomaticUpdateAttempt{
 		AttemptedAt: attemptedAt,
 		Target:      target,
@@ -418,8 +440,10 @@ func RecordAutomaticUpdateAttempt(path, target string, attemptedAt time.Time, up
 			attempt.Skipped = skip.AutomaticUpdateSkipped()
 		}
 	}
-	entry.AutomaticUpdate = attempt
-	return writeCache(path, entry)
+	return cacheTransaction(path, func(entry cacheEntry) (cacheEntry, bool) {
+		entry.AutomaticUpdate = attempt
+		return entry, true
+	})
 }
 
 func readFreshCache(path string, now time.Time) (cacheEntry, bool) {
@@ -449,14 +473,41 @@ func readCache(path string) (cacheEntry, bool) {
 }
 
 func writeCache(path string, entry cacheEntry) error {
+	return cacheTransaction(path, func(previous cacheEntry) (cacheEntry, bool) {
+		if entry.AutomaticUpdate == nil {
+			entry.AutomaticUpdate = previous.AutomaticUpdate
+		}
+		return entry, true
+	})
+}
+
+func cacheTransaction(path string, update func(cacheEntry) (cacheEntry, bool)) error {
 	if path == "" {
 		return nil
 	}
-	if entry.AutomaticUpdate == nil {
-		if previous, ok := readCache(path); ok {
-			entry.AutomaticUpdate = previous.AutomaticUpdate
+	deadline := time.Now().Add(cacheLockTimeout)
+	var releaseLock func()
+	for {
+		if release, ok := acquireCacheLock(path, time.Now()); ok {
+			releaseLock = release
+			break
 		}
+		if !time.Now().Before(deadline) {
+			return errors.New("update cache lock unavailable")
+		}
+		time.Sleep(cacheLockRetry)
 	}
+	defer releaseLock()
+
+	entry, _ := readCache(path)
+	entry, write := update(entry)
+	if !write {
+		return nil
+	}
+	return writeCacheFile(path, entry)
+}
+
+func writeCacheFile(path string, entry cacheEntry) error {
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return err
@@ -650,7 +701,7 @@ func DetectInstallMethod() InstallMethod {
 	home, _ := os.UserHomeDir()
 	goPaths := cachedGoInstallPaths()
 	goPath := strings.Join(nonEmptyStrings(goPaths.goPath, os.Getenv("GOPATH")), string(os.PathListSeparator))
-	return detectInstall(executable, filepath.EvalSymlinks, goPaths.goBin, goPath, home)
+	return detectInstall(executable, filepath.EvalSymlinks, goPaths.goBin, goPath, home, cachedHomebrewPrefixes()...)
 }
 
 func parseGoEnvPaths(output []byte, err error) goInstallPaths {
@@ -677,17 +728,16 @@ func nonEmptyStrings(values ...string) []string {
 	return result
 }
 
-func detectInstall(executable string, evalSymlinks func(string) (string, error), goBin, goPath, home string) InstallMethod {
+func detectInstall(executable string, evalSymlinks func(string) (string, error), goBin, goPath, home string, homebrewPrefixes ...string) InstallMethod {
 	resolved, err := evalSymlinks(executable)
 	if err != nil {
 		return InstallGeneric
 	}
-	return detectResolvedInstall(resolved, goBin, goPath, home)
+	return detectResolvedInstall(resolved, goBin, goPath, home, homebrewPrefixes...)
 }
 
-func detectResolvedInstall(executable, goBin, goPath, home string) InstallMethod {
-	clean := filepath.ToSlash(filepath.Clean(executable))
-	if strings.Contains(clean, "/Cellar/") || strings.Contains(clean, "/Caskroom/") {
+func detectResolvedInstall(executable, goBin, goPath, home string, homebrewPrefixes ...string) InstallMethod {
+	if isHomebrewInstall(executable, homebrewPrefixes) {
 		return InstallHomebrew
 	}
 
@@ -709,6 +759,25 @@ func detectResolvedInstall(executable, goBin, goPath, home string) InstallMethod
 		}
 	}
 	return InstallGeneric
+}
+
+func isHomebrewInstall(executable string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		rel, err := filepath.Rel(filepath.Clean(prefix), filepath.Clean(executable))
+		if err != nil {
+			continue
+		}
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		if len(parts) == 5 && parts[0] == "Cellar" && parts[1] == "termp" &&
+			parts[2] != "" && parts[3] == "bin" && parts[4] == "termp" {
+			return true
+		}
+		if len(parts) == 4 && parts[0] == "Caskroom" && parts[1] == "termp" &&
+			parts[2] != "" && parts[3] == "termp" {
+			return true
+		}
+	}
+	return false
 }
 
 func pathWithin(path, dir string) bool {
