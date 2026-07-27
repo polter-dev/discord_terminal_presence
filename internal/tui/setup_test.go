@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -128,7 +129,8 @@ func TestApplySetupNilStatusInstallsDesiredEnabledService(t *testing.T) {
 func TestSetupCompletionChoiceIsExplicitDefaultOffAndInstallsOnConfirm(t *testing.T) {
 	const completionPath = "/tmp/home/.config/fish/completions/termp.fish"
 	installCalls := 0
-	model := NewSetupModel(config.Default(), nil, nil, nil, nil).WithCompletion(
+	cfg := config.Default()
+	model := NewSetupModel(cfg, nil, nil, nil, nil).WithCompletion(
 		"fish",
 		completionPath,
 		"",
@@ -162,8 +164,108 @@ func TestSetupCompletionChoiceIsExplicitDefaultOffAndInstallsOnConfirm(t *testin
 	if installCalls != 1 || !model.Applied() {
 		t.Fatalf("completion install calls = %d, applied = %t; want 1/true", installCalls, model.Applied())
 	}
+	if !reflect.DeepEqual(model.SetupConfig(), cfg) || model.Err() != nil {
+		t.Fatalf("full-success model config/error = %#v/%v, want %#v/nil", model.SetupConfig(), model.Err(), cfg)
+	}
 	if !strings.Contains(model.View(), "Completion: installed: "+completionPath) {
 		t.Fatalf("setup summary does not report modified completion path:\n%s", model.View())
+	}
+}
+
+func TestSetupCompletionFailureReportsPartialSuccessAndAdoptsPersistedConfig(t *testing.T) {
+	original := config.Default()
+	var persisted config.Config
+	saveCalls := 0
+	model := NewSetupModel(
+		original,
+		func(cfg config.Config) (string, error) {
+			saveCalls++
+			persisted = cfg
+			return "/tmp/config.toml", nil
+		},
+		nil,
+		nil,
+		nil,
+	).WithCompletion(
+		"fish",
+		"/tmp/home/.config/fish/completions/termp.fish",
+		"",
+		func() ([]string, error) {
+			return nil, errors.New("permission denied")
+		},
+	)
+	model.choices[1].value = !original.AutoUpdate
+	model.choices[model.completionChoice].value = true
+
+	updated, cmd := model.startApply()
+	model = updated.(SetupModel)
+	updated, _ = model.Update(cmd())
+	model = updated.(SetupModel)
+
+	if saveCalls != 1 {
+		t.Fatalf("save calls = %d, want 1", saveCalls)
+	}
+	if !reflect.DeepEqual(model.SetupConfig(), persisted) || model.SetupConfig().AutoUpdate == original.AutoUpdate {
+		t.Fatalf("model config = %#v, persisted = %#v, original = %#v", model.SetupConfig(), persisted, original)
+	}
+	if !model.Applied() || model.Err() != nil {
+		t.Fatalf("partial-success applied/error = %t/%v, want true/nil", model.Applied(), model.Err())
+	}
+	view := model.View()
+	for _, want := range []string{
+		"Setup applied.",
+		"Config: /tmp/config.toml",
+		"Completion: failed: install shell completion: permission denied",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("partial-success summary missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "setup failed:") {
+		t.Fatalf("partial-success summary reports total failure:\n%s", view)
+	}
+}
+
+func TestSetupApplyFailureStillReportsTotalFailure(t *testing.T) {
+	original := config.Default()
+	completionCalls := 0
+	model := NewSetupModel(
+		original,
+		func(config.Config) (string, error) {
+			return "", errors.New("save failed")
+		},
+		nil,
+		nil,
+		nil,
+	).WithCompletion(
+		"fish",
+		"/tmp/home/.config/fish/completions/termp.fish",
+		"",
+		func() ([]string, error) {
+			completionCalls++
+			return nil, nil
+		},
+	)
+	model.choices[1].value = !original.AutoUpdate
+	model.choices[model.completionChoice].value = true
+
+	updated, cmd := model.startApply()
+	model = updated.(SetupModel)
+	updated, _ = model.Update(cmd())
+	model = updated.(SetupModel)
+
+	if completionCalls != 0 {
+		t.Fatalf("completion calls = %d, want 0", completionCalls)
+	}
+	if model.Applied() || model.Err() == nil {
+		t.Fatalf("total-failure applied/error = %t/%v, want false/non-nil", model.Applied(), model.Err())
+	}
+	if !reflect.DeepEqual(model.SetupConfig(), original) {
+		t.Fatalf("total-failure model config = %#v, want original %#v", model.SetupConfig(), original)
+	}
+	view := model.View()
+	if !strings.Contains(view, "setup failed: save failed") || strings.Contains(view, "Setup applied.") {
+		t.Fatalf("total-failure view does not report only failure:\n%s", view)
 	}
 }
 

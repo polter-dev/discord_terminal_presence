@@ -392,7 +392,7 @@ func (m SetupModel) startApply() (tea.Model, tea.Cmd) {
 		}
 		paths, err := installCompletion()
 		if err != nil {
-			result.err = fmt.Errorf("install shell completion: %w", err)
+			result.completion = fmt.Sprintf("failed: install shell completion: %v", err)
 			return result
 		}
 		result.completion = "installed: " + strings.Join(paths, ", ")
