@@ -571,11 +571,18 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 		scanFailures int
 	)
 	statePath := d.presenceStatePath
-	episodes, _ := LoadEpisodeStore(statePath)
+	episodes, err := LoadEpisodeStore(statePath)
+	if err != nil {
+		d.debugf("episode store load failed: %v", err)
+	}
 	if consumer, ok := d.lister.(episodeStoreConsumer); ok {
 		consumer.setEpisodeStore(episodes)
 	}
-	saveEpisodes := func(store *EpisodeStore) { _ = SaveEpisodeStore(statePath, store) }
+	saveEpisodes := func(store *EpisodeStore) {
+		if err := SaveEpisodeStore(statePath, store); err != nil {
+			d.debugf("episode store save failed: %v", err)
+		}
+	}
 	selector := newSelectorWithEpisodes(d.registry, d.config, systemClock{}, episodes, saveEpisodes)
 	defer saveEpisodes(episodes)
 
