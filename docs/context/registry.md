@@ -16,7 +16,9 @@ extracts process identity, resolves icons, and chooses by priority then catalog 
 surface is process name, argv0, executable path, and—only for recognized language-runtime
 wrappers—the script/package entrypoint, including `python -m <package>`. Catalog name and
 regex rules run only on those surfaces. Exclusions run on the same identity surfaces plus
-only the immediate subcommand.
+only the immediate subcommand. Python and PyPy wrappers accept tightly anchored numeric
+version suffixes such as `python3.12`; interpreter-like prefixes such as `pythonish-tool`
+are not wrappers.
 
 Structured argv from the detector is authoritative. If unavailable, the registry parses
 the command line into argv as a fallback. Generic shell interpreters are rejected, and

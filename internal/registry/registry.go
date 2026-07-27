@@ -69,6 +69,8 @@ var toolInterpreterNames = map[string]struct{}{
 	"ruby":    {},
 }
 
+var versionedPythonInterpreterPattern = regexp.MustCompile(`^(python\d+(\.\d+)*|pypy\d*(\.\d+)*)$`)
+
 // Button is a Discord activity button definition owned by a tool entry.
 type Button struct {
 	Label string
@@ -395,8 +397,9 @@ func uniqueNonEmpty(values ...string) []string {
 }
 
 func isToolInterpreter(candidate string) bool {
-	_, ok := toolInterpreterNames[strings.ToLower(normalizeName(candidate))]
-	return ok
+	name := strings.ToLower(normalizeName(candidate))
+	_, ok := toolInterpreterNames[name]
+	return ok || versionedPythonInterpreterPattern.MatchString(name)
 }
 
 func isPythonInterpreter(candidate string) bool {

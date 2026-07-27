@@ -938,6 +938,15 @@ func TestEmbeddedCatalogWrapperMatches(t *testing.T) {
 			id: "aider",
 		},
 		{
+			name: "aider versioned python module",
+			process: ProcessInfo{
+				Name:    "python3.12",
+				Exe:     "/usr/bin/python3.12",
+				Cmdline: "python3.12 -m aider --model sonnet",
+			},
+			id: "aider",
+		},
+		{
 			name: "ranger python script",
 			process: ProcessInfo{
 				Name:    "python",
@@ -952,6 +961,15 @@ func TestEmbeddedCatalogWrapperMatches(t *testing.T) {
 				Name:    "python3",
 				Exe:     "/usr/bin/python3",
 				Cmdline: "python3 /usr/local/bin/glances",
+			},
+			id: "glances",
+		},
+		{
+			name: "glances versioned python script",
+			process: ProcessInfo{
+				Name:    "python3.13",
+				Exe:     "/usr/bin/python3.13",
+				Cmdline: "python3.13 /usr/local/bin/glances",
 			},
 			id: "glances",
 		},
@@ -1111,6 +1129,11 @@ func TestEmbeddedCatalogWrapperRegexesDoNotMatchGenericInterpreters(t *testing.T
 			Name:    "python",
 			Exe:     "/usr/bin/python",
 			Cmdline: "python /srv/app/ranger_plugin.py",
+		},
+		{
+			Name:    "pythonish-tool",
+			Exe:     "/usr/local/bin/pythonish-tool",
+			Cmdline: "pythonish-tool -m aider",
 		},
 	}
 
