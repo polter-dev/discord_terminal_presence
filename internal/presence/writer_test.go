@@ -78,6 +78,54 @@ func TestWriterReconnectsAndReappliesActivity(t *testing.T) {
 	<-done
 }
 
+func TestWriterPermanentRejectionWaitsForChangedActivity(t *testing.T) {
+	client := newFakeClient(nil)
+	client.setSetErrors(&discordIPCError{code: 4000, message: "validation failed"}, nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(0),
+		withReapplyInterval(time.Second),
+		withWriteClock(clock),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	rejected := &Activity{Details: "rejected"}
+	sendActivity(t, ctx, activities, rejected)
+	client.waitForSet(t, 1)
+
+	sendActivity(t, ctx, activities, &Activity{Details: "rejected"})
+	alreadyConnected, err := writer.Reconnect(context.Background(), false)
+	if err != nil || !alreadyConnected {
+		t.Fatalf("Reconnect() = %t, %v; want healthy existing connection", alreadyConnected, err)
+	}
+	if got := len(client.activities()); got != 1 {
+		t.Fatalf("unchanged rejected payload attempts = %d, want 1", got)
+	}
+	if got := client.loginCount(); got != 1 {
+		t.Fatalf("login count after permanent rejection = %d, want 1", got)
+	}
+
+	sendActivity(t, ctx, activities, &Activity{Details: "changed"})
+	client.waitForSet(t, 2)
+	if got := client.activities()[1].Details; got != "changed" {
+		t.Fatalf("new payload details = %q, want changed", got)
+	}
+
+	cancel()
+	<-done
+}
+
 func TestWriterReconnectRequestIsOwnedByRunLoop(t *testing.T) {
 	client := newFakeClient(nil)
 	writer, err := NewWriter(client, "app-id", WithMinWriteInterval(0))

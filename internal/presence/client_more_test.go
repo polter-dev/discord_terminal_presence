@@ -239,6 +239,14 @@ func TestResponseAndPayloadHelpers(t *testing.T) {
 	if err := response.discordError(); err == nil || !strings.Contains(err.Error(), "4001") {
 		t.Fatalf("discordError() = %v", err)
 	}
+	if isPermanentActivityError(response.discordError()) {
+		t.Fatal("IPC code 4001 classified as a permanent activity rejection")
+	}
+	response.Data.Code = 4000
+	response.Data.Message = "localized or changed validation prose"
+	if !isPermanentActivityError(response.discordError()) {
+		t.Fatal("IPC code 4000 was not classified as a permanent activity rejection")
+	}
 
 	started := time.Unix(123, 456000000)
 	payload := newSetActivityPayload(Activity{
@@ -256,6 +264,23 @@ func TestResponseAndPayloadHelpers(t *testing.T) {
 	}
 	if len(payload.Args.Activity.Buttons) != 1 {
 		t.Fatalf("buttons = %#v", payload.Args.Activity.Buttons)
+	}
+}
+
+func TestSetActivityRejectsInvalidPayloadBeforeTransport(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	client := &RichClient{conn: clientConn}
+
+	err := client.SetActivity(Activity{
+		Buttons: []Button{{Label: strings.Repeat("X", 33), URL: "https://example.test"}},
+	})
+	if err == nil || !isPermanentActivityError(err) || !strings.Contains(err.Error(), "at most 32 characters") {
+		t.Fatalf("SetActivity() error = %v, want permanent local validation error", err)
+	}
+	if client.conn == nil {
+		t.Fatal("local payload validation closed the healthy connection")
 	}
 }
 

@@ -115,15 +115,19 @@ func (c *RichClient) Login(appID string) error {
 
 // SetActivity pushes one activity payload to Discord and waits for its response.
 func (c *RichClient) SetActivity(activity Activity) error {
+	if err := validateActivity(activity); err != nil {
+		return err
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.conn == nil {
 		return errors.New("presence: Discord IPC is not connected")
 	}
-	successful := false
+	retainConnection := false
 	defer func() {
-		if !successful {
+		if !retainConnection {
 			_ = c.conn.Close()
 			c.conn = nil
 		}
@@ -150,9 +154,10 @@ func (c *RichClient) SetActivity(activity Activity) error {
 		return fmt.Errorf("presence: decode SET_ACTIVITY response: %w", err)
 	}
 	if err := response.discordError(); err != nil {
+		retainConnection = isPermanentActivityError(err)
 		return err
 	}
-	successful = true
+	retainConnection = true
 	return nil
 }
 
@@ -379,6 +384,24 @@ type ipcResponse struct {
 	} `json:"data"`
 }
 
+type discordIPCError struct {
+	code    int
+	message string
+}
+
+func (e *discordIPCError) Error() string {
+	return fmt.Sprintf("presence: Discord IPC error %d: %s", e.code, e.message)
+}
+
+func isPermanentActivityError(err error) bool {
+	var validationErr *activityValidationError
+	if errors.As(err, &validationErr) {
+		return true
+	}
+	var ipcErr *discordIPCError
+	return errors.As(err, &ipcErr) && ipcErr.code == 4000
+}
+
 func parseResponse(payload []byte) (ipcResponse, error) {
 	var response ipcResponse
 	if err := json.Unmarshal(payload, &response); err != nil {
@@ -391,7 +414,7 @@ func (r ipcResponse) discordError() error {
 	if r.Event != "ERROR" {
 		return nil
 	}
-	return fmt.Errorf("presence: Discord IPC error %d: %s", r.Data.Code, r.Data.Message)
+	return &discordIPCError{code: r.Data.Code, message: r.Data.Message}
 }
 
 type ipcFrame struct {
