@@ -143,19 +143,29 @@ func (s linuxService) StatusContext(ctx context.Context) State {
 	state := State{Supported: true, Path: path, Loaded: "unknown", Enabled: "unknown"}
 	if _, err := os.Stat(path); err == nil {
 		state.Installed = true
-		if definition, readErr := os.ReadFile(path); readErr == nil {
-			if target, parseErr := systemdUnitExecutable(definition); parseErr == nil &&
-				isForeignUnixExecutable(target, s.executable) {
-				state.Installed = false
-				state.Loaded = "false"
-				state.Enabled = "false"
-				state.ForeignTask = true
-				state.Message = fmt.Sprintf(
-					"systemd unit %s belongs to a different installation: targets %q, running executable is %q",
-					path, target, s.executable,
-				)
-				return state
-			}
+		definition, readErr := os.ReadFile(path)
+		if readErr != nil {
+			state.Installed = false
+			state.Loaded = "false"
+			state.Enabled = "false"
+			state.ForeignTask = true
+			state.Message = fmt.Sprintf(
+				"systemd unit %s ownership could not be verified because the definition could not be read: %v",
+				path, readErr,
+			)
+			return state
+		}
+		if target, parseErr := systemdUnitExecutable(definition); parseErr == nil &&
+			isForeignUnixExecutable(target, s.executable) {
+			state.Installed = false
+			state.Loaded = "false"
+			state.Enabled = "false"
+			state.ForeignTask = true
+			state.Message = fmt.Sprintf(
+				"systemd unit %s belongs to a different installation: targets %q, running executable is %q",
+				path, target, s.executable,
+			)
+			return state
 		}
 	} else if os.IsNotExist(err) {
 		state.Installed = false
