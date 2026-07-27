@@ -245,19 +245,28 @@ func collectionState(prefix string, others []registry.Tool) string {
 }
 
 func directoryState(cwd string, basenameOnly bool) string {
+	directory := DirectoryDisplay(cwd, basenameOnly)
+	if directory == "" {
+		return ""
+	}
+	return "📁 " + directory
+}
+
+// DirectoryDisplay reduces a directory path to the components permitted for display.
+func DirectoryDisplay(cwd string, basenameOnly bool) string {
 	clean := filepath.Clean(cwd)
 	base := filepath.Base(clean)
 	if base == "." || base == string(filepath.Separator) || base == filepath.VolumeName(clean)+string(filepath.Separator) {
 		return ""
 	}
 	if basenameOnly {
-		return "📁 " + base
+		return base
 	}
 	parent := filepath.Base(filepath.Dir(clean))
 	if parent == "." || parent == string(filepath.Separator) || parent == filepath.VolumeName(clean)+string(filepath.Separator) {
-		return "📁 " + base
+		return base
 	}
-	return "📁 " + parent + "/" + base
+	return parent + "/" + base
 }
 
 func buttonsFromTool(tool registry.Tool) []Button {

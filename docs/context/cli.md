@@ -65,7 +65,8 @@ usage retention in [`usage.md`](usage.md).
 
 Structured CLI output and verbose log messages sanitize externally derived terminal
 text. Detection logs resolve the working directory through the same effective privacy
-policy as presence output and report `hidden` when directory display is not allowed.
+policy and path-reduction helper as presence output, cap expanded paths at their final
+two components, and report `hidden` when directory display is not allowed.
 Per-tool enablement is passed into detector selection, and hot reloads that change it
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
 
