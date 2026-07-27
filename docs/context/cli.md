@@ -56,6 +56,11 @@ corrected service definitions. When a daemon is already running, definition
 reconciliation does not immediately launch the service again; the explicit
 `termp autostart install` command retains its start-now behavior.
 
+Setup treats optional shell-completion installation as a separate outcome after
+config and autostart are applied. If completion installation fails, the summary
+reports that failure and its reason while retaining the persisted config in the
+model instead of reporting the entire setup as failed.
+
 On Windows, detached startup publishes the PID file only after the named
 shutdown event and its cleanup watcher have been created successfully. A parent
 therefore cannot observe startup readiness before graceful `termp stop`
