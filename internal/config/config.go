@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +22,7 @@ const (
 	defaultConfigDir  = ".config"
 	defaultConfigFile = "config.toml"
 	appConfigDir      = "termp"
+	maxConfigFileSize = 1 << 20
 	// DefaultFeedbackURL deep-links to the live feedback form via the page's only stable anchor, the Turnstile container.
 	DefaultFeedbackURL = "https://termp.polter.sh/#feedback-turnstile"
 )
@@ -256,6 +258,10 @@ func migrateLegacyPath(native, legacy string, resolver pathResolver) string {
 }
 
 func copyFileBestEffort(from, to string) error {
+	sourceInfo, err := os.Stat(from)
+	if err != nil {
+		return err
+	}
 	data, err := os.ReadFile(from)
 	if err != nil {
 		return err
@@ -272,7 +278,7 @@ func copyFileBestEffort(from, to string) error {
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(sourceInfo.Mode().Perm()); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -385,15 +391,9 @@ func InitFile(path string, force bool) error {
 			return fmt.Errorf("set config file permissions: %w", err)
 		}
 	} else {
-		if err := tmp.Close(); err != nil {
-			return fmt.Errorf("close temporary config file: %w", err)
-		}
-		if err := os.Remove(tmpPath); err != nil {
-			return fmt.Errorf("prepare temporary config file: %w", err)
-		}
-		tmp, err = os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-		if err != nil {
-			return fmt.Errorf("create temporary config file: %w", err)
+		if err := tmp.Chmod(0o600); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("set config file permissions: %w", err)
 		}
 	}
 	if _, err := tmp.WriteString(AnnotatedSample()); err != nil {
@@ -449,12 +449,27 @@ func LoadPath(path string) (Config, error) {
 	cfg := Default()
 	cfg.Path = path
 
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return cloneConfig(cfg), nil
 	}
 	if err != nil {
 		return cfg, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return cfg, err
+	}
+	if info.Size() > maxConfigFileSize {
+		return cfg, fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxConfigFileSize+1))
+	if err != nil {
+		return cfg, err
+	}
+	if len(data) > maxConfigFileSize {
+		return cfg, fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)
 	}
 
 	raw := fileConfig{
@@ -658,6 +673,9 @@ func validate(cfg *Config) error {
 	if utf8.RuneCountInString(cfg.DetailsFormat) > maxActivityTextLength {
 		return fmt.Errorf("details_format must be at most %d characters", maxActivityTextLength)
 	}
+	if err := ValidateFeedbackURL(cfg.FeedbackURL); err != nil {
+		return err
+	}
 	if cfg.CTA.Enabled {
 		if err := registry.ValidateButtons([]registry.Button{{Label: cfg.CTA.Label, URL: cfg.CTA.URL}}); err != nil {
 			return fmt.Errorf("cta: %w", err)
@@ -712,6 +730,17 @@ func validate(cfg *Config) error {
 		if err := registry.ValidateCustomTool(customTool); err != nil {
 			return fmt.Errorf("custom_tools[%d]: %w", i, err)
 		}
+	}
+	return nil
+}
+
+// ValidateFeedbackURL bounds feedback targets and restricts them to absolute HTTP(S) URLs.
+func ValidateFeedbackURL(value string) error {
+	if utf8.RuneCountInString(value) > registry.MaxButtonURLLength {
+		return fmt.Errorf("feedback_url must be at most %d characters", registry.MaxButtonURLLength)
+	}
+	if err := registry.ValidateHTTPURL(value); err != nil {
+		return fmt.Errorf("feedback_url must be a valid absolute http/https URL")
 	}
 	return nil
 }

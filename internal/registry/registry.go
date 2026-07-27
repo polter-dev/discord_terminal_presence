@@ -203,7 +203,7 @@ func ValidateButtons(buttons []Button) error {
 		if utf8.RuneCountInString(button.URL) > MaxButtonURLLength {
 			return fmt.Errorf("buttons[%d].url must be at most %d characters", i, MaxButtonURLLength)
 		}
-		if err := validateHTTPURL(button.URL); err != nil {
+		if err := ValidateHTTPURL(button.URL); err != nil {
 			return fmt.Errorf("buttons[%d].url must be a valid absolute http/https URL", i)
 		}
 	}
@@ -218,12 +218,30 @@ func ValidateCustomTool(tool CustomTool) error {
 	if utf8.RuneCountInString(tool.DisplayName) > MaxDisplayNameLength {
 		return fmt.Errorf("display_name must be at most %d characters", MaxDisplayNameLength)
 	}
+	resolved := Tool{
+		ImageKey:   tool.ImageKey,
+		ImageURL:   tool.ImageURL,
+		IconSlug:   tool.IconSlug,
+		IconSource: tool.IconSource,
+	}
+	resolveIcon(&resolved)
+	imageKeyField := "resolved image_key"
+	if tool.ImageKey != "" {
+		imageKeyField = "image_key"
+	}
+	imageURLField := "resolved image_url"
 	if tool.ImageURL != "" {
-		if utf8.RuneCountInString(tool.ImageURL) > MaxImageValueLength {
-			return fmt.Errorf("image_url must be at most %d characters", MaxImageValueLength)
-		}
-		if err := validateHTTPURL(tool.ImageURL); err != nil {
-			return fmt.Errorf("image_url must be a valid absolute http/https URL")
+		imageURLField = "image_url"
+	}
+	if utf8.RuneCountInString(resolved.ImageKey) > MaxImageValueLength {
+		return fmt.Errorf("%s must be at most %d characters", imageKeyField, MaxImageValueLength)
+	}
+	if utf8.RuneCountInString(resolved.ImageURL) > MaxImageValueLength {
+		return fmt.Errorf("%s must be at most %d characters", imageURLField, MaxImageValueLength)
+	}
+	if resolved.ImageURL != "" {
+		if err := ValidateHTTPURL(resolved.ImageURL); err != nil {
+			return fmt.Errorf("%s must be a valid absolute http/https URL", imageURLField)
 		}
 	}
 	if err := ValidateButtons(tool.Buttons); err != nil {
@@ -232,7 +250,8 @@ func ValidateCustomTool(tool CustomTool) error {
 	return nil
 }
 
-func validateHTTPURL(value string) error {
+// ValidateHTTPURL requires an absolute HTTP or HTTPS URL.
+func ValidateHTTPURL(value string) error {
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return errors.New("invalid URL")

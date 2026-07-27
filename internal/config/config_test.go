@@ -969,6 +969,54 @@ match = { name = "missing-image" }
 	}
 }
 
+func TestFeedbackURLValidationRejectedAtLoad(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "local file",
+			value: "file:///Applications/Malicious.app",
+			want:  "feedback_url must be a valid absolute http/https URL",
+		},
+		{
+			name:  "over length",
+			value: "https://example.test/" + strings.Repeat("x", registry.MaxButtonURLLength),
+			want:  "feedback_url must be at most 512 characters",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := withConfigHome(t)
+			writeConfig(t, path, fmt.Sprintf("feedback_url = %q\n", tt.value))
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadPathRejectsOversizedConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxConfigFileSize + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = LoadPath(path)
+	if err == nil || !strings.Contains(err.Error(), "config file exceeds maximum size") {
+		t.Fatalf("LoadPath() error = %v, want maximum-size error", err)
+	}
+}
+
 func TestToolButtonValidationRejectedAtLoad(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1030,6 +1078,16 @@ func TestCustomToolDiscordFieldValidationRejectedAtLoad(t *testing.T) {
 			want:  "custom_tools[0]: image_url must be a valid absolute http/https URL",
 		},
 		{
+			name:  "image key length",
+			field: `image_key = "` + strings.Repeat("k", registry.MaxImageValueLength+1) + `"`,
+			want:  "custom_tools[0]: image_key must be at most 256 characters",
+		},
+		{
+			name:  "resolved icon URL shape",
+			field: "icon_slug = \"file:///tmp/icon.png\"\nicon_source = \"url\"",
+			want:  "custom_tools[0]: resolved image_url must be a valid absolute http/https URL",
+		},
+		{
 			name:  "button label length",
 			field: `buttons = [{ label = "` + strings.Repeat("X", 33) + `", url = "https://example.test" }]`,
 			want:  "custom_tools[0]: buttons[0].label must be at most 32 characters",
@@ -1040,7 +1098,7 @@ func TestCustomToolDiscordFieldValidationRejectedAtLoad(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			id := `id = "custom"`
 			displayName := `display_name = "Custom"`
-			imageURL := `image_url = "https://example.test/custom.png"`
+			image := `image_url = "https://example.test/custom.png"`
 			buttons := ""
 			switch tt.name {
 			case "id length":
@@ -1048,13 +1106,15 @@ func TestCustomToolDiscordFieldValidationRejectedAtLoad(t *testing.T) {
 			case "display name length":
 				displayName = tt.field
 			case "image URL shape":
-				imageURL = tt.field
+				image = tt.field
+			case "image key length", "resolved icon URL shape":
+				image = tt.field
 			case "button label length":
 				buttons = "\n" + tt.field
 			}
 			path := withConfigHome(t)
 			writeConfig(t, path, "[[custom_tools]]\n"+id+"\n"+displayName+
-				"\nmatch = { name = \"custom\" }\n"+imageURL+buttons+"\n")
+				"\nmatch = { name = \"custom\" }\n"+image+buttons+"\n")
 			_, err := Load()
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Load() error = %v, want %q", err, tt.want)

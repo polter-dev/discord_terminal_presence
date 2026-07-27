@@ -920,6 +920,9 @@ func (m Model) startOpenFeedback() (tea.Model, tea.Cmd) {
 	m.openingURL = true
 	openURL := m.openURL
 	return m, func() tea.Msg {
+		if err := config.ValidateFeedbackURL(url); err != nil {
+			return settingsOpenURLResultMsg{url: url, err: err}
+		}
 		if openURL == nil {
 			return settingsOpenURLResultMsg{url: url}
 		}

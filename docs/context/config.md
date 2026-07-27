@@ -19,13 +19,15 @@ legacy state to the native config directory on a best-effort basis.
 Discord-facing config is rejected during load when it cannot produce a valid activity.
 Tool and custom-tool buttons allow at most two entries; labels are non-empty and at most
 32 characters, and URLs are absolute HTTP(S) URLs. Details/fallback text and custom-tool
-identity, display, and image fields are bounded before registry construction.
+identity, display, and resolved image fields are bounded before registry construction.
+The feedback target is likewise bounded and restricted to an absolute HTTP(S) URL.
+Config reads are capped at 1 MiB before TOML decoding.
 
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically
-renames it. New files request `0644`, allowing the process umask to remove bits; forced
-replacement of an existing regular file preserves that file's permission bits. Without
-`force`, an existing regular file is not replaced.
+renames it. New files are created `0600`; forced replacement of an existing regular file
+preserves that file's permission bits. Migration copies also preserve the source mode.
+Without `force`, an existing regular file is not replaced.
 
 **Depends on / used by:** Uses BurntSushi TOML and the standard library. The CLI,
 detector, presence mapping, TUI, registry construction, and update policy consume it.
