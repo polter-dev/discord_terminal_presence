@@ -668,6 +668,47 @@ func TestSelectorCPUIdleCorroborationKeepsMovingProcessEligible(t *testing.T) {
 	}
 }
 
+func TestSelectorUnknownAtimeFallsBackToCPUActivity(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	const episodeKey = "claude-code:1:episode"
+	process := Process{
+		TTY: TTYInfo{State: TTYResolved},
+	}
+	tests := []struct {
+		name        string
+		observation *processCPUObservation
+		want        bool
+	}{
+		{
+			name:        "recent CPU remains eligible",
+			observation: &processCPUObservation{lastChanged: base.Add(-time.Minute)},
+			want:        true,
+		},
+		{
+			name:        "long-idle CPU becomes ineligible",
+			observation: &processCPUObservation{lastChanged: base.Add(-21 * time.Minute)},
+			want:        false,
+		},
+		{
+			name: "missing CPU data fails open",
+			want: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			selector := NewSelector(testRegistry(t), Config{
+				IdleClearTimeout: 20 * time.Minute,
+			}, &fakeClock{now: base})
+			if test.observation != nil {
+				selector.processCPU[episodeKey] = *test.observation
+			}
+			if got := selector.presenceEligible(process, episodeKey, base); got != test.want {
+				t.Fatalf("presenceEligible() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSelectorFreshAndFutureAtimeArePresent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("presence detection unimplemented on Windows — see #183")

@@ -431,8 +431,16 @@ func (s *Selector) presenceEligible(proc Process, episodeKey string, now time.Ti
 	if proc.TTY.State == TTYNone || proc.TTY.DetachedTmux {
 		return false
 	}
-	if proc.TTY.State != TTYResolved || s.config.IdleClearTimeout <= 0 || !proc.TTY.AtimeKnown {
+	if proc.TTY.State != TTYResolved || s.config.IdleClearTimeout <= 0 {
 		return true
+	}
+	if !proc.TTY.AtimeKnown {
+		observation, ok := s.processCPU[episodeKey]
+		if !ok {
+			return true
+		}
+		cpuAge := now.Sub(observation.lastChanged)
+		return cpuAge < 0 || cpuAge < s.config.IdleClearTimeout
 	}
 	cpuAge := now.Sub(s.processCPU[episodeKey].lastChanged)
 	cpuRecent := cpuAge < 0 || cpuAge < s.config.IdleClearTimeout

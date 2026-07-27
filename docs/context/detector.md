@@ -29,7 +29,10 @@ definitive lack of a terminal and detached tmux processes are excluded from
 both sets.
 
 On macOS and Linux, collection membership continues to use the same terminal
-activity eligibility as featured selection.
+activity eligibility as featured selection. When a resolved terminal has no
+trustworthy atime (including Linux devpts mounted with the usual `relatime`),
+recent per-process CPU activity is used as the idle signal. If CPU activity is
+also unavailable, eligibility fails open.
 
 Process-list failures retain the last presence for one or two consecutive
 scans. On the third consecutive failure, the detector emits `None` immediately
