@@ -29,6 +29,7 @@ import (
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 	"github.com/polter-dev/discord_terminal_presence/internal/service"
+	"github.com/polter-dev/discord_terminal_presence/internal/terminaltext"
 	"github.com/polter-dev/discord_terminal_presence/internal/tui"
 	updatepkg "github.com/polter-dev/discord_terminal_presence/internal/update"
 	usagepkg "github.com/polter-dev/discord_terminal_presence/internal/usage"
@@ -312,7 +313,7 @@ func addVerboseFlag(fs *flag.FlagSet) {
 
 func debugf(format string, args ...any) {
 	if verbose {
-		log.Printf(format, args...)
+		log.Print(terminaltext.Sanitize(fmt.Sprintf(format, args...)))
 	}
 }
 
@@ -961,7 +962,7 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 				if detection.None {
 					debugf("scan result: none")
 				} else {
-					debugf("scan result: featured=%s cwd=%s others=%s", detection.Tool.ID, detection.Cwd, otherToolIDs(detection.Others))
+					debugf("scan result: featured=%s cwd=%s others=%s", detection.Tool.ID, debugDetectionDirectory(applied.config, detection), otherToolIDs(detection.Others))
 					recordUsage(usageStore, detection, time.Now())
 					saveUsage(false)
 				}
@@ -1080,6 +1081,13 @@ func otherToolIDs(tools []registry.Tool) string {
 		ids = append(ids, tool.ID)
 	}
 	return strings.Join(ids, ",")
+}
+
+func debugDetectionDirectory(cfg config.Config, detection detector.Detection) string {
+	if displayDir, ok := cfg.Resolve(detection.Tool).DisplayDirectory(detection.Cwd); ok {
+		return displayDir
+	}
+	return "hidden"
 }
 
 func registryToolIDs(tools []registry.Tool) []string {
@@ -1554,14 +1562,16 @@ func knownDaemonPID(pidPath, discordStatePath string, alive, looksLikeTermp func
 	return 0
 }
 
+var lookupProcessStartTime = processStartTime
+
 func processIdentityMatches(pid int, expectedStartTime uint64, alive, looksLikeTermp func(int) bool) bool {
 	if pid <= 0 || !alive(pid) || !looksLikeTermp(pid) {
 		return false
 	}
 	if expectedStartTime == 0 {
-		return true
+		return false
 	}
-	actualStartTime, err := processStartTime(pid)
+	actualStartTime, err := lookupProcessStartTime(pid)
 	return err == nil && actualStartTime == expectedStartTime
 }
 
@@ -2043,7 +2053,7 @@ func writePIDOwnedWithHook(path string, pid int, initializingHook func()) (os.Fi
 		return nil, err
 	}
 	record := daemonPIDRecord{PID: pid}
-	record.StartTime, _ = processStartTime(pid)
+	record.StartTime, _ = lookupProcessStartTime(pid)
 	recordData, err := json.Marshal(record)
 	if err != nil {
 		return nil, err
@@ -2258,7 +2268,7 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLi
 	if err := signal(pid); err != nil {
 		return 0, fmt.Errorf("refusing to signal pid %d: %w", pid, err)
 	}
-	if !waitForProcessExit(pid, timeout, pollInterval, alive, sleep) {
+	if !waitForProcessExit(pid, record.StartTime, timeout, pollInterval, alive, looksLikeTermp, sleep) {
 		return 0, fmt.Errorf("timed out after %s waiting for daemon pid %d to exit; PID file was not removed", timeout, pid)
 	}
 	result, err := removePIDIfOwnedResult(path, pid, info)
@@ -2310,7 +2320,7 @@ func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pol
 		}
 	}
 	for _, target := range targets {
-		if !waitForProcessExit(target.PID, timeout, pollInterval, alive, sleep) {
+		if !waitForProcessExit(target.PID, target.StartTime, timeout, pollInterval, alive, looksLikeTermp, sleep) {
 			return 0, fmt.Errorf("timed out after %s waiting for daemon pid %d to exit; PID file was not removed", timeout, target.PID)
 		}
 	}
@@ -2335,8 +2345,8 @@ func pidFileOwnedByRelaunchedDaemon(path string, stoppedPID int, alive, looksLik
 		processIdentityMatches(record.PID, record.StartTime, alive, looksLikeTermp)
 }
 
-func waitForProcessExit(pid int, timeout, pollInterval time.Duration, alive func(int) bool, sleep func(time.Duration)) bool {
-	if !alive(pid) {
+func waitForProcessExit(pid int, startTime uint64, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, sleep func(time.Duration)) bool {
+	if !processIdentityMatches(pid, startTime, alive, looksLikeTermp) {
 		return true
 	}
 	if timeout <= 0 || pollInterval <= 0 {
@@ -2346,7 +2356,7 @@ func waitForProcessExit(pid int, timeout, pollInterval time.Duration, alive func
 		delay := min(pollInterval, timeout-waited)
 		sleep(delay)
 		waited += delay
-		if !alive(pid) {
+		if !processIdentityMatches(pid, startTime, alive, looksLikeTermp) {
 			return true
 		}
 	}
