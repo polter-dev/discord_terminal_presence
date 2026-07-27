@@ -61,6 +61,11 @@ config and autostart are applied. If completion installation fails, the summary
 reports that failure and its reason while retaining the persisted config in the
 model instead of reporting the entire setup as failed.
 
+Local tool-usage history is capped at 1,024 entries and a 1 MiB input file.
+Counters saturate at the platform maximum. Entries missing from the complete
+built-in and custom-tool registry are retained for 90 days before pruning;
+process-scan absence is never used to prune history.
+
 On Windows, detached startup publishes the PID file only after the named
 shutdown event and its cleanup watcher have been created successfully. A parent
 therefore cannot observe startup readiness before graceful `termp stop`

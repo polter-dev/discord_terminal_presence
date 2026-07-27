@@ -3,6 +3,9 @@ package usage
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +18,9 @@ const (
 	defaultStateDir  = ".local/state"
 	appStateDir      = "termp"
 	defaultStateFile = "usage.json"
+	maxEntries       = 1024
+	maxStateFileSize = 1 << 20
+	retentionPeriod  = 90 * 24 * time.Hour
 )
 
 // Entry records local-only usage for one known tool.
@@ -150,6 +156,7 @@ func Load(path string) (*Store, error) {
 	for id, entry := range disk.Tools {
 		store.Tools[id] = entry
 	}
+	store.enforceCap()
 	return store, nil
 }
 
@@ -158,6 +165,7 @@ func Save(path string, store *Store) error {
 	if store == nil {
 		store = New()
 	}
+	store.enforceCap()
 	snapshot := store.snapshot()
 	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
@@ -198,9 +206,33 @@ func (s *Store) Record(toolID string, now time.Time) {
 		s.Tools = make(map[string]Entry)
 	}
 	entry := s.Tools[toolID]
-	entry.Count++
+	if entry.Count < math.MaxInt {
+		entry.Count++
+	}
 	entry.LastSeen = now
 	s.Tools[toolID] = entry
+	s.enforceCapLocked()
+}
+
+// Prune removes entries that have been absent from the known registry for the
+// retention period. A nil registry means registry data is unavailable, so only
+// the hard entry cap is enforced.
+func (s *Store) Prune(knownToolIDs []string, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if knownToolIDs != nil {
+		known := make(map[string]struct{}, len(knownToolIDs))
+		for _, id := range knownToolIDs {
+			known[id] = struct{}{}
+		}
+		cutoff := now.Add(-retentionPeriod)
+		for id, entry := range s.Tools {
+			if _, ok := known[id]; !ok && entry.LastSeen.Before(cutoff) {
+				delete(s.Tools, id)
+			}
+		}
+	}
+	s.enforceCapLocked()
 }
 
 // Rank returns tool IDs ordered by usage count, then recency.
@@ -233,4 +265,50 @@ func (s *Store) snapshot() diskStore {
 		out.Tools[id] = entry
 	}
 	return out
+}
+
+func (s *Store) enforceCap() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enforceCapLocked()
+}
+
+func (s *Store) enforceCapLocked() {
+	if len(s.Tools) <= maxEntries {
+		return
+	}
+	ids := make([]string, 0, len(s.Tools))
+	for id := range s.Tools {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		left := s.Tools[ids[i]]
+		right := s.Tools[ids[j]]
+		if !left.LastSeen.Equal(right.LastSeen) {
+			return left.LastSeen.Before(right.LastSeen)
+		}
+		if left.Count != right.Count {
+			return left.Count < right.Count
+		}
+		return ids[i] < ids[j]
+	})
+	for _, id := range ids[:len(ids)-maxEntries] {
+		delete(s.Tools, id)
+	}
+}
+
+func readFileOnce(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxStateFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxStateFileSize {
+		return nil, fmt.Errorf("usage state file exceeds %d bytes", maxStateFileSize)
+	}
+	return data, nil
 }

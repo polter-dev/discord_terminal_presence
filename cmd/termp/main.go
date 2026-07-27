@@ -914,6 +914,9 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	if err != nil {
 		debugf("usage load skipped: %v", err)
 	}
+	if usageStore != nil {
+		usageStore.Prune(registryToolIDs(applied.registry.Tools()), time.Now())
+	}
 	lastUsageSave := time.Time{}
 	saveUsage := func(force bool) {
 		if usageStore == nil {
@@ -980,6 +983,9 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 					}
 				}
 				applied = next
+				if usageStore != nil {
+					usageStore.Prune(registryToolIDs(applied.registry.Tools()), time.Now())
+				}
 				debugf("config reloaded")
 				if haveLast && !change.detector {
 					if !send(buildActivity(applied.config, last, fallbackMessage)) {
@@ -1074,6 +1080,14 @@ func otherToolIDs(tools []registry.Tool) string {
 		ids = append(ids, tool.ID)
 	}
 	return strings.Join(ids, ",")
+}
+
+func registryToolIDs(tools []registry.Tool) []string {
+	ids := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		ids = append(ids, tool.ID)
+	}
+	return ids
 }
 
 // buildActivity resolves the config for a detection and produces the presence
@@ -1724,6 +1738,7 @@ func settings(args []string) error {
 		debugf("usage load skipped: %v", err)
 		usageStore = usagepkg.New()
 	}
+	usageStore.Prune(registryToolIDs(reg.Tools()), time.Now())
 	model := tui.NewSettingsModel(cfg, reg.Tools(), usageStore.Rank(), func(next config.Config) error {
 		return config.Save(next, config.DefaultPath())
 	}, openInBrowser)

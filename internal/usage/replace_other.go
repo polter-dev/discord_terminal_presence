@@ -9,5 +9,5 @@ func replaceFile(from, to string) error {
 }
 
 func readFile(path string) ([]byte, error) {
-	return os.ReadFile(path)
+	return readFileOnce(path)
 }
