@@ -110,6 +110,7 @@ func processIdentity(proc *psprocess.Process) Process {
 	if args, err := proc.CmdlineSlice(); err == nil {
 		if len(args) > 0 {
 			process.Argv0 = args[0]
+			process.Argv = append([]string(nil), args...)
 			process.Cmdline = strings.Join(args, " ")
 		}
 	}
