@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +61,111 @@ func TestApplyConfigChangeReloadsPin(t *testing.T) {
 	})
 	if selection.None || selection.Tool.ID != "claude-code" {
 		t.Fatalf("pinned selection = %#v, want claude-code", selection)
+	}
+}
+
+func TestDisabledFeaturedToolFallsBackBeforeSelection(t *testing.T) {
+	cfg := config.Default()
+	cfg.Pin = "claude-code"
+	cfg.Privacy.ShowDirectory = true
+	current, err := newDetectionRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := detector.NewSelector(current.registry, current.detectorConfig, nil)
+	processes := []detector.Process{
+		{Pid: 1, Name: "claude", Cwd: "/work/claude-project"},
+		{Pid: 2, Name: "codex", Cwd: "/work/codex-project"},
+	}
+	if initial := selector.Select(processes); initial.None || initial.Tool.ID != "claude-code" {
+		t.Fatalf("initial selection = %#v, want pinned claude-code", initial)
+	}
+
+	disabled := false
+	disabledCfg := cfg
+	disabledCfg.Tools = map[string]config.ToolOverride{
+		"claude-code": {Enabled: &disabled},
+	}
+	next, change, err := applyConfigChange(current, disabledCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !change.detector || change.registry {
+		t.Fatalf("disable change = %+v, want detector-only reload", change)
+	}
+	selector.Reconfigure(next.registry, next.detectorConfig)
+	fallback := selector.Select(processes)
+	if fallback.None || fallback.Tool.ID != "codex-cli" {
+		t.Fatalf("fallback selection = %#v, want codex-cli", fallback)
+	}
+	if fallback.Cwd != "/work/codex-project" {
+		t.Fatalf("fallback cwd = %q, want codex process cwd", fallback.Cwd)
+	}
+	if fallback.StartedAt.IsZero() {
+		t.Fatal("fallback start time is zero")
+	}
+	activity := buildActivity(disabledCfg, fallback, "Fixed fallback")
+	if activity == nil {
+		t.Fatal("fallback activity = nil, want codex activity")
+	}
+	if activity.Name != "Codex CLI" || !strings.Contains(activity.Details, "codex-project") {
+		t.Fatalf("fallback activity = %#v, want Codex CLI in codex-project", activity)
+	}
+	if activity.StartTimestamp == nil || !activity.StartTimestamp.Equal(fallback.StartedAt) {
+		t.Fatalf("fallback timestamp = %v, want %v", activity.StartTimestamp, fallback.StartedAt)
+	}
+
+	reenabled := true
+	reenabledCfg := cfg
+	reenabledCfg.Tools = map[string]config.ToolOverride{
+		"claude-code": {Enabled: &reenabled},
+	}
+	restored, change, err := applyConfigChange(next, reenabledCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !change.detector || change.registry {
+		t.Fatalf("re-enable change = %+v, want detector-only reload", change)
+	}
+	selector.Reconfigure(restored.registry, restored.detectorConfig)
+	if selection := selector.Select(processes); selection.None || selection.Tool.ID != "claude-code" {
+		t.Fatalf("re-enabled selection = %#v, want pinned claude-code", selection)
+	}
+}
+
+func TestBuildActivityGlobalDisabledClearsPresence(t *testing.T) {
+	cfg := config.Default()
+	cfg.Enabled = false
+	detection := detector.Detection{
+		Tool:      registry.Tool{ID: "claude-code", DisplayName: "Claude Code"},
+		Cwd:       "/work/claude-project",
+		StartedAt: time.Now(),
+	}
+	if activity := buildActivity(cfg, detection, "Fixed fallback"); activity != nil {
+		t.Fatalf("activity = %#v, want nil when globally disabled", activity)
+	}
+}
+
+func TestAllRunningToolsDisabledClearsPresence(t *testing.T) {
+	cfg := config.Default()
+	disabled := false
+	cfg.Tools = map[string]config.ToolOverride{
+		"claude-code": {Enabled: &disabled},
+		"codex-cli":   {Enabled: &disabled},
+	}
+	runtime, err := newDetectionRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detection := detector.NewSelector(runtime.registry, runtime.detectorConfig, nil).Select([]detector.Process{
+		{Pid: 1, Name: "claude", Cwd: "/work/claude-project"},
+		{Pid: 2, Name: "codex", Cwd: "/work/codex-project"},
+	})
+	if !detection.None {
+		t.Fatalf("selection = %#v, want none when every running tool is disabled", detection)
+	}
+	if activity := buildActivity(cfg, detection, "Fixed fallback"); activity != nil {
+		t.Fatalf("activity = %#v, want nil", activity)
 	}
 }
 

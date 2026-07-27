@@ -1047,11 +1047,17 @@ func applyConfigChange(current detectionRuntime, nextCfg config.Config) (detecti
 		next.registry = reg
 	}
 	change.timing = current.detectorConfig.ScanInterval != next.detectorConfig.ScanInterval
-	change.detector = change.registry || current.detectorConfig != next.detectorConfig
+	change.detector = change.registry || !reflect.DeepEqual(current.detectorConfig, next.detectorConfig)
 	return next, change, nil
 }
 
 func detectorConfig(cfg config.Config) detector.Config {
+	disabledTools := make(map[string]bool)
+	for id, override := range cfg.Tools {
+		if override.Enabled != nil && !*override.Enabled {
+			disabledTools[id] = true
+		}
+	}
 	return detector.Config{
 		ScanInterval:           cfg.ScanIntervalDuration(),
 		IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
@@ -1059,6 +1065,7 @@ func detectorConfig(cfg config.Config) detector.Config {
 		HeadlinerIdleTimeout:   cfg.HeadlinerIdleTimeoutDuration(),
 		CorroborateIdleWithCPU: detector.DefaultCorroborateIdleWithCPU,
 		ActivitySwitching:      cfg.ActivitySwitching,
+		DisabledTools:          disabledTools,
 	}
 }
 

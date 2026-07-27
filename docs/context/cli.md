@@ -61,6 +61,8 @@ usage retention in [`usage.md`](usage.md).
 Structured CLI output and verbose log messages sanitize externally derived terminal
 text. Detection logs resolve the working directory through the same effective privacy
 policy as presence output and report `hidden` when directory display is not allowed.
+Per-tool enablement is passed into detector selection, and hot reloads that change it
+trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
 
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.
