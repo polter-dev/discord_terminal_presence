@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -31,6 +32,12 @@ type recordingRunner struct {
 	calls    int
 	err      error
 }
+
+type skippedUpdateError struct{}
+
+func (skippedUpdateError) Error() string { return "update skipped" }
+
+func (skippedUpdateError) AutomaticUpdateSkipped() bool { return true }
 
 func (r *recordingRunner) Run(_ context.Context, command Command, _ io.Reader, _, _ io.Writer) error {
 	r.calls++
@@ -451,6 +458,18 @@ func TestReleaseCacheWritesPreserveAutomaticUpdateAttempt(t *testing.T) {
 	attempt, ok := ReadAutomaticUpdateAttempt(path)
 	if !ok || attempt.AttemptedAt != attemptedAt || attempt.Target != "v1.2.0" || attempt.Error != "permission denied" {
 		t.Fatalf("automatic update attempt after cache write = (%+v, %t)", attempt, ok)
+	}
+}
+
+func TestRecordAutomaticUpdateAttemptPreservesSkippedOutcome(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "update.json")
+	attemptedAt := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	if err := RecordAutomaticUpdateAttempt(path, "v1.2.0", attemptedAt, fmt.Errorf("preflight: %w", skippedUpdateError{})); err != nil {
+		t.Fatal(err)
+	}
+	attempt, ok := ReadAutomaticUpdateAttempt(path)
+	if !ok || !attempt.Skipped || attempt.Error != "preflight: update skipped" {
+		t.Fatalf("skipped automatic update attempt = (%+v, %t)", attempt, ok)
 	}
 }
 

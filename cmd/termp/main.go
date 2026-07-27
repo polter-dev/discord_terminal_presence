@@ -1647,7 +1647,12 @@ func automaticUpdateFailure(path string) string {
 	if !ok || attempt.Error == "" {
 		return ""
 	}
-	return fmt.Sprintf("failed for %s at %s: %s; run `termp update` manually",
+	outcome := "failed"
+	if attempt.Skipped {
+		outcome = "skipped"
+	}
+	return fmt.Sprintf("%s for %s at %s: %s; run `termp update` manually",
+		outcome,
 		attempt.Target,
 		attempt.AttemptedAt.Local().Format(time.RFC3339),
 		attempt.Error,

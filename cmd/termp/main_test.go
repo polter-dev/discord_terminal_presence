@@ -1364,6 +1364,9 @@ func TestAutomaticUpdateRunsInstallAwareUpdater(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_ = os.Unsetenv("NO_UPDATE_CHECK")
+			if tt.method == updatepkg.InstallGeneric {
+				t.Setenv("BINDIR", t.TempDir())
+			}
 			source := &staticReleaseSource{latest: "v1.1.0"}
 			checker := updatepkg.NewChecker(source, filepath.Join(t.TempDir(), "update-check.json"))
 			checker.DetectInstall = func() updatepkg.InstallMethod { return tt.method }
@@ -1398,6 +1401,7 @@ func TestAutomaticUpdateFailuresDoNotEscape(t *testing.T) {
 			_ = os.Unsetenv("NO_UPDATE_CHECK")
 			checker := updatepkg.NewChecker(tt.source, filepath.Join(t.TempDir(), "update-check.json"))
 			checker.DetectInstall = func() updatepkg.InstallMethod { return updatepkg.InstallGeneric }
+			t.Setenv("BINDIR", t.TempDir())
 			cfg := config.Default()
 			cfg.AutoUpdate = true
 			runAutomaticUpdate(context.Background(), cfg, "1.0.0", checker, tt.runner)

@@ -80,6 +80,16 @@ func runAutomaticUpdateWithStatePath(ctx context.Context, cfg config.Config, cur
 		return
 	}
 
+	if result.Method == updatepkg.InstallGeneric {
+		if err := genericAutomaticUpdatePreflight(); err != nil {
+			if recordErr := updatepkg.RecordAutomaticUpdateAttempt(statePath, result.Latest, time.Now(), err); recordErr != nil {
+				debugf("automatic update skip could not be recorded: %v", recordErr)
+			}
+			debugf("automatic update skipped: %v", err)
+			return
+		}
+	}
+
 	updateCtx, cancelUpdate := context.WithTimeout(ctx, automaticUpdateTimeout)
 	defer cancelUpdate()
 	// Homebrew owns Homebrew-installed binaries, so PerformUpdate delegates to
