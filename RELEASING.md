@@ -28,12 +28,18 @@ releases as pre-releases automatically.
 
 GoReleaser creates the GitHub release as a draft because `.goreleaser.yaml` sets
 `release.draft: true`. After the workflow succeeds, open the draft under the repository's
-**Releases** page, review its notes and artifacts, then choose **Publish release**.
+**Releases** page and review its notes and artifacts, including the generated `termp.rb`.
+The tag workflow does not update the public Homebrew tap.
+
+Choose **Publish release** after approval. Publishing the release triggers a second workflow
+job that verifies the release is public, downloads the exact generated `termp.rb` from the
+release, and commits it to `polter-dev/homebrew-tap`. If this job fails, the release remains
+public but the tap remains at its previous version and the job can be rerun safely.
 
 ## Test locally without publishing
 
 ```sh
-goreleaser release --snapshot --clean
+goreleaser release --snapshot --clean --skip=publish
 ```
 
 Snapshot mode builds local artifacts without creating a GitHub release or updating the
