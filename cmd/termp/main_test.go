@@ -1416,6 +1416,40 @@ func TestAutomaticUpdateFailuresDoNotEscape(t *testing.T) {
 	}
 }
 
+func TestAutomaticUpdateFailureIsReportedAndLaterSuccessClearsIt(t *testing.T) {
+	_ = os.Unsetenv("NO_UPDATE_CHECK")
+	statePath := filepath.Join(t.TempDir(), "update-check.json")
+	source := &staticReleaseSource{latest: "v1.1.0"}
+	checker := updatepkg.NewChecker(source, statePath)
+	checker.DetectInstall = func() updatepkg.InstallMethod { return updatepkg.InstallGo }
+	cfg := config.Default()
+	cfg.AutoUpdate = true
+
+	runner := &recordingUpdateRunner{err: errors.New("permission denied")}
+	runAutomaticUpdateWithStatePath(context.Background(), cfg, "1.0.0", checker, runner, statePath)
+
+	failure := automaticUpdateFailure(statePath)
+	for _, want := range []string{"failed for v1.1.0", "permission denied", "run `termp update` manually"} {
+		if !strings.Contains(failure, want) {
+			t.Fatalf("automatic update failure %q missing %q", failure, want)
+		}
+	}
+	statusOutput := formatStatus(statusInfo{updateFailure: failure})
+	if !strings.Contains(statusOutput, "Updates\n  Automatic  "+failure+"\n") {
+		t.Fatalf("status did not report automatic update failure:\n%s", statusOutput)
+	}
+
+	runner.err = nil
+	runAutomaticUpdateWithStatePath(context.Background(), cfg, "1.0.0", checker, runner, statePath)
+	if failure := automaticUpdateFailure(statePath); failure != "" {
+		t.Fatalf("successful automatic update left stale failure %q", failure)
+	}
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
+	if !ok || attempt.Target != "v1.1.0" || attempt.Error != "" {
+		t.Fatalf("successful automatic update attempt = (%+v, %t), want cleared v1.1.0 attempt", attempt, ok)
+	}
+}
+
 func TestInteractiveOnlyAlertsAreSuppressedForScriptStyleInvocation(t *testing.T) {
 	for _, command := range []string{"settings", "setup", "watch"} {
 		if eligibleForUpdateAlert(command, nil, false) {

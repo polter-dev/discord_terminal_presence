@@ -1305,6 +1305,7 @@ func status(args []string) error {
 		configOK:         loadErr == nil,
 		configError:      loadErr,
 		configWarnings:   cfg.Warnings,
+		updateFailure:    automaticUpdateFailure(updatepkg.DefaultCachePath()),
 		homeDir:          homeDir,
 	}
 
@@ -1591,6 +1592,7 @@ type statusInfo struct {
 	configOK         bool
 	configError      error
 	configWarnings   []string
+	updateFailure    string
 	homeDir          string
 }
 
@@ -1623,7 +1625,7 @@ func formatStatus(info statusInfo) string {
 		configFields = append(configFields, outputField{label: "Warning", value: warning})
 	}
 
-	return formatSections("termp status",
+	sections := []outputSection{
 		outputSection{header: "Daemon", fields: []outputField{
 			{label: "Running", value: yesNo(info.running)},
 			{label: "Discord", value: info.discord},
@@ -1631,6 +1633,24 @@ func formatStatus(info statusInfo) string {
 		}},
 		outputSection{header: "Autostart", fields: autostart},
 		outputSection{header: "Config", fields: configFields},
+	}
+	if info.updateFailure != "" {
+		sections = append(sections, outputSection{header: "Updates", fields: []outputField{
+			{label: "Automatic", value: info.updateFailure},
+		}})
+	}
+	return formatSections("termp status", sections...)
+}
+
+func automaticUpdateFailure(path string) string {
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
+	if !ok || attempt.Error == "" {
+		return ""
+	}
+	return fmt.Sprintf("failed for %s at %s: %s; run `termp update` manually",
+		attempt.Target,
+		attempt.AttemptedAt.Local().Format(time.RFC3339),
+		attempt.Error,
 	)
 }
 

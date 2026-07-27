@@ -65,6 +65,10 @@ func printCommandUpdateAlert(command string, args []string, interactive bool, cf
 // error. They run it asynchronously so even a slow package manager cannot
 // delay the daemon. The installed release is used on the next daemon start.
 func runAutomaticUpdate(ctx context.Context, cfg config.Config, current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner) {
+	runAutomaticUpdateWithStatePath(ctx, cfg, current, checker, runner, updatepkg.DefaultCachePath())
+}
+
+func runAutomaticUpdateWithStatePath(ctx context.Context, cfg config.Config, current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner, statePath string) {
 	if !cfg.AutoUpdate || !cfg.UpdateCheck || checker == nil {
 		return
 	}
@@ -81,8 +85,14 @@ func runAutomaticUpdate(ctx context.Context, cfg config.Config, current string, 
 	// Homebrew owns Homebrew-installed binaries, so PerformUpdate delegates to
 	// `brew upgrade polter-dev/tap/termp` instead of replacing the executable directly.
 	if err := updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, nil, io.Discard, io.Discard); err != nil {
+		if recordErr := updatepkg.RecordAutomaticUpdateAttempt(statePath, result.Latest, time.Now(), err); recordErr != nil {
+			debugf("automatic update failure could not be recorded: %v", recordErr)
+		}
 		debugf("automatic update skipped: %v", err)
 		return
+	}
+	if err := updatepkg.RecordAutomaticUpdateAttempt(statePath, result.Latest, time.Now(), nil); err != nil {
+		debugf("automatic update success could not be recorded: %v", err)
 	}
 	debugf("automatic update installed %s; it will take effect on next start", result.Latest)
 }

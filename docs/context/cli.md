@@ -74,6 +74,10 @@ unchanged.
 
 Automatic updates delegate Homebrew Formula installations to
 `brew upgrade polter-dev/tap/termp`; they do not use the Cask-only `--cask` flag.
+Automatic install failures remain fail-open and non-interactive, but the update
+cache records the attempt time, target version, and error. `termp status`
+reports the latest failure with an instruction to run `termp update` manually;
+a later successful automatic install replaces and clears the failure.
 
 `termp config init` refuses to replace symlinks and other non-regular config
 paths, including with `--force`. Config creation and forced replacement write a

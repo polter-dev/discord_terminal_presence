@@ -438,6 +438,22 @@ func TestCheckerUsesFreshCache(t *testing.T) {
 	}
 }
 
+func TestReleaseCacheWritesPreserveAutomaticUpdateAttempt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "update.json")
+	attemptedAt := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	if err := RecordAutomaticUpdateAttempt(path, "v1.2.0", attemptedAt, errors.New("permission denied")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCache(path, cacheEntry{CheckedAt: attemptedAt.Add(time.Hour), Latest: "v1.3.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	attempt, ok := ReadAutomaticUpdateAttempt(path)
+	if !ok || attempt.AttemptedAt != attemptedAt || attempt.Target != "v1.2.0" || attempt.Error != "permission denied" {
+		t.Fatalf("automatic update attempt after cache write = (%+v, %t)", attempt, ok)
+	}
+}
+
 func TestCachedCheckNeverUsesReleaseSource(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
