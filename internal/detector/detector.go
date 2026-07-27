@@ -14,7 +14,8 @@ const (
 	DefaultDebounceCycles       = 2
 	DefaultHeadlinerIdleTimeout = time.Minute
 
-	activityThreshold = 0.01
+	activityThreshold           = 0.01
+	instanceSwitchConfirmations = 2
 )
 
 // Process is the detector's small, testable view of an OS process.
@@ -250,17 +251,25 @@ type Selector struct {
 	config   Config
 	clock    Clock
 
-	previousFeatured string
-	previousCPU      map[string]float64
-	idleSince        map[string]time.Time
-	processCPU       map[string]processCPUObservation
-	episodes         *EpisodeStore
-	saveEpisodes     func(*EpisodeStore)
+	previousFeatured   string
+	previousCPU        map[string]float64
+	idleSince          map[string]time.Time
+	processCPU         map[string]processCPUObservation
+	selectedInstances  map[string]string
+	instanceChallenges map[string]instanceChallenge
+	episodes           *EpisodeStore
+	saveEpisodes       func(*EpisodeStore)
 }
 
 type processCPUObservation struct {
 	total       float64
 	lastChanged time.Time
+	hasChanged  bool
+}
+
+type instanceChallenge struct {
+	key           string
+	confirmations int
 }
 
 // NewSelector creates a stateful selector for repeated snapshots.
@@ -287,14 +296,16 @@ func newSelectorWithEpisodes(reg *registry.Registry, config Config, clock Clock,
 		episodes = NewEpisodeStore()
 	}
 	return &Selector{
-		registry:     reg,
-		config:       config,
-		clock:        clock,
-		previousCPU:  make(map[string]float64),
-		idleSince:    make(map[string]time.Time),
-		processCPU:   make(map[string]processCPUObservation),
-		episodes:     episodes,
-		saveEpisodes: save,
+		registry:           reg,
+		config:             config,
+		clock:              clock,
+		previousCPU:        make(map[string]float64),
+		idleSince:          make(map[string]time.Time),
+		processCPU:         make(map[string]processCPUObservation),
+		selectedInstances:  make(map[string]string),
+		instanceChallenges: make(map[string]instanceChallenge),
+		episodes:           episodes,
+		saveEpisodes:       save,
 	}
 }
 
@@ -305,8 +316,8 @@ func (s *Selector) Select(processes []Process) Detection {
 
 // SelectWithEnricher returns the collection snapshot, enriching only matched processes.
 func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnricher) Detection {
-	candidates := make(map[string]toolCandidate)
-	collectionCandidates := make(map[string]toolCandidate)
+	candidateInstances := make(map[string][]toolCandidate)
+	collectionInstances := make(map[string][]toolCandidate)
 	cpuTotals := make(map[string]float64)
 	now := s.clock.Now()
 	eligibleEpisodes := make(map[string]struct{})
@@ -331,7 +342,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			}
 		}
 		episodeKey := EpisodeKey(tool.ID, proc.Pid, proc.CreateTime)
-		s.observeProcessCPU(episodeKey, proc.CPUTime, now)
+		processActivity, cpuActivityAt, cpuActivityKnown := s.observeProcessCPU(episodeKey, proc.CPUTime, now)
 		observedProcesses[episodeKey] = struct{}{}
 		featuredEligible := s.presenceEligible(proc, episodeKey, now)
 		if !featuredEligible && !inactiveCollectionEligible(proc) {
@@ -348,21 +359,21 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 				Cwd:       proc.Cwd,
 				StartedAt: startedAt,
 			},
-			CreateTime: proc.CreateTime,
+			CreateTime:       proc.CreateTime,
+			InstanceKey:      episodeKey,
+			ProcessActivity:  processActivity,
+			CPUActivityAt:    cpuActivityAt,
+			CPUActivityKnown: cpuActivityKnown,
+			TTYActivityAt:    proc.TTY.Atime,
+			TTYActivityKnown: proc.TTY.AtimeKnown,
 		}
 
-		current, exists := collectionCandidates[tool.ID]
-		if !exists || isBetterInstance(candidate, current) {
-			collectionCandidates[tool.ID] = candidate
-		}
+		collectionInstances[tool.ID] = append(collectionInstances[tool.ID], candidate)
 		if !featuredEligible {
 			continue
 		}
 		cpuTotals[tool.ID] += proc.CPUTime
-		current, exists = candidates[tool.ID]
-		if !exists || isBetterInstance(candidate, current) {
-			candidates[tool.ID] = candidate
-		}
+		candidateInstances[tool.ID] = append(candidateInstances[tool.ID], candidate)
 	}
 	for key := range s.processCPU {
 		if _, observed := observedProcesses[key]; !observed {
@@ -372,6 +383,17 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	episodesChanged = s.episodes.EndAbsent(eligibleEpisodes) || episodesChanged
 	if episodesChanged && s.saveEpisodes != nil {
 		s.saveEpisodes(s.episodes)
+	}
+
+	candidates := make(map[string]toolCandidate, len(candidateInstances))
+	for id, instances := range candidateInstances {
+		candidates[id] = s.selectInstance(id, instances, now)
+	}
+	for id := range s.selectedInstances {
+		if _, running := candidateInstances[id]; !running {
+			delete(s.selectedInstances, id)
+			delete(s.instanceChallenges, id)
+		}
 	}
 
 	if len(candidates) == 0 {
@@ -404,27 +426,138 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	featured := s.selectFeatured(candidates, now)
 	s.previousFeatured = featured.Tool.ID
 
-	for id, candidate := range collectionCandidates {
+	collectionCandidates := make(map[string]toolCandidate, len(collectionInstances))
+	for id, instances := range collectionInstances {
 		if featuredCandidate, ok := candidates[id]; ok {
-			candidate.Activity = featuredCandidate.Activity
-			collectionCandidates[id] = candidate
+			collectionCandidates[id] = featuredCandidate
+			continue
 		}
+		collectionCandidates[id] = s.bestInstance(instances, now)
 	}
 	others := s.sortedOthers(collectionCandidates, featured.Tool.ID)
 	return detectionFromFeatured(featured, others)
 }
 
-func (s *Selector) observeProcessCPU(key string, total float64, now time.Time) {
+func (s *Selector) observeProcessCPU(key string, total float64, now time.Time) (float64, time.Time, bool) {
 	observation, ok := s.processCPU[key]
 	if !ok {
 		s.processCPU[key] = processCPUObservation{total: total, lastChanged: now}
-		return
+		return 0, time.Time{}, false
+	}
+	activity := total - observation.total
+	if activity < 0 {
+		activity = 0
 	}
 	if total > observation.total {
 		observation.lastChanged = now
+		observation.hasChanged = true
 	}
 	observation.total = total
 	s.processCPU[key] = observation
+	return activity, observation.lastChanged, observation.hasChanged
+}
+
+func (s *Selector) selectInstance(toolID string, instances []toolCandidate, now time.Time) toolCandidate {
+	best := s.bestInstance(instances, now)
+	selectedKey := s.selectedInstances[toolID]
+	if selectedKey == "" {
+		s.selectedInstances[toolID] = best.InstanceKey
+		return best
+	}
+
+	var current toolCandidate
+	currentFound := false
+	for _, instance := range instances {
+		if instance.InstanceKey == selectedKey {
+			current = instance
+			currentFound = true
+			break
+		}
+	}
+	if !currentFound {
+		s.selectedInstances[toolID] = best.InstanceKey
+		delete(s.instanceChallenges, toolID)
+		return best
+	}
+	if best.InstanceKey == current.InstanceKey || !s.clearlyBetterInstance(best, current, now) {
+		delete(s.instanceChallenges, toolID)
+		return current
+	}
+
+	challenge := s.instanceChallenges[toolID]
+	if challenge.key != best.InstanceKey {
+		challenge = instanceChallenge{key: best.InstanceKey}
+	}
+	challenge.confirmations++
+	if challenge.confirmations < instanceSwitchConfirmations {
+		s.instanceChallenges[toolID] = challenge
+		return current
+	}
+
+	s.selectedInstances[toolID] = best.InstanceKey
+	delete(s.instanceChallenges, toolID)
+	return best
+}
+
+func (s *Selector) bestInstance(instances []toolCandidate, now time.Time) toolCandidate {
+	best := instances[0]
+	for _, candidate := range instances[1:] {
+		if s.isBetterInstance(candidate, best, now) {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func (s *Selector) isBetterInstance(left, right toolCandidate, now time.Time) bool {
+	if left.ProcessActivity > right.ProcessActivity+activityThreshold {
+		return true
+	}
+	if right.ProcessActivity > left.ProcessActivity+activityThreshold {
+		return false
+	}
+	leftActivity, leftActive := s.instanceActivityAt(left, now)
+	rightActivity, rightActive := s.instanceActivityAt(right, now)
+	if leftActive != rightActive {
+		return leftActive
+	}
+	if leftActive && !leftActivity.Equal(rightActivity) {
+		return leftActivity.After(rightActivity)
+	}
+	return isNewerInstance(left, right)
+}
+
+func (s *Selector) clearlyBetterInstance(challenger, current toolCandidate, now time.Time) bool {
+	if challenger.ProcessActivity > current.ProcessActivity+activityThreshold {
+		return true
+	}
+	challengerActivity, challengerActive := s.instanceActivityAt(challenger, now)
+	currentActivity, currentActive := s.instanceActivityAt(current, now)
+	if !challengerActive {
+		return false
+	}
+	if !currentActive {
+		return true
+	}
+	return challengerActivity.Sub(currentActivity) >= s.config.ScanInterval
+}
+
+func (s *Selector) instanceActivityAt(candidate toolCandidate, now time.Time) (time.Time, bool) {
+	var latest time.Time
+	if candidate.CPUActivityKnown {
+		latest = candidate.CPUActivityAt
+	}
+	if candidate.TTYActivityKnown && candidate.TTYActivityAt.After(latest) {
+		latest = candidate.TTYActivityAt
+	}
+	if latest.IsZero() {
+		return time.Time{}, false
+	}
+	age := now.Sub(latest)
+	if age < 0 {
+		age = 0
+	}
+	return latest, age < s.config.HeadlinerIdleTimeout
 }
 
 func (s *Selector) presenceEligible(proc Process, episodeKey string, now time.Time) bool {
@@ -507,8 +640,14 @@ func isBetterActiveCandidate(left, right toolCandidate) bool {
 
 type toolCandidate struct {
 	FeaturedTool
-	Activity   float64
-	CreateTime time.Time
+	Activity         float64
+	CreateTime       time.Time
+	InstanceKey      string
+	ProcessActivity  float64
+	CPUActivityAt    time.Time
+	CPUActivityKnown bool
+	TTYActivityAt    time.Time
+	TTYActivityKnown bool
 }
 
 func mostActive(candidates map[string]toolCandidate, excludeID string) (toolCandidate, bool) {
@@ -710,7 +849,7 @@ func processEnricher(lister ProcessLister) ProcessEnricher {
 	return enricher
 }
 
-func isBetterInstance(left, right toolCandidate) bool {
+func isNewerInstance(left, right toolCandidate) bool {
 	if !left.CreateTime.Equal(right.CreateTime) {
 		return left.CreateTime.After(right.CreateTime)
 	}

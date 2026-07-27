@@ -34,6 +34,13 @@ trustworthy atime (including Linux devpts mounted with the usual `relatime`),
 recent per-process CPU activity is used as the idle signal. If CPU activity is
 also unavailable, eligibility fails open.
 
+When one tool has multiple eligible processes, the selector keeps the current
+representative unless the same challenger has a clear per-process CPU or recent
+terminal-activity advantage for two consecutive scans. With no distinguishing
+activity signal, the newer process remains the fallback. This instance-level
+hysteresis prevents alternating sessions from changing the displayed directory
+and elapsed-session anchor every scan.
+
 Process-list failures retain the last presence for one or two consecutive
 scans. On the third consecutive failure, the detector emits `None` immediately
 so the writer clears stale Discord presence. A successful scan resets the
