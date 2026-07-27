@@ -1290,6 +1290,10 @@ func status(args []string) error {
 	})
 	serviceState := probes.service
 	homeDir, _ := os.UserHomeDir()
+	updateMethod := updatepkg.InstallGeneric
+	if cfg.AutoUpdate && runtime.GOOS == "windows" {
+		updateMethod = updatepkg.DetectInstallMethod()
+	}
 	info := statusInfo{
 		running:          running,
 		discord:          probes.discord,
@@ -1305,7 +1309,7 @@ func status(args []string) error {
 		configOK:         loadErr == nil,
 		configError:      loadErr,
 		configWarnings:   cfg.Warnings,
-		updateFailure:    automaticUpdateFailure(updatepkg.DefaultCachePath()),
+		updateFailure:    automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, runtime.GOOS, updateMethod),
 		homeDir:          homeDir,
 	}
 
@@ -1657,6 +1661,19 @@ func automaticUpdateFailure(path string) string {
 		attempt.AttemptedAt.Local().Format(time.RFC3339),
 		attempt.Error,
 	)
+}
+
+func automaticUpdateStatus(path string, enabled bool, goos string, method updatepkg.InstallMethod) string {
+	if enabled {
+		if err := automaticUpdatePlatformPreflight(goos, method); err != nil {
+			attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
+			if ok && attempt.Skipped && attempt.Error == err.Error() {
+				return automaticUpdateFailure(path)
+			}
+			return fmt.Sprintf("skipped: %s", err)
+		}
+	}
+	return automaticUpdateFailure(path)
 }
 
 func autostartLocationLabel(goos string) string {
