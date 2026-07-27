@@ -2003,7 +2003,7 @@ func TestDebugDetectionDirectoryHonorsPrivacy(t *testing.T) {
 	cfg.Privacy.DirectoryAllowlist = []string{filepath.Dir(detection.Cwd)}
 
 	got := debugDetectionDirectory(cfg, detection)
-	want := filepath.Join("clients", "acme-secret-project")
+	want := "clients/acme-secret-project"
 	if got != want {
 		t.Fatalf("allowed deep debug directory = %q, want final two components %q", got, want)
 	}
