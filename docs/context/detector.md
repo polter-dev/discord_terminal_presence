@@ -23,3 +23,7 @@ Process-list failures retain the last presence for one or two consecutive
 scans. On the third consecutive failure, the detector emits `None` immediately
 so the writer clears stale Discord presence. A successful scan resets the
 failure counter, and normal detection debounce applies when presence recovers.
+
+Episode-store load and save failures are reported through the detector's debug
+callback. The detector continues with its in-memory episode store so persistence
+failures do not change scan or elapsed-timer semantics.

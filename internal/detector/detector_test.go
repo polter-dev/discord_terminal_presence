@@ -1224,6 +1224,101 @@ func TestRunDebugfEmitsScanAndDetectionDiagnostics(t *testing.T) {
 	}
 }
 
+func TestRunDebugfReportsEpisodeStoreLoadFailure(t *testing.T) {
+	det, err := New(testRegistry(t), &fakeLister{}, Config{
+		ScanInterval:   time.Hour,
+		DebounceCycles: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	det.presenceStatePath = t.TempDir()
+	lines := make(chan string, 16)
+	det.SetDebugf(func(format string, args ...any) {
+		lines <- fmt.Sprintf(format, args...)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	detections := det.Run(ctx)
+	select {
+	case <-detections:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for detection")
+	}
+	cancel()
+	for range detections {
+	}
+	close(lines)
+
+	var output strings.Builder
+	for line := range lines {
+		output.WriteString(line)
+		output.WriteByte('\n')
+	}
+	if !strings.Contains(output.String(), "episode store load failed:") {
+		t.Fatalf("debug output = %q, want episode store load failure", output.String())
+	}
+}
+
+func TestRunDebugfReportsEpisodeStoreSaveFailure(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if err := os.Mkdir(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	lister := newControlledLister()
+	det, err := New(testRegistry(t), lister, Config{
+		ScanInterval:   time.Hour,
+		DebounceCycles: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	det.presenceStatePath = filepath.Join(stateDir, "presence.json")
+	lines := make(chan string, 16)
+	det.SetDebugf(func(format string, args ...any) {
+		lines <- fmt.Sprintf(format, args...)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	detections := det.Run(ctx)
+	select {
+	case <-lister.calls:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for process scan")
+	}
+	if err := os.Remove(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stateDir, []byte("block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lister.results <- processListResult{processes: []Process{{
+		Pid:        7,
+		Name:       "claude",
+		CreateTime: time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC),
+	}}}
+	select {
+	case <-detections:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for detection")
+	}
+	cancel()
+	for range detections {
+	}
+	close(lines)
+
+	var output strings.Builder
+	for line := range lines {
+		output.WriteString(line)
+		output.WriteByte('\n')
+	}
+	if !strings.Contains(output.String(), "episode store save failed:") {
+		t.Fatalf("debug output = %q, want episode store save failure", output.String())
+	}
+}
+
 func TestRunEmitsNoneAfterDebounce(t *testing.T) {
 	lister := &fakeLister{snapshots: [][]Process{
 		{{Name: "bash"}},
