@@ -359,6 +359,45 @@ func TestInitFileRefusesExistingWithoutForce(t *testing.T) {
 	}
 }
 
+func TestInitFileRefusesSymlink(t *testing.T) {
+	path := withConfigHome(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target.toml")
+	const original = "target contents\n"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable on this account: %v", err)
+	}
+
+	err := InitFile(path, true)
+	if err == nil || !strings.Contains(err.Error(), "non-regular") {
+		t.Fatalf("InitFile() error = %v, want non-regular file error", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatalf("symlink target was overwritten: %q", data)
+	}
+}
+
+func TestInitFileRefusesNonRegularFile(t *testing.T) {
+	path := withConfigHome(t)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := InitFile(path, true)
+	if err == nil || !strings.Contains(err.Error(), "non-regular") {
+		t.Fatalf("InitFile() error = %v, want non-regular file error", err)
+	}
+}
+
 func TestInitFileForceOverwrites(t *testing.T) {
 	path := withConfigHome(t)
 	writeConfig(t, path, `enabled = false`)
