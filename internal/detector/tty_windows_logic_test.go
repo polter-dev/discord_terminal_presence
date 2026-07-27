@@ -159,10 +159,11 @@ func TestWindowsTTYAtimeUnfocusedPastIdleTimeoutClearsPresence(t *testing.T) {
 		source,
 	)
 	process := Process{
-		Pid:        1,
-		Name:       "claude",
-		CreateTime: base.Add(-time.Hour),
-		CPUTime:    10,
+		Pid:          1,
+		Name:         "claude",
+		CreateTime:   base.Add(-time.Hour),
+		CPUTime:      10,
+		CPUTimeKnown: true,
 	}
 
 	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {
@@ -210,10 +211,11 @@ func TestWindowsFocusedWorkingProcessDoesNotRequireUserInput(t *testing.T) {
 		source,
 	)
 	process := Process{
-		Pid:        1,
-		Name:       "claude",
-		CreateTime: base.Add(-time.Hour),
-		CPUTime:    10,
+		Pid:          1,
+		Name:         "claude",
+		CreateTime:   base.Add(-time.Hour),
+		CPUTime:      10,
+		CPUTimeKnown: true,
 	}
 
 	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {
@@ -251,10 +253,11 @@ func TestWindowsFocusedProcessWithoutInputOrCPUEventuallyIdles(t *testing.T) {
 		source,
 	)
 	process := Process{
-		Pid:        1,
-		Name:       "claude",
-		CreateTime: base.Add(-time.Hour),
-		CPUTime:    10,
+		Pid:          1,
+		Name:         "claude",
+		CreateTime:   base.Add(-time.Hour),
+		CPUTime:      10,
+		CPUTimeKnown: true,
 	}
 
 	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {
@@ -289,10 +292,11 @@ func TestWindowsFocusedPinnedInputStillRequiresCPUCorroboration(t *testing.T) {
 		source,
 	)
 	process := Process{
-		Pid:        1,
-		Name:       "claude",
-		CreateTime: base.Add(-time.Hour),
-		CPUTime:    10,
+		Pid:          1,
+		Name:         "claude",
+		CreateTime:   base.Add(-time.Hour),
+		CPUTime:      10,
+		CPUTimeKnown: true,
 	}
 
 	if detection := selector.SelectWithEnricher([]Process{process}, enricher); detection.None {

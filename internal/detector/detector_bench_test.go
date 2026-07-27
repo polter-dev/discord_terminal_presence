@@ -43,6 +43,7 @@ func newBenchmarkProcessLister(size int) *benchmarkProcessLister {
 		enriched.Cwd = fmt.Sprintf("/workspace/project-%03d", i%17)
 		enriched.CreateTime = base.Add(time.Duration(i) * time.Second)
 		enriched.CPUTime = float64(i%31) + 0.25
+		enriched.CPUTimeKnown = true
 
 		lister.identities = append(lister.identities, identity)
 		lister.enriched = append(lister.enriched, enriched)

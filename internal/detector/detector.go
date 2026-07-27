@@ -20,16 +20,17 @@ const (
 
 // Process is the detector's small, testable view of an OS process.
 type Process struct {
-	Pid        int32
-	Name       string
-	Exe        string
-	Cmdline    string
-	Argv0      string
-	Argv       []string
-	Cwd        string
-	CreateTime time.Time
-	CPUTime    float64
-	TTY        TTYInfo
+	Pid          int32
+	Name         string
+	Exe          string
+	Cmdline      string
+	Argv0        string
+	Argv         []string
+	Cwd          string
+	CreateTime   time.Time
+	CPUTime      float64
+	CPUTimeKnown bool
+	TTY          TTYInfo
 }
 
 // TTYState distinguishes a definitive lack of a controlling tty from an
@@ -266,6 +267,7 @@ type processCPUObservation struct {
 	total       float64
 	lastChanged time.Time
 	hasChanged  bool
+	available   bool
 }
 
 type instanceChallenge struct {
@@ -346,7 +348,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			}
 		}
 		episodeKey := EpisodeKey(tool.ID, proc.Pid, proc.CreateTime)
-		processActivity, cpuActivityAt, cpuActivityKnown := s.observeProcessCPU(episodeKey, proc.CPUTime, now)
+		processActivity, cpuActivityAt, cpuActivityKnown := s.observeProcessCPU(episodeKey, proc.CPUTime, proc.CPUTimeKnown, now)
 		observedProcesses[episodeKey] = struct{}{}
 		featuredEligible := s.presenceEligible(proc, episodeKey, now)
 		if !featuredEligible && !inactiveCollectionEligible(proc) {
@@ -442,10 +444,15 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	return detectionFromFeatured(featured, others)
 }
 
-func (s *Selector) observeProcessCPU(key string, total float64, now time.Time) (float64, time.Time, bool) {
+func (s *Selector) observeProcessCPU(key string, total float64, available bool, now time.Time) (float64, time.Time, bool) {
 	observation, ok := s.processCPU[key]
-	if !ok {
-		s.processCPU[key] = processCPUObservation{total: total, lastChanged: now}
+	if !available {
+		observation.available = false
+		s.processCPU[key] = observation
+		return 0, time.Time{}, false
+	}
+	if !ok || !observation.available {
+		s.processCPU[key] = processCPUObservation{total: total, lastChanged: now, available: true}
 		return 0, time.Time{}, false
 	}
 	activity := total - observation.total
@@ -457,6 +464,7 @@ func (s *Selector) observeProcessCPU(key string, total float64, now time.Time) (
 		observation.hasChanged = true
 	}
 	observation.total = total
+	observation.available = true
 	s.processCPU[key] = observation
 	return activity, observation.lastChanged, observation.hasChanged
 }
@@ -573,14 +581,18 @@ func (s *Selector) presenceEligible(proc Process, episodeKey string, now time.Ti
 	}
 	if !proc.TTY.AtimeKnown {
 		observation, ok := s.processCPU[episodeKey]
-		if !ok {
+		if !ok || !observation.available {
 			return true
 		}
 		cpuAge := now.Sub(observation.lastChanged)
 		return cpuAge < 0 || cpuAge < s.config.IdleClearTimeout
 	}
-	cpuAge := now.Sub(s.processCPU[episodeKey].lastChanged)
-	cpuRecent := cpuAge < 0 || cpuAge < s.config.IdleClearTimeout
+	observation, ok := s.processCPU[episodeKey]
+	cpuRecent := true
+	if ok && observation.available {
+		cpuAge := now.Sub(observation.lastChanged)
+		cpuRecent = cpuAge < 0 || cpuAge < s.config.IdleClearTimeout
+	}
 	if s.config.CorroborateIdleWithCPU && proc.TTY.FocusKnown && proc.TTY.Foreground {
 		return cpuRecent
 	}

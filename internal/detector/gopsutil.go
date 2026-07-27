@@ -129,8 +129,10 @@ func enrichProcess(proc *psprocess.Process, process Process) Process {
 	if millis, err := proc.CreateTime(); err == nil && millis > 0 {
 		process.CreateTime = time.UnixMilli(millis)
 	}
+	process.CPUTimeKnown = false
 	if times, err := proc.Times(); err == nil && times != nil {
 		process.CPUTime = times.User + times.System
+		process.CPUTimeKnown = true
 	}
 	return process
 }

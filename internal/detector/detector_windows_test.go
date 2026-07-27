@@ -119,8 +119,8 @@ func TestSelectorIncludesToolInUnfocusedWindowAsOther(t *testing.T) {
 	)
 
 	detection := selector.SelectWithEnricher([]Process{
-		{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour), CPUTime: 10},
-		{Pid: 2, Name: "codex", CreateTime: base.Add(-time.Minute), CPUTime: 10},
+		{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour), CPUTime: 10, CPUTimeKnown: true},
+		{Pid: 2, Name: "codex", CreateTime: base.Add(-time.Minute), CPUTime: 10, CPUTimeKnown: true},
 	}, enricher)
 
 	if detection.None || detection.Tool.ID != "codex-cli" {

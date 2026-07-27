@@ -31,8 +31,9 @@ both sets.
 On macOS and Linux, collection membership continues to use the same terminal
 activity eligibility as featured selection. When a resolved terminal has no
 trustworthy atime (including Linux devpts mounted with the usual `relatime`),
-recent per-process CPU activity is used as the idle signal. If CPU activity is
-also unavailable, eligibility fails open.
+recent per-process CPU activity is used as the idle signal. CPU observations
+carry sampling availability separately from the sampled total; failed samples
+fail open instead of treating a silent zero as inactivity.
 
 When one tool has multiple eligible processes, the selector keeps the current
 representative unless the same challenger has a clear per-process CPU or recent
