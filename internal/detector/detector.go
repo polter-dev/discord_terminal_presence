@@ -751,60 +751,85 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 	selector := newSelectorWithEpisodes(d.registry, d.config, systemClock{}, episodes, saveEpisodes)
 	defer saveEpisodes(episodes)
 
+	var ticker *time.Ticker
+	applyReconfigure := func(request reconfigureRequest) {
+		intervalChanged := request.config.ScanInterval != d.config.ScanInterval
+		d.registry = request.registry
+		d.config = request.config
+		selector.Reconfigure(request.registry, request.config)
+		if ticker != nil && intervalChanged {
+			ticker.Reset(request.config.ScanInterval)
+		}
+		// Registry metadata and selection settings can change the rendered
+		// activity even when the selected IDs stay the same.
+		hasEmitted = false
+		candidateSet = false
+		close(request.done)
+	}
+
 	scan := func(forceEmit bool) bool {
-		processes, err := listProcesses(d.lister)
-		if err != nil {
-			scanFailures++
-			d.debugf("process scan failed: %v", err)
-			if scanFailures < ScanFailureClearThreshold || !hasEmitted || emitted.None {
+		for {
+			processes, err := listProcesses(d.lister)
+			if err != nil {
+				scanFailures++
+				d.debugf("process scan failed: %v", err)
+				if scanFailures < ScanFailureClearThreshold || !hasEmitted || emitted.None {
+					return true
+				}
+				none := Detection{None: true}
+				select {
+				case out <- none:
+					d.debugf("detection emitted after %d consecutive scan failures: %s", scanFailures, detectionSummary(none))
+					emitted = none
+					candidate = none
+					candidateSet = true
+					streak = 0
+					return true
+				case request := <-d.reconfigure:
+					applyReconfigure(request)
+					forceEmit = true
+					continue
+				case <-ctx.Done():
+					return false
+				}
+			}
+			if scanFailures > 0 {
+				d.debugf("process scan recovered after %d failure(s)", scanFailures)
+				scanFailures = 0
+			}
+			d.debugf("process scan: processes=%d", len(processes))
+			current := selector.SelectWithEnricher(processes, processEnricher(d.lister))
+
+			if !candidateSet || !sameDetection(current, candidate) {
+				candidate = current
+				candidateSet = true
+				streak = 1
+				d.debugf("detection candidate changed: %s", detectionSummary(current))
+			} else {
+				streak++
+			}
+
+			if !forceEmit && streak < d.config.DebounceCycles {
+				d.debugf("detection decision: debounce=%d/%d", streak, d.config.DebounceCycles)
 				return true
 			}
-			none := Detection{None: true}
-			select {
-			case out <- none:
-				d.debugf("detection emitted after %d consecutive scan failures: %s", scanFailures, detectionSummary(none))
-				emitted = none
-				candidate = none
-				candidateSet = true
-				streak = 0
+			if !forceEmit && hasEmitted && sameDetection(candidate, emitted) {
+				d.debugf("detection decision: unchanged")
 				return true
+			}
+
+			select {
+			case out <- candidate:
+				d.debugf("detection emitted: %s", detectionSummary(candidate))
+				emitted = candidate
+				hasEmitted = true
+				return true
+			case request := <-d.reconfigure:
+				applyReconfigure(request)
+				forceEmit = true
 			case <-ctx.Done():
 				return false
 			}
-		}
-		if scanFailures > 0 {
-			d.debugf("process scan recovered after %d failure(s)", scanFailures)
-			scanFailures = 0
-		}
-		d.debugf("process scan: processes=%d", len(processes))
-		current := selector.SelectWithEnricher(processes, processEnricher(d.lister))
-
-		if !candidateSet || !sameDetection(current, candidate) {
-			candidate = current
-			candidateSet = true
-			streak = 1
-			d.debugf("detection candidate changed: %s", detectionSummary(current))
-		} else {
-			streak++
-		}
-
-		if !forceEmit && streak < d.config.DebounceCycles {
-			d.debugf("detection decision: debounce=%d/%d", streak, d.config.DebounceCycles)
-			return true
-		}
-		if !forceEmit && hasEmitted && sameDetection(candidate, emitted) {
-			d.debugf("detection decision: unchanged")
-			return true
-		}
-
-		select {
-		case out <- candidate:
-			d.debugf("detection emitted: %s", detectionSummary(candidate))
-			emitted = candidate
-			hasEmitted = true
-			return true
-		case <-ctx.Done():
-			return false
 		}
 	}
 
@@ -812,7 +837,7 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 		return
 	}
 
-	ticker := time.NewTicker(d.config.ScanInterval)
+	ticker = time.NewTicker(d.config.ScanInterval)
 	defer ticker.Stop()
 
 	for {
@@ -822,18 +847,7 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 				return
 			}
 		case request := <-d.reconfigure:
-			intervalChanged := request.config.ScanInterval != d.config.ScanInterval
-			d.registry = request.registry
-			d.config = request.config
-			selector.Reconfigure(request.registry, request.config)
-			if intervalChanged {
-				ticker.Reset(request.config.ScanInterval)
-			}
-			// Registry metadata and selection settings can change the rendered
-			// activity even when the selected IDs stay the same.
-			hasEmitted = false
-			candidateSet = false
-			close(request.done)
+			applyReconfigure(request)
 			if !scan(true) {
 				return
 			}

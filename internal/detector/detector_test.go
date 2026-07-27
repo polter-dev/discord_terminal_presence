@@ -1707,6 +1707,115 @@ func TestReconfigureResetsTickerCadence(t *testing.T) {
 	}
 }
 
+func TestReconfigureCompletesWhileDetectionEmitIsBlocked(t *testing.T) {
+	base := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	lister := newControlledLister()
+	reg := testRegistry(t)
+	det, err := New(reg, lister, Config{
+		ScanInterval:      time.Millisecond,
+		DebounceCycles:    1,
+		ActivitySwitching: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	det.presenceStatePath = filepath.Join(t.TempDir(), "presence.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	detections := det.Run(ctx)
+	waitForScan := func() {
+		t.Helper()
+		select {
+		case <-lister.calls:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for process scan")
+		}
+	}
+	completeScan := func(processes []Process) {
+		t.Helper()
+		select {
+		case lister.results <- processListResult{processes: processes}:
+		case <-time.After(time.Second):
+			t.Fatal("timed out completing process scan")
+		}
+	}
+
+	waitForScan()
+	completeScan([]Process{{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base,
+		Cwd:        "/initial",
+	}})
+
+	// Leave the first detection buffered, then change the candidate so the next
+	// scan blocks trying to emit into the full one-slot channel.
+	waitForScan()
+	completeScan([]Process{{
+		Pid:        2,
+		Name:       "codex",
+		CreateTime: base.Add(time.Minute),
+		Cwd:        "/stale",
+	}})
+
+	reconfigured := make(chan error, 1)
+	go func() {
+		reconfigured <- det.Reconfigure(ctx, reg, Config{
+			ScanInterval:      time.Hour,
+			DebounceCycles:    1,
+			Pin:               "claude-code",
+			ActivitySwitching: true,
+		})
+	}()
+	select {
+	case err := <-reconfigured:
+		if err != nil {
+			t.Fatalf("Reconfigure() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		select {
+		case <-reconfigured:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("Reconfigure blocked while detector was waiting to emit")
+	}
+
+	// Reconfiguration invalidates the blocked old-config candidate and performs
+	// an immediate scan. The next emission must be derived from the new config.
+	waitForScan()
+	completeScan([]Process{
+		{Pid: 1, Name: "claude", CreateTime: base, Cwd: "/reconfigured"},
+		{Pid: 2, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/stale"},
+	})
+	select {
+	case initial := <-detections:
+		if initial.Tool.ID != "claude-code" || initial.Cwd != "/initial" {
+			t.Fatalf("initial detection = %#v, want claude-code /initial", initial)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out draining initial detection")
+	}
+	select {
+	case reloaded := <-detections:
+		if reloaded.Tool.ID != "claude-code" || reloaded.Cwd != "/reconfigured" {
+			t.Fatalf("reloaded detection = %#v, want re-derived claude-code /reconfigured", reloaded)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for re-derived detection")
+	}
+
+	cancel()
+	select {
+	case _, ok := <-detections:
+		if ok {
+			t.Fatal("detection channel remained open after cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for detector shutdown")
+	}
+}
+
 func TestReconfigureAppliesPinOnImmediateScan(t *testing.T) {
 	base := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	lister := &fakeLister{snapshots: [][]Process{{
