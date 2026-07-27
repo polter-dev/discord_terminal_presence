@@ -2076,6 +2076,51 @@ accent_color = "cyan"
 	}
 }
 
+func TestWatchOnceReportsInvalidConfigFallback(t *testing.T) {
+	configHome := withTermpConfigHome(t)
+
+	path := filepath.Join(configHome, "termp", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`enabled = "not-a-bool"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	oldVerbose := verbose
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+		verbose = oldVerbose
+	})
+
+	var stderr bytes.Buffer
+	log.SetOutput(&stderr)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	verbose = false
+
+	if _, err := captureStdout(t, func() error {
+		return watch([]string{"--once"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := stderr.String()
+	for _, want := range []string{
+		"config load failed",
+		"using built-in defaults",
+		`termp status`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("watch --once stderr = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestCompletionScriptsContainCommands(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		t.Run(shell, func(t *testing.T) {

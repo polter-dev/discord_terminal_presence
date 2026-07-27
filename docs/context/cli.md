@@ -79,6 +79,9 @@ Live watch loads the daemon's episode anchors for matching elapsed-time display 
 the detector read-only, leaving `presence.json` persistence exclusively to the daemon.
 It shares the daemon's config-change transaction and hot-reconfigures detector settings;
 display-only changes re-render the last detection without forcing another scan.
+When initial config loading fails, `watch --once` warns on stderr that built-in defaults
+are active and points to `termp status`; interactive watch shows the same warning inside
+the alternate-screen view so it remains visible without corrupting the terminal.
 
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.

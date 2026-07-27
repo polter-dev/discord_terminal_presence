@@ -1795,7 +1795,7 @@ func watch(args []string) error {
 			return err
 		}
 		for _, warning := range warnings {
-			log.Print(warning)
+			log.Print(terminaltext.Sanitize(warning))
 		}
 		fmt.Println(card)
 		return nil
@@ -1811,9 +1811,6 @@ func watch(args []string) error {
 
 	manager := config.NewManager()
 	cfg, loadErr := manager.Current()
-	if loadErr != nil {
-		log.Printf("config load error, using last-good/default config: %v", loadErr)
-	}
 	for _, warning := range cfg.Warnings {
 		log.Print(warning)
 	}
@@ -1832,7 +1829,10 @@ func watch(args []string) error {
 		return err
 	}
 
-	model := tui.NewWatchModel()
+	model := tui.NewWatchModelWithConfig(cfg, time.Now)
+	if loadErr != nil {
+		model.SetWarning(configLoadFallbackWarning(loadErr))
+	}
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	detections := det.RunReadOnly(ctx)
 
@@ -1846,9 +1846,6 @@ func watch(args []string) error {
 
 func watchSnapshot(now time.Time) (string, []string, error) {
 	cfg, loadErr := config.Load()
-	if loadErr != nil {
-		debugf("config load error, using last-good/default config: %v", loadErr)
-	}
 	reg, err := registry.NewWithCustom(cfg.CustomTools...)
 	if err != nil {
 		return "", nil, err
@@ -1873,12 +1870,20 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 	if activity != nil && detection.Tool.DisplayName != "" {
 		recent = []tui.RecentDetection{{Name: detection.Tool.DisplayName, At: now}}
 	}
+	warnings := cfg.Warnings
+	if loadErr != nil {
+		warnings = append([]string{configLoadFallbackWarning(loadErr)}, warnings...)
+	}
 	return tui.RenderCard(tui.CardState{
 		Activity:  activity,
 		Connected: connected,
 		Now:       now,
 		Recent:    recent,
-	}, tui.DefaultCardStyles(cfg.UI.AccentColor)), cfg.Warnings, nil
+	}, tui.DefaultCardStyles(cfg.UI.AccentColor)), warnings, nil
+}
+
+func configLoadFallbackWarning(err error) string {
+	return fmt.Sprintf(`config load failed; using built-in defaults; run "termp status" for details: %v`, err)
 }
 
 type detectorReconfigurer interface {
