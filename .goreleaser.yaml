@@ -70,6 +70,8 @@ nfpms:
 
 homebrew_casks:
   - name: termp
+    # The release.published workflow uploads this generated cask after approval.
+    skip_upload: true
     binaries:
       - termp
     repository:
@@ -89,3 +91,5 @@ homebrew_casks:
 release:
   # The polter-dev/homebrew-tap repository must exist before running goreleaser release.
   draft: true
+  extra_files:
+    - glob: ./dist/homebrew/Casks/termp.rb

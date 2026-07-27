@@ -72,6 +72,10 @@ tag as the archive filename and checksum, and falls back to the tag-pinned GitHu
 on any failure. Checksums remain tag-pinned direct GitHub downloads and are verified
 unchanged.
 
+Tag builds create a draft GitHub release and retain the generated Homebrew Cask as a release
+asset without updating the public tap. Publishing the approved release triggers the tap
+update from that exact cask only after the workflow verifies that the release is public.
+
 Automatic updates delegate Homebrew Formula installations to
 `brew upgrade polter-dev/tap/termp`; they do not use the Cask-only `--cask` flag.
 Automatic install failures remain fail-open and non-interactive, but the update

@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*"
+  release:
+    types:
+      - published
 
 permissions:
   contents: write
@@ -14,6 +17,7 @@ concurrency:
 
 jobs:
   release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -34,4 +38,46 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+  publish-homebrew-cask:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download cask from public release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .draft)" = "false"
+          mkdir -p dist/homebrew/Casks
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern termp.rb \
+            --dir dist/homebrew/Casks
+
+      - name: Publish cask to Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          api_path="repos/polter-dev/homebrew-tap/contents/Casks/termp.rb"
+          content="$(base64 -w 0 dist/homebrew/Casks/termp.rb)"
+          existing_sha="$(gh api "${api_path}" --jq .sha 2>/dev/null || true)"
+          generated_sha="$(git hash-object dist/homebrew/Casks/termp.rb)"
+
+          if [[ "${existing_sha}" == "${generated_sha}" ]]; then
+            echo "Homebrew cask is already current."
+            exit 0
+          fi
+
+          args=(
+            --method PUT
+            "${api_path}"
+            -f "message=chore: update termp cask for ${RELEASE_TAG}"
+            -f "content=${content}"
+          )
+          if [[ -n "${existing_sha}" ]]; then
+            args+=(-f "sha=${existing_sha}")
+          fi
+
+          gh api "${args[@]}"
