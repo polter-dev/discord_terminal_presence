@@ -875,6 +875,181 @@ func TestUnixMutationsRefuseForeignDefinitions(t *testing.T) {
 	}
 }
 
+func TestUnixUnreadableDefinitionsRequireForce(t *testing.T) {
+	platforms := []struct {
+		name string
+		goos string
+		path func() (string, error)
+	}{
+		{name: "linux", goos: "linux", path: systemdUnitPath},
+		{name: "darwin", goos: "darwin", path: launchAgentPath},
+	}
+
+	for _, platform := range platforms {
+		t.Run(platform.name+"/without force", func(t *testing.T) {
+			fakeHome(t)
+			path, err := platform.path()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("existing definition"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			makeUnreadable(t, path)
+
+			runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
+			manager := Manager{GOOS: platform.goos, Runner: runner, Executable: "/opt/termp"}
+			state, err := manager.InstallDefinition("/opt/termp", false)
+			if err == nil ||
+				!strings.Contains(err.Error(), path) ||
+				!strings.Contains(err.Error(), "ownership could not be verified") ||
+				!strings.Contains(err.Error(), "--force") {
+				t.Fatalf("InstallDefinition() error = %v, want actionable ownership refusal for %s", err, path)
+			}
+			if !state.ForeignTask {
+				t.Fatalf("InstallDefinition() state = %+v, want ownership-unknown definition", state)
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("InstallDefinition() calls = %#v, want no runner invocation", runner.calls)
+			}
+		})
+
+		t.Run(platform.name+"/with force", func(t *testing.T) {
+			fakeHome(t)
+			path, err := platform.path()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("existing definition"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			makeUnreadable(t, path)
+
+			runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
+			manager := Manager{GOOS: platform.goos, Runner: runner, Executable: "/opt/termp"}
+			state, err := manager.Uninstall(true)
+			if err != nil {
+				t.Fatalf("Uninstall(force) error = %v, want mutation to proceed", err)
+			}
+			if state.Installed || state.ForeignTask {
+				t.Fatalf("Uninstall(force) state = %+v, want absent definition", state)
+			}
+			if len(runner.calls) == 0 {
+				t.Fatal("Uninstall(force) did not invoke the service runner")
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("Uninstall(force) left definition behind: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnixReadableOwnedAndUnparseableDefinitionsProceed(t *testing.T) {
+	platforms := []struct {
+		name        string
+		goos        string
+		definition  func(string) ([]byte, error)
+		executable  func([]byte) (string, error)
+		unparseable []byte
+		path        func() (string, error)
+	}{
+		{
+			name:        "linux",
+			goos:        "linux",
+			definition:  BuildSystemdUnit,
+			executable:  systemdUnitExecutable,
+			unparseable: []byte("[Service]\n"),
+			path:        systemdUnitPath,
+		},
+		{
+			name: "darwin",
+			goos: "darwin",
+			definition: func(exe string) ([]byte, error) {
+				return BuildLaunchAgentPlist(exe, filepath.Join(os.TempDir(), "termp.log"))
+			},
+			executable:  launchAgentExecutable,
+			unparseable: []byte("not a plist"),
+			path:        launchAgentPath,
+		},
+	}
+
+	for _, platform := range platforms {
+		for _, fixture := range []struct {
+			name       string
+			definition func(string) ([]byte, error)
+		}{
+			{
+				name: "unparseable",
+				definition: func(string) ([]byte, error) {
+					return platform.unparseable, nil
+				},
+			},
+			{name: "owned", definition: platform.definition},
+		} {
+			t.Run(platform.name+"/"+fixture.name, func(t *testing.T) {
+				fakeHome(t)
+				path, err := platform.path()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				current := filepath.Join(t.TempDir(), "termp")
+				original, err := fixture.definition(current)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, original, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
+				manager := Manager{GOOS: platform.goos, Runner: runner, Executable: current}
+
+				state, err := manager.InstallDefinition(current, false)
+				if err != nil {
+					t.Fatalf("InstallDefinition() error = %v, want mutation to proceed", err)
+				}
+				if !state.Installed || state.ForeignTask {
+					t.Fatalf("InstallDefinition() state = %+v, want owned definition", state)
+				}
+				installed, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				target, err := platform.executable(installed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if target != current {
+					t.Fatalf("InstallDefinition() target = %q, want %q", target, current)
+				}
+			})
+		}
+	}
+}
+
+func makeUnreadable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("restore permissions for %s: %v", path, err)
+		}
+	})
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skip("test account can read mode-000 files")
+	}
+}
+
 func TestUnixForceMutatesForeignDefinitions(t *testing.T) {
 	platforms := []struct {
 		name       string

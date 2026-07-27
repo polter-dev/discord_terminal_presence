@@ -34,7 +34,10 @@ entry. Unix paths are cleaned and existing symlinks are resolved before
 comparison. Status surfaces a definition targeting a different absolute
 executable as foreign; non-forced mutations refuse it, while forced install and
 uninstall may take it over or remove it. Unparseable, dynamic, or non-absolute
-targets remain ownership-unknown rather than risking a false foreign result.
+targets remain fail-open rather than risking a parser gap blocking legitimate
+users from reconciling termp's own definitions. A definition that cannot be read
+is different: its ownership cannot be verified, so non-forced mutations refuse it
+with an actionable `--force` message, while forced install and uninstall proceed.
 
 The Windows task retries a failed daemon up to three times at one-minute
 intervals. Disable and uninstall treat `schtasks /End` as required: disable
