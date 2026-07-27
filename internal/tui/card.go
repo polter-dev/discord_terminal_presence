@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
+	"github.com/polter-dev/discord_terminal_presence/internal/terminaltext"
 )
 
 // CardState is everything the mock Discord card needs to render one frame.
@@ -80,7 +80,7 @@ func RenderCard(s CardState, st CardStyles) string {
 		body.WriteString("\n\n")
 		body.WriteString(st.Accent.Render("recent detections"))
 		for _, recent := range s.Recent {
-			name := sanitizeTerminalText(recent.Name)
+			name := terminaltext.Sanitize(recent.Name)
 			if name == "" {
 				continue
 			}
@@ -93,7 +93,7 @@ func RenderCard(s CardState, st CardStyles) string {
 }
 
 func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Time, st CardStyles) {
-	name := sanitizeTerminalText(activity.LargeImage.Text)
+	name := terminaltext.Sanitize(activity.LargeImage.Text)
 	if name == "" {
 		name = "unknown tool"
 	}
@@ -103,11 +103,11 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 		b.WriteByte('\n')
 		b.WriteString(st.Muted.Render(image))
 	}
-	if state := sanitizeTerminalText(activity.State); state != "" {
+	if state := terminaltext.Sanitize(activity.State); state != "" {
 		b.WriteByte('\n')
 		b.WriteString(state)
 	}
-	if details := sanitizeTerminalText(activity.Details); details != "" {
+	if details := terminaltext.Sanitize(activity.Details); details != "" {
 		b.WriteByte('\n')
 		b.WriteString(details)
 	}
@@ -124,7 +124,7 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 	if len(activity.Buttons) > 0 {
 		labels := make([]string, 0, len(activity.Buttons))
 		for _, button := range activity.Buttons {
-			if label := sanitizeTerminalText(button.Label); label != "" {
+			if label := terminaltext.Sanitize(button.Label); label != "" {
 				labels = append(labels, label)
 			}
 		}
@@ -136,10 +136,10 @@ func writeActivity(b *strings.Builder, activity *presence.Activity, now time.Tim
 }
 
 func imageLabel(image presence.Image, cardTitle string) string {
-	key := sanitizeTerminalText(image.Key)
-	rawURL := sanitizeTerminalText(image.URL)
-	text := sanitizeTerminalText(image.Text)
-	cardTitle = sanitizeTerminalText(cardTitle)
+	key := terminaltext.Sanitize(image.Key)
+	rawURL := terminaltext.Sanitize(image.URL)
+	text := terminaltext.Sanitize(image.Text)
+	cardTitle = terminaltext.Sanitize(cardTitle)
 	if strings.TrimSpace(key) == "" && strings.TrimSpace(rawURL) == "" {
 		return ""
 	}
@@ -168,22 +168,8 @@ func imageNameFromURL(rawURL string) string {
 	return strings.TrimSuffix(name, path.Ext(name))
 }
 
-func sanitizeTerminalText(value string) string {
-	value = ansi.Strip(value)
-	var cleaned strings.Builder
-	cleaned.Grow(len(value))
-	for _, r := range value {
-		if r <= 0x1f || r == 0x7f || r >= 0x80 && r <= 0x9f ||
-			r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 {
-			continue
-		}
-		cleaned.WriteRune(r)
-	}
-	return cleaned.String()
-}
-
 func terminalTextStyle(style lipgloss.Style) lipgloss.Style {
-	return style.Transform(sanitizeTerminalText)
+	return style.Transform(terminaltext.Sanitize)
 }
 
 func renderTerminalText(style lipgloss.Style, value string) string {

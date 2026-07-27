@@ -59,18 +59,21 @@ func TestConnectCommandPrintsFirstRunCTAAfterValidArguments(t *testing.T) {
 }
 
 func TestConnectCommandTargetsPublisherAndWaitsForNewConnectedState(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	now := time.Date(2026, 7, 25, 20, 0, 0, 0, time.UTC)
 	deps := baseConnectDeps(now)
 	deps.readFresh = func(string, time.Time, time.Duration) (daemonDiscordState, bool) {
-		return daemonDiscordState{PID: 22, UpdatedAt: now}, true
+		return daemonDiscordState{PID: 22, StartTime: fixtureProcessStartTime, UpdatedAt: now}, true
 	}
-	deps.readPID = func(string) (daemonPIDRecord, error) { return daemonPIDRecord{PID: 11}, nil }
+	deps.readPID = func(string) (daemonPIDRecord, error) {
+		return daemonPIDRecord{PID: 11, StartTime: fixtureProcessStartTime}, nil
+	}
 	deps.alive = func(pid int) bool { return pid == 11 || pid == 22 }
 	deps.looksLike = deps.alive
 	states := []daemonDiscordState{
-		{PID: 22, Connected: false, UpdatedAt: now},
-		{PID: 22, Connected: false, UpdatedAt: now},
-		{PID: 22, Connected: true, UpdatedAt: now.Add(time.Millisecond)},
+		{PID: 22, StartTime: fixtureProcessStartTime, Connected: false, UpdatedAt: now},
+		{PID: 22, StartTime: fixtureProcessStartTime, Connected: false, UpdatedAt: now},
+		{PID: 22, StartTime: fixtureProcessStartTime, Connected: true, UpdatedAt: now.Add(time.Millisecond)},
 	}
 	deps.readState = func(string) (daemonDiscordState, bool) {
 		state := states[0]
@@ -101,9 +104,12 @@ func TestConnectCommandTargetsPublisherAndWaitsForNewConnectedState(t *testing.T
 }
 
 func TestConnectCommandSurfacesReconnectFailureWithoutSuccess(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	now := time.Now()
 	deps := baseConnectDeps(now)
-	deps.readPID = func(string) (daemonPIDRecord, error) { return daemonPIDRecord{PID: 42}, nil }
+	deps.readPID = func(string) (daemonPIDRecord, error) {
+		return daemonPIDRecord{PID: 42, StartTime: fixtureProcessStartTime}, nil
+	}
 	deps.alive = func(pid int) bool { return pid == 42 }
 	deps.looksLike = deps.alive
 	deps.send = func(context.Context, int, controlRequest) (controlResponse, error) {
@@ -121,11 +127,14 @@ func TestConnectCommandSurfacesReconnectFailureWithoutSuccess(t *testing.T) {
 }
 
 func TestConnectCommandTimeoutDoesNotReportSuccess(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	now := time.Now()
 	deps := baseConnectDeps(now)
 	deps.timeout = 50 * time.Millisecond
 	deps.pollInterval = 25 * time.Millisecond
-	deps.readPID = func(string) (daemonPIDRecord, error) { return daemonPIDRecord{PID: 42}, nil }
+	deps.readPID = func(string) (daemonPIDRecord, error) {
+		return daemonPIDRecord{PID: 42, StartTime: fixtureProcessStartTime}, nil
+	}
 	deps.alive = func(pid int) bool { return pid == 42 }
 	deps.looksLike = deps.alive
 	deps.readState = func(string) (daemonDiscordState, bool) {
@@ -146,9 +155,12 @@ func TestConnectCommandTimeoutDoesNotReportSuccess(t *testing.T) {
 }
 
 func TestConnectCommandReportsAlreadyConnected(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	now := time.Now()
 	deps := baseConnectDeps(now)
-	deps.readPID = func(string) (daemonPIDRecord, error) { return daemonPIDRecord{PID: 42}, nil }
+	deps.readPID = func(string) (daemonPIDRecord, error) {
+		return daemonPIDRecord{PID: 42, StartTime: fixtureProcessStartTime}, nil
+	}
 	deps.alive = func(pid int) bool { return pid == 42 }
 	deps.looksLike = deps.alive
 	deps.send = func(_ context.Context, _ int, request controlRequest) (controlResponse, error) {

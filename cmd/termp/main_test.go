@@ -28,6 +28,19 @@ import (
 	updatepkg "github.com/polter-dev/discord_terminal_presence/internal/update"
 )
 
+const fixtureProcessStartTime = uint64(1)
+
+func useFixtureProcessStartTime(t *testing.T) {
+	t.Helper()
+	oldLookup := lookupProcessStartTime
+	lookupProcessStartTime = func(int) (uint64, error) {
+		return fixtureProcessStartTime, nil
+	}
+	t.Cleanup(func() {
+		lookupProcessStartTime = oldLookup
+	})
+}
+
 type failingReleaseSource struct {
 	calls int
 }
@@ -374,6 +387,7 @@ func TestPIDFileMatchesOwnerRequiresPIDAndFileIdentity(t *testing.T) {
 }
 
 func TestStopDaemonWaitsForExitThenRemovesPIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
@@ -410,8 +424,9 @@ func TestStopDaemonWaitsForExitThenRemovesPIDFile(t *testing.T) {
 }
 
 func TestStopDaemonRechecksIdentityImmediatelyBeforeSignal(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
-	if err := os.WriteFile(path, []byte("1234\n"), 0o600); err != nil {
+	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
 	}
 	identityChecks := 0
@@ -438,6 +453,7 @@ func TestStopDaemonRechecksIdentityImmediatelyBeforeSignal(t *testing.T) {
 }
 
 func TestStopDaemonSucceedsWhenDaemonRemovesPIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
@@ -463,13 +479,14 @@ func TestStopDaemonSucceedsWhenDaemonRemovesPIDFile(t *testing.T) {
 }
 
 func TestStopDaemonAndPublisherStopsOrphanNotNamedByPIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 2222); err != nil {
 		t.Fatal(err)
 	}
 	live := map[int]bool{1111: true, 2222: true}
 	var signaled []int
-	pid, err := stopDaemonAndPublisher(path, daemonPIDRecord{PID: 1111}, time.Second, time.Millisecond,
+	pid, err := stopDaemonAndPublisher(path, daemonPIDRecord{PID: 1111, StartTime: fixtureProcessStartTime}, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
 		func(int) bool { return true },
 		func(pid int) error {
@@ -492,6 +509,7 @@ func TestStopDaemonAndPublisherStopsOrphanNotNamedByPIDFile(t *testing.T) {
 }
 
 func TestStopDaemonAndPublisherAcceptsAutostartRelaunch(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
@@ -528,6 +546,7 @@ func TestStopDaemonAndPublisherAcceptsAutostartRelaunch(t *testing.T) {
 }
 
 func TestStopDaemonAndPublisherRejectsUnexpectedPIDFileTakeover(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
@@ -550,11 +569,16 @@ func TestStopDaemonAndPublisherRejectsUnexpectedPIDFileTakeover(t *testing.T) {
 }
 
 func TestKnownDaemonPIDFindsLivePublisherNotNamedByPIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	pidPath := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(pidPath, 2222); err != nil {
 		t.Fatal(err)
 	}
-	statePath := writeDaemonDiscordStateFixture(t, daemonDiscordState{Connected: true, PID: 1111})
+	statePath := writeDaemonDiscordStateFixture(t, daemonDiscordState{
+		Connected: true,
+		PID:       1111,
+		StartTime: fixtureProcessStartTime,
+	})
 	got := knownDaemonPID(pidPath, statePath,
 		func(pid int) bool { return pid == 1111 },
 		func(pid int) bool { return pid == 1111 },
@@ -592,6 +616,7 @@ func TestConcurrentPIDInitializationDoesNotPublishEmptyFile(t *testing.T) {
 }
 
 func TestStopDaemonRemovesStalePIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
@@ -609,6 +634,7 @@ func TestStopDaemonRemovesStalePIDFile(t *testing.T) {
 }
 
 func TestStopDaemonTimeoutKeepsPIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
@@ -622,6 +648,55 @@ func TestStopDaemonTimeoutKeepsPIDFile(t *testing.T) {
 	}
 	if slept != 25*time.Millisecond {
 		t.Fatalf("slept %s, want bounded 25ms", slept)
+	}
+	if pid, readErr := readPID(path); readErr != nil || pid != 1234 {
+		t.Fatalf("retained PID = %d, %v; want 1234, nil", pid, readErr)
+	}
+}
+
+func TestStopDaemonSignalsLiveProcessWhenStartTimeUnavailable(t *testing.T) {
+	oldLookup := lookupProcessStartTime
+	lookupProcessStartTime = func(int) (uint64, error) {
+		return 0, errors.New("start time unavailable")
+	}
+	t.Cleanup(func() {
+		lookupProcessStartTime = oldLookup
+	})
+
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 1234); err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := readPIDIdentity(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.StartTime != 0 || !record.StartTimeUnavailable {
+		t.Fatalf("PID identity = %+v, want explicit unavailable start time", record)
+	}
+
+	signals := 0
+	_, err = stopDaemon(
+		path,
+		time.Millisecond,
+		time.Millisecond,
+		func(int) bool { return true },
+		func(int) bool { return true },
+		func(pid int) error {
+			signals++
+			if pid != 1234 {
+				t.Fatalf("signal PID = %d, want 1234", pid)
+			}
+			return nil
+		},
+		func(time.Duration) {},
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "PID file was not removed") {
+		t.Fatalf("stopDaemon() error = %v, want retained-file timeout", err)
+	}
+	if signals != 1 {
+		t.Fatalf("signal calls = %d, want 1", signals)
 	}
 	if pid, readErr := readPID(path); readErr != nil || pid != 1234 {
 		t.Fatalf("retained PID = %d, %v; want 1234, nil", pid, readErr)
@@ -795,6 +870,22 @@ func TestFormatStatusGroupedAlignedAndComplete(t *testing.T) {
 		"  Warning  unknown key ignored\n"
 	if got := formatStatus(info); got != want {
 		t.Fatalf("formatStatus() =\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestFormatStatusSanitizesExternallyDerivedText(t *testing.T) {
+	got := formatStatus(statusInfo{
+		detectedTool:   "safe\x1b]52;c;clipboard\x07\u200fevil",
+		serviceMessage: "ready\x1b[31m",
+		configOK:       true,
+	})
+	for _, unsafe := range []string{"\x1b", "\x07", "\u200f"} {
+		if strings.Contains(got, unsafe) {
+			t.Fatalf("formatStatus() retained unsafe terminal text %q:\n%s", unsafe, got)
+		}
+	}
+	if !strings.Contains(got, "safeevil") || !strings.Contains(got, "ready") {
+		t.Fatalf("formatStatus() lost safe text:\n%s", got)
 	}
 }
 
@@ -1788,6 +1879,47 @@ func TestDebugfEmitsOnlyWhenVerbose(t *testing.T) {
 	debugf("hello %s", "world")
 	if got := buf.String(); !strings.Contains(got, "hello world") {
 		t.Fatalf("debugf output = %q, want hello world", got)
+	}
+}
+
+func TestDebugfSanitizesTerminalText(t *testing.T) {
+	oldVerbose := verbose
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	t.Cleanup(func() {
+		verbose = oldVerbose
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	verbose = true
+	debugf("scan %s", "safe\x1b]52;c;clipboard\x07\u061cevil")
+
+	if got := buf.String(); got != "scan safeevil\n" {
+		t.Fatalf("debugf output = %q, want sanitized log line", got)
+	}
+}
+
+func TestDebugDetectionDirectoryHonorsPrivacy(t *testing.T) {
+	cfg := config.Default()
+	detection := detector.Detection{
+		Tool: registry.Tool{ID: "claude-code"},
+		Cwd:  filepath.Join(string(filepath.Separator), "private", "client"),
+	}
+	if got := debugDetectionDirectory(cfg, detection); got != "hidden" {
+		t.Fatalf("private debug directory = %q, want hidden", got)
+	}
+
+	cfg.Privacy.ShowDirectory = true
+	cfg.Privacy.DirectoryBasenameOnly = true
+	if got := debugDetectionDirectory(cfg, detection); got != "client" {
+		t.Fatalf("allowed debug directory = %q, want basename client", got)
 	}
 }
 

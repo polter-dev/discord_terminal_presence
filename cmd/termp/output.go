@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/polter-dev/discord_terminal_presence/internal/terminaltext"
 )
 
 type outputField struct {
@@ -20,22 +22,22 @@ type outputSection struct {
 // waste space in every other section.
 func formatSections(title string, sections ...outputSection) string {
 	var b strings.Builder
-	b.WriteString(title)
+	b.WriteString(terminaltext.Sanitize(title))
 	b.WriteByte('\n')
 
 	for _, section := range sections {
 		if section.header != "" {
 			b.WriteByte('\n')
-			b.WriteString(section.header)
+			b.WriteString(terminaltext.Sanitize(section.header))
 			b.WriteByte('\n')
 		}
 
 		width := 0
 		for _, field := range section.fields {
-			width = max(width, len(field.label))
+			width = max(width, len(terminaltext.Sanitize(field.label)))
 		}
 		for _, field := range section.fields {
-			fmt.Fprintf(&b, "  %-*s  %s\n", width, field.label, displayValue(field.value))
+			fmt.Fprintf(&b, "  %-*s  %s\n", width, terminaltext.Sanitize(field.label), displayValue(field.value))
 		}
 	}
 
@@ -43,7 +45,7 @@ func formatSections(title string, sections ...outputSection) string {
 }
 
 func displayValue(value string) string {
-	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(terminaltext.Sanitize(value))
 	if value == "" || strings.EqualFold(value, "n/a") {
 		return "—"
 	}

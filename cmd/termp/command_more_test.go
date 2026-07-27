@@ -866,6 +866,72 @@ func TestPIDRecordPersistsProcessStartTime(t *testing.T) {
 	}
 }
 
+func TestLegacyPIDRecordCannotAuthorizeProcessIdentity(t *testing.T) {
+	record, err := parsePIDRecord([]byte("4242\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.PID != 4242 || record.StartTime != 0 || record.StartTimeUnavailable {
+		t.Fatalf("legacy PID record = %+v, want pid 4242 without start time", record)
+	}
+	if pidRecordIdentityMatches(record, func(int) bool { return true }, func(int) bool { return true }) {
+		t.Fatal("legacy PID record without a start time authorized process identity")
+	}
+}
+
+func TestProcessIdentityRequiresMatchingStartTime(t *testing.T) {
+	oldLookup := lookupProcessStartTime
+	lookupProcessStartTime = func(int) (uint64, error) { return 100, nil }
+	t.Cleanup(func() { lookupProcessStartTime = oldLookup })
+
+	alive := func(int) bool { return true }
+	looksLike := func(int) bool { return true }
+	if !processIdentityMatches(42, 100, alive, looksLike) {
+		t.Fatal("matching process start time was rejected")
+	}
+	if processIdentityMatches(42, 101, alive, looksLike) {
+		t.Fatal("mismatched process start time was accepted")
+	}
+}
+
+func TestProcessIdentityFallsBackWhenStartTimeLookupFails(t *testing.T) {
+	oldLookup := lookupProcessStartTime
+	lookupProcessStartTime = func(int) (uint64, error) {
+		return 0, errors.New("start time unavailable")
+	}
+	t.Cleanup(func() { lookupProcessStartTime = oldLookup })
+
+	if !processIdentityMatches(42, 100, func(int) bool { return true }, func(int) bool { return true }) {
+		t.Fatal("live termp process was rejected when its start time could not be verified")
+	}
+	if processIdentityMatches(42, 100, func(int) bool { return true }, func(int) bool { return false }) {
+		t.Fatal("non-termp process was accepted when its start time could not be verified")
+	}
+}
+
+func TestWaitForProcessExitTreatsPIDReuseAsExit(t *testing.T) {
+	oldLookup := lookupProcessStartTime
+	currentStartTime := uint64(100)
+	lookupProcessStartTime = func(int) (uint64, error) { return currentStartTime, nil }
+	t.Cleanup(func() { lookupProcessStartTime = oldLookup })
+
+	sleeps := 0
+	exited := waitForProcessExit(
+		daemonPIDRecord{PID: 42, StartTime: 100},
+		time.Second,
+		time.Millisecond,
+		func(int) bool { return true },
+		func(int) bool { return true },
+		func(time.Duration) {
+			sleeps++
+			currentStartTime = 200
+		},
+	)
+	if !exited || sleeps != 1 {
+		t.Fatalf("waitForProcessExit() = %t after %d sleeps, want true after PID identity changes", exited, sleeps)
+	}
+}
+
 func TestStopDaemonRejectsMismatchedStartTime(t *testing.T) {
 	startTime, err := processStartTime(os.Getpid())
 	if err != nil {

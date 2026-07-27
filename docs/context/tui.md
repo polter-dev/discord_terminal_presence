@@ -11,8 +11,9 @@ boundary.
 
 **Key files:** `internal/tui/settings.go` contains Miller-style columns, fuzzy pin search,
 usage-ranked results, save, and feedback. `setup.go` applies config/autostart/completion.
-`styles.go` owns the adaptive palette. `card.go` owns card rendering plus shared terminal
-text sanitization. `confirm.go` and `watch.go` contain their respective models.
+`styles.go` owns the adaptive palette. `card.go` owns card rendering and uses the shared
+`internal/terminaltext` sanitizer. `confirm.go` and `watch.go` contain their respective
+models.
 
 **Invariants / gotchas:** Settings and setup sanitize externally derived values at shared
 rendering boundaries, not at individual call sites. Table cells inherit a Lip Gloss

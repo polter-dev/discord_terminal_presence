@@ -123,6 +123,18 @@ func TestRenderCard(t *testing.T) {
 			},
 			want: []string{"recent detections", "nvim  3s ago"},
 		},
+		{
+			name: "unsafe terminal text",
+			state: CardState{
+				Now: now,
+				Activity: &presence.Activity{
+					Details:    "safe\u200fevil",
+					LargeImage: presence.Image{Text: "\x1b]0;title\x07Neovim"},
+				},
+			},
+			want:    []string{"Neovim", "safeevil"},
+			wantNot: []string{"\x1b", "\x07", "\u200f"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -137,27 +149,6 @@ func TestRenderCard(t *testing.T) {
 				if strings.Contains(got, unwanted) {
 					t.Fatalf("RenderCard() contains %q:\n%s", unwanted, got)
 				}
-			}
-		})
-	}
-}
-
-func TestSanitizeTerminalText(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "plain text", input: "Neovim 日本語", want: "Neovim 日本語"},
-		{name: "OSC title", input: "safe\x1b]0;title\x07 text", want: "safe text"},
-		{name: "CSI color", input: "\x1b[31mred\x1b[0m", want: "red"},
-		{name: "bare control", input: "bad\x03value", want: "badvalue"},
-		{name: "bidi overrides", input: "safe\u202eevil\u202c\u2066text\u2069", want: "safeeviltext"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := sanitizeTerminalText(tt.input); got != tt.want {
-				t.Fatalf("sanitizeTerminalText(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

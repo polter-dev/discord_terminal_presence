@@ -26,6 +26,12 @@ and readiness share a bound. Non-Windows transport remains explicitly unsupporte
 Status trusts a fresh connected publisher instead of probing Discord and exposes
 concurrent PID/publisher faults.
 
+Plain legacy PID records remain readable for stale-file cleanup, but a true legacy
+record without a process start time never authorizes signaling. New records explicitly
+mark an unavailable start time and fall back to executable identity so a live daemon is
+not orphaned when process metadata cannot be read. Verified records still use process
+start time to detect PID reuse during shutdown polling.
+
 Setup rewrites enabled service definitions but does not relaunch an already-running
 daemon. Config/autostart success survives a completion-only failure and the summary
 reports that partial outcome. Completion removal attempts every shell; details live in
@@ -51,6 +57,10 @@ that verifies the release is public, downloads that exact Cask, and updates the 
 Config initialization safety is documented in [`config.md`](config.md), terminal
 rendering in [`tui.md`](tui.md), update cache/detection in [`update.md`](update.md), and
 usage retention in [`usage.md`](usage.md).
+
+Structured CLI output and verbose log messages sanitize externally derived terminal
+text. Detection logs resolve the working directory through the same effective privacy
+policy as presence output and report `hidden` when directory display is not allowed.
 
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.
