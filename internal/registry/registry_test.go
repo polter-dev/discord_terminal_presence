@@ -229,6 +229,32 @@ func TestNewWithCustomValidatesDiscordFields(t *testing.T) {
 			want: "image_url must be a valid absolute http/https URL",
 		},
 		{
+			name: "image key length",
+			mutate: func(tool *CustomTool) {
+				tool.ImageURL = ""
+				tool.ImageKey = strings.Repeat("k", MaxImageValueLength+1)
+			},
+			want: "image_key must be at most 256 characters",
+		},
+		{
+			name: "resolved URL shape",
+			mutate: func(tool *CustomTool) {
+				tool.ImageURL = ""
+				tool.IconSlug = "file:///tmp/icon.png"
+				tool.IconSource = IconSourceURL
+			},
+			want: "resolved image_url must be a valid absolute http/https URL",
+		},
+		{
+			name: "resolved key length",
+			mutate: func(tool *CustomTool) {
+				tool.ImageURL = ""
+				tool.IconSlug = strings.Repeat("k", MaxImageValueLength+1)
+				tool.IconSource = IconSourceKey
+			},
+			want: "resolved image_key must be at most 256 characters",
+		},
+		{
 			name: "buttons",
 			mutate: func(tool *CustomTool) {
 				tool.Buttons = []Button{{Label: "", URL: "https://example.test"}}

@@ -31,10 +31,11 @@ Regexes are compiled once and case-insensitively. Image resolution prefers expli
 key, then configured icon source, with the self-hosted generic mark as fallback; flagship
 tools use explicit self-hosted URLs.
 
-`NewWithCustom` validates Discord-facing custom-tool IDs, display names, image URLs, and
-buttons before converting them into runtime tools. Button labels are non-empty and at
-most 32 characters, each URL is absolute HTTP(S), and no activity receives more than two
-buttons.
+`NewWithCustom` validates Discord-facing custom-tool IDs, display names, resolved image
+keys/URLs, and buttons before converting them into runtime tools. Resolved images are
+bounded to Discord's limit and resolved URLs must be absolute HTTP(S). Button labels are
+non-empty and at most 32 characters, each URL is absolute HTTP(S), and no activity
+receives more than two buttons. `ValidateHTTPURL` is the shared URL-scheme boundary.
 
 Do not replace identity matching with `gopsutil.Terminal()` filtering: it is not
 implemented on Darwin and would remove all macOS presence. Short exact catalog names

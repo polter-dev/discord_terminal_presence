@@ -30,7 +30,8 @@ The settings view clips the whole output to terminal width, drops leftmost colum
 necessary, never wraps/truncates mid-glyph, and keeps focused ancestry when it fits.
 Section-label rows are not selectable. Pin search returns at most six results and ranks
 exact, prefix, substring, subsequence, then bounded Levenshtein matches; no match renders
-an explicit row.
+an explicit row. The feedback action revalidates its target as a bounded absolute HTTP(S)
+URL immediately before calling the platform opener.
 
 `RenderCard` does no I/O and never renders a raw asset URL. Watch stores already-resolved
 activities and caps recent featured-tool changes at five. Setup confirmation/navigation

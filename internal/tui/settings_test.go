@@ -636,6 +636,32 @@ func TestModelLeaveFeedbackOpensConfiguredURL(t *testing.T) {
 	}
 }
 
+func TestModelLeaveFeedbackRejectsUnsafeURLBeforeOpener(t *testing.T) {
+	cfg := config.Default()
+	cfg.FeedbackURL = "file:///Applications/Malicious.app"
+	called := false
+	model := NewSettingsModel(cfg, nil, nil, nil, func(string) error {
+		called = true
+		return nil
+	})
+	model.columns[0].cursor = findColumnRow(t, model, 0, rowLink, "Leave feedback")
+
+	updated, cmd := model.Update(key("enter"))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("feedback action should return a command")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(Model)
+
+	if called {
+		t.Fatal("unsafe feedback URL reached platform opener")
+	}
+	if !strings.Contains(model.status, cfg.FeedbackURL) {
+		t.Fatalf("feedback status = %q, want rejected URL", model.status)
+	}
+}
+
 func TestModelLeaveFeedbackFailureShowsURL(t *testing.T) {
 	cfg := config.Default()
 	cfg.FeedbackURL = ""
