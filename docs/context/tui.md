@@ -35,8 +35,9 @@ an explicit row. The feedback action revalidates its target as a bounded absolut
 URL immediately before calling the platform opener.
 
 `RenderCard` does no I/O and never renders a raw asset URL. Watch stores already-resolved
-activities and caps recent featured-tool changes at five. Setup confirmation/navigation
-semantics and Ctrl+C's immediate exit must remain stable.
+activities, caps recent featured-tool changes at five, and renders a persistent sanitized
+warning banner when its caller supplies one. Setup confirmation/navigation semantics and
+Ctrl+C's immediate exit must remain stable.
 
 **Depends on / used by:** Depends on Bubble Tea, Lip Gloss, `internal/config`,
 `internal/registry`, and `internal/presence`; used by `cmd/termp`.

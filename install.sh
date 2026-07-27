@@ -434,7 +434,7 @@ fi
 
 if [ -n "$config_path" ] && [ -e "$config_path" ]; then
 	printf 'Next steps:\n'
-	printf '  termp start    # run the daemon in the foreground\n'
+	printf '  termp start    # run the daemon in the background\n'
 	printf '  termp install  # install and start the login autostart service\n'
 else
 	print_setup_cta

@@ -5,8 +5,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/presence"
+	"github.com/polter-dev/discord_terminal_presence/internal/terminaltext"
 )
 
 const maxRecentDetections = 5
@@ -32,6 +34,8 @@ type WatchModel struct {
 	nowFunc      func() time.Time
 	quitting     bool
 	styles       CardStyles
+	warningStyle lipgloss.Style
+	warningText  string
 }
 
 // NewWatchModel creates a watch model using the real clock.
@@ -58,9 +62,10 @@ func newWatchModel(accentColor string, nowFunc func() time.Time) WatchModel {
 		nowFunc = time.Now
 	}
 	return WatchModel{
-		now:     nowFunc(),
-		nowFunc: nowFunc,
-		styles:  DefaultCardStyles(accentColor),
+		now:          nowFunc(),
+		nowFunc:      nowFunc,
+		styles:       DefaultCardStyles(accentColor),
+		warningStyle: defaultStyles(accentColor).warning,
 	}
 }
 
@@ -82,6 +87,11 @@ func (m WatchModel) Recent() []RecentDetection {
 // Quitting reports whether the model handled a quit key.
 func (m WatchModel) Quitting() bool {
 	return m.quitting
+}
+
+// SetWarning adds a persistent warning banner to the live watch view.
+func (m *WatchModel) SetWarning(warning string) {
+	m.warningText = warning
 }
 
 func (m WatchModel) Init() tea.Cmd {
@@ -122,6 +132,10 @@ func (m WatchModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.styles.Title.Render("termp watch - live Discord preview"))
 	b.WriteString("\n\n")
+	if m.warningText != "" {
+		b.WriteString(m.warningStyle.Render(terminaltext.Sanitize(m.warningText)))
+		b.WriteString("\n\n")
+	}
 	b.WriteString(RenderCard(CardState{
 		Activity:  m.activity,
 		Connected: m.connected,

@@ -62,6 +62,19 @@ func TestWatchModelActivityAndConnection(t *testing.T) {
 	}
 }
 
+func TestWatchModelSanitizesWarning(t *testing.T) {
+	model := NewWatchModelWithClock(time.Now)
+	model.SetWarning("bad\x1b[31m config")
+
+	view := model.View()
+	if strings.Contains(view, "\x1b[31m") {
+		t.Fatalf("view contains warning control sequence: %q", view)
+	}
+	if !strings.Contains(view, "bad config") {
+		t.Fatalf("view = %q, want sanitized warning", view)
+	}
+}
+
 func TestWatchModelRecentOnlyChangesOnFeaturedChange(t *testing.T) {
 	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	model := NewWatchModelWithClock(func() time.Time { return now })
