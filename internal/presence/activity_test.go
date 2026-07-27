@@ -168,6 +168,94 @@ func TestActivityFromDetectionDefaultDetailsCascade(t *testing.T) {
 	}
 }
 
+func TestActivityFromDetectionDefaultDetailsShowsDirectoryWithoutToolName(t *testing.T) {
+	options := DefaultDisplayOptions()
+	options.ToolName = false
+	options.ShowDirectory = true
+	detection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+		Cwd:  "/Users/me/dev/myrepo",
+	}
+
+	activity, ok := ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.Details != "📁 myrepo" || activity.State != "" {
+		t.Fatalf("details/state = %q/%q, want opted-in directory/empty", activity.Details, activity.State)
+	}
+}
+
+func TestActivityFromDetectionCollectionDoesNotExposeToolNamesWhenToolNameDisabled(t *testing.T) {
+	options := DefaultDisplayOptions()
+	options.ToolName = false
+	options.Collection = true
+	options.FallbackMessage = "Fixed fallback"
+	detection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+		Others: []registry.Tool{
+			{DisplayName: "Aider"},
+		},
+	}
+
+	activity, ok := ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if strings.Contains(activity.Details, "Aider") || strings.Contains(activity.State, "Aider") {
+		t.Fatalf("details/state = %q/%q, must not expose another tool name when tool_name is false", activity.Details, activity.State)
+	}
+	if activity.Details != "Fixed fallback" || activity.State != "" {
+		t.Fatalf("details/state = %q/%q, want fallback and empty state", activity.Details, activity.State)
+	}
+}
+
+func TestActivityFromDetectionBoundsRenderedText(t *testing.T) {
+	detailsDetection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+		Others: []registry.Tool{
+			{DisplayName: strings.Repeat("界", registry.MaxDisplayNameLength)},
+		},
+	}
+
+	activity, ok := ActivityFromDetection(detailsDetection, DefaultDisplayOptions())
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if got := len([]rune(activity.Details)); got != maxActivityTextLength {
+		t.Fatalf("details rune count = %d, want %d", got, maxActivityTextLength)
+	}
+	if !strings.HasSuffix(activity.Details, "…") {
+		t.Fatalf("details = %q, want graceful ellipsis", activity.Details)
+	}
+	if err := validateActivity(activity); err != nil {
+		t.Fatalf("rendered activity failed validation: %v", err)
+	}
+
+	options := DefaultDisplayOptions()
+	options.ToolName = false
+	options.DetailsFormat = "{tool}"
+	options.ShowDirectory = true
+	stateDetection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+		Cwd:  "/" + strings.Repeat("界", registry.MaxDisplayNameLength),
+	}
+
+	activity, ok = ActivityFromDetection(stateDetection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if got := len([]rune(activity.State)); got != maxActivityTextLength {
+		t.Fatalf("state rune count = %d, want %d", got, maxActivityTextLength)
+	}
+	if !strings.HasSuffix(activity.State, "…") {
+		t.Fatalf("state = %q, want graceful ellipsis", activity.State)
+	}
+	if err := validateActivity(activity); err != nil {
+		t.Fatalf("rendered activity failed validation: %v", err)
+	}
+}
+
 func TestActivityFromDetectionCollectionCanBeDisabledAndCapsList(t *testing.T) {
 	detection := detector.Detection{
 		Tool: registry.Tool{DisplayName: "Claude Code", ImageKey: "claude-code"},
