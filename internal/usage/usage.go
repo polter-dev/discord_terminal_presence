@@ -215,12 +215,12 @@ func (s *Store) Record(toolID string, now time.Time) {
 }
 
 // Prune removes entries that have been absent from the known registry for the
-// retention period. A nil registry means registry data is unavailable, so only
-// the hard entry cap is enforced.
+// retention period. An empty registry means registry data is unavailable, so
+// only the hard entry cap is enforced.
 func (s *Store) Prune(knownToolIDs []string, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if knownToolIDs != nil {
+	if len(knownToolIDs) > 0 {
 		known := make(map[string]struct{}, len(knownToolIDs))
 		for _, id := range knownToolIDs {
 			known[id] = struct{}{}

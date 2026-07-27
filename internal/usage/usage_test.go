@@ -251,6 +251,21 @@ func TestPruneOnlyRegistryAbsentAfterRetention(t *testing.T) {
 	}
 }
 
+func TestPruneEmptyRegistryDeletesNothing(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	store := New()
+	store.Tools["long-absent"] = Entry{
+		Count:    1,
+		LastSeen: now.Add(-10 * retentionPeriod),
+	}
+
+	store.Prune(make([]string, 0), now)
+
+	if _, ok := store.Tools["long-absent"]; !ok {
+		t.Fatal("Prune(empty non-nil registry) removed an entry")
+	}
+}
+
 func TestRecordSaturatesCounter(t *testing.T) {
 	store := New()
 	store.Tools["codex-cli"] = Entry{Count: math.MaxInt}
