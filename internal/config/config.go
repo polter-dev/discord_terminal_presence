@@ -353,6 +353,10 @@ func InitFile(path string, force bool) error {
 			return err
 		}
 	}
+	var (
+		existingMode os.FileMode
+		replacing    bool
+	)
 	if info, err := os.Lstat(path); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("refuse to replace non-regular config file %s", path)
@@ -360,6 +364,8 @@ func InitFile(path string, force bool) error {
 		if !force {
 			return fmt.Errorf("config already exists: %s", path)
 		}
+		existingMode = info.Mode().Perm()
+		replacing = true
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect config file %s: %w", path, err)
 	}
@@ -370,9 +376,22 @@ func InitFile(path string, force bool) error {
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("set config file permissions: %w", err)
+	if replacing {
+		if err := tmp.Chmod(existingMode); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("set config file permissions: %w", err)
+		}
+	} else {
+		if err := tmp.Close(); err != nil {
+			return fmt.Errorf("close temporary config file: %w", err)
+		}
+		if err := os.Remove(tmpPath); err != nil {
+			return fmt.Errorf("prepare temporary config file: %w", err)
+		}
+		tmp, err = os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			return fmt.Errorf("create temporary config file: %w", err)
+		}
 	}
 	if _, err := tmp.WriteString(AnnotatedSample()); err != nil {
 		_ = tmp.Close()

@@ -90,7 +90,9 @@ and interactive `termp update` retains its existing manual-install guidance.
 
 `termp config init` refuses to replace symlinks and other non-regular config
 paths, including with `--force`. Config creation and forced replacement write a
-temporary file in the config directory and atomically rename it into place.
+temporary file in the config directory and atomically rename it into place. New
+files use mode `0644` filtered through the process umask, while forced
+replacement preserves an existing regular file's permission bits.
 
 ## TUI rendering safety
 
