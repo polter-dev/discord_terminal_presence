@@ -1715,6 +1715,17 @@ func TestRunUpdateFailurePrintsMethodRetryCommand(t *testing.T) {
 				io.Discard,
 				&stderr,
 			)
+			if tt.method == updatepkg.InstallGeneric && runtime.GOOS == "windows" {
+				if err == nil || !strings.Contains(err.Error(), "generic self-update is not supported on Windows") ||
+					!strings.Contains(err.Error(), updatepkg.GoCommand("v1.1.0")) ||
+					!strings.Contains(err.Error(), "install the release archive manually") {
+					t.Fatalf("Windows generic update error = %v, want unsupported-method recovery guidance", err)
+				}
+				if runner.calls != 0 {
+					t.Fatalf("unsupported Windows generic update invoked runner %d times", runner.calls)
+				}
+				return
+			}
 			if err == nil || !strings.Contains(err.Error(), "simulated update failure") {
 				t.Fatalf("runUpdate() error = %v, want simulated failure", err)
 			}
