@@ -60,6 +60,8 @@ Setup treats optional shell-completion installation as a separate outcome after
 config and autostart are applied. If completion installation fails, the summary
 reports that failure and its reason while retaining the persisted config in the
 model instead of reporting the entire setup as failed.
+Removing all shell completions attempts bash, zsh, and fish even when an earlier
+removal fails, returning successful paths together with all named failures.
 
 Local tool-usage history is capped at 1,024 entries and a 1 MiB input file.
 Counters saturate at the platform maximum. Entries missing from the complete

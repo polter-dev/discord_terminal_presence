@@ -133,6 +133,72 @@ func TestUninstallAll(t *testing.T) {
 	}
 }
 
+func TestUninstallAllContinuesAfterFailure(t *testing.T) {
+	home := t.TempDir()
+	resolveHome := func() (string, error) { return home, nil }
+	bashPath, err := TargetPath("bash", resolveHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bashPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bashPath, "keep"), []byte("not empty"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wantRemoved []string
+	for _, shell := range []string{"zsh", "fish"} {
+		paths, err := Install(shell, "# completion\n", resolveHome)
+		if err != nil {
+			t.Fatalf("Install(%q) error = %v", shell, err)
+		}
+		wantRemoved = append(wantRemoved, paths...)
+	}
+
+	removed, err := UninstallAll(resolveHome)
+	if !reflect.DeepEqual(removed, wantRemoved) {
+		t.Fatalf("UninstallAll() paths = %#v, want %#v", removed, wantRemoved)
+	}
+	if err == nil || !strings.Contains(err.Error(), "bash:") || !strings.Contains(err.Error(), bashPath) {
+		t.Fatalf("UninstallAll() error = %v, want named bash removal failure", err)
+	}
+	for _, path := range wantRemoved {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("completion file %q still exists after UninstallAll: %v", path, statErr)
+		}
+	}
+}
+
+func TestUninstallAllAggregatesEveryFailure(t *testing.T) {
+	home := t.TempDir()
+	resolveHome := func() (string, error) { return home, nil }
+	for _, shell := range []string{"bash", "zsh"} {
+		path, err := TargetPath(shell, resolveHome)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "keep"), []byte("not empty"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fishPaths, err := Install("fish", "# completion\n", resolveHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := UninstallAll(resolveHome)
+	if !reflect.DeepEqual(removed, fishPaths) {
+		t.Fatalf("UninstallAll() paths = %#v, want %#v", removed, fishPaths)
+	}
+	if err == nil || !strings.Contains(err.Error(), "bash:") || !strings.Contains(err.Error(), "zsh:") {
+		t.Fatalf("UninstallAll() error = %v, want aggregated bash and zsh failures", err)
+	}
+}
+
 func TestDetectShell(t *testing.T) {
 	for input, want := range map[string]string{
 		"/bin/bash":              "bash",
