@@ -1990,6 +1990,29 @@ func TestDebugDetectionDirectoryHonorsPrivacy(t *testing.T) {
 	if got := debugDetectionDirectory(cfg, detection); got != "client" {
 		t.Fatalf("allowed debug directory = %q, want basename client", got)
 	}
+
+	const homeDirectoryName = "privacy-user-home"
+	detection.Cwd = filepath.Join(
+		string(filepath.Separator),
+		"Users",
+		homeDirectoryName,
+		"clients",
+		"acme-secret-project",
+	)
+	cfg.Privacy.DirectoryBasenameOnly = false
+	cfg.Privacy.DirectoryAllowlist = []string{filepath.Dir(detection.Cwd)}
+
+	got := debugDetectionDirectory(cfg, detection)
+	want := "clients/acme-secret-project"
+	if got != want {
+		t.Fatalf("allowed deep debug directory = %q, want final two components %q", got, want)
+	}
+	if strings.Contains(got, detection.Cwd) {
+		t.Fatalf("debug directory contains full path: %q", got)
+	}
+	if strings.Contains(got, homeDirectoryName) {
+		t.Fatalf("debug directory contains home directory name %q: %q", homeDirectoryName, got)
+	}
 }
 
 func TestWatchOnceEmitsConfigWarnings(t *testing.T) {

@@ -27,6 +27,10 @@ backoff or reapply that payload, and attempts normally again when the desired ac
 changes. Transport, timeout, and connection failures retain the existing reconnect
 backoff.
 
+Directory path reduction is centralized in `DirectoryDisplay`: basename-only mode returns
+one component and expanded mode returns at most the final two. Presence adds the folder
+emoji separately so non-payload consumers can reuse the same privacy boundary.
+
 `StatusProbe` checks cancellation before work and threads its context through discovery
 and dialing. A watcher goroutine forces a read/write deadline to `time.Now()` when the
 context ends so frame I/O unblocks promptly. The status-only `statusIOTimeout` remains

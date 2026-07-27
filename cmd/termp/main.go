@@ -1091,8 +1091,9 @@ func otherToolIDs(tools []registry.Tool) string {
 }
 
 func debugDetectionDirectory(cfg config.Config, detection detector.Detection) string {
-	if displayDir, ok := cfg.Resolve(detection.Tool).DisplayDirectory(detection.Cwd); ok {
-		return displayDir
+	resolved := cfg.Resolve(detection.Tool)
+	if resolved.DirectoryAllowed(detection.Cwd) {
+		return presence.DirectoryDisplay(detection.Cwd, resolved.DirectoryBasenameOnly)
 	}
 	return "hidden"
 }
@@ -1119,11 +1120,9 @@ func buildActivity(cfg config.Config, detection detector.Detection, fallbackMess
 		return nil
 	}
 
-	displayDir, showDir := resolved.DisplayDirectory(detection.Cwd)
+	showDir := resolved.DirectoryAllowed(detection.Cwd)
 	detection.Others = enabledOthers(cfg, detection.Others)
-	if showDir {
-		detection.Cwd = displayDir
-	} else {
+	if !showDir {
 		detection.Cwd = ""
 	}
 	opts := presence.DisplayOptions{
@@ -1134,7 +1133,7 @@ func buildActivity(cfg config.Config, detection detector.Detection, fallbackMess
 		SmallImage:            resolved.SmallImage,
 		Collection:            cfg.Display.Collection,
 		ShowDirectory:         showDir,
-		DirectoryBasenameOnly: false,
+		DirectoryBasenameOnly: resolved.DirectoryBasenameOnly,
 	}
 	activity, ok := presence.ActivityFromDetection(detection, opts)
 	if !ok {
