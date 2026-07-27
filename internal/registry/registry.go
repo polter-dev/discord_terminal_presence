@@ -3,14 +3,24 @@ package registry
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
+	MaxButtonCount       = 2
+	MaxButtonLabelLength = 32
+	MaxButtonURLLength   = 512
+	MaxToolIDLength      = 64
+	MaxDisplayNameLength = 128
+	MaxImageValueLength  = 256
+
 	// IconSourceSimpleIcons resolves a Simple Icons slug to a raster PNG. Discord activity
 	// images must be raster (PNG/JPG); Simple Icons ships SVG, so it is rendered to PNG
 	// on the fly through the free wsrv.nl image proxy (brand-colored by default).
@@ -152,7 +162,10 @@ func New(custom ...Tool) (*Registry, error) {
 // NewWithCustom converts config-facing tools into runtime tool entries.
 func NewWithCustom(custom ...CustomTool) (*Registry, error) {
 	tools := make([]Tool, 0, len(custom))
-	for _, customTool := range custom {
+	for i, customTool := range custom {
+		if err := ValidateCustomTool(customTool); err != nil {
+			return nil, fmt.Errorf("custom_tools[%d]: %w", i, err)
+		}
 		tools = append(tools, Tool{
 			ID:          customTool.ID,
 			DisplayName: customTool.DisplayName,
@@ -170,6 +183,59 @@ func NewWithCustom(custom ...CustomTool) (*Registry, error) {
 		})
 	}
 	return New(tools...)
+}
+
+// ValidateButtons enforces Discord's Rich Presence button constraints.
+func ValidateButtons(buttons []Button) error {
+	if len(buttons) > MaxButtonCount {
+		return fmt.Errorf("buttons must contain at most %d entries", MaxButtonCount)
+	}
+	for i, button := range buttons {
+		labelLength := utf8.RuneCountInString(button.Label)
+		if labelLength == 0 {
+			return fmt.Errorf("buttons[%d].label must not be empty", i)
+		}
+		if labelLength > MaxButtonLabelLength {
+			return fmt.Errorf("buttons[%d].label must be at most %d characters", i, MaxButtonLabelLength)
+		}
+		if utf8.RuneCountInString(button.URL) > MaxButtonURLLength {
+			return fmt.Errorf("buttons[%d].url must be at most %d characters", i, MaxButtonURLLength)
+		}
+		if err := validateHTTPURL(button.URL); err != nil {
+			return fmt.Errorf("buttons[%d].url must be a valid absolute http/https URL", i)
+		}
+	}
+	return nil
+}
+
+// ValidateCustomTool bounds config-facing fields that can reach Discord.
+func ValidateCustomTool(tool CustomTool) error {
+	if utf8.RuneCountInString(tool.ID) > MaxToolIDLength {
+		return fmt.Errorf("id must be at most %d characters", MaxToolIDLength)
+	}
+	if utf8.RuneCountInString(tool.DisplayName) > MaxDisplayNameLength {
+		return fmt.Errorf("display_name must be at most %d characters", MaxDisplayNameLength)
+	}
+	if tool.ImageURL != "" {
+		if utf8.RuneCountInString(tool.ImageURL) > MaxImageValueLength {
+			return fmt.Errorf("image_url must be at most %d characters", MaxImageValueLength)
+		}
+		if err := validateHTTPURL(tool.ImageURL); err != nil {
+			return fmt.Errorf("image_url must be a valid absolute http/https URL")
+		}
+	}
+	if err := ValidateButtons(tool.Buttons); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateHTTPURL(value string) error {
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return errors.New("invalid URL")
+	}
+	return nil
 }
 
 // Tools returns a copy of the registry entries.

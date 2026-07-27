@@ -2,6 +2,7 @@ package registry
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -197,6 +198,58 @@ func TestRegistryPriorityBreaksMatchTie(t *testing.T) {
 	}
 	if tool.ID != "high" {
 		t.Fatalf("tool ID = %q, want high", tool.ID)
+	}
+}
+
+func TestNewWithCustomValidatesDiscordFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*CustomTool)
+		want   string
+	}{
+		{
+			name: "id",
+			mutate: func(tool *CustomTool) {
+				tool.ID = strings.Repeat("i", MaxToolIDLength+1)
+			},
+			want: "id must be at most 64 characters",
+		},
+		{
+			name: "display name",
+			mutate: func(tool *CustomTool) {
+				tool.DisplayName = strings.Repeat("n", MaxDisplayNameLength+1)
+			},
+			want: "display_name must be at most 128 characters",
+		},
+		{
+			name: "image URL",
+			mutate: func(tool *CustomTool) {
+				tool.ImageURL = "not-a-url"
+			},
+			want: "image_url must be a valid absolute http/https URL",
+		},
+		{
+			name: "buttons",
+			mutate: func(tool *CustomTool) {
+				tool.Buttons = []Button{{Label: "", URL: "https://example.test"}}
+			},
+			want: "buttons[0].label must not be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := CustomTool{
+				ID:          "custom",
+				DisplayName: "Custom",
+				Match:       CustomMatch{Name: "custom"},
+				ImageURL:    "https://example.test/custom.png",
+			}
+			tt.mutate(&tool)
+			if _, err := NewWithCustom(tool); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("NewWithCustom() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

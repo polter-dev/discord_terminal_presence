@@ -3,6 +3,7 @@ package presence
 import (
 	"context"
 	"errors"
+	"reflect"
 	"time"
 
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
@@ -201,6 +202,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		lastWrite time.Time
 		wrote     bool
 		pending   bool
+		rejected  *activityPayload
 	)
 
 	setConnected := func(next bool) {
@@ -266,6 +268,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 	clear := func() {
 		w.debugf("presence clear")
 		desired = nil
+		rejected = nil
 		pending = false
 		stopWrite()
 		stopRetry()
@@ -281,6 +284,9 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		if desired == nil {
 			return nil
 		}
+		if rejected != nil && activityPayloadEqual(*desired, *rejected) {
+			return nil
+		}
 		if !connected {
 			w.debugf("presence connect attempt")
 			if err := w.client.Login(w.appID); err != nil {
@@ -292,6 +298,16 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		}
 		if err := w.client.SetActivity(*desired); err != nil {
 			w.debugf("presence push failed: %v", err)
+			if isPermanentActivityError(err) {
+				w.debugf("presence payload rejected permanently; waiting for activity change")
+				rejectedPayload := activityPayloadFor(*desired)
+				rejected = &rejectedPayload
+				pending = false
+				stopWrite()
+				stopRetry()
+				stopReapply()
+				return err
+			}
 			if connected {
 				_ = w.client.Logout()
 				setConnected(false)
@@ -300,6 +316,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 			return err
 		}
 		w.debugf("presence push: details=%q state=%q", desired.Details, desired.State)
+		rejected = nil
 		lastWrite = w.clock.Now()
 		wrote = true
 		pending = false
@@ -351,6 +368,9 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 				clear()
 				continue
 			}
+			if rejected != nil && !activityPayloadEqual(*activity, *rejected) {
+				rejected = nil
+			}
 			desired = activity
 			requestApply()
 		case <-retryC:
@@ -394,9 +414,17 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 				continue
 			}
 			setConnected(true)
-			if desired != nil {
+			if desired != nil && (rejected == nil || !activityPayloadEqual(*desired, *rejected)) {
 				if err := w.client.SetActivity(*desired); err != nil {
 					w.debugf("presence push failed: %v", err)
+					if isPermanentActivityError(err) {
+						w.debugf("presence payload rejected permanently; waiting for activity change")
+						rejectedPayload := activityPayloadFor(*desired)
+						rejected = &rejectedPayload
+						pending = false
+						request.result <- reconnectResult{err: err}
+						continue
+					}
 					_ = w.client.Logout()
 					setConnected(false)
 					scheduleRetry()
@@ -404,6 +432,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 					continue
 				}
 				w.debugf("presence push: details=%q state=%q", desired.Details, desired.State)
+				rejected = nil
 				lastWrite = w.clock.Now()
 				wrote = true
 				pending = false
@@ -414,6 +443,14 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 			return
 		}
 	}
+}
+
+func activityPayloadFor(activity Activity) activityPayload {
+	return newSetActivityPayload(activity, 0, "").Args.Activity
+}
+
+func activityPayloadEqual(activity Activity, payload activityPayload) bool {
+	return reflect.DeepEqual(activityPayloadFor(activity), payload)
 }
 
 type writeClock interface {

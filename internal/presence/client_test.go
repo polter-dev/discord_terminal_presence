@@ -128,8 +128,8 @@ func TestSetActivitySurfacesDiscordErrorResponse(t *testing.T) {
 	if !strings.Contains(err.Error(), "4000") || !strings.Contains(err.Error(), "large_image is not allowed to be empty") {
 		t.Fatalf("SetActivity error = %q, want code and message", err)
 	}
-	if client.conn != nil {
-		t.Fatal("client retained connection after SET_ACTIVITY error")
+	if client.conn == nil {
+		t.Fatal("client closed healthy connection after Discord payload rejection")
 	}
 	if serverErr := <-serverErr; serverErr != nil && !errors.Is(serverErr, net.ErrClosed) {
 		t.Fatal(serverErr)

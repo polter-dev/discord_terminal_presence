@@ -16,6 +16,11 @@ contains polling-based reload and config-directory setup.
 or documented warnings rather than silently changing privacy behavior. Windows migrates
 legacy state to the native config directory on a best-effort basis.
 
+Discord-facing config is rejected during load when it cannot produce a valid activity.
+Tool and custom-tool buttons allow at most two entries; labels are non-empty and at most
+32 characters, and URLs are absolute HTTP(S) URLs. Details/fallback text and custom-tool
+identity, display, and image fields are bounded before registry construction.
+
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically
 renames it. New files request `0644`, allowing the process umask to remove bits; forced

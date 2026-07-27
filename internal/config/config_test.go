@@ -969,6 +969,100 @@ match = { name = "missing-image" }
 	}
 }
 
+func TestToolButtonValidationRejectedAtLoad(t *testing.T) {
+	tests := []struct {
+		name    string
+		buttons string
+		want    string
+	}{
+		{
+			name:    "over-length label",
+			buttons: `[{ label = "` + strings.Repeat("X", 33) + `", url = "https://example.test" }]`,
+			want:    "tools.claude-code: buttons[0].label must be at most 32 characters",
+		},
+		{
+			name: "more than two buttons",
+			buttons: `[
+				{ label = "One", url = "https://example.test/one" },
+				{ label = "Two", url = "https://example.test/two" },
+				{ label = "Three", url = "https://example.test/three" },
+			]`,
+			want: "tools.claude-code: buttons must contain at most 2 entries",
+		},
+		{
+			name:    "malformed URL",
+			buttons: `[{ label = "Broken", url = "not-a-valid-url-at-all" }]`,
+			want:    "tools.claude-code: buttons[0].url must be a valid absolute http/https URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := withConfigHome(t)
+			writeConfig(t, path, "[tools.claude-code]\nbuttons = "+tt.buttons+"\n")
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCustomToolDiscordFieldValidationRejectedAtLoad(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		want  string
+	}{
+		{
+			name:  "id length",
+			field: `id = "` + strings.Repeat("i", registry.MaxToolIDLength+1) + `"`,
+			want:  "custom_tools[0]: id must be at most 64 characters",
+		},
+		{
+			name:  "display name length",
+			field: `display_name = "` + strings.Repeat("n", registry.MaxDisplayNameLength+1) + `"`,
+			want:  "custom_tools[0]: display_name must be at most 128 characters",
+		},
+		{
+			name:  "image URL shape",
+			field: `image_url = "not-an-absolute-url"`,
+			want:  "custom_tools[0]: image_url must be a valid absolute http/https URL",
+		},
+		{
+			name:  "button label length",
+			field: `buttons = [{ label = "` + strings.Repeat("X", 33) + `", url = "https://example.test" }]`,
+			want:  "custom_tools[0]: buttons[0].label must be at most 32 characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := `id = "custom"`
+			displayName := `display_name = "Custom"`
+			imageURL := `image_url = "https://example.test/custom.png"`
+			buttons := ""
+			switch tt.name {
+			case "id length":
+				id = tt.field
+			case "display name length":
+				displayName = tt.field
+			case "image URL shape":
+				imageURL = tt.field
+			case "button label length":
+				buttons = "\n" + tt.field
+			}
+			path := withConfigHome(t)
+			writeConfig(t, path, "[[custom_tools]]\n"+id+"\n"+displayName+
+				"\nmatch = { name = \"custom\" }\n"+imageURL+buttons+"\n")
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestSaveRoundTrip(t *testing.T) {
 	path := withConfigHome(t)
 	cfg := Default()

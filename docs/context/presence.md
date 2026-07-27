@@ -18,6 +18,13 @@ dial IPC endpoints. `internal/presence/writer.go` owns client lifecycle.
 allowlisted display directory. Buttons are capped at two. One writer goroutine owns all
 client calls; the default activity write throttle remains 15 seconds.
 
+The IPC boundary validates bounded activity text, image values, button labels/count, and
+absolute HTTP(S) URLs before encoding. Discord IPC code 4000 is a permanent rejection for
+the current payload: the writer keeps a healthy connection, does not schedule transport
+backoff or reapply that payload, and attempts normally again when the desired activity
+changes. Transport, timeout, and connection failures retain the existing reconnect
+backoff.
+
 `StatusProbe` checks cancellation before work and threads its context through discovery
 and dialing. A watcher goroutine forces a read/write deadline to `time.Now()` when the
 context ends so frame I/O unblocks promptly. The status-only `statusIOTimeout` remains

@@ -1,9 +1,12 @@
 package presence
 
 import (
+	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
@@ -15,6 +18,11 @@ import (
 const DefaultAppID = "1523168764793847918"
 
 const defaultDetailsFormat = "Using {tool}"
+
+const (
+	maxActivityTextLength = 128
+	maxImageValueLength   = 256
+)
 
 // DisplayOptions is the M2 stand-in for future config-driven display/privacy settings.
 type DisplayOptions struct {
@@ -66,6 +74,61 @@ type Image struct {
 type Button struct {
 	Label string
 	URL   string
+}
+
+type activityValidationError struct {
+	message string
+}
+
+func (e *activityValidationError) Error() string {
+	return "presence: invalid activity: " + e.message
+}
+
+func validateActivity(activity Activity) error {
+	textFields := []struct {
+		name  string
+		value string
+	}{
+		{name: "name", value: activity.Name},
+		{name: "details", value: activity.Details},
+		{name: "state", value: activity.State},
+		{name: "large_image_text", value: activity.LargeImage.Text},
+		{name: "small_image_text", value: activity.SmallImage.Text},
+	}
+	for _, field := range textFields {
+		if utf8.RuneCountInString(field.value) > maxActivityTextLength {
+			return &activityValidationError{message: fmt.Sprintf("%s must be at most %d characters", field.name, maxActivityTextLength)}
+		}
+	}
+	imageFields := []struct {
+		name  string
+		image Image
+	}{
+		{name: "large_image", image: activity.LargeImage},
+		{name: "small_image", image: activity.SmallImage},
+	}
+	for _, field := range imageFields {
+		value := imageValue(field.image)
+		if utf8.RuneCountInString(value) > maxImageValueLength {
+			return &activityValidationError{message: fmt.Sprintf("%s must be at most %d characters", field.name, maxImageValueLength)}
+		}
+		if field.image.URL != "" && !validHTTPURL(field.image.URL) {
+			return &activityValidationError{message: fmt.Sprintf("%s URL must be a valid absolute http/https URL", field.name)}
+		}
+	}
+	buttons := make([]registry.Button, 0, len(activity.Buttons))
+	for _, button := range activity.Buttons {
+		buttons = append(buttons, registry.Button{Label: button.Label, URL: button.URL})
+	}
+	if err := registry.ValidateButtons(buttons); err != nil {
+		return &activityValidationError{message: err.Error()}
+	}
+	return nil
+}
+
+func validHTTPURL(value string) bool {
+	parsed, err := url.ParseRequestURI(value)
+	return err == nil && parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https")
 }
 
 // ActivityFromDetection maps an active detector result into a Discord activity payload.

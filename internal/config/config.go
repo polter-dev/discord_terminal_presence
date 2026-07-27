@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
@@ -30,6 +31,8 @@ var defaultFallbackMessages = []string{BuiltInFallbackMessage, "In the terminal"
 
 // DefaultAccentColor preserves the original adaptive purple TUI palette.
 const DefaultAccentColor = "purple"
+
+const maxActivityTextLength = 128
 
 var hexColorPattern = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
 
@@ -652,9 +655,20 @@ func validate(cfg *Config) error {
 	if err := validateDuration("headliner_idle_timeout", cfg.HeadlinerIdleTimeout, false); err != nil {
 		return err
 	}
+	if utf8.RuneCountInString(cfg.DetailsFormat) > maxActivityTextLength {
+		return fmt.Errorf("details_format must be at most %d characters", maxActivityTextLength)
+	}
+	if cfg.CTA.Enabled {
+		if err := registry.ValidateButtons([]registry.Button{{Label: cfg.CTA.Label, URL: cfg.CTA.URL}}); err != nil {
+			return fmt.Errorf("cta: %w", err)
+		}
+	}
 
 	fallbackMessages := cfg.FallbackMessages[:0]
-	for _, message := range cfg.FallbackMessages {
+	for i, message := range cfg.FallbackMessages {
+		if utf8.RuneCountInString(message) > maxActivityTextLength {
+			return fmt.Errorf("fallback_messages[%d] must be at most %d characters", i, maxActivityTextLength)
+		}
 		if strings.TrimSpace(message) != "" {
 			fallbackMessages = append(fallbackMessages, message)
 		}
@@ -675,6 +689,9 @@ func validate(cfg *Config) error {
 
 	cfg.Privacy.DirectoryAllowlist = expandPaths(cfg.Privacy.DirectoryAllowlist)
 	for id, override := range cfg.Tools {
+		if err := registry.ValidateButtons(override.Buttons); err != nil {
+			return fmt.Errorf("tools.%s: %w", id, err)
+		}
 		override.DirectoryAllowlist = expandPaths(override.DirectoryAllowlist)
 		cfg.Tools[id] = override
 	}
@@ -691,6 +708,9 @@ func validate(cfg *Config) error {
 		}
 		if strings.TrimSpace(customTool.ImageKey) == "" && strings.TrimSpace(customTool.ImageURL) == "" && strings.TrimSpace(customTool.IconSlug) == "" {
 			return fmt.Errorf("custom_tools[%d]: image_key, image_url, or icon_slug is required", i)
+		}
+		if err := registry.ValidateCustomTool(customTool); err != nil {
+			return fmt.Errorf("custom_tools[%d]: %w", i, err)
 		}
 	}
 	return nil
