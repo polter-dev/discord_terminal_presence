@@ -157,7 +157,7 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 	if customizedDetailsFormat(options.DetailsFormat) {
 		if directory != "" {
 			activity.State = directory
-		} else if options.Collection {
+		} else if options.ToolName && options.Collection {
 			activity.State = legacyCollectionState(detection.Others)
 		}
 		if options.ToolName {
@@ -165,7 +165,7 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		}
 	} else {
 		collection := ""
-		if options.Collection {
+		if options.ToolName && options.Collection {
 			collection = CollectionState(detection.Others)
 		}
 		switch {

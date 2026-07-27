@@ -186,6 +186,30 @@ func TestActivityFromDetectionDefaultDetailsShowsDirectoryWithoutToolName(t *tes
 	}
 }
 
+func TestActivityFromDetectionCollectionDoesNotExposeToolNamesWhenToolNameDisabled(t *testing.T) {
+	options := DefaultDisplayOptions()
+	options.ToolName = false
+	options.Collection = true
+	options.FallbackMessage = "Fixed fallback"
+	detection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+		Others: []registry.Tool{
+			{DisplayName: "Aider"},
+		},
+	}
+
+	activity, ok := ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if strings.Contains(activity.Details, "Aider") || strings.Contains(activity.State, "Aider") {
+		t.Fatalf("details/state = %q/%q, must not expose another tool name when tool_name is false", activity.Details, activity.State)
+	}
+	if activity.Details != "Fixed fallback" || activity.State != "" {
+		t.Fatalf("details/state = %q/%q, want fallback and empty state", activity.Details, activity.State)
+	}
+}
+
 func TestActivityFromDetectionBoundsRenderedText(t *testing.T) {
 	detailsDetection := detector.Detection{
 		Tool: registry.Tool{DisplayName: "Claude Code"},
