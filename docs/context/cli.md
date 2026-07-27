@@ -78,6 +78,10 @@ Automatic install failures remain fail-open and non-interactive, but the update
 cache records the attempt time, target version, and error. `termp status`
 reports the latest failure with an instruction to run `termp update` manually;
 a later successful automatic install replaces and clears the failure.
+On macOS and Linux, generic automatic updates preflight the installer's
+`BINDIR` (default `/usr/local/bin`) and skip before downloading when it is not
+writable. The cache distinguishes this elevation-required skip from an
+installer failure, while interactive `termp update` continues to allow sudo.
 
 `termp config init` refuses to replace symlinks and other non-regular config
 paths, including with `--force`. Config creation and forced replacement write a

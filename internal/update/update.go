@@ -388,6 +388,7 @@ type AutomaticUpdateAttempt struct {
 	AttemptedAt time.Time `json:"attempted_at"`
 	Target      string    `json:"target_version"`
 	Error       string    `json:"error,omitempty"`
+	Skipped     bool      `json:"skipped,omitempty"`
 }
 
 // ReadAutomaticUpdateAttempt reads the last automatic install attempt from the
@@ -410,6 +411,12 @@ func RecordAutomaticUpdateAttempt(path, target string, attemptedAt time.Time, up
 	}
 	if updateErr != nil {
 		attempt.Error = updateErr.Error()
+		var skip interface {
+			AutomaticUpdateSkipped() bool
+		}
+		if errors.As(updateErr, &skip) {
+			attempt.Skipped = skip.AutomaticUpdateSkipped()
+		}
 	}
 	entry.AutomaticUpdate = attempt
 	return writeCache(path, entry)
