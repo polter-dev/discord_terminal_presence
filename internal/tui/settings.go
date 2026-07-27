@@ -317,7 +317,7 @@ func (m Model) View() string {
 	b.WriteByte('\n')
 	if m.err != nil {
 		b.WriteString("\n")
-		b.WriteString(m.styles.error.Render("save failed: " + m.err.Error()))
+		b.WriteString(renderTerminalText(m.styles.error, "save failed: "+m.err.Error()))
 		b.WriteByte('\n')
 	} else if m.saved {
 		b.WriteString("\n")
@@ -325,7 +325,7 @@ func (m Model) View() string {
 		b.WriteByte('\n')
 	} else if m.status != "" {
 		b.WriteString("\n")
-		b.WriteString(m.styles.muted.Render(m.status))
+		b.WriteString(renderTerminalText(m.styles.muted, m.status))
 		b.WriteByte('\n')
 	}
 	b.WriteString("\n")
@@ -417,7 +417,7 @@ func (m Model) settingsTable(columnIndex int) string {
 		BorderStyle(borderStyle).
 		BorderRow(false).
 		StyleFunc(func(rowIndex, cellColumnIndex int) lipgloss.Style {
-			style := lipgloss.NewStyle().Padding(0, 1)
+			style := terminalTextStyle(lipgloss.NewStyle().Padding(0, 1))
 			modelRowIndex := start + rowIndex
 			if column.kind == columnChoices {
 				modelRowIndex--

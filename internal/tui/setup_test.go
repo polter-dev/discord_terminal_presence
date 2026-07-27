@@ -190,3 +190,52 @@ func TestSetupCompletionChoiceSkipsInstallByDefault(t *testing.T) {
 		t.Fatalf("default-off completion state = calls:%d\n%s", installCalls, model.View())
 	}
 }
+
+func TestSetupViewSanitizesExternallyDerivedOutput(t *testing.T) {
+	const (
+		osc52 = "\x1b]52;c;Y2xpcGJvYXJk\x07"
+		erase = "\x1b[2J"
+	)
+	model := NewSetupModel(config.Default(), nil, nil, nil, nil).WithCompletion(
+		"fi"+osc52+"sh",
+		"/tmp/"+erase+"completion",
+		"",
+		func() ([]string, error) { return nil, nil },
+	)
+
+	view := model.View()
+	for _, control := range []string{osc52, erase} {
+		if strings.Contains(view, control) {
+			t.Fatalf("setup table emitted terminal control sequence %q:\n%s", control, view)
+		}
+	}
+	if !strings.Contains(view, "Install shell completion for fish? (writes /tmp/completion)") {
+		t.Fatalf("setup table missing sanitized completion choice:\n%s", view)
+	}
+
+	model.err = errors.New("install " + osc52 + "failed")
+	view = model.View()
+	if strings.Contains(view, osc52) || !strings.Contains(view, "setup failed: install failed") {
+		t.Fatalf("setup error was not sanitized:\n%s", view)
+	}
+
+	model.step = 2
+	model.path = "/tmp/" + osc52 + "config.toml"
+	model.autostart = "in" + erase + "stalled"
+	model.completion = "installed: /tmp/completion\n" + osc52 + "restart shell"
+	view = model.View()
+	for _, control := range []string{osc52, erase} {
+		if strings.Contains(view, control) {
+			t.Fatalf("setup summary emitted terminal control sequence %q:\n%s", control, view)
+		}
+	}
+	for _, want := range []string{
+		"Config: /tmp/config.toml",
+		"Autostart: installed",
+		"Completion: installed: /tmp/completionrestart shell",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("setup summary missing sanitized output %q:\n%s", want, view)
+		}
+	}
+}

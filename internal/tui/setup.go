@@ -272,7 +272,7 @@ func (m SetupModel) View() string {
 		b.WriteString(m.actionButton(label, m.setupActionFocused()))
 		if m.err != nil {
 			b.WriteString("\n\n")
-			b.WriteString(m.styles.error.Render("setup failed: " + m.err.Error()))
+			b.WriteString(renderTerminalText(m.styles.error, "setup failed: "+m.err.Error()))
 		}
 	case 1:
 		b.WriteString(m.applyConfirm.View())
@@ -342,7 +342,7 @@ func (m SetupModel) choicesTable(interactive bool) string {
 		BorderStyle(m.styles.focusedBorder).
 		BorderRow(false).
 		StyleFunc(func(rowIndex, columnIndex int) lipgloss.Style {
-			style := lipgloss.NewStyle().Padding(0, 1)
+			style := terminalTextStyle(lipgloss.NewStyle().Padding(0, 1))
 			switch {
 			case rowIndex == table.HeaderRow:
 				return style.Inherit(m.styles.title)
@@ -466,11 +466,14 @@ func (m SetupModel) summary() string {
 	b.WriteString(m.styles.success.Render("Setup applied."))
 	b.WriteString("\n\n")
 	if m.path != "" {
-		b.WriteString("Config: " + m.path + "\n")
+		b.WriteString(renderTerminalText(lipgloss.NewStyle(), "Config: "+m.path))
+		b.WriteByte('\n')
 	}
-	b.WriteString("Autostart: " + m.autostart + "\n")
+	b.WriteString(renderTerminalText(lipgloss.NewStyle(), "Autostart: "+m.autostart))
+	b.WriteByte('\n')
 	if m.completion != "" {
-		b.WriteString("Completion: " + m.completion + "\n")
+		b.WriteString(renderTerminalText(lipgloss.NewStyle(), "Completion: "+m.completion))
+		b.WriteByte('\n')
 	}
 	b.WriteString("Run now: termp start\n\n")
 	b.WriteString("You can disable autostart later with `termp uninstall`; re-run setup or edit config to change these choices.\n")
