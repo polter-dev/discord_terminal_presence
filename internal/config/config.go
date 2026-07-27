@@ -347,20 +347,44 @@ func tomlStringArray(values []string) string {
 
 // InitFile writes the annotated default config, refusing to overwrite unless force is true.
 func InitFile(path string, force bool) error {
-	if !force {
-		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("config already exists: %s", path)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
 	dir := filepath.Dir(path)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	return os.WriteFile(path, []byte(AnnotatedSample()), 0o644)
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refuse to replace non-regular config file %s", path)
+		}
+		if !force {
+			return fmt.Errorf("config already exists: %s", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect config file %s: %w", path, err)
+	}
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary config file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("set config file permissions: %w", err)
+	}
+	if _, err := tmp.WriteString(AnnotatedSample()); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write config file %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write config file %s: %w", path, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replace config file %s: %w", path, err)
+	}
+	return nil
 }
 
 // Load reads the default config path. A missing file returns defaults.

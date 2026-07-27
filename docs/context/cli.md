@@ -69,3 +69,7 @@ unchanged.
 
 Automatic updates delegate Homebrew Formula installations to
 `brew upgrade polter-dev/tap/termp`; they do not use the Cask-only `--cask` flag.
+
+`termp config init` refuses to replace symlinks and other non-regular config
+paths, including with `--force`. Config creation and forced replacement write a
+temporary file in the config directory and atomically rename it into place.
