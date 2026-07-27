@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -69,6 +70,10 @@ func runAutomaticUpdate(ctx context.Context, cfg config.Config, current string, 
 }
 
 func runAutomaticUpdateWithStatePath(ctx context.Context, cfg config.Config, current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner, statePath string) {
+	runAutomaticUpdateWithStatePathForPlatform(ctx, cfg, current, checker, runner, statePath, runtime.GOOS)
+}
+
+func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.Config, current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner, statePath, goos string) {
 	if !cfg.AutoUpdate || !cfg.UpdateCheck || checker == nil {
 		return
 	}
@@ -77,6 +82,14 @@ func runAutomaticUpdateWithStatePath(ctx context.Context, cfg config.Config, cur
 	cancelCheck()
 	if !ok {
 		debugf("automatic update check skipped or found no newer release")
+		return
+	}
+
+	if err := automaticUpdatePlatformPreflight(goos, result.Method); err != nil {
+		if recordErr := updatepkg.RecordAutomaticUpdateAttempt(statePath, result.Latest, time.Now(), err); recordErr != nil {
+			debugf("automatic update skip could not be recorded: %v", recordErr)
+		}
+		debugf("automatic update skipped: %v", err)
 		return
 	}
 
@@ -105,6 +118,23 @@ func runAutomaticUpdateWithStatePath(ctx context.Context, cfg config.Config, cur
 		debugf("automatic update success could not be recorded: %v", err)
 	}
 	debugf("automatic update installed %s; it will take effect on next start", result.Latest)
+}
+
+type automaticUpdatePlatformError struct{}
+
+func (automaticUpdatePlatformError) Error() string {
+	return "generic automatic updates are not supported on Windows; run `termp update` for supported manual options"
+}
+
+func (automaticUpdatePlatformError) AutomaticUpdateSkipped() bool {
+	return true
+}
+
+func automaticUpdatePlatformPreflight(goos string, method updatepkg.InstallMethod) error {
+	if goos == "windows" && method == updatepkg.InstallGeneric {
+		return automaticUpdatePlatformError{}
+	}
+	return nil
 }
 
 func eligibleForUpdateAlert(command string, args []string, interactive bool) bool {

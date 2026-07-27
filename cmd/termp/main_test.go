@@ -1352,6 +1352,100 @@ func TestAutomaticUpdateDisabledDoesNothing(t *testing.T) {
 	}
 }
 
+func TestAutomaticGenericWindowsUpdateRecordsLimitation(t *testing.T) {
+	_ = os.Unsetenv("NO_UPDATE_CHECK")
+	statePath := filepath.Join(t.TempDir(), "update-check.json")
+	source := &staticReleaseSource{latest: "v1.1.0"}
+	checker := updatepkg.NewChecker(source, statePath)
+	checker.DetectInstall = func() updatepkg.InstallMethod { return updatepkg.InstallGeneric }
+	runner := &recordingUpdateRunner{}
+	cfg := config.Default()
+	cfg.AutoUpdate = true
+
+	runAutomaticUpdateWithStatePathForPlatform(context.Background(), cfg, "1.0.0", checker, runner, statePath, "windows")
+
+	if source.calls != 1 || runner.calls != 0 {
+		t.Fatalf("generic Windows automatic update used source %d times and runner %d times, want 1 and 0", source.calls, runner.calls)
+	}
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
+	if !ok || !attempt.Skipped || attempt.Target != "v1.1.0" {
+		t.Fatalf("recorded attempt = (%+v, %t), want skipped v1.1.0 attempt", attempt, ok)
+	}
+	for _, want := range []string{"generic automatic updates are not supported on Windows", "run `termp update`"} {
+		if !strings.Contains(attempt.Error, want) {
+			t.Fatalf("recorded skip %q missing %q", attempt.Error, want)
+		}
+	}
+	status := automaticUpdateStatus(statePath, true, "windows", updatepkg.InstallGeneric)
+	for _, want := range []string{"skipped for v1.1.0", "not supported on Windows", "run `termp update`"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("status update reason %q missing %q", status, want)
+		}
+	}
+}
+
+func TestAutomaticUpdateStatusReportsGenericWindowsLimitationBeforeAttempt(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "missing-update-check.json")
+	status := automaticUpdateStatus(statePath, true, "windows", updatepkg.InstallGeneric)
+	for _, want := range []string{"skipped:", "not supported on Windows", "run `termp update`"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("status update reason %q missing %q", status, want)
+		}
+	}
+	rendered := formatStatus(statusInfo{updateFailure: status})
+	if !strings.Contains(rendered, "Updates\n  Automatic  "+status+"\n") {
+		t.Fatalf("status did not report generic Windows automatic-update limitation:\n%s", rendered)
+	}
+	if got := automaticUpdateStatus(statePath, false, "windows", updatepkg.InstallGeneric); got != "" {
+		t.Fatalf("disabled automatic update status = %q, want empty", got)
+	}
+}
+
+func TestAutomaticUpdatePlatformPreflightOnlyRejectsGenericWindows(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		goos   string
+		method updatepkg.InstallMethod
+		want   bool
+	}{
+		{name: "generic Windows", goos: "windows", method: updatepkg.InstallGeneric, want: true},
+		{name: "Go Windows", goos: "windows", method: updatepkg.InstallGo},
+		{name: "Homebrew Windows", goos: "windows", method: updatepkg.InstallHomebrew},
+		{name: "generic Linux", goos: "linux", method: updatepkg.InstallGeneric},
+		{name: "generic macOS", goos: "darwin", method: updatepkg.InstallGeneric},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := automaticUpdatePlatformPreflight(tt.goos, tt.method) != nil; got != tt.want {
+				t.Fatalf("automaticUpdatePlatformPreflight(%q, %q) rejected = %t, want %t", tt.goos, tt.method, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAutomaticManagedWindowsUpdatesRemainEnabled(t *testing.T) {
+	for _, method := range []updatepkg.InstallMethod{updatepkg.InstallGo, updatepkg.InstallHomebrew} {
+		t.Run(string(method), func(t *testing.T) {
+			_ = os.Unsetenv("NO_UPDATE_CHECK")
+			statePath := filepath.Join(t.TempDir(), "update-check.json")
+			checker := updatepkg.NewChecker(&staticReleaseSource{latest: "v1.1.0"}, statePath)
+			checker.DetectInstall = func() updatepkg.InstallMethod { return method }
+			runner := &recordingUpdateRunner{}
+			cfg := config.Default()
+			cfg.AutoUpdate = true
+
+			runAutomaticUpdateWithStatePathForPlatform(context.Background(), cfg, "1.0.0", checker, runner, statePath, "windows")
+
+			if runner.calls != 1 {
+				t.Fatalf("%s Windows automatic update invoked runner %d times, want 1", method, runner.calls)
+			}
+			attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
+			if !ok || attempt.Skipped || attempt.Error != "" {
+				t.Fatalf("%s Windows automatic update attempt = (%+v, %t), want success", method, attempt, ok)
+			}
+		})
+	}
+}
+
 func TestAutomaticUpdateRunsInstallAwareUpdater(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

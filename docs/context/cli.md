@@ -82,6 +82,11 @@ On macOS and Linux, generic automatic updates preflight the installer's
 `BINDIR` (default `/usr/local/bin`) and skip before downloading when it is not
 writable. The cache distinguishes this elevation-required skip from an
 installer failure, while interactive `termp update` continues to allow sudo.
+On Windows, generic release-archive installs cannot use automatic updates.
+When enabled, the automatic path records an unsupported-platform skip before
+running an updater, and `termp status` reports the limitation even before a
+newer release is available. Go and Homebrew install methods remain eligible,
+and interactive `termp update` retains its existing manual-install guidance.
 
 `termp config init` refuses to replace symlinks and other non-regular config
 paths, including with `--force`. Config creation and forced replacement write a
