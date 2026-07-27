@@ -51,6 +51,9 @@ Process-list failures retain the last presence for one or two consecutive
 scans. On the third consecutive failure, the detector emits `None` immediately
 so the writer clears stale Discord presence. A successful scan resets the
 failure counter, and normal detection debounce applies when presence recovers.
+Blocked detection emissions continue to service reconfiguration requests. A
+mid-emit reload invalidates the candidate derived from the old registry/config,
+acknowledges the reload, and immediately re-scans before emitting.
 
 Gopsutil `CmdlineSlice` is preserved as structured argv; string cmdline remains a
 fallback. Episode-store load and save failures reach the detector debug callback. The
