@@ -29,8 +29,10 @@ concurrent PID/publisher faults.
 Plain legacy PID records remain readable for stale-file cleanup, but a true legacy
 record without a process start time never authorizes signaling. New records explicitly
 mark an unavailable start time and fall back to executable identity so a live daemon is
-not orphaned when process metadata cannot be read. Verified records still use process
-start time to detect PID reuse during shutdown polling.
+not orphaned when process metadata cannot be read; status and connect's PID-file fallback
+honor that marker. Publisher/Discord-state records still require their recorded process
+start time. Verified records use process start time to detect PID reuse during shutdown
+polling.
 
 Setup rewrites enabled service definitions but does not relaunch an already-running
 daemon. Config/autostart success survives a completion-only failure and the summary

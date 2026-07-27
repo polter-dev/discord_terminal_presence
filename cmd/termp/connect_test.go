@@ -103,6 +103,28 @@ func TestConnectCommandTargetsPublisherAndWaitsForNewConnectedState(t *testing.T
 	}
 }
 
+func TestConnectCommandFallsBackToPIDRecordWithUnavailableStartTime(t *testing.T) {
+	deps := baseConnectDeps(time.Now())
+	deps.readPID = func(string) (daemonPIDRecord, error) {
+		return daemonPIDRecord{PID: 42, StartTimeUnavailable: true}, nil
+	}
+	deps.alive = func(pid int) bool { return pid == 42 }
+	deps.looksLike = deps.alive
+	targetPID := 0
+	deps.send = func(_ context.Context, pid int, _ controlRequest) (controlResponse, error) {
+		targetPID = pid
+		return controlResponse{Status: "already_connected"}, nil
+	}
+
+	var output bytes.Buffer
+	if err := connectCommandWith(nil, &output, &output, deps); err != nil {
+		t.Fatal(err)
+	}
+	if targetPID != 42 {
+		t.Fatalf("connect target pid = %d, want PID-file fallback pid 42", targetPID)
+	}
+}
+
 func TestConnectCommandSurfacesReconnectFailureWithoutSuccess(t *testing.T) {
 	useFixtureProcessStartTime(t)
 	now := time.Now()

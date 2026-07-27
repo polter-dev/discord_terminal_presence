@@ -831,6 +831,25 @@ func TestFormatStatusLabelsWindowsScheduledTask(t *testing.T) {
 	}
 }
 
+func TestStatusReportsRunningForPIDRecordWithUnavailableStartTime(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "termp.pid")
+	if err := os.WriteFile(pidPath, []byte(`{"pid":42,"start_time_unavailable":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	daemonPID := statusDaemonPID(
+		pidPath,
+		filepath.Join(t.TempDir(), "missing-discord.json"),
+		time.Now(),
+		func(pid int) bool { return pid == 42 },
+		func(pid int) bool { return pid == 42 },
+	)
+	got := formatStatus(statusInfo{running: daemonPID > 0, configOK: true})
+	if daemonPID != 42 || !strings.Contains(got, "  Running        yes\n") {
+		t.Fatalf("status daemon pid = %d, output =\n%s\nwant pid 42 reported running", daemonPID, got)
+	}
+}
+
 func TestFormatStatusGroupedAlignedAndComplete(t *testing.T) {
 	homeDir := filepath.Join(string(filepath.Separator), "Users", "test")
 	servicePath := filepath.Join(homeDir, "Library", "LaunchAgents", "dev.termp.plist")

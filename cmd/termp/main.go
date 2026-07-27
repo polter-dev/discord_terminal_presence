@@ -1270,22 +1270,8 @@ func status(args []string) error {
 	defer cancelStatus()
 	cfg, loadErr := config.Load()
 	defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
-	pidPath := pidFilePath()
-	running := false
-	daemonPID := 0
-	if record, _, err := readPIDIdentity(pidPath); err == nil {
-		running = processIdentityMatches(record.PID, record.StartTime, processAlive, processLooksLikeTermp)
-		if running {
-			daemonPID = record.PID
-		}
-	}
-	if !running {
-		if state, ok := readFreshDaemonDiscordState(daemonDiscordStatePath(), time.Now(), daemonDiscordStateStaleAfter); ok &&
-			processIdentityMatches(state.PID, state.StartTime, processAlive, processLooksLikeTermp) {
-			running = true
-			daemonPID = state.PID
-		}
-	}
+	daemonPID := statusDaemonPID(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermp)
+	running := daemonPID > 0
 
 	reg, registryErr := registry.NewWithCustom(cfg.CustomTools...)
 	probes := runStatusProbes(statusCtx, statusProbeFuncs{
@@ -1348,6 +1334,18 @@ func status(args []string) error {
 	}
 	fmt.Print(formatStatus(info))
 	return nil
+}
+
+func statusDaemonPID(pidPath, discordStatePath string, now time.Time, alive, looksLikeTermp func(int) bool) int {
+	if record, _, err := readPIDIdentity(pidPath); err == nil &&
+		pidRecordIdentityMatches(record, alive, looksLikeTermp) {
+		return record.PID
+	}
+	if state, ok := readFreshDaemonDiscordState(discordStatePath, now, daemonDiscordStateStaleAfter); ok &&
+		processIdentityMatches(state.PID, state.StartTime, alive, looksLikeTermp) {
+		return state.PID
+	}
+	return 0
 }
 
 type statusProbeFuncs struct {
