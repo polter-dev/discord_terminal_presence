@@ -1225,12 +1225,6 @@ func TestRunDebugfEmitsScanAndDetectionDiagnostics(t *testing.T) {
 }
 
 func TestRunDebugfReportsEpisodeStoreLoadFailure(t *testing.T) {
-	root := t.TempDir()
-	blocker := filepath.Join(root, "not-a-directory")
-	if err := os.WriteFile(blocker, []byte("block"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	det, err := New(testRegistry(t), &fakeLister{}, Config{
 		ScanInterval:   time.Hour,
 		DebounceCycles: 1,
@@ -1238,7 +1232,7 @@ func TestRunDebugfReportsEpisodeStoreLoadFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	det.presenceStatePath = filepath.Join(blocker, "presence.json")
+	det.presenceStatePath = t.TempDir()
 	lines := make(chan string, 16)
 	det.SetDebugf(func(format string, args ...any) {
 		lines <- fmt.Sprintf(format, args...)
