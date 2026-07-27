@@ -28,6 +28,11 @@
 /.obsidian/
 # landing_page belongs to the separate termp-web repo; never commit here
 /landing_page/
+# Private local download-analytics tool + its notes — never published.
+/dashboard/
+/DASHBOARD.md
+# Local asset bundle — not distributed.
+/assets.zip
 
 # ── Go build artifacts ───────────────────────────────────────
 # Compiled binary (single-binary project) and Go tooling output
