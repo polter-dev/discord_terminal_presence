@@ -13,6 +13,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const connectSupported = true
+
 func controlPipeName(pid int) string {
 	return `\\.\pipe\termp-control-` + strconv.Itoa(pid)
 }

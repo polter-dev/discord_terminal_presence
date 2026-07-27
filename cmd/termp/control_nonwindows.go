@@ -8,6 +8,8 @@ import (
 	"runtime"
 )
 
+const connectSupported = false
+
 // TODO(#237): Implement and live-test the daemon control transport separately
 // on macOS and Linux against a real Discord IPC socket.
 func startControlServer(context.Context, int, controlHandler) (func(), error) {

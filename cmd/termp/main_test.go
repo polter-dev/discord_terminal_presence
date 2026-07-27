@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -205,11 +206,7 @@ func (r *recordingUpdateRunner) Run(_ context.Context, command updatepkg.Command
 	return nil
 }
 
-var expectedCommands = []string{
-	"install", "uninstall", "disable", "enable", "autostart", "start", "stop", "connect", "status",
-	"settings", "watch", "version", "setup", "config", "completion",
-	"update",
-}
+var expectedCommands = commandNames()
 
 type fileInfoWithSys struct {
 	os.FileInfo
@@ -1825,6 +1822,9 @@ func TestSubcommandHelpReturnsSuccess(t *testing.T) {
 		args    []string
 	}, 0, len(commandHelp)+1)
 	for _, command := range commandHelp {
+		if command.name == "connect" && !connectSupported {
+			continue
+		}
 		tests = append(tests, struct {
 			name    string
 			command string
@@ -1917,6 +1917,29 @@ func TestUsageListsEveryCommandWithDescription(t *testing.T) {
 	for lineNumber, line := range strings.Split(got, "\n") {
 		if len(line) > 80 {
 			t.Fatalf("usage line %d is %d columns: %q", lineNumber+1, len(line), line)
+		}
+	}
+}
+
+func TestConnectAdvertisingMatchesPlatformSupport(t *testing.T) {
+	advertised := slices.Contains(commandNames(), "connect")
+	if advertised != connectSupported {
+		t.Fatalf("command list advertises connect = %t, connectSupported = %t", advertised, connectSupported)
+	}
+
+	var help bytes.Buffer
+	usage(&help)
+	if strings.Contains(help.String(), "\n  connect ") != connectSupported {
+		t.Fatalf("help connect advertising does not match connectSupported = %t:\n%s", connectSupported, help.String())
+	}
+
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		script, err := completionScript(shell)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(script, "connect") != connectSupported {
+			t.Fatalf("%s completion connect advertising does not match connectSupported = %t:\n%s", shell, connectSupported, script)
 		}
 	}
 }

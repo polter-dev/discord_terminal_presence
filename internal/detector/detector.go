@@ -203,7 +203,14 @@ func normalizeConfig(config Config) Config {
 // Run starts one goroutine that scans until ctx is cancelled.
 func (d *Detector) Run(ctx context.Context) <-chan Detection {
 	out := make(chan Detection, 1)
-	go d.run(ctx, out)
+	go d.run(ctx, out, SaveEpisodeStore)
+	return out
+}
+
+// RunReadOnly starts one goroutine that loads presence episodes but never saves them.
+func (d *Detector) RunReadOnly(ctx context.Context) <-chan Detection {
+	out := make(chan Detection, 1)
+	go d.run(ctx, out, nil)
 	return out
 }
 
@@ -724,7 +731,7 @@ func detectionFromFeatured(featured FeaturedTool, others []registry.Tool) Detect
 	}
 }
 
-func (d *Detector) run(ctx context.Context, out chan<- Detection) {
+func (d *Detector) run(ctx context.Context, out chan<- Detection, persistEpisodes func(string, *EpisodeStore) error) {
 	defer close(out)
 
 	var (
@@ -743,13 +750,18 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection) {
 	if consumer, ok := d.lister.(episodeStoreConsumer); ok {
 		consumer.setEpisodeStore(episodes)
 	}
-	saveEpisodes := func(store *EpisodeStore) {
-		if err := SaveEpisodeStore(statePath, store); err != nil {
-			d.debugf("episode store save failed: %v", err)
+	var saveEpisodes func(*EpisodeStore)
+	if persistEpisodes != nil {
+		saveEpisodes = func(store *EpisodeStore) {
+			if err := persistEpisodes(statePath, store); err != nil {
+				d.debugf("episode store save failed: %v", err)
+			}
 		}
 	}
 	selector := newSelectorWithEpisodes(d.registry, d.config, systemClock{}, episodes, saveEpisodes)
-	defer saveEpisodes(episodes)
+	if saveEpisodes != nil {
+		defer saveEpisodes(episodes)
+	}
 
 	var ticker *time.Ticker
 	applyReconfigure := func(request reconfigureRequest) {

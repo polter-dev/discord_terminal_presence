@@ -1323,6 +1323,70 @@ func TestRunDebouncesBeforeEmitting(t *testing.T) {
 	}
 }
 
+func TestRunReadOnlyLoadsEpisodeStoreWithoutSaving(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	created := now.Add(-time.Hour)
+	anchor := now.Add(-30 * time.Minute)
+	tty := "/dev/ttys007"
+	statePath := filepath.Join(t.TempDir(), "presence.json")
+	store := NewEpisodeStore()
+	store.Episodes[EpisodeKey("claude-code", 7, created)] = Episode{
+		PresentSince: anchor,
+		TTY:          tty,
+		LastAtime:    now.Add(-5 * time.Minute),
+	}
+	if err := SaveEpisodeStore(statePath, store); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lister := &fakeLister{snapshots: [][]Process{{{
+		Pid:        7,
+		Name:       "claude",
+		CreateTime: created,
+		TTY: TTYInfo{
+			State:      TTYResolved,
+			Path:       tty,
+			Atime:      now,
+			AtimeKnown: true,
+		},
+	}}}}
+	det, err := New(testRegistry(t), lister, Config{
+		ScanInterval:     time.Hour,
+		DebounceCycles:   1,
+		IdleClearTimeout: 20 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	det.presenceStatePath = statePath
+
+	ctx, cancel := context.WithCancel(context.Background())
+	detections := det.RunReadOnly(ctx)
+	select {
+	case detection := <-detections:
+		if !detection.StartedAt.Equal(anchor) {
+			t.Fatalf("started at = %s, want loaded anchor %s", detection.StartedAt, anchor)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for read-only detection")
+	}
+	cancel()
+	for range detections {
+	}
+
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("read-only detector mutated the episode store")
+	}
+}
+
 func TestRunDebugfEmitsScanAndDetectionDiagnostics(t *testing.T) {
 	det, err := New(testRegistry(t), &fakeLister{}, Config{DebounceCycles: 1})
 	if err != nil {
