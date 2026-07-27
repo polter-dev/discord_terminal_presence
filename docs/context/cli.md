@@ -73,3 +73,12 @@ Automatic updates delegate Homebrew Formula installations to
 `termp config init` refuses to replace symlinks and other non-regular config
 paths, including with `--force`. Config creation and forced replacement write a
 temporary file in the config directory and atomically rename it into place.
+
+## TUI rendering safety
+
+Settings and setup sanitize externally derived text at their shared rendering
+boundaries. Table cells pass through a sanitizing Lip Gloss transform, and
+status, error, and setup-summary text is sanitized before styling or terminal
+output. ANSI escape sequences, C0/C1 controls, and bidirectional text controls
+from configuration, filesystem paths, tool metadata, and errors are therefore
+not emitted by these screens.

@@ -182,6 +182,14 @@ func sanitizeTerminalText(value string) string {
 	return cleaned.String()
 }
 
+func terminalTextStyle(style lipgloss.Style) lipgloss.Style {
+	return style.Transform(sanitizeTerminalText)
+}
+
+func renderTerminalText(style lipgloss.Style, value string) string {
+	return terminalTextStyle(style).Render(value)
+}
+
 func elapsedString(now, started time.Time) string {
 	if started.IsZero() || now.Before(started) {
 		return ""

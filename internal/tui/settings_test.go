@@ -77,6 +77,45 @@ func TestModelTogglePinAndSave(t *testing.T) {
 	}
 }
 
+func TestSettingsViewSanitizesExternallyDerivedRowsAndStatus(t *testing.T) {
+	const (
+		osc52 = "\x1b]52;c;Y2xpcGJvYXJk\x07"
+		erase = "\x1b[2J"
+	)
+	model := NewSettingsModel(config.Default(), []registry.Tool{
+		{ID: "custom-tool", DisplayName: "Custom" + osc52 + " Tool"},
+		{ID: "fallback-" + erase + "tool"},
+	}, nil, nil, nil)
+	model = openCategory(t, model, "Pin Specific Tool")
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+
+	view := model.View()
+	for _, control := range []string{osc52, erase} {
+		if strings.Contains(view, control) {
+			t.Fatalf("settings row emitted terminal control sequence %q:\n%s", control, view)
+		}
+	}
+	for _, want := range []string{"Custom Tool", "fallback-tool"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("settings row missing sanitized label %q:\n%s", want, view)
+		}
+	}
+
+	model.err = errors.New("disk " + osc52 + "full")
+	view = model.View()
+	if strings.Contains(view, osc52) || !strings.Contains(view, "save failed: disk full") {
+		t.Fatalf("settings error was not sanitized:\n%s", view)
+	}
+
+	model.err = nil
+	model.status = "Feedback: https://example.test/" + erase + "report"
+	view = model.View()
+	if strings.Contains(view, erase) || !strings.Contains(view, "https://example.test/report") {
+		t.Fatalf("settings status was not sanitized:\n%s", view)
+	}
+}
+
 func TestModelAutomaticUpdateDefaultsOffAndTogglesOn(t *testing.T) {
 	model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
 	if model.Config().AutoUpdate {
