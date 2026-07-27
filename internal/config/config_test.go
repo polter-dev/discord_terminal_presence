@@ -698,9 +698,6 @@ directory_basename_only = true
 	if !resolved.DirectoryAllowed(inside) {
 		t.Fatalf("expected %q to be allowed", inside)
 	}
-	if got, ok := resolved.DisplayDirectory(inside); !ok || got != "client" {
-		t.Fatalf("display directory = %q, %t; want client, true", got, ok)
-	}
 	outside := filepath.Join(home, "other")
 	if resolved.DirectoryAllowed(outside) {
 		t.Fatalf("expected %q to be denied", outside)
@@ -709,6 +706,12 @@ directory_basename_only = true
 	defaultResolved := Default().Resolve(registry.Tool{ID: "codex-cli"})
 	if defaultResolved.DirectoryAllowed(inside) {
 		t.Fatal("default show_directory=false should deny directory display")
+	}
+}
+
+func TestResolvedToolDoesNotExposeDirectoryFormatting(t *testing.T) {
+	if _, ok := reflect.TypeOf(ResolvedTool{}).MethodByName("DisplayDirectory"); ok {
+		t.Fatal("ResolvedTool.DisplayDirectory must not expose an independent directory privacy boundary")
 	}
 }
 

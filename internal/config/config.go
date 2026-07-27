@@ -633,6 +633,7 @@ func (c Config) Resolve(tool registry.Tool) ResolvedTool {
 }
 
 // DirectoryAllowed reports whether path may be displayed under the effective privacy rules.
+// It does not format path for display.
 func (r ResolvedTool) DirectoryAllowed(path string) bool {
 	if !r.Enabled || !r.ShowDirectory || path == "" {
 		return false
@@ -647,17 +648,6 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 		}
 	}
 	return false
-}
-
-// DisplayDirectory returns the directory string allowed for presence rendering.
-func (r ResolvedTool) DisplayDirectory(path string) (string, bool) {
-	if !r.DirectoryAllowed(path) {
-		return "", false
-	}
-	if r.DirectoryBasenameOnly {
-		return filepath.Base(filepath.Clean(path)), true
-	}
-	return filepath.Clean(path), true
 }
 
 func validate(cfg *Config) error {

@@ -16,6 +16,10 @@ contains polling-based reload and config-directory setup.
 or documented warnings rather than silently changing privacy behavior. Windows migrates
 legacy state to the native config directory on a best-effort basis.
 
+`ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
+not format paths for display. Display reduction belongs to the presence mapping boundary,
+so config does not expose a second directory formatter that could diverge from it.
+
 Discord-facing config is rejected during load when it cannot produce a valid activity.
 Tool and custom-tool buttons allow at most two entries; labels are non-empty and at most
 32 characters, and URLs are absolute HTTP(S) URLs. Details/fallback text and custom-tool
