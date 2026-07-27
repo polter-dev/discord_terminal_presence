@@ -26,10 +26,11 @@ and readiness share a bound. Non-Windows transport remains explicitly unsupporte
 Status trusts a fresh connected publisher instead of probing Discord and exposes
 concurrent PID/publisher faults.
 
-Plain legacy PID records remain readable for stale-file cleanup, but a record without
-a process start time never authorizes signaling. Shutdown polling follows the recorded
-process identity, so an exited daemon whose PID is reused is treated as successfully
-stopped.
+Plain legacy PID records remain readable for stale-file cleanup, but a true legacy
+record without a process start time never authorizes signaling. New records explicitly
+mark an unavailable start time and fall back to executable identity so a live daemon is
+not orphaned when process metadata cannot be read. Verified records still use process
+start time to detect PID reuse during shutdown polling.
 
 Setup rewrites enabled service definitions but does not relaunch an already-running
 daemon. Config/autostart success survives a completion-only failure and the summary

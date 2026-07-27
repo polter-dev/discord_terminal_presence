@@ -616,6 +616,7 @@ func TestConcurrentPIDInitializationDoesNotPublishEmptyFile(t *testing.T) {
 }
 
 func TestStopDaemonRemovesStalePIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
@@ -633,6 +634,7 @@ func TestStopDaemonRemovesStalePIDFile(t *testing.T) {
 }
 
 func TestStopDaemonTimeoutKeepsPIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
@@ -646,6 +648,55 @@ func TestStopDaemonTimeoutKeepsPIDFile(t *testing.T) {
 	}
 	if slept != 25*time.Millisecond {
 		t.Fatalf("slept %s, want bounded 25ms", slept)
+	}
+	if pid, readErr := readPID(path); readErr != nil || pid != 1234 {
+		t.Fatalf("retained PID = %d, %v; want 1234, nil", pid, readErr)
+	}
+}
+
+func TestStopDaemonSignalsLiveProcessWhenStartTimeUnavailable(t *testing.T) {
+	oldLookup := lookupProcessStartTime
+	lookupProcessStartTime = func(int) (uint64, error) {
+		return 0, errors.New("start time unavailable")
+	}
+	t.Cleanup(func() {
+		lookupProcessStartTime = oldLookup
+	})
+
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 1234); err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := readPIDIdentity(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.StartTime != 0 || !record.StartTimeUnavailable {
+		t.Fatalf("PID identity = %+v, want explicit unavailable start time", record)
+	}
+
+	signals := 0
+	_, err = stopDaemon(
+		path,
+		time.Millisecond,
+		time.Millisecond,
+		func(int) bool { return true },
+		func(int) bool { return true },
+		func(pid int) error {
+			signals++
+			if pid != 1234 {
+				t.Fatalf("signal PID = %d, want 1234", pid)
+			}
+			return nil
+		},
+		func(time.Duration) {},
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "PID file was not removed") {
+		t.Fatalf("stopDaemon() error = %v, want retained-file timeout", err)
+	}
+	if signals != 1 {
+		t.Fatalf("signal calls = %d, want 1", signals)
 	}
 	if pid, readErr := readPID(path); readErr != nil || pid != 1234 {
 		t.Fatalf("retained PID = %d, %v; want 1234, nil", pid, readErr)

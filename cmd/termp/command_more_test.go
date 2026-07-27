@@ -871,10 +871,10 @@ func TestLegacyPIDRecordCannotAuthorizeProcessIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.PID != 4242 || record.StartTime != 0 {
+	if record.PID != 4242 || record.StartTime != 0 || record.StartTimeUnavailable {
 		t.Fatalf("legacy PID record = %+v, want pid 4242 without start time", record)
 	}
-	if processIdentityMatches(record.PID, record.StartTime, func(int) bool { return true }, func(int) bool { return true }) {
+	if pidRecordIdentityMatches(record, func(int) bool { return true }, func(int) bool { return true }) {
 		t.Fatal("legacy PID record without a start time authorized process identity")
 	}
 }
@@ -894,6 +894,21 @@ func TestProcessIdentityRequiresMatchingStartTime(t *testing.T) {
 	}
 }
 
+func TestProcessIdentityFallsBackWhenStartTimeLookupFails(t *testing.T) {
+	oldLookup := lookupProcessStartTime
+	lookupProcessStartTime = func(int) (uint64, error) {
+		return 0, errors.New("start time unavailable")
+	}
+	t.Cleanup(func() { lookupProcessStartTime = oldLookup })
+
+	if !processIdentityMatches(42, 100, func(int) bool { return true }, func(int) bool { return true }) {
+		t.Fatal("live termp process was rejected when its start time could not be verified")
+	}
+	if processIdentityMatches(42, 100, func(int) bool { return true }, func(int) bool { return false }) {
+		t.Fatal("non-termp process was accepted when its start time could not be verified")
+	}
+}
+
 func TestWaitForProcessExitTreatsPIDReuseAsExit(t *testing.T) {
 	oldLookup := lookupProcessStartTime
 	currentStartTime := uint64(100)
@@ -902,8 +917,7 @@ func TestWaitForProcessExitTreatsPIDReuseAsExit(t *testing.T) {
 
 	sleeps := 0
 	exited := waitForProcessExit(
-		42,
-		100,
+		daemonPIDRecord{PID: 42, StartTime: 100},
 		time.Second,
 		time.Millisecond,
 		func(int) bool { return true },
