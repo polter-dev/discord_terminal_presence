@@ -473,8 +473,8 @@ func TestSelectorPinOverridesHeadliner(t *testing.T) {
 	}, clock)
 
 	detection := selector.Select([]Process{
-		{Name: "claude", CreateTime: base, Cwd: "/claude", CPUTime: 1},
-		{Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex", CPUTime: 100},
+		{Name: "claude", CreateTime: base, Cwd: "/claude", CPUTime: 1, CPUTimeKnown: true},
+		{Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex", CPUTime: 100, CPUTimeKnown: true},
 	})
 
 	if detection.Tool.ID != "claude-code" {
@@ -491,8 +491,8 @@ func TestSelectorStickyKeepsPreviousHeadliner(t *testing.T) {
 	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
 
 	first := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
-		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1, CPUTimeKnown: true},
+		{Name: "claude", CreateTime: base, CPUTime: 1, CPUTimeKnown: true},
 	})
 	if first.Tool.ID != "codex-cli" {
 		t.Fatalf("first tool = %q, want codex-cli", first.Tool.ID)
@@ -500,8 +500,8 @@ func TestSelectorStickyKeepsPreviousHeadliner(t *testing.T) {
 
 	clock.Advance(time.Second)
 	next := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1},
-		{Name: "claude", CreateTime: base, CPUTime: 1.5},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1, CPUTimeKnown: true},
+		{Name: "claude", CreateTime: base, CPUTime: 1.5, CPUTimeKnown: true},
 	})
 	if next.Tool.ID != "codex-cli" {
 		t.Fatalf("sticky tool = %q, want codex-cli", next.Tool.ID)
@@ -517,8 +517,8 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 	}, clock)
 
 	first := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10},
-		{Name: "claude", CreateTime: base, CPUTime: 1},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10, CPUTimeKnown: true},
+		{Name: "claude", CreateTime: base, CPUTime: 1, CPUTimeKnown: true},
 	})
 	if first.Tool.ID != "codex-cli" {
 		t.Fatalf("first tool = %q, want codex-cli", first.Tool.ID)
@@ -526,8 +526,8 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 
 	clock.Advance(time.Second)
 	sticky := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10},
-		{Name: "claude", CreateTime: base, CPUTime: 2},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10, CPUTimeKnown: true},
+		{Name: "claude", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
 	})
 	if sticky.Tool.ID != "codex-cli" {
 		t.Fatalf("tool before timeout = %q, want codex-cli", sticky.Tool.ID)
@@ -535,8 +535,8 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 
 	clock.Advance(31 * time.Second)
 	switched := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10},
-		{Name: "claude", CreateTime: base, CPUTime: 4},
+		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10, CPUTimeKnown: true},
+		{Name: "claude", CreateTime: base, CPUTime: 4, CPUTimeKnown: true},
 	})
 	if switched.Tool.ID != "claude-code" {
 		t.Fatalf("tool after timeout = %q, want claude-code", switched.Tool.ID)
@@ -600,11 +600,12 @@ func TestSelectorCPUIdleCorroborationDisabledPreservesAtimeBehavior(t *testing.T
 		ActivitySwitching:      true,
 	}, clock)
 	process := Process{
-		Pid:        1,
-		Name:       "claude",
-		CreateTime: base.Add(-time.Hour),
-		CPUTime:    10,
-		TTY:        TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
+		Pid:          1,
+		Name:         "claude",
+		CreateTime:   base.Add(-time.Hour),
+		CPUTime:      10,
+		CPUTimeKnown: true,
+		TTY:          TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
 	}
 
 	if detection := selector.Select([]Process{process}); detection.None {
@@ -626,11 +627,12 @@ func TestSelectorCPUIdleCorroborationExcludesFlatProcessAfterTimeout(t *testing.
 		ActivitySwitching:      true,
 	}, clock)
 	process := Process{
-		Pid:        1,
-		Name:       "claude",
-		CreateTime: base.Add(-time.Hour),
-		CPUTime:    10,
-		TTY:        TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
+		Pid:          1,
+		Name:         "claude",
+		CreateTime:   base.Add(-time.Hour),
+		CPUTime:      10,
+		CPUTimeKnown: true,
+		TTY:          TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
 	}
 
 	if detection := selector.Select([]Process{process}); detection.None {
@@ -652,10 +654,11 @@ func TestSelectorCPUIdleCorroborationKeepsMovingProcessEligible(t *testing.T) {
 		ActivitySwitching:      true,
 	}, clock)
 	process := Process{
-		Pid:        1,
-		Name:       "claude",
-		CreateTime: base.Add(-time.Hour),
-		TTY:        TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
+		Pid:          1,
+		Name:         "claude",
+		CreateTime:   base.Add(-time.Hour),
+		CPUTimeKnown: true,
+		TTY:          TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
 	}
 
 	for scan := 0; scan < 4; scan++ {
@@ -681,12 +684,12 @@ func TestSelectorUnknownAtimeFallsBackToCPUActivity(t *testing.T) {
 	}{
 		{
 			name:        "recent CPU remains eligible",
-			observation: &processCPUObservation{lastChanged: base.Add(-time.Minute)},
+			observation: &processCPUObservation{lastChanged: base.Add(-time.Minute), available: true},
 			want:        true,
 		},
 		{
 			name:        "long-idle CPU becomes ineligible",
-			observation: &processCPUObservation{lastChanged: base.Add(-21 * time.Minute)},
+			observation: &processCPUObservation{lastChanged: base.Add(-21 * time.Minute), available: true},
 			want:        false,
 		},
 		{
@@ -706,6 +709,27 @@ func TestSelectorUnknownAtimeFallsBackToCPUActivity(t *testing.T) {
 				t.Fatalf("presenceEligible() = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestSelectorUnknownAtimeUnavailableCPURemainsEligible(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		IdleClearTimeout: 20 * time.Minute,
+	}, clock)
+	process := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		TTY:        TTYInfo{State: TTYResolved},
+	}
+
+	for scan := 0; scan < 4; scan++ {
+		if detection := selector.Select([]Process{process}); detection.None {
+			t.Fatalf("scan %d: unavailable CPU data should fail open", scan)
+		}
+		clock.Advance(time.Hour)
 	}
 }
 
@@ -1031,10 +1055,10 @@ func TestSelectorOrdersOthersByActivityThenPriority(t *testing.T) {
 	}, clock)
 
 	detection := selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 1},
-		{Name: "nvim", CreateTime: base, CPUTime: 2},
-		{Name: "lazygit", CreateTime: base, CPUTime: 2},
-		{Name: "htop", CreateTime: base, CPUTime: 5},
+		{Name: "claude", CreateTime: base, CPUTime: 1, CPUTimeKnown: true},
+		{Name: "nvim", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
+		{Name: "lazygit", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
+		{Name: "htop", CreateTime: base, CPUTime: 5, CPUTimeKnown: true},
 	})
 
 	got := []string{}
@@ -1084,8 +1108,8 @@ func TestSelectorSameToolInstanceActivitySwitchesWithoutAlternatingFlaps(t *test
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
-	older := Process{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour), Cwd: "/older", CPUTime: 1}
-	newer := Process{Pid: 2, Name: "claude", CreateTime: base.Add(-time.Minute), Cwd: "/newer", CPUTime: 1}
+	older := Process{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour), Cwd: "/older", CPUTime: 1, CPUTimeKnown: true}
+	newer := Process{Pid: 2, Name: "claude", CreateTime: base.Add(-time.Minute), Cwd: "/newer", CPUTime: 1, CPUTimeKnown: true}
 
 	if detection := selector.Select([]Process{older, newer}); detection.Cwd != newer.Cwd {
 		t.Fatalf("initial cwd = %q, want creation-time fallback %q", detection.Cwd, newer.Cwd)
@@ -1218,12 +1242,12 @@ func TestSelectorClaudeHelpersDoNotChurnFeaturedInstance(t *testing.T) {
 func TestSelectWithEnricherMatchesFullSnapshotResults(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	full := []Process{
-		{Pid: 1, Name: "bash", Cwd: "/ignored", CreateTime: base.Add(10 * time.Minute), CPUTime: 50},
-		{Pid: 2, Name: "claude", Cwd: "/claude-old", CreateTime: base, CPUTime: 2},
-		{Pid: 3, Name: "codex", Cwd: "/codex", CreateTime: base.Add(time.Minute), CPUTime: 3},
-		{Pid: 4, Name: "nvim", Cwd: "/nvim", CreateTime: base.Add(-time.Minute), CPUTime: 4},
-		{Pid: 5, Name: "claude", Cwd: "/claude-new", CreateTime: base.Add(2 * time.Minute), CPUTime: 5},
-		{Pid: 6, Name: "zsh", Cwd: "/ignored-too", CreateTime: base.Add(20 * time.Minute), CPUTime: 60},
+		{Pid: 1, Name: "bash", Cwd: "/ignored", CreateTime: base.Add(10 * time.Minute), CPUTime: 50, CPUTimeKnown: true},
+		{Pid: 2, Name: "claude", Cwd: "/claude-old", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
+		{Pid: 3, Name: "codex", Cwd: "/codex", CreateTime: base.Add(time.Minute), CPUTime: 3, CPUTimeKnown: true},
+		{Pid: 4, Name: "nvim", Cwd: "/nvim", CreateTime: base.Add(-time.Minute), CPUTime: 4, CPUTimeKnown: true},
+		{Pid: 5, Name: "claude", Cwd: "/claude-new", CreateTime: base.Add(2 * time.Minute), CPUTime: 5, CPUTimeKnown: true},
+		{Pid: 6, Name: "zsh", Cwd: "/ignored-too", CreateTime: base.Add(20 * time.Minute), CPUTime: 60, CPUTimeKnown: true},
 	}
 	identities := make([]Process, 0, len(full))
 	for _, process := range full {
