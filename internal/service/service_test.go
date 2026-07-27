@@ -331,6 +331,62 @@ func TestBuildSystemdUnitRejectsLineBreaks(t *testing.T) {
 	}
 }
 
+func TestServiceDefinitionExecutableParsers(t *testing.T) {
+	t.Run("systemd unit", func(t *testing.T) {
+		unit := []byte(`[Unit]
+Description=fixture
+[Service]
+ExecStart="/opt/%%u Term Presence/termp" start --foreground
+`)
+		got, err := systemdUnitExecutable(unit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "/opt/%u Term Presence/termp"; got != want {
+			t.Fatalf("systemdUnitExecutable() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("launchd plist", func(t *testing.T) {
+		plist := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist><dict>
+<key>Label</key><string>fixture</string>
+<key>ProgramArguments</key>
+<array><string>/opt/Term &amp; Presence/termp</string><string>start</string></array>
+</dict></plist>`)
+		got, err := launchAgentExecutable(plist)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "/opt/Term & Presence/termp"; got != want {
+			t.Fatalf("launchAgentExecutable() = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestSameUnixExecutableResolvesSymlinksAndCleansPaths(t *testing.T) {
+	requireSymlink(t)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bin", "termp")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "termp")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if !sameUnixExecutable(filepath.Join(dir, "bin", "..", "bin", "termp"), link) {
+		t.Fatalf("sameUnixExecutable() = false for equivalent clean and symlink paths")
+	}
+	if sameUnixExecutable(target, filepath.Join(dir, "other", "termp")) {
+		t.Fatalf("sameUnixExecutable() = true for different paths")
+	}
+}
+
 func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 	requireGOOS(t, "darwin")
 	home := fakeHome(t)
@@ -704,6 +760,215 @@ func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 	text := string(data)
 	if !strings.Contains(text, "ExecStart=/bin/termp start --foreground") || !strings.Contains(text, "Restart=on-failure") {
 		t.Fatalf("unit missing executable/restart:\n%s", text)
+	}
+}
+
+func TestUnixMutationsRefuseForeignDefinitions(t *testing.T) {
+	platforms := []struct {
+		name       string
+		goos       string
+		definition func(exe string) ([]byte, error)
+		path       func() (string, error)
+	}{
+		{
+			name: "linux",
+			goos: "linux",
+			definition: func(exe string) ([]byte, error) {
+				return BuildSystemdUnit(exe)
+			},
+			path: systemdUnitPath,
+		},
+		{
+			name: "darwin",
+			goos: "darwin",
+			definition: func(exe string) ([]byte, error) {
+				return BuildLaunchAgentPlist(exe, filepath.Join(os.TempDir(), "termp.log"))
+			},
+			path: launchAgentPath,
+		},
+	}
+	actions := []struct {
+		name string
+		run  func(Manager, string) (State, error)
+	}{
+		{name: "install", run: func(m Manager, exe string) (State, error) {
+			return m.Install(exe, false)
+		}},
+		{name: "install definition", run: func(m Manager, exe string) (State, error) {
+			return m.InstallDefinition(exe, false)
+		}},
+		{name: "uninstall", run: func(m Manager, _ string) (State, error) {
+			return m.Uninstall(false)
+		}},
+		{name: "disable", run: func(m Manager, _ string) (State, error) {
+			return m.Disable()
+		}},
+		{name: "enable", run: func(m Manager, _ string) (State, error) {
+			return m.Enable()
+		}},
+	}
+
+	for _, platform := range platforms {
+		for _, action := range actions {
+			t.Run(platform.name+"/"+action.name, func(t *testing.T) {
+				fakeHome(t)
+				dir := t.TempDir()
+				current := filepath.Join(dir, "current", "termp")
+				foreign := filepath.Join(dir, "foreign", "termp")
+				for _, exe := range []string{current, foreign} {
+					if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				path, err := platform.path()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				original, err := platform.definition(foreign)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, original, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
+				manager := Manager{
+					GOOS:       platform.goos,
+					Runner:     runner,
+					Executable: current,
+				}
+
+				state, err := action.run(manager, current)
+				if err == nil || !strings.Contains(err.Error(), "different installation") ||
+					!strings.Contains(err.Error(), "--force") {
+					t.Fatalf("%s() error = %v, want ownership refusal", action.name, err)
+				}
+				if !state.ForeignTask || state.Installed {
+					t.Fatalf("%s() state = %+v, want foreign definition", action.name, state)
+				}
+				got, readErr := os.ReadFile(path)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if string(got) != string(original) {
+					t.Fatalf("%s() changed foreign definition", action.name)
+				}
+				for _, call := range runner.calls {
+					if strings.Contains(call, " daemon-reload") ||
+						strings.Contains(call, " enable") ||
+						strings.Contains(call, " disable") ||
+						strings.Contains(call, " bootstrap") ||
+						strings.Contains(call, " bootout") ||
+						strings.Contains(call, " load ") ||
+						strings.Contains(call, " unload ") {
+						t.Fatalf("%s() made mutation call %q for foreign definition", action.name, call)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestUnixForceMutatesForeignDefinitions(t *testing.T) {
+	platforms := []struct {
+		name       string
+		goos       string
+		definition func(exe string) ([]byte, error)
+		executable func([]byte) (string, error)
+		path       func() (string, error)
+	}{
+		{
+			name:       "linux",
+			goos:       "linux",
+			definition: BuildSystemdUnit,
+			executable: systemdUnitExecutable,
+			path:       systemdUnitPath,
+		},
+		{
+			name: "darwin",
+			goos: "darwin",
+			definition: func(exe string) ([]byte, error) {
+				return BuildLaunchAgentPlist(exe, filepath.Join(os.TempDir(), "termp.log"))
+			},
+			executable: launchAgentExecutable,
+			path:       launchAgentPath,
+		},
+	}
+
+	for _, platform := range platforms {
+		t.Run(platform.name, func(t *testing.T) {
+			fakeHome(t)
+			dir := t.TempDir()
+			current := filepath.Join(dir, "current", "termp")
+			foreign := filepath.Join(dir, "foreign", "termp")
+			for _, exe := range []string{current, foreign} {
+				if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path, err := platform.path()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			foreignDefinition, err := platform.definition(foreign)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, foreignDefinition, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
+			manager := Manager{
+				GOOS:       platform.goos,
+				Runner:     runner,
+				Executable: current,
+			}
+
+			state, err := manager.Install(current, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !state.Installed || state.ForeignTask {
+				t.Fatalf("forced Install() state = %+v, want owned definition", state)
+			}
+			installed, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target, err := platform.executable(installed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target != current {
+				t.Fatalf("forced Install() target = %q, want %q", target, current)
+			}
+
+			if err := os.WriteFile(path, foreignDefinition, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			state, err = manager.Uninstall(true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Installed || state.ForeignTask {
+				t.Fatalf("forced Uninstall() state = %+v, want absent definition", state)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("forced Uninstall() left definition behind: %v", err)
+			}
+		})
 	}
 }
 

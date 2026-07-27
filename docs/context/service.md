@@ -28,6 +28,14 @@ install, uninstall, enable, and disable refuse to modify it by default.
 same executable still replaces the definition, preserving the reconciliation
 behavior used to apply updated service settings.
 
+Linux and macOS apply the same ownership contract to the executable parsed from
+the systemd unit's `ExecStart` or the launchd plist's first `ProgramArguments`
+entry. Unix paths are cleaned and existing symlinks are resolved before
+comparison. Status surfaces a definition targeting a different absolute
+executable as foreign; non-forced mutations refuse it, while forced install and
+uninstall may take it over or remove it. Unparseable, dynamic, or non-absolute
+targets remain ownership-unknown rather than risking a false foreign result.
+
 The Windows task retries a failed daemon up to three times at one-minute
 intervals. Disable and uninstall treat `schtasks /End` as required: disable
 surfaces an end failure, and uninstall refuses to delete the task definition

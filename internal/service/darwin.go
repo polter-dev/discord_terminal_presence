@@ -1,22 +1,30 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
 type darwinService struct {
-	runner Runner
+	runner     Runner
+	executable string
 }
 
 func (s darwinService) Install(exe string, force bool) (State, error) {
 	return s.install(exe, true, force)
 }
 
-func (s darwinService) install(exe string, launch, _ bool) (State, error) {
+func (s darwinService) install(exe string, launch, force bool) (State, error) {
+	status := s.Status()
+	if status.ForeignTask && !force {
+		return status, foreignTaskError(status.Message)
+	}
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true}, err
@@ -51,13 +59,17 @@ func (s darwinService) install(exe string, launch, _ bool) (State, error) {
 	return s.Status(), nil
 }
 
-func (s darwinService) Uninstall(_ bool) (State, error) {
+func (s darwinService) Uninstall(force bool) (State, error) {
+	status := s.Status()
+	if status.ForeignTask && !force {
+		return status, foreignTaskError(status.Message)
+	}
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true}, err
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return s.Status(), nil
+		return status, nil
 	} else if err != nil {
 		return State{Supported: true, Path: path}, err
 	}
@@ -71,12 +83,16 @@ func (s darwinService) Uninstall(_ bool) (State, error) {
 }
 
 func (s darwinService) Disable() (State, error) {
+	status := s.Status()
+	if status.ForeignTask {
+		return status, foreignTaskError(status.Message)
+	}
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true}, err
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return s.Status(), nil
+		return status, nil
 	} else if err != nil {
 		return State{Supported: true, Path: path}, err
 	}
@@ -87,12 +103,16 @@ func (s darwinService) Disable() (State, error) {
 }
 
 func (s darwinService) Enable() (State, error) {
+	status := s.Status()
+	if status.ForeignTask {
+		return status, foreignTaskError(status.Message)
+	}
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true}, err
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return s.Status(), nil
+		return status, nil
 	} else if err != nil {
 		return State{Supported: true, Path: path}, err
 	}
@@ -114,6 +134,20 @@ func (s darwinService) StatusContext(ctx context.Context) State {
 	state := State{Supported: true, Path: path, Loaded: "unknown", Enabled: "n/a"}
 	if _, err := os.Stat(path); err == nil {
 		state.Installed = true
+		if definition, readErr := os.ReadFile(path); readErr == nil {
+			if target, parseErr := launchAgentExecutable(definition); parseErr == nil &&
+				isForeignUnixExecutable(target, s.executable) {
+				state.Installed = false
+				state.Loaded = "false"
+				state.Enabled = "false"
+				state.ForeignTask = true
+				state.Message = fmt.Sprintf(
+					"launchd plist %s belongs to a different installation: targets %q, running executable is %q",
+					path, target, s.executable,
+				)
+				return state
+			}
+		}
 	} else if os.IsNotExist(err) {
 		state.Loaded = "false"
 		return state
@@ -201,4 +235,70 @@ func containsAnyFold(text string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+func launchAgentExecutable(plist []byte) (string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(plist))
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			if err == io.EOF {
+				return "", fmt.Errorf("launchd plist has no ProgramArguments executable")
+			}
+			return "", fmt.Errorf("parse launchd plist: %w", err)
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != "key" {
+			continue
+		}
+		var key string
+		if err := decoder.DecodeElement(&key, &start); err != nil {
+			return "", fmt.Errorf("parse launchd plist key: %w", err)
+		}
+		if strings.TrimSpace(key) != "ProgramArguments" {
+			continue
+		}
+		return launchAgentFirstProgramArgument(decoder)
+	}
+}
+
+func launchAgentFirstProgramArgument(decoder *xml.Decoder) (string, error) {
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", fmt.Errorf("parse launchd ProgramArguments: %w", err)
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if start.Name.Local != "array" {
+			return "", fmt.Errorf("launchd ProgramArguments is not an array")
+		}
+		for {
+			token, err := decoder.Token()
+			if err != nil {
+				return "", fmt.Errorf("parse launchd ProgramArguments array: %w", err)
+			}
+			switch element := token.(type) {
+			case xml.StartElement:
+				if element.Name.Local != "string" {
+					return "", fmt.Errorf("launchd ProgramArguments first value is not a string")
+				}
+				var executable string
+				if err := decoder.DecodeElement(&executable, &element); err != nil {
+					return "", fmt.Errorf("parse launchd executable: %w", err)
+				}
+				executable = strings.TrimSpace(executable)
+				if executable == "" {
+					return "", fmt.Errorf("launchd ProgramArguments executable is empty")
+				}
+				return executable, nil
+			case xml.EndElement:
+				if element.Name.Local == "array" {
+					return "", fmt.Errorf("launchd ProgramArguments is empty")
+				}
+			}
+		}
+	}
 }
