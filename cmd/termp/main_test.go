@@ -1687,6 +1687,56 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 	}
 }
 
+func TestRunUpdateFailurePrintsMethodRetryCommand(t *testing.T) {
+	tests := []struct {
+		method updatepkg.InstallMethod
+		want   string
+	}{
+		{method: updatepkg.InstallHomebrew, want: updatepkg.BrewCommand},
+		{method: updatepkg.InstallGo, want: updatepkg.GoCommand("v1.1.0")},
+		{method: updatepkg.InstallGeneric, want: updatepkg.GenericCommand("v1.1.0")},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.method), func(t *testing.T) {
+			runner := &recordingUpdateRunner{err: errors.New("simulated update failure")}
+			checker := stubLatestChecker{result: updatepkg.Result{
+				Current: "1.0.0",
+				Latest:  "v1.1.0",
+				Method:  tt.method,
+			}}
+			var stderr bytes.Buffer
+			err := runUpdate(
+				context.Background(),
+				context.Background(),
+				"1.0.0",
+				checker,
+				runner,
+				nil,
+				io.Discard,
+				&stderr,
+			)
+			if tt.method == updatepkg.InstallGeneric && runtime.GOOS == "windows" {
+				if err == nil || !strings.Contains(err.Error(), "generic self-update is not supported on Windows") ||
+					!strings.Contains(err.Error(), updatepkg.GoCommand("v1.1.0")) ||
+					!strings.Contains(err.Error(), "install the release archive manually") {
+					t.Fatalf("Windows generic update error = %v, want unsupported-method recovery guidance", err)
+				}
+				if runner.calls != 0 {
+					t.Fatalf("unsupported Windows generic update invoked runner %d times", runner.calls)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "simulated update failure") {
+				t.Fatalf("runUpdate() error = %v, want simulated failure", err)
+			}
+			want := "termp update: retry with: " + tt.want + "\n"
+			if got := stderr.String(); got != want {
+				t.Fatalf("retry output = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestRunUpdateAlreadyLatest(t *testing.T) {
 	runner := &recordingUpdateRunner{}
 	checker := stubLatestChecker{result: updatepkg.Result{Current: "1.2.0", Latest: "v1.2.0", Method: updatepkg.InstallGo}}

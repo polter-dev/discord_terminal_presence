@@ -41,18 +41,21 @@ Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
 installs preflight `BINDIR` (default `/usr/local/bin`) and record a skipped reason when it
 is not writable. Generic Windows installs record an unsupported-platform skip; Go and
 Homebrew installs remain eligible. Attempts are visible in `termp status`, and a later
-success clears the reported failure/skip. Interactive `termp update` is unchanged and
-may still use sudo/manual guidance.
+success clears the reported failure/skip. A failed interactive `termp update` prints the
+exact retry command built for its detected Homebrew, Go, or generic install method.
 
-Homebrew automation currently runs `brew upgrade polter-dev/tap/termp` without `--cask`,
-but GoReleaser publishes a Cask. Issue #303 records this unresolved contradiction pending
-an empirical test release; do not change either stance without the owner decision.
+Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
+resolves the fully qualified token to the GoReleaser-published Cask; the orphaned
+hand-written Formula draft was removed under #303.
 
 The installer resolves one tag for archive/checksum, prefers
 `https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}`, and falls back to the tag-pinned
-GitHub asset. Tag runs create a draft release (`release.draft: true`) and attach the
-generated Cask without writing the tap. Only `release.published` triggers a second job
-that verifies the release is public, downloads that exact Cask, and updates the tap.
+GitHub asset. Every fatal installer path prints a local `sh install.sh` retry command
+that preserves explicitly supplied `VERSION`, `BINDIR`, and `TERMP_DOWNLOAD_CHANNEL`;
+atomic staging prevents failed installs from leaving a partial destination binary.
+Tag runs create a draft release (`release.draft: true`) and attach the generated Cask
+without writing the tap. Only `release.published` triggers a second job that verifies
+the release is public, downloads that exact Cask, and updates the tap.
 
 Config initialization safety is documented in [`config.md`](config.md), terminal
 rendering in [`tui.md`](tui.md), update cache/detection in [`update.md`](update.md), and
@@ -67,5 +70,4 @@ trigger an immediate rescan; the global `enabled` switch still clears mapped pre
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.
 
-**Open questions / TODO:** Resolve the Homebrew Formula/Cask contract in #303. Implement
-and live-verify non-Windows daemon control transport.
+**Open questions / TODO:** Implement and live-verify non-Windows daemon control transport.
