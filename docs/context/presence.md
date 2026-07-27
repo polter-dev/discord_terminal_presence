@@ -16,7 +16,9 @@ dial IPC endpoints. `internal/presence/writer.go` owns client lifecycle.
 
 **Invariants / gotchas:** Directory display is off by default and callers pass only an
 allowlisted display directory. Buttons are capped at two. One writer goroutine owns all
-client calls; the default activity write throttle remains 15 seconds.
+client calls; the default activity write throttle remains 15 seconds. Final rendered
+details and state are capped at 128 runes with an ellipsis, and opted-in directory or
+collection placement does not depend on tool-name display.
 
 The IPC boundary validates bounded activity text, image values, button labels/count, and
 absolute HTTP(S) URLs before encoding. Discord IPC code 4000 is a permanent rejection for

@@ -163,7 +163,7 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		if options.ToolName {
 			activity.Details = renderDetails(options.DetailsFormat, tool.DisplayName, directory)
 		}
-	} else if options.ToolName {
+	} else {
 		collection := ""
 		if options.Collection {
 			collection = CollectionState(detection.Others)
@@ -178,6 +178,8 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 			activity.Details = options.FallbackMessage
 		}
 	}
+	activity.Details = boundActivityText(activity.Details)
+	activity.State = boundActivityText(activity.State)
 	if options.SmallImage && len(detection.Others) > 0 {
 		other := detection.Others[0]
 		activity.SmallImage = Image{
@@ -195,6 +197,13 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 	}
 
 	return activity, true
+}
+
+func boundActivityText(value string) string {
+	if utf8.RuneCountInString(value) <= maxActivityTextLength {
+		return value
+	}
+	return string([]rune(value)[:maxActivityTextLength-1]) + "…"
 }
 
 func renderDetails(format, toolName, directory string) string {
