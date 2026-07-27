@@ -9,14 +9,19 @@ import (
 )
 
 type linuxService struct {
-	runner Runner
+	runner     Runner
+	executable string
 }
 
 func (s linuxService) Install(exe string, force bool) (State, error) {
 	return s.install(exe, true, force)
 }
 
-func (s linuxService) install(exe string, launch, _ bool) (State, error) {
+func (s linuxService) install(exe string, launch, force bool) (State, error) {
+	status := s.Status()
+	if status.ForeignTask && !force {
+		return status, foreignTaskError(status.Message)
+	}
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true}, err
@@ -45,13 +50,17 @@ func (s linuxService) install(exe string, launch, _ bool) (State, error) {
 	return s.Status(), nil
 }
 
-func (s linuxService) Uninstall(_ bool) (State, error) {
+func (s linuxService) Uninstall(force bool) (State, error) {
+	status := s.Status()
+	if status.ForeignTask && !force {
+		return status, foreignTaskError(status.Message)
+	}
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true}, err
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return s.Status(), nil
+		return status, nil
 	} else if err != nil {
 		return State{Supported: true, Path: path}, err
 	}
@@ -83,12 +92,16 @@ func isBenignSystemctlDisableError(out []byte) bool {
 }
 
 func (s linuxService) Disable() (State, error) {
+	status := s.Status()
+	if status.ForeignTask {
+		return status, foreignTaskError(status.Message)
+	}
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true}, err
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return s.Status(), nil
+		return status, nil
 	} else if err != nil {
 		return State{Supported: true, Path: path}, err
 	}
@@ -99,12 +112,16 @@ func (s linuxService) Disable() (State, error) {
 }
 
 func (s linuxService) Enable() (State, error) {
+	status := s.Status()
+	if status.ForeignTask {
+		return status, foreignTaskError(status.Message)
+	}
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true}, err
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return s.Status(), nil
+		return status, nil
 	} else if err != nil {
 		return State{Supported: true, Path: path}, err
 	}
@@ -126,6 +143,20 @@ func (s linuxService) StatusContext(ctx context.Context) State {
 	state := State{Supported: true, Path: path, Loaded: "unknown", Enabled: "unknown"}
 	if _, err := os.Stat(path); err == nil {
 		state.Installed = true
+		if definition, readErr := os.ReadFile(path); readErr == nil {
+			if target, parseErr := systemdUnitExecutable(definition); parseErr == nil &&
+				isForeignUnixExecutable(target, s.executable) {
+				state.Installed = false
+				state.Loaded = "false"
+				state.Enabled = "false"
+				state.ForeignTask = true
+				state.Message = fmt.Sprintf(
+					"systemd unit %s belongs to a different installation: targets %q, running executable is %q",
+					path, target, s.executable,
+				)
+				return state
+			}
+		}
 	} else if os.IsNotExist(err) {
 		state.Installed = false
 	}
@@ -144,4 +175,94 @@ func systemctlState(out []byte, documented ...string) string {
 		}
 	}
 	return "unknown"
+}
+
+func systemdUnitExecutable(unit []byte) (string, error) {
+	section := ""
+	lines := strings.Split(strings.ReplaceAll(string(unit), "\r\n", "\n"), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.TrimSpace(line[1 : len(line)-1])
+			continue
+		}
+		if section != "Service" {
+			continue
+		}
+		key, value, found := strings.Cut(line, "=")
+		if !found || strings.TrimSpace(key) != "ExecStart" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		executable, err := systemdFirstWord(strings.TrimSpace(value))
+		if err != nil {
+			return "", fmt.Errorf("parse systemd ExecStart: %w", err)
+		}
+		for len(executable) > 0 && strings.ContainsRune("-@:+!|", rune(executable[0])) {
+			executable = executable[1:]
+		}
+		return decodeSystemdPercentEscapes(executable)
+	}
+	return "", fmt.Errorf("systemd unit has no ExecStart executable")
+}
+
+func systemdFirstWord(value string) (string, error) {
+	var word strings.Builder
+	var quote byte
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if quote == 0 && (character == ' ' || character == '\t') {
+			if word.Len() > 0 {
+				return word.String(), nil
+			}
+			continue
+		}
+		if character == '\'' || character == '"' {
+			if quote == 0 {
+				quote = character
+				continue
+			}
+			if quote == character {
+				quote = 0
+				continue
+			}
+		}
+		if character == '\\' {
+			index++
+			if index >= len(value) {
+				return "", fmt.Errorf("trailing backslash")
+			}
+			if !strings.ContainsRune(`\'"`, rune(value[index])) {
+				return "", fmt.Errorf("unsupported escape sequence \\%c", value[index])
+			}
+			word.WriteByte(value[index])
+			continue
+		}
+		word.WriteByte(character)
+	}
+	if quote != 0 {
+		return "", fmt.Errorf("unterminated quote")
+	}
+	if word.Len() == 0 {
+		return "", fmt.Errorf("empty command")
+	}
+	return word.String(), nil
+}
+
+func decodeSystemdPercentEscapes(value string) (string, error) {
+	var decoded strings.Builder
+	for index := 0; index < len(value); index++ {
+		if value[index] != '%' {
+			decoded.WriteByte(value[index])
+			continue
+		}
+		if index+1 >= len(value) || value[index+1] != '%' {
+			return "", fmt.Errorf("systemd executable uses a dynamic specifier")
+		}
+		decoded.WriteByte('%')
+		index++
+	}
+	return decoded.String(), nil
 }

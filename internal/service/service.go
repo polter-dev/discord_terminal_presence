@@ -149,9 +149,9 @@ func (m Manager) InstallDefinition(exe string, force bool) (State, error) {
 func (m Manager) install(exe string, launch, force bool) (State, error) {
 	switch m.GOOS {
 	case "darwin":
-		return darwinService{runner: m.runner()}.install(exe, launch, force)
+		return darwinService{runner: m.runner(), executable: exe}.install(exe, launch, force)
 	case "linux":
-		return linuxService{runner: m.runner()}.install(exe, launch, force)
+		return linuxService{runner: m.runner(), executable: exe}.install(exe, launch, force)
 	case "windows":
 		return windowsService{runner: m.runner(), executable: exe}.install(exe, launch, force)
 	default:
@@ -162,9 +162,9 @@ func (m Manager) install(exe string, launch, force bool) (State, error) {
 func (m Manager) Uninstall(force bool) (State, error) {
 	switch m.GOOS {
 	case "darwin":
-		return darwinService{runner: m.runner()}.Uninstall(force)
+		return darwinService{runner: m.runner(), executable: m.Executable}.Uninstall(force)
 	case "linux":
-		return linuxService{runner: m.runner()}.Uninstall(force)
+		return linuxService{runner: m.runner(), executable: m.Executable}.Uninstall(force)
 	case "windows":
 		return windowsService{runner: m.runner(), executable: m.Executable}.Uninstall(force)
 	default:
@@ -175,9 +175,9 @@ func (m Manager) Uninstall(force bool) (State, error) {
 func (m Manager) Disable() (State, error) {
 	switch m.GOOS {
 	case "darwin":
-		return darwinService{runner: m.runner()}.Disable()
+		return darwinService{runner: m.runner(), executable: m.Executable}.Disable()
 	case "linux":
-		return linuxService{runner: m.runner()}.Disable()
+		return linuxService{runner: m.runner(), executable: m.Executable}.Disable()
 	case "windows":
 		return windowsService{runner: m.runner(), executable: m.Executable}.Disable()
 	default:
@@ -188,9 +188,9 @@ func (m Manager) Disable() (State, error) {
 func (m Manager) Enable() (State, error) {
 	switch m.GOOS {
 	case "darwin":
-		return darwinService{runner: m.runner()}.Enable()
+		return darwinService{runner: m.runner(), executable: m.Executable}.Enable()
 	case "linux":
-		return linuxService{runner: m.runner()}.Enable()
+		return linuxService{runner: m.runner(), executable: m.Executable}.Enable()
 	case "windows":
 		return windowsService{runner: m.runner(), executable: m.Executable}.Enable()
 	default:
@@ -208,9 +208,9 @@ func (m Manager) Status() State {
 func (m Manager) StatusContext(ctx context.Context) State {
 	switch m.GOOS {
 	case "darwin":
-		return darwinService{runner: m.runner()}.StatusContext(ctx)
+		return darwinService{runner: m.runner(), executable: m.Executable}.StatusContext(ctx)
 	case "linux":
-		return linuxService{runner: m.runner()}.StatusContext(ctx)
+		return linuxService{runner: m.runner(), executable: m.Executable}.StatusContext(ctx)
 	case "windows":
 		return windowsService{runner: m.runner(), executable: m.Executable}.StatusContext(ctx)
 	default:
@@ -335,4 +335,34 @@ func systemdEscapeExecArg(arg string) string {
 		return arg
 	}
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(arg) + `"`
+}
+
+func sameUnixExecutable(definitionExecutable, currentExecutable string) bool {
+	definitionExecutable = filepath.Clean(strings.TrimSpace(definitionExecutable))
+	currentExecutable = filepath.Clean(strings.TrimSpace(currentExecutable))
+	if definitionExecutable == "." || currentExecutable == "." {
+		return false
+	}
+	if definitionExecutable == currentExecutable {
+		return true
+	}
+
+	definitionResolved, definitionErr := filepath.EvalSymlinks(definitionExecutable)
+	currentResolved, currentErr := filepath.EvalSymlinks(currentExecutable)
+	if definitionErr == nil && currentErr == nil {
+		return filepath.Clean(definitionResolved) == filepath.Clean(currentResolved)
+	}
+
+	definitionInfo, definitionStatErr := os.Stat(definitionExecutable)
+	currentInfo, currentStatErr := os.Stat(currentExecutable)
+	return definitionStatErr == nil && currentStatErr == nil &&
+		os.SameFile(definitionInfo, currentInfo)
+}
+
+func isForeignUnixExecutable(definitionExecutable, currentExecutable string) bool {
+	if definitionExecutable == "" || currentExecutable == "" ||
+		!filepath.IsAbs(definitionExecutable) || !filepath.IsAbs(currentExecutable) {
+		return false
+	}
+	return !sameUnixExecutable(definitionExecutable, currentExecutable)
 }
