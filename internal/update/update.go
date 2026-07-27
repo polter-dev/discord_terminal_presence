@@ -23,6 +23,7 @@ const (
 	latestReleaseURL = "https://api.github.com/repos/polter-dev/discord_terminal_presence/releases/latest"
 	cacheLifetime    = 24 * time.Hour
 	maxReleaseBody   = 1 << 20
+	goEnvTimeout     = 500 * time.Millisecond
 
 	BrewCommand         = "brew upgrade polter-dev/tap/termp"
 	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
@@ -30,6 +31,20 @@ const (
 )
 
 var removeTemporaryInstaller = os.Remove
+
+type goInstallPaths struct {
+	goBin  string
+	goPath string
+}
+
+var cachedGoInstallPaths = sync.OnceValue(func() goInstallPaths {
+	ctx, cancel := context.WithTimeout(context.Background(), goEnvTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "env", "GOBIN", "GOPATH")
+	cmd.WaitDelay = goEnvTimeout
+	output, err := cmd.Output()
+	return parseGoEnvPaths(output, err)
+})
 
 // InstallMethod identifies how the running binary was installed.
 type InstallMethod string
@@ -579,24 +594,53 @@ func DetectInstallMethod() InstallMethod {
 		return InstallGeneric
 	}
 	home, _ := os.UserHomeDir()
-	return detectInstall(executable, filepath.EvalSymlinks, os.Getenv("GOPATH"), home)
+	goPaths := cachedGoInstallPaths()
+	goPath := strings.Join(nonEmptyStrings(goPaths.goPath, os.Getenv("GOPATH")), string(os.PathListSeparator))
+	return detectInstall(executable, filepath.EvalSymlinks, goPaths.goBin, goPath, home)
 }
 
-func detectInstall(executable string, evalSymlinks func(string) (string, error), goPath, home string) InstallMethod {
+func parseGoEnvPaths(output []byte, err error) goInstallPaths {
+	if err != nil {
+		return goInstallPaths{}
+	}
+	lines := strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n")
+	if len(lines) < 2 {
+		return goInstallPaths{}
+	}
+	return goInstallPaths{
+		goBin:  strings.TrimSpace(lines[0]),
+		goPath: strings.TrimSpace(lines[1]),
+	}
+}
+
+func nonEmptyStrings(values ...string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func detectInstall(executable string, evalSymlinks func(string) (string, error), goBin, goPath, home string) InstallMethod {
 	resolved, err := evalSymlinks(executable)
 	if err != nil {
 		return InstallGeneric
 	}
-	return detectResolvedInstall(resolved, goPath, home)
+	return detectResolvedInstall(resolved, goBin, goPath, home)
 }
 
-func detectResolvedInstall(executable, goPath, home string) InstallMethod {
+func detectResolvedInstall(executable, goBin, goPath, home string) InstallMethod {
 	clean := filepath.ToSlash(filepath.Clean(executable))
 	if strings.Contains(clean, "/Cellar/") || strings.Contains(clean, "/Caskroom/") {
 		return InstallHomebrew
 	}
 
 	goBins := make(map[string]struct{})
+	if goBin = strings.TrimSpace(goBin); goBin != "" {
+		goBins[filepath.Clean(goBin)] = struct{}{}
+	}
 	for _, root := range filepath.SplitList(goPath) {
 		if root = strings.TrimSpace(root); root != "" {
 			goBins[filepath.Clean(filepath.Join(root, "bin"))] = struct{}{}
