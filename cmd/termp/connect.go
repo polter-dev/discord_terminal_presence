@@ -86,7 +86,7 @@ func connectCommandWith(args []string, output, errorOutput io.Writer, deps conne
 	}
 	if targetPID == 0 {
 		if record, err := deps.readPID(deps.pidPath); err == nil &&
-			processIdentityMatches(record.PID, record.StartTime, deps.alive, deps.looksLike) {
+			pidRecordIdentityMatches(record, deps.alive, deps.looksLike) {
 			targetPID = record.PID
 		}
 	}
