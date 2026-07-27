@@ -1039,6 +1039,75 @@ func TestActiveDetectionDedupesToolInstances(t *testing.T) {
 	}
 }
 
+func TestSelectorSameToolInstanceActivitySwitchesWithoutAlternatingFlaps(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
+	older := Process{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour), Cwd: "/older", CPUTime: 1}
+	newer := Process{Pid: 2, Name: "claude", CreateTime: base.Add(-time.Minute), Cwd: "/newer", CPUTime: 1}
+
+	if detection := selector.Select([]Process{older, newer}); detection.Cwd != newer.Cwd {
+		t.Fatalf("initial cwd = %q, want creation-time fallback %q", detection.Cwd, newer.Cwd)
+	}
+
+	for scan := 0; scan < instanceSwitchConfirmations; scan++ {
+		clock.Advance(DefaultScanInterval)
+		older.CPUTime++
+		detection := selector.Select([]Process{older, newer})
+		if scan+1 < instanceSwitchConfirmations && detection.Cwd != newer.Cwd {
+			t.Fatalf("cwd after %d active older scan = %q, want hysteresis to retain %q", scan+1, detection.Cwd, newer.Cwd)
+		}
+	}
+	if detection := selector.Select([]Process{older, newer}); detection.Cwd != older.Cwd {
+		t.Fatalf("cwd after sustained older activity = %q, want %q", detection.Cwd, older.Cwd)
+	}
+
+	for scan := 0; scan < 6; scan++ {
+		clock.Advance(DefaultScanInterval)
+		if scan%2 == 0 {
+			newer.CPUTime++
+		} else {
+			older.CPUTime++
+		}
+		if detection := selector.Select([]Process{older, newer}); detection.Cwd != older.Cwd {
+			t.Fatalf("cwd after alternating activity scan %d = %q, want stable %q", scan+1, detection.Cwd, older.Cwd)
+		}
+	}
+}
+
+func TestSelectorSameToolInstanceUsesRecentTTYActivity(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
+	older := Process{
+		Pid:        1,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Hour),
+		Cwd:        "/older",
+		TTY:        TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
+	}
+	newer := Process{
+		Pid:        2,
+		Name:       "claude",
+		CreateTime: base.Add(-time.Minute),
+		Cwd:        "/newer",
+		TTY:        TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
+	}
+
+	if detection := selector.Select([]Process{older, newer}); detection.Cwd != newer.Cwd {
+		t.Fatalf("initial cwd = %q, want creation-time fallback %q", detection.Cwd, newer.Cwd)
+	}
+	clock.Advance(DefaultScanInterval)
+	older.TTY.Atime = clock.Now()
+	if detection := selector.Select([]Process{older, newer}); detection.Cwd != newer.Cwd {
+		t.Fatalf("cwd after first recent TTY scan = %q, want hysteresis to retain %q", detection.Cwd, newer.Cwd)
+	}
+	clock.Advance(DefaultScanInterval)
+	if detection := selector.Select([]Process{older, newer}); detection.Cwd != older.Cwd {
+		t.Fatalf("cwd after confirmed recent TTY activity = %q, want %q", detection.Cwd, older.Cwd)
+	}
+}
+
 func TestActiveDetectionMatchesClaudeVersionBinaryAndDedupes(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	detection := ActiveDetection(testRegistry(t), []Process{
