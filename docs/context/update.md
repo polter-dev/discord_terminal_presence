@@ -21,12 +21,16 @@ checks are cached for 24 hours and a short-lived lock prevents concurrent checks
 requests send only `termp/<version>` as User-Agent.
 
 Install detection resolves executable symlinks, then recognizes Homebrew, Go, or generic
-ownership. Go locations include a once-cached, 500ms-bounded `go env GOBIN GOPATH`,
-the `GOPATH` environment variable, and `~/go/bin`. Resolution uncertainty is generic.
+ownership. Homebrew detection uses standard roots plus a once-cached, 500ms-bounded
+`brew --prefix`, and requires the resolved executable to match the `termp` Cellar or
+Caskroom layout. Go locations include a once-cached, 500ms-bounded
+`go env GOBIN GOPATH`, the `GOPATH` environment variable, and `~/go/bin`. Resolution
+uncertainty is generic.
 
 Automatic attempt state shares the update cache and records time, target, error, and a
-distinct skipped flag. Check-cache writes preserve it. Status reports failed/skipped
-attempts; recording a later success leaves no reportable error and clears that warning.
+distinct skipped flag. All cache read-modify-write transactions share a cross-process lock,
+so check-cache writes preserve concurrent automatic-attempt records. Status reports
+failed/skipped attempts; recording a later success leaves no reportable error and clears that warning.
 All updater commands validate and pin the exact semver tag. Generic updates download the
 tagged installer and pass a tagged archive URL; Windows generic self-update is unsupported.
 

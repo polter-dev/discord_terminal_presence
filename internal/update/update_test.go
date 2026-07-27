@@ -334,6 +334,7 @@ func TestInstallMethodDetection(t *testing.T) {
 	home := filepath.Join(string(filepath.Separator), "Users", "test")
 	goBin := filepath.Join(string(filepath.Separator), "Users", "test", "bin")
 	goPath := filepath.Join(string(filepath.Separator), "opt", "gopath")
+	homebrewPrefixes := []string{"/opt/homebrew", "/usr/local"}
 	tests := []struct {
 		name string
 		path string
@@ -341,6 +342,9 @@ func TestInstallMethodDetection(t *testing.T) {
 	}{
 		{name: "Homebrew Cellar", path: filepath.Join("/opt/homebrew/Cellar/termp/1.2.3/bin/termp"), want: InstallHomebrew},
 		{name: "Homebrew Caskroom", path: filepath.Join("/usr/local/Caskroom/termp/1.2.3/termp"), want: InstallHomebrew},
+		{name: "unrelated Cellar", path: filepath.Join("/home/alice/Cellar/archive/termp"), want: InstallGeneric},
+		{name: "wrong Cellar package", path: filepath.Join("/opt/homebrew/Cellar/archive/1.2.3/bin/termp"), want: InstallGeneric},
+		{name: "wrong Caskroom layout", path: filepath.Join("/usr/local/Caskroom/termp/1.2.3/bin/termp"), want: InstallGeneric},
 		{name: "GOBIN", path: filepath.Join(goBin, "termp"), want: InstallGo},
 		{name: "GOPATH bin", path: filepath.Join(goPath, "bin", "termp"), want: InstallGo},
 		{name: "default home Go bin", path: filepath.Join(home, "go", "bin", "termp"), want: InstallGo},
@@ -348,7 +352,7 @@ func TestInstallMethodDetection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := detectInstall(tt.path, func(path string) (string, error) { return path, nil }, goBin, goPath, home)
+			got := detectInstall(tt.path, func(path string) (string, error) { return path, nil }, goBin, goPath, home, homebrewPrefixes...)
 			if got != tt.want {
 				t.Fatalf("detectInstall(%q) = %q, want %q", tt.path, got, tt.want)
 			}
@@ -411,7 +415,11 @@ func TestInstallDetectionResolvesSymlinkBeforeMatching(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if got := detectInstall(link, filepath.EvalSymlinks, "", "", root); got != InstallHomebrew {
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := detectInstall(link, filepath.EvalSymlinks, "", "", root, resolvedRoot); got != InstallHomebrew {
 		t.Fatalf("symlinked Homebrew install = %q, want %q", got, InstallHomebrew)
 	}
 }
@@ -458,6 +466,33 @@ func TestReleaseCacheWritesPreserveAutomaticUpdateAttempt(t *testing.T) {
 	attempt, ok := ReadAutomaticUpdateAttempt(path)
 	if !ok || attempt.AttemptedAt != attemptedAt || attempt.Target != "v1.2.0" || attempt.Error != "permission denied" {
 		t.Fatalf("automatic update attempt after cache write = (%+v, %t)", attempt, ok)
+	}
+}
+
+func TestConcurrentCacheWritersPreserveAutomaticUpdateAttempt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "update.json")
+	attemptedAt := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+
+	go func() {
+		<-start
+		errs <- writeCache(path, cacheEntry{CheckedAt: attemptedAt.Add(time.Hour), Latest: strings.Repeat("v1.3.0", 1<<20)})
+	}()
+	go func() {
+		<-start
+		errs <- RecordAutomaticUpdateAttempt(path, "v1.2.0", attemptedAt, errors.New("permission denied"))
+	}()
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	attempt, ok := ReadAutomaticUpdateAttempt(path)
+	if !ok || attempt.AttemptedAt != attemptedAt || attempt.Target != "v1.2.0" || attempt.Error != "permission denied" {
+		t.Fatalf("automatic update attempt after concurrent cache writes = (%+v, %t)", attempt, ok)
 	}
 }
 
