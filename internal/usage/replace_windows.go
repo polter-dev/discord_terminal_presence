@@ -4,7 +4,6 @@ package usage
 
 import (
 	"errors"
-	"os"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -32,7 +31,7 @@ func replaceFile(from, to string) error {
 func readFile(path string) ([]byte, error) {
 	deadline := time.Now().Add(replaceRetryTimeout)
 	for {
-		data, err := os.ReadFile(path)
+		data, err := readFileOnce(path)
 		if err == nil {
 			return data, nil
 		}

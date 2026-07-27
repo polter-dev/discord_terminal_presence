@@ -113,14 +113,16 @@ func Uninstall(shell string, homeDir HomeDirFunc) ([]string, error) {
 // supported shell. Files that are already absent are ignored.
 func UninstallAll(homeDir HomeDirFunc) ([]string, error) {
 	var removed []string
+	var uninstallErrors []error
 	for _, shell := range [...]string{"bash", "zsh", "fish"} {
 		paths, err := Uninstall(shell, homeDir)
 		if err != nil {
-			return removed, err
+			uninstallErrors = append(uninstallErrors, fmt.Errorf("%s: %w", shell, err))
+			continue
 		}
 		removed = append(removed, paths...)
 	}
-	return removed, nil
+	return removed, errors.Join(uninstallErrors...)
 }
 
 // Note returns shell-specific activation guidance. No shell rc file is edited.

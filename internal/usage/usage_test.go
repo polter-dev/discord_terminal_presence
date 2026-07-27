@@ -2,9 +2,12 @@ package usage
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -204,6 +207,90 @@ func TestRecordRankOrdersByFrequencyThenRecency(t *testing.T) {
 	want := []string{"codex-cli", "gemini-cli", "claude-code"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Rank() = %#v, want %#v", got, want)
+	}
+}
+
+func TestStoreRespectsEntryCap(t *testing.T) {
+	store := New()
+	base := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < maxEntries+10; i++ {
+		store.Record(fmt.Sprintf("tool-%04d", i), base.Add(time.Duration(i)*time.Second))
+	}
+
+	if got := len(store.Tools); got != maxEntries {
+		t.Fatalf("len(Tools) = %d, want %d", got, maxEntries)
+	}
+	for i := 0; i < 10; i++ {
+		if _, ok := store.Tools[fmt.Sprintf("tool-%04d", i)]; ok {
+			t.Fatalf("oldest tool-%04d was not evicted", i)
+		}
+	}
+}
+
+func TestPruneOnlyRegistryAbsentAfterRetention(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	store := New()
+	store.Tools["known-old"] = Entry{Count: 3, LastSeen: now.Add(-retentionPeriod - time.Hour)}
+	store.Tools["absent-old"] = Entry{Count: 2, LastSeen: now.Add(-retentionPeriod - time.Hour)}
+	store.Tools["absent-recent"] = Entry{Count: 1, LastSeen: now.Add(-retentionPeriod + time.Hour)}
+
+	store.Prune(nil, now)
+	if len(store.Tools) != 3 {
+		t.Fatalf("Prune(nil) removed entries without registry data: %#v", store.Tools)
+	}
+
+	store.Prune([]string{"known-old"}, now)
+	if _, ok := store.Tools["known-old"]; !ok {
+		t.Fatal("known registry entry was pruned")
+	}
+	if _, ok := store.Tools["absent-recent"]; !ok {
+		t.Fatal("recent registry-absent entry was pruned before retention")
+	}
+	if _, ok := store.Tools["absent-old"]; ok {
+		t.Fatal("old registry-absent entry was retained")
+	}
+}
+
+func TestPruneEmptyRegistryDeletesNothing(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	store := New()
+	store.Tools["long-absent"] = Entry{
+		Count:    1,
+		LastSeen: now.Add(-10 * retentionPeriod),
+	}
+
+	store.Prune(make([]string, 0), now)
+
+	if _, ok := store.Tools["long-absent"]; !ok {
+		t.Fatal("Prune(empty non-nil registry) removed an entry")
+	}
+}
+
+func TestRecordSaturatesCounter(t *testing.T) {
+	store := New()
+	store.Tools["codex-cli"] = Entry{Count: math.MaxInt}
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+
+	store.Record("codex-cli", now)
+
+	entry := store.Tools["codex-cli"]
+	if entry.Count != math.MaxInt {
+		t.Fatalf("Count = %d, want saturated %d", entry.Count, math.MaxInt)
+	}
+	if !entry.LastSeen.Equal(now) {
+		t.Fatalf("LastSeen = %v, want %v", entry.LastSeen, now)
+	}
+}
+
+func TestLoadRejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	if err := os.WriteFile(path, make([]byte, maxStateFileSize+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Load() = (%#v, %v), want oversized file error", store, err)
 	}
 }
 
