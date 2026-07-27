@@ -37,7 +37,33 @@ keeps folder names hidden unless you choose otherwise.
 
 ## Install
 
-### From source — available now
+### Shell installer — macOS and Linux
+
+```sh
+curl -fsSL https://termp.polter.sh/install.sh | sh
+```
+
+The installer downloads the matching release archive, verifies its SHA-256
+checksum, and installs `termp` to `/usr/local/bin`.
+
+### Homebrew Cask
+
+```sh
+brew install --cask polter-dev/tap/termp
+```
+
+The Cask is published from the
+[`polter-dev/homebrew-tap`](https://github.com/polter-dev/homebrew-tap).
+
+### Release downloads
+
+Download the files for your platform from the
+[latest GitHub release](https://github.com/polter-dev/discord_terminal_presence/releases/latest).
+macOS and Linux archives are named `termp_VERSION_OS_ARCH.tar.gz`, Linux
+packages use `termp_VERSION_OS_ARCH.deb` or `.rpm`, and Windows archives use
+`termp_VERSION_windows_ARCH.zip`. `VERSION` has no leading `v`.
+
+### From source
 
 ```sh
 go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
@@ -46,13 +72,6 @@ go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
 This builds `termp` and puts it in your Go bin directory. If your shell cannot
 find the command, make sure that directory is on your `PATH`. This source
 install works on Windows, macOS, and Linux.
-
-### Packaged installs — coming at launch
-
-There is no published GitHub release or Homebrew tap yet. Once the first release
-is live, the project plans to offer downloadable Windows binaries as well as
-Homebrew, a Unix shell installer, and `.deb` and `.rpm` packages. Until then,
-please use the source install above.
 
 ## Everyday commands
 
@@ -163,15 +182,15 @@ Automatic updates are opt-in with `auto_update = true`; they run silently when
 
 ## About the packaged installer
 
-When packaged installs launch, `install.sh` will pin an exact release tag, use
-HTTPS throughout to download the matching binary and `checksums.txt`, verify the
-binary's SHA-256, and install it to `/usr/local/bin`. Please inspect the script
-before running it, as you should with any install script.
+`install.sh` pins an exact release tag, uses HTTPS throughout to download the
+matching binary and `checksums.txt`, verifies the binary's SHA-256, and installs
+it to `/usr/local/bin`. Please inspect the script before running it, as you
+should with any install script.
 
-Each packaged install—or direct download of a release binary—will add to
-GitHub's anonymous, aggregate download tally. The tally contains no identifier,
-IP address, or data from your machine; it is simply a small vanity/resume
-statistic for termp's student maintainer.
+Each packaged install—or direct download of a release binary—adds to GitHub's
+anonymous, aggregate download tally. The tally contains no identifier, IP
+address, or data from your machine; it is simply a small vanity/resume statistic
+for termp's student maintainer.
 
 `termp` itself still sends no telemetry, and nothing is collected from the
 running app.
