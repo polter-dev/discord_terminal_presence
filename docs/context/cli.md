@@ -51,6 +51,9 @@ exact retry command built for its detected Homebrew, Go, or generic install meth
 Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned
 hand-written Formula draft was removed under #303.
+Homebrew Cask installs and deb/rpm postinstall scripts print the same plain-text setup
+instruction; the package script always exits successfully so guidance cannot break an
+install.
 
 The installer resolves one tag for archive/checksum, prefers
 `https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}`, and falls back to the tag-pinned
