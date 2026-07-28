@@ -2810,13 +2810,15 @@ func TestConfigWatchSelfHealsOnceDirectoryBecomesAvailable(t *testing.T) {
 	// have been picked up as part of recovering the watch itself — if
 	// recovery only starts the watcher without reloading once, this times
 	// out, because nothing ever touches the file again to generate an
-	// fsnotify event.
+	// fsnotify event. The repair omits enabled, so its fail-closed false to
+	// defaulted true transition also waits through the extended loosening
+	// horizon before the manager publishes it.
 	select {
 	case result := <-manager.Reloads():
 		if result.Err != nil {
 			t.Fatalf("reload after self-heal failed: %v", result.Err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("config that was already fixed before recovery was never loaded (self-heal started watching but did not reload — issue #416)")
 	}
 	if _, err := manager.Current(); err != nil {

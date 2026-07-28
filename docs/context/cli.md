@@ -247,7 +247,8 @@ are active with presence disabled and points to `termp status`; interactive watc
 the same warning inside the alternate-screen view so it remains visible without
 corrupting the terminal. At daemon startup an invalid existing config is reported to the
 invoking stderr and daemon log, the daemon stays running with presence off, and a valid
-hot reload restores normal operation. A failed hot reload keeps last-good behavior,
+hot reload restores normal operation (with an absent-key `enabled` loosening subject to
+config's extended guard). A failed hot reload keeps last-good behavior,
 writes a sanitized daemon log line, and updates the live watch warning banner without
 writing through the global logger from the watch goroutine. The existing daemon state
 record carries config health, so `termp status` distinguishes startup failure (`off`)
