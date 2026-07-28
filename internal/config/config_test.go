@@ -98,6 +98,12 @@ func (w *nonAtomicWriter) write(path, content string, delayBeforeContent time.Du
 	}()
 }
 
+func (w *nonAtomicWriter) writeChunked(path, prefix, suffix string, delayBeforeSuffix time.Duration) {
+	go func() {
+		w.done <- w.doWriteChunked(path, prefix, suffix, delayBeforeSuffix)
+	}()
+}
+
 func (w *nonAtomicWriter) doWrite(path, content string, delayBeforeContent time.Duration) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o644)
 	if err != nil {
@@ -108,6 +114,26 @@ func (w *nonAtomicWriter) doWrite(path, content string, delayBeforeContent time.
 		time.Sleep(delayBeforeContent)
 	}
 	if _, err := f.Write([]byte(content)); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func (w *nonAtomicWriter) doWriteChunked(path, prefix, suffix string, delayBeforeSuffix time.Duration) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write([]byte(prefix)); err != nil {
+		_ = f.Close()
+		return err
+	}
+	close(w.truncated)
+	if delayBeforeSuffix > 0 {
+		time.Sleep(delayBeforeSuffix)
+	}
+	if _, err := f.Write([]byte(suffix)); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -1498,13 +1524,15 @@ image_url = "https://example.test/mine.png"
 	}
 }
 
-// TestManagerReloadWaitsOutNonAtomicTruncationWindow is the #410 regression: a
+// TestManagerReloadRejectsChangingNonAtomicTruncationWindow is the #410
+// regression: a
 // non-atomic save (truncate, then write the final content after a delay)
 // produces a transient empty file that parses as valid TOML. A reload that
 // fires during that window must not adopt the transient defaults as
-// last-good; it must wait for the write to finish and observe the final
-// content instead.
-func TestManagerReloadWaitsOutNonAtomicTruncationWindow(t *testing.T) {
+// last-good. Because the provisional snapshot changes during the settle
+// budget, this reload is a no-op; the write completion's fsnotify event
+// triggers a later reload of the final content.
+func TestManagerReloadRejectsChangingNonAtomicTruncationWindow(t *testing.T) {
 	path := withConfigHome(t)
 	writeConfig(t, path, `scan_interval = "7s"`)
 	manager := NewManagerPath(path)
@@ -1524,8 +1552,8 @@ func TestManagerReloadWaitsOutNonAtomicTruncationWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Current() error = %v", err)
 	}
-	if cfg.ScanInterval != "9s" {
-		t.Fatalf("last-good scan interval = %q, want settled value 9s (reload must not adopt the transient empty file as last-good)", cfg.ScanInterval)
+	if cfg.ScanInterval != "7s" {
+		t.Fatalf("last-good scan interval = %q, want unchanged value 7s after provisional snapshot changed", cfg.ScanInterval)
 	}
 }
 
@@ -1579,8 +1607,148 @@ func TestManagerReloadPreservesEnabledFalseAcrossNonAtomicRewrite(t *testing.T) 
 	if cfg.Enabled {
 		t.Fatal("enabled flipped to true after a non-atomic rewrite of an unrelated field; reload must not adopt the transient empty-file default")
 	}
+	if cfg.ScanInterval != "7s" {
+		t.Fatalf("scan interval = %q, want unchanged last-good value 7s after provisional snapshot changed", cfg.ScanInterval)
+	}
+}
+
+func TestManagerReloadPreservesEnabledFalseAcrossUnlinkRecreateWindow(t *testing.T) {
+	const contents = "enabled = false\nscan_interval = \"9s\"\n"
+	path := withConfigHome(t)
+	writeConfig(t, path, contents)
+	manager := NewManagerPath(path)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		time.Sleep(120 * time.Millisecond)
+		writeDone <- os.WriteFile(path, []byte(contents), 0o600)
+	}()
+	defer func() {
+		if err := <-writeDone; err != nil {
+			t.Errorf("recreate config: %v", err)
+		}
+	}()
+
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload during unlink-recreate window returned error: %v", err)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("enabled flipped to true after Reload observed the missing-file window of an unlink-recreate save")
+	}
 	if cfg.ScanInterval != "9s" {
-		t.Fatalf("scan interval = %q, want settled value 9s", cfg.ScanInterval)
+		t.Fatalf("scan interval = %q, want unchanged last-good value 9s during unlink-recreate save", cfg.ScanInterval)
+	}
+}
+
+func TestManagerReloadAcceptsStableConfigDeletion(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+	manager := NewManagerPath(path)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload after deliberate deletion returned error: %v", err)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v, want defaults after deliberate deletion", err)
+	}
+	if !cfg.Enabled || cfg.ScanInterval != Default().ScanInterval {
+		t.Fatalf("config after deliberate deletion = enabled %t, scan interval %q; want defaults", cfg.Enabled, cfg.ScanInterval)
+	}
+}
+
+func TestProvisionalConfigSnapshotMissingDependsOnAcceptedFile(t *testing.T) {
+	missing := fileSnapshot{}
+	if provisionalConfigSnapshot(missing, fileSnapshot{}) {
+		t.Fatal("missing first-run candidate is provisional without a previously accepted file")
+	}
+	if !provisionalConfigSnapshot(missing, fileSnapshot{exists: true, data: []byte("enabled = false\n")}) {
+		t.Fatal("missing candidate is not provisional after a file was previously accepted")
+	}
+}
+
+func TestManagerReloadRejectsEmptySnapshotThatChangesDuringFullSettleBudget(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, "scan_interval = \"9s\"\nenabled = false\n")
+	manager := NewManagerPath(path)
+
+	writer := newNonAtomicWriter(t)
+	defer writer.wait(t)
+	writer.write(path, "scan_interval = \"9s\"\nenabled = false\n", 100*time.Millisecond)
+
+	<-writer.truncated
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload during stalled truncation returned error: %v", err)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("enabled flipped to true after the empty provisional snapshot changed during the settle budget")
+	}
+}
+
+func TestManagerReloadRejectsPrefixSnapshotThatChangesDuringFullSettleBudget(t *testing.T) {
+	const prefix = "scan_interval = \"9s\"\n"
+	const suffix = "enabled = false\n"
+	path := withConfigHome(t)
+	writeConfig(t, path, prefix+suffix)
+	manager := NewManagerPath(path)
+
+	writer := newNonAtomicWriter(t)
+	defer writer.wait(t)
+	writer.writeChunked(path, prefix, suffix, 60*time.Millisecond)
+
+	<-writer.truncated
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload during chunked write returned error: %v", err)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("enabled flipped to true after the strict-prefix provisional snapshot changed during the settle budget")
+	}
+	if cfg.ScanInterval != "9s" {
+		t.Fatalf("scan interval = %q, want final value 9s", cfg.ScanInterval)
+	}
+}
+
+func TestManagerReloadAcceptsStableTrailingLineDeletion(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, "scan_interval = \"9s\"\nenabled = false\n")
+	manager := NewManagerPath(path)
+
+	writeConfig(t, path, "scan_interval = \"9s\"\n")
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload after deliberate trailing-line deletion returned error: %v", err)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if !cfg.Enabled {
+		t.Fatal("stable trailing-line deletion was not accepted; enabled remained false instead of returning to its default")
+	}
+	if cfg.ScanInterval != "9s" {
+		t.Fatalf("scan interval = %q, want retained value 9s", cfg.ScanInterval)
 	}
 }
 

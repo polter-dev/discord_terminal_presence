@@ -25,25 +25,33 @@ last-good config; daemon/watch rendering labels them as watcher errors instead o
 failures. Windows migrates legacy state to the native config directory on a best-effort
 basis.
 
-`Manager.Reload` defends against non-atomic (truncate-then-write) saves, which is what a
-transient empty or partial file — often still syntactically valid TOML on its own — comes
-from: before accepting a read as a reload result, it waits (via `settledConfigSnapshot`)
-for two consecutive reads of the file to agree, reading every ~15ms, up to 20 attempts
-(~300ms budget). This fixes #410: without it, an ordinary non-atomic editor save produced
-a momentary 0-byte file that fsnotify observed and the manager accepted as last-good,
-silently discarding the user's real settings (`enabled = false` included) in favor of
-defaults. A file that never stops changing within the budget leaves last-good and
-`LastError` untouched for that reload attempt (relying on the write's completion to fire
-another fsnotify event); a deliberately blanked config that stays blank still settles and
-loads defaults, so that legitimate reset path is unaffected. This is a mitigation, not a
-guarantee: a writer that pauses longer than the poll interval mid-save can still settle
-on a partial state — either a pause right after truncate (observed flipping
-`enabled = false` back to the default `true`) or a pause mid-content that leaves a stable
-but incomplete prefix (observed settling on one written field while a later field in the
-same save was still pending). In both cases the write's later completion fires a further
-fsnotify event that corrects last-good, but persistent loss remains theoretically
-reachable on Linux if that final content happens to be invalid TOML. Tracked as a
-follow-up to #410.
+`Manager.Reload` defends against non-atomic saves, including truncate-then-write and
+unlink-then-recreate. Those saves can expose a transient missing, empty, or partial file;
+an empty or partial file is often still syntactically valid TOML on its own. Before
+accepting a read as a reload result, `settledConfigSnapshot` normally waits for two
+consecutive reads of the file to agree, reading every ~15ms, up to 20 attempts (~300ms
+budget). A candidate is instead provisional when a previously accepted file is now
+missing, when it is an existing empty file, or when its bytes are a strict prefix of the
+manager's last successfully accepted, error-free file snapshot. Provisional candidates
+must remain unchanged across the full settle budget before acceptance. If one changes
+during that budget, the reload leaves last-good and `LastError` untouched and relies on
+the save's completion to fire another fsnotify event. A deliberate deletion, blanking, or
+trailing-line deletion still loads after remaining stable for the full budget, preserving
+the reset and shortening paths. A missing file is not provisional when the manager has
+never accepted an existing file, so first-run reloads do not incur the settle budget.
+`LoadPath` remains a single-read operation and does not use settle semantics.
+
+This is a mitigation, not a guarantee, and two gaps are known and tracked. A stalled
+partial write whose bytes are **not** a prefix of the last accepted content (a writer that
+changes an early byte before stalling) is not classified as provisional, settles on two
+agreeing reads, and can still revert `enabled = false` to the default (#434) — the
+provisional rule is bound to a content relationship, so any writer that diverges early
+escapes it. Separately, the **startup** load in `NewManagerPath` has no settle check at
+all, and both daemon entry points construct the manager before installing the watcher, so
+an in-flight save at startup can leave a daemon on defaults with no event ever arriving to
+correct it (#435). A candidate that becomes provisional-stable partway through the budget
+also cannot reach acceptance in that call, which is safe: the reload is a no-op and the
+next fsnotify event starts a fresh budget with the settled content as its first read.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,
