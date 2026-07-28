@@ -37,9 +37,10 @@ custom-tool display names must contain 2–128 characters.
 The feedback target is likewise bounded and restricted to an absolute HTTP(S) URL.
 Config reads are capped at 1 MiB before TOML decoding.
 
-Watch tests allow an intermediate successful reload when a non-atomic write transiently
-exposes an empty file, then wait under one overall deadline for the final reload result.
-An empty file remains valid TOML and intentionally loads enabled defaults.
+Watch tests write config changes atomically so they exercise malformed content rather
+than a truncation window. A transient empty file remains valid TOML and currently becomes
+the manager's last-good defaults; whether that behavior should change is an open question
+tracked in #410.
 
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically
