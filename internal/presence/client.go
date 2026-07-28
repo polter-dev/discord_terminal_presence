@@ -45,6 +45,7 @@ var (
 	ErrDiscordIPCNotFound         = errors.New("presence: Discord IPC endpoint not found")
 	ErrDiscordIPCUnreachable      = errors.New("presence: Discord IPC endpoint unreachable")
 	ErrDiscordIPCHandshakeTimeout = errors.New("presence: Discord IPC handshake timed out")
+	ErrDiscordIPCOverrideInvalid  = errors.New("presence: DISCORD_IPC_PATH override is not an absolute path")
 )
 
 // Login connects to Discord IPC using the public application ID and waits for READY.

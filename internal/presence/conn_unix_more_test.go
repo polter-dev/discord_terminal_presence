@@ -103,6 +103,75 @@ func TestDiscordIPCOverrideCandidates(t *testing.T) {
 	}
 }
 
+// TestDialDiscordIPCOverrideAuthoritative reproduces #409: DISCORD_IPC_PATH
+// must be authoritative. If the override's own candidates fail, dialDiscordIPC
+// must report failure naming the override rather than silently falling
+// through to the default candidate search — which, on a real machine, could
+// connect to a genuine running Discord instance and leak live presence.
+func TestDialDiscordIPCOverrideAuthoritative(t *testing.T) {
+	decoyDir, err := os.MkdirTemp("/tmp", "termp-decoy-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(decoyDir) })
+	decoyPath := filepath.Join(decoyDir, "discord-ipc-0")
+	listener, err := net.Listen("unix", decoyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if _, lerr := os.Lstat(decoyPath); lerr != nil {
+		t.Fatalf("decoy socket did not bind: %v", lerr)
+	}
+
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = conn.Close()
+			accepted <- struct{}{}
+		}
+	}()
+
+	// Point every fallback base dir at the decoy so a fallthrough to the
+	// default candidate search would connect to it and prove the bug is
+	// fixed, not merely untriggered.
+	t.Setenv("XDG_RUNTIME_DIR", decoyDir)
+	t.Setenv("TMPDIR", decoyDir)
+	t.Setenv("TMP", decoyDir)
+	t.Setenv("TEMP", decoyDir)
+	t.Setenv("DISCORD_IPC_PATH", filepath.Join(decoyDir, "does-not-exist"))
+
+	conn, err := dialDiscordIPC(context.Background())
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("dialDiscordIPC returned a connection, want override failure")
+	}
+	if !errors.Is(err, ErrDiscordIPCNotFound) {
+		t.Fatalf("error = %v, want ErrDiscordIPCNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "DISCORD_IPC_PATH=") {
+		t.Fatalf("error = %v, want it to name the override", err)
+	}
+
+	select {
+	case <-accepted:
+		t.Fatal("fallback connected to the decoy socket despite an authoritative override")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestDialDiscordIPCRejectsRelativeOverrideAsError proves a non-absolute
+// DISCORD_IPC_PATH is a hard error (not a logged "override ignored") and that
+// the default candidate search is never consulted in that case either.
+func TestDialDiscordIPCRejectsRelativeOverrideAsError(t *testing.T) {
+	t.Setenv("DISCORD_IPC_PATH", "relative/discord-ipc-0")
+	_, err := dialDiscordIPC(context.Background())
+	if !errors.Is(err, ErrDiscordIPCOverrideInvalid) {
+		t.Fatalf("error = %v, want ErrDiscordIPCOverrideInvalid", err)
+	}
+}
+
 func TestStatusProbeReturnsPromptlyWhenContextCancelled(t *testing.T) {
 	socketDir, err := os.MkdirTemp("/tmp", "termp-status-probe-")
 	if err != nil {
@@ -217,6 +286,7 @@ func TestValidateSocketCandidateMatrix(t *testing.T) {
 		{name: "unknown owner representation", lookup: map[string]os.FileInfo{dir: dirInfo, path: fakeFileInfo{mode: os.ModeSocket, sys: struct{}{}}}, wantErr: "cannot determine socket owner"},
 		{name: "foreign owner", lookup: map[string]os.FileInfo{dir: dirInfo, path: fakeFileInfo{mode: os.ModeSocket, sys: &syscall.Stat_t{Uid: euid + 1}}}, wantErr: "does not match effective UID"},
 	}
+	identityEval := func(p string) (string, error) { return p, nil }
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			lstat := func(name string) (os.FileInfo, error) {
@@ -228,7 +298,7 @@ func TestValidateSocketCandidateMatrix(t *testing.T) {
 				}
 				return nil, fs.ErrNotExist
 			}
-			got, err := validateSocketCandidateWithLstat(path, euid, lstat)
+			got, err := validateSocketCandidateWithLstat(path, euid, lstat, identityEval)
 			if tt.wantErr == "" {
 				if err != nil || got != socketInfo {
 					t.Fatalf("result = %#v, %v", got, err)
@@ -255,7 +325,85 @@ func TestValidateSocketCandidateAllowsStickyGlobalTmp(t *testing.T) {
 			return nil, errors.New("unexpected path")
 		}
 	}
-	if _, err := validateSocketCandidateWithLstat(path, euid, lstat); err != nil {
+	identityEval := func(p string) (string, error) { return p, nil }
+	if _, err := validateSocketCandidateWithLstat(path, euid, lstat, identityEval); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestValidateSocketCandidateResolvesSymlinkedTmp reproduces #417: macOS ships
+// /tmp as a symlink to /private/tmp, so a candidate directly under /tmp must
+// still validate once the parent directory is resolved, and the sticky-/tmp
+// carve-out must compare against the resolved path rather than the literal
+// string "/tmp".
+func TestValidateSocketCandidateResolvesSymlinkedTmp(t *testing.T) {
+	const euid = 501
+	path := "/tmp/discord-ipc-0"
+	resolvedPath := "/private/tmp/discord-ipc-0"
+	lstat := func(name string) (os.FileInfo, error) {
+		switch name {
+		case "/private/tmp":
+			return fakeFileInfo{mode: os.ModeDir | os.ModeSticky | 0o777}, nil
+		case resolvedPath:
+			return fakeFileInfo{mode: os.ModeSocket | 0o600, sys: &syscall.Stat_t{Uid: euid}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected lstat(%s)", name)
+		}
+	}
+	eval := func(p string) (string, error) {
+		switch p {
+		case "/tmp":
+			return "/private/tmp", nil
+		default:
+			return "", fmt.Errorf("unexpected EvalSymlinks(%s)", p)
+		}
+	}
+	info, err := validateSocketCandidateWithLstat(path, euid, lstat, eval)
+	if err != nil {
+		t.Fatalf("validateSocketCandidateWithLstat: %v", err)
+	}
+	if info == nil {
+		t.Fatal("info = nil, want socket info")
+	}
+}
+
+// TestValidateSocketCandidateStillRejectsSymlinkedSocket proves the anti-symlink
+// guarantee on the socket file itself survives the #417 fix: resolving the
+// *directory* must not cause the socket path's own final component to be
+// followed through a symlink planted by another user.
+func TestValidateSocketCandidateStillRejectsSymlinkedSocket(t *testing.T) {
+	const euid = 501
+	path := "/private/tmp/discord-ipc-0"
+	lstat := func(name string) (os.FileInfo, error) {
+		switch name {
+		case "/private/tmp":
+			return fakeFileInfo{mode: os.ModeDir | 0o700}, nil
+		case path:
+			// A symlink has neither the directory nor socket mode bit set.
+			return fakeFileInfo{mode: os.ModeSymlink | 0o777}, nil
+		default:
+			return nil, fmt.Errorf("unexpected lstat(%s)", name)
+		}
+	}
+	identityEval := func(p string) (string, error) { return p, nil }
+	_, err := validateSocketCandidateWithLstat(path, euid, lstat, identityEval)
+	if err == nil || !strings.Contains(err.Error(), "not a Unix socket") {
+		t.Fatalf("error = %v, want \"not a Unix socket\"", err)
+	}
+}
+
+// TestValidateSocketCandidatePropagatesSymlinkResolutionFailure ensures a
+// directory that cannot be resolved (e.g. a broken symlink) surfaces as an
+// error rather than silently falling through.
+func TestValidateSocketCandidatePropagatesSymlinkResolutionFailure(t *testing.T) {
+	resolveErr := errors.New("broken symlink")
+	eval := func(string) (string, error) { return "", resolveErr }
+	lstat := func(string) (os.FileInfo, error) {
+		t.Fatal("lstat should not be called when symlink resolution fails")
+		return nil, nil
+	}
+	_, err := validateSocketCandidateWithLstat("/tmp/discord-ipc-0", 501, lstat, eval)
+	if !errors.Is(err, resolveErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, resolveErr)
 	}
 }

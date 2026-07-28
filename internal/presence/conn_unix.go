@@ -70,11 +70,20 @@ func dialDiscordIPC(ctx context.Context) (net.Conn, error) {
 	}
 
 	override := os.Getenv("DISCORD_IPC_PATH")
-	if override != "" && !filepath.IsAbs(override) {
-		fmt.Fprintf(&failures, "  DISCORD_IPC_PATH %q is not absolute; override ignored\n", override)
-	}
-	if conn := tryCandidates(discordIPCOverrideCandidates(override, os.Lstat)); conn != nil {
-		return conn, nil
+	if override != "" {
+		if !filepath.IsAbs(override) {
+			return nil, fmt.Errorf("%w: DISCORD_IPC_PATH %q is not an absolute path", ErrDiscordIPCOverrideInvalid, override)
+		}
+		if conn := tryCandidates(discordIPCOverrideCandidates(override, os.Lstat)); conn != nil {
+			return conn, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !endpointFound {
+			return nil, fmt.Errorf("%w: DISCORD_IPC_PATH=%q override not connectable:\n%s", ErrDiscordIPCNotFound, override, failures.String())
+		}
+		return nil, fmt.Errorf("%w: DISCORD_IPC_PATH=%q override not connectable:\n%s", ErrDiscordIPCUnreachable, override, failures.String())
 	}
 	for _, dir := range discordIPCCandidateDirs(baseDirs) {
 		if budgetExhausted {
@@ -207,12 +216,23 @@ func discordIPCGlobCandidates(baseDirs []string) []string {
 }
 
 func validateSocketCandidate(path string, euid int) (os.FileInfo, error) {
-	return validateSocketCandidateWithLstat(path, euid, os.Lstat)
+	return validateSocketCandidateWithLstat(path, euid, os.Lstat, filepath.EvalSymlinks)
 }
 
-func validateSocketCandidateWithLstat(path string, euid int, lstat func(string) (os.FileInfo, error)) (os.FileInfo, error) {
+// validateSocketCandidateWithLstat validates the socket at path. The parent
+// directory is resolved through evalSymlinks first (macOS ships /tmp as a
+// symlink to /private/tmp, so a literal lstat of the parent directory would
+// see a symlink, not a directory, and every /tmp candidate would be rejected
+// as an error rather than treated as merely absent). The socket path itself
+// is still lstat'd (never stat'd) within the resolved directory so a
+// symlinked socket planted by another user is still refused.
+func validateSocketCandidateWithLstat(path string, euid int, lstat func(string) (os.FileInfo, error), evalSymlinks func(string) (string, error)) (os.FileInfo, error) {
 	dir := filepath.Dir(path)
-	dirInfo, err := lstat(dir)
+	resolvedDir, err := evalSymlinks(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve socket directory: %w", err)
+	}
+	dirInfo, err := lstat(resolvedDir)
 	if err != nil {
 		return nil, fmt.Errorf("inspect socket directory: %w", err)
 	}
@@ -222,12 +242,20 @@ func validateSocketCandidateWithLstat(path string, euid int, lstat func(string) 
 	if dirInfo.Mode().Perm()&0002 != 0 {
 		// Discord commonly places its socket directly in the sticky global /tmp.
 		// The socket ownership check below keeps that compatible fallback safe.
-		if filepath.Clean(dir) != "/tmp" || dirInfo.Mode()&os.ModeSticky == 0 {
+		// Compare against /tmp's resolved path too, since /tmp itself may be a
+		// symlink (macOS: /tmp -> /private/tmp) and resolvedDir above is already
+		// resolved.
+		resolvedStickyTmp, stickyErr := evalSymlinks("/tmp")
+		if stickyErr != nil {
+			resolvedStickyTmp = "/tmp"
+		}
+		if filepath.Clean(resolvedDir) != filepath.Clean(resolvedStickyTmp) || dirInfo.Mode()&os.ModeSticky == 0 {
 			return nil, fmt.Errorf("socket directory is world-writable")
 		}
 	}
 
-	info, err := lstat(path)
+	resolvedPath := filepath.Join(resolvedDir, filepath.Base(path))
+	info, err := lstat(resolvedPath)
 	if err != nil {
 		return nil, fmt.Errorf("inspect socket: %w", err)
 	}

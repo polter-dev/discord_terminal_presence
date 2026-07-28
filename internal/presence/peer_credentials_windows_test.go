@@ -278,6 +278,49 @@ func TestDialDiscordIPCStopsWhenContextCancelled(t *testing.T) {
 	}
 }
 
+// TestDialDiscordIPCWithOverrideAuthoritative reproduces #409 on Windows:
+// when DISCORD_IPC_PATH (passed in as override) fails to connect, the default
+// pipe candidates must never be dialed.
+func TestDialDiscordIPCWithOverrideAuthoritative(t *testing.T) {
+	const override = `\\.\pipe\does-not-exist`
+	dialed := make([]string, 0, 1)
+	dial := func(_ context.Context, path string, _ time.Duration) (net.Conn, error) {
+		dialed = append(dialed, path)
+		return nil, errors.New("no such pipe")
+	}
+
+	conn, err := dialDiscordIPCWith(context.Background(), override, dial, func(net.Conn) error {
+		t.Fatal("verify should not run when dial fails")
+		return nil
+	})
+	if conn != nil {
+		t.Fatalf("connection = %v, want nil", conn)
+	}
+	if !errors.Is(err, ErrDiscordIPCNotFound) {
+		t.Fatalf("error = %v, want ErrDiscordIPCNotFound", err)
+	}
+	if !strings.Contains(err.Error(), override) {
+		t.Fatalf("error = %v, want it to name the override %q", err, override)
+	}
+	if len(dialed) != 1 || dialed[0] != override {
+		t.Fatalf("dialed = %v, want only the override to be attempted", dialed)
+	}
+}
+
+// TestDialDiscordIPCWithRejectsRelativeOverrideAsError proves a non-absolute
+// override is a hard error, not a logged "override ignored", and that no
+// pipe is dialed at all.
+func TestDialDiscordIPCWithRejectsRelativeOverrideAsError(t *testing.T) {
+	dial := func(context.Context, string, time.Duration) (net.Conn, error) {
+		t.Fatal("dial should not run for a non-absolute override")
+		return nil, nil
+	}
+	_, err := dialDiscordIPCWith(context.Background(), "relative-pipe", dial, func(net.Conn) error { return nil })
+	if !errors.Is(err, ErrDiscordIPCOverrideInvalid) {
+		t.Fatalf("error = %v, want ErrDiscordIPCOverrideInvalid", err)
+	}
+}
+
 func TestDiscordIPCPipeCandidatesOverrideFirst(t *testing.T) {
 	const override = `\\wsl.localhost\Ubuntu\discord-ipc-0`
 	got := discordIPCPipeCandidates(override)
