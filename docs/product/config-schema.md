@@ -79,10 +79,16 @@ accent produces a warning and falls back to purple.
 
 Allowlist entries expand `~` and are compared by path components, not raw string prefix. An
 absent `directory_allowlist` key means "no restriction configured" (any path is allowed once
-`show_directory` is on). A present top-level `directory_allowlist` must contain at least one
-non-blank entry; a blank entry (e.g. `[""]`) or a present-but-empty `directory_allowlist = []`
-is a validation error rather than silently becoming allow-everything (#449). Remove the key
-entirely to allow all directories.
+`show_directory` is on). A blank entry anywhere in a top-level or per-tool allowlist (e.g.
+`[""]`, `[" "]`) is always a validation error (#449): no generated config has ever contained
+one, so it is always a typo, and silently dropping it (the old behavior) could turn a
+restrictive allowlist into an unrestricted one. A present-but-empty **top-level**
+`directory_allowlist = []` is different: `termp config init` emitted exactly this for every
+config generated before #449, so treating it as a hard error would silently disable presence
+on upgrade for every existing user. It instead loads successfully, still means "no
+restriction configured" (identical to an absent key), and adds a `Config.Warnings` entry
+(surfaced at startup and in `status`) noting the key allows every directory and can be
+removed.
 
 ## CTA options (`[cta]`)
 

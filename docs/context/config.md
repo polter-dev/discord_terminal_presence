@@ -110,13 +110,16 @@ present in the surviving read; an absent key always resolves to the restrictive 
 The ambiguous, truncation-vulnerable case for these two fields is therefore specifically a
 *per-tool* override (a `*bool` pointer) going from explicit-and-restrictive to nil/absent,
 falling back to a more permissive global or built-in value — exactly what
-`permissivenessLoosened`'s per-tool resolution catches. The global directory allowlist is
-different: because #449 now rejects a present-but-empty `directory_allowlist` at load, a
-successfully decoded config can only have an empty global allowlist when the key is
-genuinely absent, so any observed *global* allowlist loosening (non-empty → empty) reaching
-the choke point is always ambiguous with a truncation and is always gated — no
-metadata-based exemption is needed or would be safe there. A per-tool allowlist override
-carries its own explicit-vs-absent tracking already (`allowlistSet`, set from
+`permissivenessLoosened`'s per-tool resolution catches. The global directory allowlist
+reaches an empty, unrestricted resolved value from either an absent key or an explicit,
+present-but-empty `directory_allowlist = []` (#449 warns on the latter rather than
+rejecting it — see below); either way `permissivenessLoosened` sees the same resolved
+`allowlistRestricted: false` and gates the transition the same way, since it operates on
+the resolved posture from `Config.Resolve`, entirely independent of which source form
+`validate` accepted. `TestManagerReloadStillGatesGlobalAllowlistBecomingPresentButEmpty`
+is a regression for this: it confirms the #449 warning downgrade (below) did not
+accidentally let a global allowlist loosening skip the horizon. A per-tool allowlist
+override carries its own explicit-vs-absent tracking already (`allowlistSet`, set from
 `meta.IsDefined("tools", id, "directory_allowlist")`), and an explicit, present-but-empty
 per-tool override remains a valid, deliberate way to opt that tool out of a restrictive
 global allowlist (see the `directory_allowlist` section below).
@@ -193,16 +196,29 @@ nothing) silently collapsed to the same zero-length, allow-everything slice, and
 then cemented it on disk as `[]`. `validate` now rejects any blank/whitespace-only
 allowlist entry, at both the top-level `[privacy]` allowlist and every per-tool override,
 with a validation error (consistent with #419's reject-don't-silently-strip approach) —
-the entry is never reached by `expandPaths`. A **top-level** `directory_allowlist` that is
-present but has zero entries (`directory_allowlist = []`, tracked via
-`meta.IsDefined("privacy", "directory_allowlist")`) is likewise rejected: there is no
-legitimate reason to write it explicitly instead of omitting the key, so treating it as a
-possible mistake costs nothing. A **per-tool** override with zero entries is deliberately
-*not* rejected the same way: `docs/product/config-schema.md` already documents an explicit,
-present-but-empty per-tool `directory_allowlist` as the way to opt that one tool out of a
-restrictive global allowlist, and `Config.Resolve` implements exactly that via
-`allowlistSet`. `AnnotatedSample`'s `directory_allowlist` line is now commented out (it used
-to emit an active, present-but-empty key that the new top-level check would itself reject).
+the entry is never reached by `expandPaths`; no generated config has ever contained a
+blank entry, so this is always a typo.
+
+A **top-level** `directory_allowlist` that is present but has zero entries
+(`directory_allowlist = []`, tracked via `meta.IsDefined("privacy", "directory_allowlist")`)
+is a different case, and the first cut of this fix got it wrong: it initially rejected this
+too, on the reasoning that there is no legitimate reason to write `[]` explicitly instead of
+omitting the key. Lead review caught that `termp config init`'s `AnnotatedSample` had always
+emitted exactly that key, so the hard rejection would have silently disabled presence (the
+config fails to load, and per #395 the daemon starts with presence off) for every user who
+had ever run `config init` — the exact silent-failure shape this whole issue family exists
+to eliminate, just relocated. A present-but-empty top-level allowlist therefore now loads
+successfully, still resolves to "no restriction configured" (identical to an absent key),
+and appends a `Config.Warnings` entry noting it allows every directory and can be removed;
+`Warnings` is already surfaced at startup and in `status`. `AnnotatedSample`'s
+`directory_allowlist` line is commented out so a **new** `config init` does not generate a
+config that immediately warns; existing on-disk configs keep the active line and now load
+with a warning instead of failing.
+
+A **per-tool** override with zero entries is not warned on at all: `docs/product/config-schema.md`
+already documents an explicit, present-but-empty per-tool `directory_allowlist` as the way
+to opt that one tool out of a restrictive global allowlist, and `Config.Resolve` implements
+exactly that via `allowlistSet` — there is nothing ambiguous to flag there.
 
 Discord-facing config is rejected during load when it cannot produce a valid activity.
 Tool and custom-tool buttons allow at most two entries; labels are non-empty and at most

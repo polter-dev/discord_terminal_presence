@@ -2818,14 +2818,109 @@ func TestDirectoryAllowlistBlankEntriesRejected(t *testing.T) {
 	}
 }
 
-func TestDirectoryAllowlistPresentButEmptyRejected(t *testing.T) {
+// TestDirectoryAllowlistPresentButEmptyWarnsAndAllowsAll covers the lead's
+// review finding on the original #449 fix: `termp config init`'s own
+// AnnotatedSample has always emitted a top-level `directory_allowlist = []`
+// for every existing user. Rejecting that outright at load would silently
+// disable presence on upgrade for every one of them (an invalid config loads
+// with presence off per the #395 policy) -- exactly the kind of silent
+// failure this issue family exists to eliminate, just moved to a new place.
+// A present-but-empty top-level allowlist must instead load successfully,
+// keep meaning "no restriction configured" (same as an absent key), and
+// surface a Config.Warnings entry so the ambiguity is visible, not silent.
+func TestDirectoryAllowlistPresentButEmptyWarnsAndAllowsAll(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = []\n")
 
 	cfg, err := LoadPath(path)
-	if err == nil {
-		t.Fatalf("LoadPath() with present-but-empty top-level allowlist = nil error, want a validation error; got %#v", cfg)
+	if err != nil {
+		t.Fatalf("LoadPath() with present-but-empty top-level allowlist = %v, want success", err)
 	}
+	if !cfg.Enabled {
+		t.Fatal("present-but-empty top-level allowlist disabled presence; want it to load as no-restriction, same as an absent key")
+	}
+	resolved := cfg.Resolve(registry.Tool{ID: "any"})
+	if !resolved.DirectoryAllowed("/anywhere/at/all") {
+		t.Fatal("present-but-empty top-level allowlist should mean no restriction, same as an absent key")
+	}
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "directory_allowlist") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no warning surfaced for a present-but-empty top-level allowlist; warnings = %#v", cfg.Warnings)
+	}
+}
+
+// TestDirectoryAllowlistLegacyAnnotatedSampleStillLoads is the lead's
+// requested regression: a byte-for-byte legacy config as `termp config init`
+// generated it before #449 (including the trailing comment) must still load
+// with presence enabled and a warning, not fail closed.
+func TestDirectoryAllowlistLegacyAnnotatedSampleStillLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	legacy := "enabled = true\n" +
+		"[privacy]\n" +
+		"show_directory = false         # Show the working directory on Discord. Off by default.\n" +
+		"directory_allowlist = []    # Optional path prefixes allowed when show_directory is true.\n" +
+		"directory_basename_only = true # Show only the final directory name; false shows at most the last two segments.\n"
+	writeConfig(t, path, legacy)
+
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() legacy config init output = %v, want success (this must not break every user who ever ran `termp config init`)", err)
+	}
+	if !cfg.Enabled {
+		t.Fatal("legacy config from `termp config init` lost presence on load; every existing user would silently stop publishing")
+	}
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "directory_allowlist") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("legacy config loaded but with no warning about the empty allowlist; warnings = %#v", cfg.Warnings)
+	}
+}
+
+// TestManagerReloadStillGatesGlobalAllowlistBecomingPresentButEmpty confirms
+// that downgrading the present-but-empty top-level allowlist from a hard
+// validation error to a warning (per the lead's review of the original #449
+// fix) did not accidentally route around #447's loosening horizon. The
+// resolved allowlist becomes empty (unrestricted) either way; #447's guard
+// operates on the resolved posture in Config.Resolve/permissivenessLoosened,
+// entirely independent of whether validate() treats the source form as an
+// error or a warning, so this transition must still be held pending rather
+// than applied on the very next Reload.
+func TestManagerReloadStillGatesGlobalAllowlistBecomingPresentButEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = [\"/allowed/only\"]\n")
+	manager := NewManagerPath(path)
+
+	if resolved := mustCurrent(t, manager).Resolve(registry.Tool{ID: "any"}); resolved.DirectoryAllowed("/home/secret") {
+		t.Fatal("precondition failed: /home/secret should not be allowed before the edit")
+	}
+
+	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = []\n")
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() = %v", err)
+	}
+
+	resolved := mustCurrent(t, manager).Resolve(registry.Tool{ID: "any"})
+	if resolved.DirectoryAllowed("/home/secret") {
+		t.Fatal("an explicit present-but-empty allowlist bypassed the loosening horizon on the very next reload; #449's warning downgrade must not affect #447's gate")
+	}
+}
+
+func mustCurrent(t *testing.T, manager *Manager) Config {
+	t.Helper()
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() = %v", err)
+	}
+	return cfg
 }
 
 func TestDirectoryAllowlistAbsentMeansNoRestriction(t *testing.T) {

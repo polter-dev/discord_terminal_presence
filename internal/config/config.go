@@ -1109,18 +1109,25 @@ func validate(cfg *Config, privacyAllowlistDefined bool) error {
 	// #449: a blank allowlist entry (e.g. `[""]`) used to be silently dropped
 	// by expandPaths, leaving a zero-length allowlist that DirectoryAllowed
 	// treats as "no restriction configured" -- the exact opposite of what a
-	// user writing an allowlist entry intends. Reject it instead of guessing.
-	// A present-but-empty `directory_allowlist = []` at the TOP LEVEL is
-	// likewise rejected: unlike a per-tool override (where an explicit empty
-	// allowlist is a meaningful way to opt a tool out of the global
-	// allowlist), an empty top-level allowlist has no such use and is
-	// indistinguishable in intent from a mistake. An ABSENT key is unaffected
-	// and still means "no restriction configured".
+	// user writing an allowlist entry intends. No generated config has ever
+	// contained a blank entry, so this is always a typo: reject it rather
+	// than guessing. An ABSENT key is unaffected and still means "no
+	// restriction configured".
 	if err := validateAllowlistEntries("privacy", cfg.Privacy.DirectoryAllowlist); err != nil {
 		return err
 	}
+	// A present-but-empty `directory_allowlist = []` at the TOP LEVEL is
+	// different: `termp config init`'s own AnnotatedSample emitted exactly
+	// this for every existing user before #449, so rejecting it outright
+	// would silently disable presence on upgrade for every one of them (the
+	// lead caught this in review). Warn instead of erroring: the config
+	// still loads and still means "no restriction configured" (identical to
+	// an absent key), but the ambiguity is no longer silent. A present-but-
+	// empty PER-TOOL override is unaffected by this warning and stays valid
+	// with no message: it is the documented way to opt one tool out of a
+	// restrictive global allowlist (docs/product/config-schema.md).
 	if privacyAllowlistDefined && len(cfg.Privacy.DirectoryAllowlist) == 0 {
-		return fmt.Errorf("privacy.directory_allowlist is present but empty; remove the key to allow all directories, or add at least one path")
+		cfg.Warnings = append(cfg.Warnings, "privacy.directory_allowlist is present but empty, which allows every directory; remove the key to make that explicit, or add at least one path to restrict it")
 	}
 	cfg.Privacy.DirectoryAllowlist = expandPaths(cfg.Privacy.DirectoryAllowlist)
 	for id, override := range cfg.Tools {
