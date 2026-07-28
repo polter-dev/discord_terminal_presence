@@ -264,6 +264,62 @@ func TestDiscordIPCGlobCandidatesFiltersSortsAndDedupes(t *testing.T) {
 	}
 }
 
+// TestValidateSocketCandidateRealSymlinkedParentDirectory exercises the #417
+// fix end to end against the real filesystem: real os.Lstat and real
+// filepath.EvalSymlinks (no injected fakes), so this proves the production
+// wiring in validateSocketCandidate resolves a symlinked parent directory,
+// not just that the algorithm is correct in isolation. It also re-proves the
+// anti-symlink security guarantee (a symlinked *socket* path is still
+// refused) using the same real directories.
+func TestValidateSocketCandidateRealSymlinkedParentDirectory(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "termp-sym-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+
+	socketPath := filepath.Join(realDir, "discord-ipc-0")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	t.Run("accepts socket reached through a symlinked parent directory", func(t *testing.T) {
+		viaSymlink := filepath.Join(linkDir, "discord-ipc-0")
+		info, err := validateSocketCandidate(viaSymlink, os.Geteuid())
+		if err != nil {
+			t.Fatalf("validateSocketCandidate(%s): %v", viaSymlink, err)
+		}
+		if info == nil || info.Mode()&os.ModeSocket == 0 {
+			t.Fatalf("info = %#v, want socket info", info)
+		}
+	})
+
+	t.Run("still refuses a symlinked socket path inside a real parent", func(t *testing.T) {
+		evilLink := filepath.Join(realDir, "discord-ipc-evil")
+		if err := os.Symlink(socketPath, evilLink); err != nil {
+			t.Fatal(err)
+		}
+		_, err := validateSocketCandidate(evilLink, os.Geteuid())
+		if err == nil {
+			t.Fatal("validateSocketCandidate accepted a symlinked socket path, want refusal")
+		}
+		if !strings.Contains(err.Error(), "not a Unix socket") {
+			t.Fatalf("error = %v, want \"not a Unix socket\"", err)
+		}
+	})
+}
+
 func TestValidateSocketCandidateMatrix(t *testing.T) {
 	const euid = 501
 	dir := filepath.Join(string(filepath.Separator), "run", "user", "501")
