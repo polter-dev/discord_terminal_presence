@@ -446,31 +446,104 @@ func Save(cfg Config, path string) error {
 
 // LoadPath reads a TOML config from path. A missing file returns defaults.
 func LoadPath(path string) (Config, error) {
-	cfg := Default()
-	cfg.Path = path
+	return loadSnapshot(path, snapshotConfigFile(path))
+}
 
+// fileSnapshot is a point-in-time read of a config file, used both by LoadPath
+// and by the reload settle-check so both paths decode identically.
+type fileSnapshot struct {
+	exists bool
+	data   []byte
+	err    error
+}
+
+// snapshotConfigFile reads path once, applying the same existence and size
+// rules as LoadPath. It never runs TOML decoding.
+func snapshotConfigFile(path string) fileSnapshot {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return cloneConfig(cfg), nil
+		return fileSnapshot{exists: false}
 	}
 	if err != nil {
-		return invalidFallbackWithPath(path), err
+		return fileSnapshot{exists: true, err: err}
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return invalidFallbackWithPath(path), err
+		return fileSnapshot{exists: true, err: err}
 	}
 	if info.Size() > maxConfigFileSize {
-		return invalidFallbackWithPath(path), fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)
+		return fileSnapshot{exists: true, err: fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)}
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxConfigFileSize+1))
 	if err != nil {
-		return invalidFallbackWithPath(path), err
+		return fileSnapshot{exists: true, err: err}
 	}
 	if len(data) > maxConfigFileSize {
-		return invalidFallbackWithPath(path), fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)
+		return fileSnapshot{exists: true, err: fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)}
 	}
+	return fileSnapshot{exists: true, data: data}
+}
+
+// snapshotsEqual reports whether two snapshots observed the same file state.
+func snapshotsEqual(a, b fileSnapshot) bool {
+	if a.exists != b.exists {
+		return false
+	}
+	if (a.err == nil) != (b.err == nil) {
+		return false
+	}
+	if a.err != nil {
+		return a.err.Error() == b.err.Error()
+	}
+	return bytes.Equal(a.data, b.data)
+}
+
+const (
+	// reloadSettleInterval is the gap between consecutive reads while waiting
+	// for a config file to stop changing. It is small enough that a genuinely
+	// finished write (the common case) only adds one interval of latency.
+	reloadSettleInterval = 15 * time.Millisecond
+	// reloadSettleAttempts bounds how long a reload will wait for a file to
+	// stabilize before giving up on this reload attempt (~reloadSettleInterval
+	// * reloadSettleAttempts, currently ~300ms). A subsequent fsnotify event
+	// once the write finishes triggers another attempt.
+	reloadSettleAttempts = 20
+)
+
+// settledConfigSnapshot waits for two consecutive reads of path to agree
+// before returning, defending against non-atomic (truncate-then-write) saves
+// that would otherwise let a transient empty or partial file — which is
+// often still syntactically valid TOML — become the reload result. It
+// reports ok=false if the file never stops changing within the budget; the
+// caller should treat that as "no new information yet" rather than as either
+// a success or a failure.
+func settledConfigSnapshot(path string) (fileSnapshot, bool) {
+	prev := snapshotConfigFile(path)
+	for i := 0; i < reloadSettleAttempts; i++ {
+		time.Sleep(reloadSettleInterval)
+		next := snapshotConfigFile(path)
+		if snapshotsEqual(prev, next) {
+			return next, true
+		}
+		prev = next
+	}
+	return fileSnapshot{}, false
+}
+
+// loadSnapshot decodes an already-read snapshot into a Config, applying the
+// same defaulting, validation, and fail-closed rules as LoadPath.
+func loadSnapshot(path string, snap fileSnapshot) (Config, error) {
+	cfg := Default()
+	cfg.Path = path
+
+	if snap.err != nil {
+		return invalidFallbackWithPath(path), snap.err
+	}
+	if !snap.exists {
+		return cloneConfig(cfg), nil
+	}
+	data := snap.data
 
 	raw := fileConfig{
 		Enabled:              cfg.Enabled,
