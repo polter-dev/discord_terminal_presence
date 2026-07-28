@@ -169,7 +169,10 @@ func (w *Writer) Run(ctx context.Context, detections <-chan detector.Detection) 
 					return
 				}
 				var next *Activity
-				if activity, active := ActivityFromDetection(detection, w.options); active {
+				if activity, active, omissions := ActivityFromDetectionWithOmissions(detection, w.options); active {
+					for _, omission := range omissions {
+						w.debugf("%s", omission.Message())
+					}
 					next = &activity
 				}
 				select {

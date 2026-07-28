@@ -57,6 +57,12 @@ two images, or more than two buttons.
 | Tool buttons plus optional CTA | At most two buttons when `display.buttons` is enabled |
 | `details_format` and fallback messages | Details/state text selected by the activity mapper |
 
+When present, `details`, `state`, and large/small image tooltip text contain 2–128
+characters. A rendered one-character optional value is omitted and the omission is
+logged, keeping termp from sending a value outside Discord's documented constraint.
+Custom-tool `display_name` values must contain at least two characters so invalid
+tooltip text is reported while loading configuration.
+
 ## Privacy reminder
 
 The working directory is the field most likely to reveal a sensitive name. Directory

@@ -3,7 +3,9 @@ package presence
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +34,47 @@ func TestWriterNoneDetectionClearsPresence(t *testing.T) {
 	client.waitForSet(t, 1)
 	detections <- detector.Detection{None: true}
 	client.waitForLogout(t, 1)
+
+	cancel()
+	<-done
+}
+
+func TestWriterRoutesTextOmissionsThroughDebugf(t *testing.T) {
+	client := newFakeClient(nil)
+	options := DefaultDisplayOptions()
+	options.DetailsFormat = "x"
+	diagnostics := make(chan string, 1)
+	writer, err := NewWriter(client, "app-id",
+		WithDisplayOptions(options),
+		WithDebugf(func(format string, args ...any) {
+			message := fmt.Sprintf(format, args...)
+			if strings.Contains(message, "omitting details") {
+				diagnostics <- message
+			}
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	detections := make(chan detector.Detection, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.Run(ctx, detections)
+	}()
+
+	detections <- activeDetection(time.Now())
+	select {
+	case got := <-diagnostics:
+		want := "presence: omitting details: rendered value contains 1 character; minimum is 2"
+		if got != want {
+			t.Fatalf("debug diagnostic = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for omission diagnostic")
+	}
 
 	cancel()
 	<-done

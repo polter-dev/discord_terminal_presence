@@ -8,8 +8,8 @@ Start here, then read the module entry before opening source.
 | Completion install | [`completioninstall.md`](completioninstall.md) | `internal/completioninstall` | Installs and removes generated completions for bash, zsh, and fish. |
 | Config | [`config.md`](config.md) | `internal/config` | Defines, validates (including Discord field bounds), migrates, watches, initializes, loads, and saves user configuration. |
 | Detector | [`detector.md`](detector.md) | `internal/detector` | Scans processes, applies terminal-activity rules, and selects the featured and other present tools. |
-| Presence | [`presence.md`](presence.md) | `internal/presence` | Maps detections to bounded Discord activity and classifies payload versus transport IPC failures. |
-| Registry | [`registry.md`](registry.md) | `internal/registry` | Defines and validates built-in/custom tools, resolves logos, and matches process identity to tools. |
+| Presence | [`presence.md`](presence.md) | `internal/presence` | Maps detections to defensively bounded activity, reports optional-field omissions for caller-gated diagnostics, and classifies payload versus transport IPC failures. |
+| Registry | [`registry.md`](registry.md) | `internal/registry` | Defines built-in/custom tools, validates Discord-facing custom fields, resolves logos, and matches process identity to tools. |
 | Service | [`service.md`](service.md) | `internal/service` | Manages per-OS login services and context-bounded status queries. |
 | Terminal text | [`terminaltext.md`](terminaltext.md) | `internal/terminaltext` | Sanitizes externally derived text and safely flattens multi-line values at single-line terminal and log rendering boundaries. |
 | TUI | [`tui.md`](tui.md) | `internal/tui` | Owns setup, settings, confirmation, watch, and card UI with shared safe rendering. |

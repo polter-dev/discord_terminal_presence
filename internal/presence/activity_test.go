@@ -1,6 +1,8 @@
 package presence
 
 import (
+	"bytes"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -253,6 +255,85 @@ func TestActivityFromDetectionBoundsRenderedText(t *testing.T) {
 	}
 	if err := validateActivity(activity); err != nil {
 		t.Fatalf("rendered activity failed validation: %v", err)
+	}
+}
+
+func TestActivityFromDetectionOmitsTooShortRenderedTextWithoutGlobalLogging(t *testing.T) {
+	originalLogOutput := log.Writer()
+	t.Cleanup(func() {
+		log.SetOutput(originalLogOutput)
+	})
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+
+	options := DefaultDisplayOptions()
+	options.DetailsFormat = "x"
+	activity, ok := ActivityFromDetection(detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+	}, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.Details != "" {
+		t.Fatalf("details = %q, want one-character text omitted", activity.Details)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("global log output = %q, want none", logs.String())
+	}
+
+	_, ok, omissions := ActivityFromDetectionWithOmissions(detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+	}, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if len(omissions) != 1 || omissions[0] != (ActivityTextOmission{Field: "details", Length: 1, Minimum: 2}) {
+		t.Fatalf("omissions = %#v, want details omission", omissions)
+	}
+}
+
+func TestActivityFromDetectionOmitsTooShortImageTooltips(t *testing.T) {
+	options := DefaultDisplayOptions()
+	activity, ok := ActivityFromDetection(detector.Detection{
+		Tool: registry.Tool{DisplayName: "x", ImageKey: "featured"},
+		Others: []registry.Tool{
+			{DisplayName: "界", ImageKey: "other"},
+		},
+	}, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.Name != "x" {
+		t.Fatalf("name = %q, want one-character name preserved", activity.Name)
+	}
+	if activity.LargeImage.Text != "" {
+		t.Fatalf("large image text = %q, want one-character tooltip omitted", activity.LargeImage.Text)
+	}
+	if activity.SmallImage.Text != "" {
+		t.Fatalf("small image text = %q, want one-character tooltip omitted", activity.SmallImage.Text)
+	}
+}
+
+func TestValidateActivityEnforcesPerFieldMinimums(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		activity Activity
+	}{
+		{name: "details", activity: Activity{Details: "x"}},
+		{name: "state", activity: Activity{State: "界"}},
+		{name: "large image text", activity: Activity{LargeImage: Image{Text: "x"}}},
+		{name: "small image text", activity: Activity{SmallImage: Image{Text: "界"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateActivity(tt.activity)
+			if err == nil || !strings.Contains(err.Error(), "must be at least 2 characters") {
+				t.Fatalf("validateActivity() error = %v, want minimum-length error", err)
+			}
+		})
+	}
+
+	if err := validateActivity(Activity{Name: "x"}); err != nil {
+		t.Fatalf("validateActivity() rejected one-character name: %v", err)
 	}
 }
 

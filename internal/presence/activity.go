@@ -20,6 +20,7 @@ const DefaultAppID = "1523168764793847918"
 const defaultDetailsFormat = "Using {tool}"
 
 const (
+	minActivityTextLength = 2
 	maxActivityTextLength = 128
 	maxImageValueLength   = 256
 )
@@ -76,6 +77,23 @@ type Button struct {
 	URL   string
 }
 
+// ActivityTextOmission describes a rendered optional field that was too short
+// for Discord and was therefore omitted from the mapped activity.
+type ActivityTextOmission struct {
+	Field   string
+	Length  int
+	Minimum int
+}
+
+// Message formats the diagnostic for a caller-provided debug logger.
+func (o ActivityTextOmission) Message() string {
+	characters := "characters"
+	if o.Length == 1 {
+		characters = "character"
+	}
+	return fmt.Sprintf("presence: omitting %s: rendered value contains %d %s; minimum is %d", o.Field, o.Length, characters, o.Minimum)
+}
+
 type activityValidationError struct {
 	message string
 }
@@ -88,16 +106,21 @@ func validateActivity(activity Activity) error {
 	textFields := []struct {
 		name  string
 		value string
+		min   int
 	}{
-		{name: "name", value: activity.Name},
-		{name: "details", value: activity.Details},
-		{name: "state", value: activity.State},
-		{name: "large_image_text", value: activity.LargeImage.Text},
-		{name: "small_image_text", value: activity.SmallImage.Text},
+		{name: "name", value: activity.Name, min: 0},
+		{name: "details", value: activity.Details, min: minActivityTextLength},
+		{name: "state", value: activity.State, min: minActivityTextLength},
+		{name: "large_image_text", value: activity.LargeImage.Text, min: minActivityTextLength},
+		{name: "small_image_text", value: activity.SmallImage.Text, min: minActivityTextLength},
 	}
 	for _, field := range textFields {
-		if utf8.RuneCountInString(field.value) > maxActivityTextLength {
+		length := utf8.RuneCountInString(field.value)
+		if length > maxActivityTextLength {
 			return &activityValidationError{message: fmt.Sprintf("%s must be at most %d characters", field.name, maxActivityTextLength)}
+		}
+		if length > 0 && length < field.min {
+			return &activityValidationError{message: fmt.Sprintf("%s must be at least %d characters when present", field.name, field.min)}
 		}
 	}
 	imageFields := []struct {
@@ -133,8 +156,27 @@ func validHTTPURL(value string) bool {
 
 // ActivityFromDetection maps an active detector result into a Discord activity payload.
 func ActivityFromDetection(detection detector.Detection, options DisplayOptions) (Activity, bool) {
+	activity, ok, _ := ActivityFromDetectionWithOmissions(detection, options)
+	return activity, ok
+}
+
+// ActivityFromDetectionWithOmissions maps a detector result and reports optional
+// text fields omitted because they did not meet Discord's minimum length.
+func ActivityFromDetectionWithOmissions(detection detector.Detection, options DisplayOptions) (Activity, bool, []ActivityTextOmission) {
 	if detection.None {
-		return Activity{}, false
+		return Activity{}, false, nil
+	}
+	var omissions []ActivityTextOmission
+	boundText := func(field, value string) string {
+		bounded, omitted := boundActivityText(value)
+		if omitted {
+			omissions = append(omissions, ActivityTextOmission{
+				Field:   field,
+				Length:  utf8.RuneCountInString(value),
+				Minimum: minActivityTextLength,
+			})
+		}
+		return bounded
 	}
 
 	tool := detection.Featured.Tool
@@ -146,7 +188,7 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		LargeImage: Image{
 			Key:  tool.ImageKey,
 			URL:  tool.ImageURL,
-			Text: tool.DisplayName,
+			Text: boundText("large_image_text", tool.DisplayName),
 		},
 	}
 
@@ -178,14 +220,14 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 			activity.Details = options.FallbackMessage
 		}
 	}
-	activity.Details = boundActivityText(activity.Details)
-	activity.State = boundActivityText(activity.State)
+	activity.Details = boundText("details", activity.Details)
+	activity.State = boundText("state", activity.State)
 	if options.SmallImage && len(detection.Others) > 0 {
 		other := detection.Others[0]
 		activity.SmallImage = Image{
 			Key:  other.ImageKey,
 			URL:  other.ImageURL,
-			Text: other.DisplayName,
+			Text: boundText("small_image_text", other.DisplayName),
 		}
 	}
 	if options.ElapsedTimer && !detection.StartedAt.IsZero() {
@@ -196,14 +238,18 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		activity.Buttons = buttonsFromTool(tool)
 	}
 
-	return activity, true
+	return activity, true, omissions
 }
 
-func boundActivityText(value string) string {
-	if utf8.RuneCountInString(value) <= maxActivityTextLength {
-		return value
+func boundActivityText(value string) (string, bool) {
+	length := utf8.RuneCountInString(value)
+	if length > 0 && length < minActivityTextLength {
+		return "", true
 	}
-	return string([]rune(value)[:maxActivityTextLength-1]) + "…"
+	if length <= maxActivityTextLength {
+		return value, false
+	}
+	return string([]rune(value)[:maxActivityTextLength-1]) + "…", false
 }
 
 func renderDetails(format, toolName, directory string) string {

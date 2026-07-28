@@ -18,6 +18,7 @@ const (
 	MaxButtonLabelLength = 32
 	MaxButtonURLLength   = 512
 	MaxToolIDLength      = 64
+	MinDisplayNameLength = 2
 	MaxDisplayNameLength = 128
 	MaxImageValueLength  = 256
 
@@ -215,7 +216,11 @@ func ValidateCustomTool(tool CustomTool) error {
 	if utf8.RuneCountInString(tool.ID) > MaxToolIDLength {
 		return fmt.Errorf("id must be at most %d characters", MaxToolIDLength)
 	}
-	if utf8.RuneCountInString(tool.DisplayName) > MaxDisplayNameLength {
+	displayNameLength := utf8.RuneCountInString(tool.DisplayName)
+	if displayNameLength < MinDisplayNameLength {
+		return fmt.Errorf("display_name must be at least %d characters", MinDisplayNameLength)
+	}
+	if displayNameLength > MaxDisplayNameLength {
 		return fmt.Errorf("display_name must be at most %d characters", MaxDisplayNameLength)
 	}
 	resolved := Tool{
