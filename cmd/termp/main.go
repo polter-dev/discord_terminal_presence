@@ -956,6 +956,14 @@ func retryConfigWatch(ctx context.Context, manager *config.Manager, path string,
 			// failure was already logged by startConfigWatchWithRetry.
 			if tryStartConfigWatch(ctx, manager, path, nil) {
 				log.Print("config watch recovered")
+				// manager.Watch only reacts to fsnotify events from here
+				// on; it never loads the file that is already sitting on
+				// disk. In the #416 repro the user fixes the directory and
+				// drops in a valid config in one burst, before the watch
+				// exists to see any event for it, so without this the
+				// daemon would stay on its stale startup error until a
+				// second, unrelated edit happened to arrive.
+				_ = manager.Reload()
 				return
 			}
 		}
@@ -1567,7 +1575,11 @@ func statusPublicationHealth(daemonPID int, state daemonDiscordState, stateOK bo
 	if !stateOK || daemonPID <= 0 || state.PID != daemonPID || state.PublicationOK == nil || *state.PublicationOK {
 		return false, "", time.Time{}
 	}
-	return true, state.PublicationError, state.PublicationAt
+	var at time.Time
+	if state.PublicationAt != nil {
+		at = *state.PublicationAt
+	}
+	return true, state.PublicationError, at
 }
 
 type statusProbeFuncs struct {
@@ -1675,10 +1687,13 @@ type daemonDiscordState struct {
 	// while the connection stays healthy, so status must be able to tell
 	// "connected" apart from "published". It clears (returns to nil/"")
 	// the moment a later publish succeeds or presence is cleared; see
-	// presence.WithPublicationState.
-	PublicationOK    *bool     `json:"publication_ok,omitempty"`
-	PublicationError string    `json:"publication_error,omitempty"`
-	PublicationAt    time.Time `json:"publication_at,omitempty"`
+	// presence.WithPublicationState. PublicationAt is a pointer (not a bare
+	// time.Time) because encoding/json's omitempty never omits a zero-value
+	// struct field, so a bare time.Time would always render as
+	// "0001-01-01T00:00:00Z" before anything was ever published.
+	PublicationOK    *bool      `json:"publication_ok,omitempty"`
+	PublicationError string     `json:"publication_error,omitempty"`
+	PublicationAt    *time.Time `json:"publication_at,omitempty"`
 }
 
 func daemonDiscordStatePath() string {
@@ -1762,9 +1777,10 @@ func runDaemonDiscordStatePublisher(ctx context.Context, path string, interval t
 		publication: func(err error) {
 			publish(func(state *daemonDiscordState) {
 				ok := err == nil
+				at := time.Now()
 				state.PublicationOK = &ok
 				state.PublicationError = errorString(err)
-				state.PublicationAt = time.Now()
+				state.PublicationAt = &at
 			})
 		},
 	}

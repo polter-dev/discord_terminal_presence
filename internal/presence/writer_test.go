@@ -404,6 +404,59 @@ func TestWriterPublicationStateHookClearsOnPresenceCleared(t *testing.T) {
 	<-done
 }
 
+func TestWriterPublicationStateHookIgnoresRepeatedSuccessfulReapply(t *testing.T) {
+	client := newFakeClient(nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	var mu sync.Mutex
+	var results []error
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(0),
+		withReapplyInterval(15*time.Second),
+		withWriteClock(clock),
+		WithPublicationState(func(pubErr error) {
+			mu.Lock()
+			defer mu.Unlock()
+			results = append(results, pubErr)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "steady"})
+	client.waitForSet(t, 1)
+	clock.waitForTimerCount(t, 1) // reapply scheduled
+
+	// Two more successful writes via the periodic reapply timer, with no
+	// rejection ever recorded. A caller persisting every publicationState
+	// call to disk (as cmd/termp does) would otherwise write on every one
+	// of these ticks for no reason: nothing about "is the last publish
+	// rejected" ever changed.
+	clock.Advance(15 * time.Second)
+	client.waitForSet(t, 2)
+	clock.Advance(15 * time.Second)
+	client.waitForSet(t, 3)
+
+	mu.Lock()
+	if len(results) != 0 {
+		t.Fatalf("publication hook fired %d times across 3 successful writes with no rejection ever recorded: %v", len(results), results)
+	}
+	mu.Unlock()
+
+	cancel()
+	<-done
+}
+
 func waitForPublicationResults(t *testing.T, mu *sync.Mutex, got *[]error, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

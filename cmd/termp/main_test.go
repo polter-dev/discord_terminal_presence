@@ -973,7 +973,7 @@ func TestStatusPublicationHealthReportsRejectionSeparatelyFromConnection(t *test
 		Connected:        true,
 		PublicationOK:    &rejected,
 		PublicationError: "code 4000: rejected",
-		PublicationAt:    at,
+		PublicationAt:    &at,
 	}, true)
 	if !gotRejected || gotErr != "code 4000: rejected" || !gotAt.Equal(at) {
 		t.Fatalf("statusPublicationHealth() = (%t, %q, %v), want (true, %q, %v)", gotRejected, gotErr, gotAt, "code 4000: rejected", at)
@@ -1329,6 +1329,43 @@ func TestWriteDaemonDiscordStateUses0600(t *testing.T) {
 		t.Fatalf("read state = (%+v, %t), want %+v, true", read, ok, state)
 	}
 	assertPIDFileMode(t, path)
+}
+
+func TestDaemonDiscordStatePublicationAtOmittedWhenNeverPublished(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "discord.json")
+	state := daemonDiscordState{
+		Connected: true,
+		UpdatedAt: time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
+		PID:       1234,
+	}
+	if err := writeDaemonDiscordState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PublicationAt is a *time.Time specifically because encoding/json's
+	// omitempty never omits a zero-value struct field: a bare time.Time
+	// would always render "0001-01-01T00:00:00Z" here even though nothing
+	// was ever published. Assert the field is actually absent, not just
+	// present-with-a-nonsense-value.
+	if strings.Contains(string(data), "publication_at") {
+		t.Fatalf("daemon.json included publication_at before anything was published:\n%s", data)
+	}
+
+	at := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	state.PublicationAt = &at
+	if err := writeDaemonDiscordState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"publication_at": "2026-07-28T09:00:00Z"`) {
+		t.Fatalf("daemon.json did not record a real publication_at once set:\n%s", data)
+	}
 }
 
 func writeDaemonDiscordStateFixture(t *testing.T, state daemonDiscordState) string {
@@ -2610,17 +2647,17 @@ func TestConfigWatchSelfHealsOnceDirectoryBecomesAvailable(t *testing.T) {
 		t.Fatal("tryStartConfigWatch() unexpectedly succeeded against a stray file")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		retryConfigWatch(ctx, manager, configPath, 5*time.Millisecond)
-	}()
-
-	// The user fixes it while the daemon keeps running, exactly like the
-	// issue #416 repro: remove the stray file, create the real directory,
-	// and drop in a config the daemon has never seen.
+	// The user fixes everything in one burst — exactly like the issue #416
+	// repro (`rm stray && mkdir && cp config`) — entirely BEFORE the retry
+	// loop ever gets a chance to look again. By the time retryConfigWatch's
+	// ticker fires, the valid config is already sitting on disk unchanged,
+	// so manager.Watch's fsnotify listener never sees a Write/Create event
+	// for it: manager.Watch only reacts to *future* filesystem events, it
+	// does not load whatever is already there. A version of the fix that
+	// only starts the watcher (without also reloading once) would leave
+	// haveGoodConfig false and the daemon on its stale startup error
+	// forever — this test must fail against that version, not just pass
+	// once "enough" edits eventually happen after recovery.
 	if err := os.Remove(confDir); err != nil {
 		t.Fatal(err)
 	}
@@ -2631,24 +2668,35 @@ func TestConfigWatchSelfHealsOnceDirectoryBecomesAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		retryConfigWatch(ctx, manager, configPath, 5*time.Millisecond)
+	}()
+
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("retryConfigWatch never recovered once the config directory became available (presence would stay off forever — issue #416)")
 	}
 
-	// Prove the watch it started is real, not just a one-shot recheck: a
-	// further edit must still produce a reload, with no restart involved.
-	if err := os.WriteFile(configPath, []byte("scan_interval = \"7s\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// No further edit happens from here on. The already-fixed config must
+	// have been picked up as part of recovering the watch itself — if
+	// recovery only starts the watcher without reloading once, this times
+	// out, because nothing ever touches the file again to generate an
+	// fsnotify event.
 	select {
 	case result := <-manager.Reloads():
 		if result.Err != nil {
 			t.Fatalf("reload after self-heal failed: %v", result.Err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("watch established by self-heal did not pick up a subsequent edit")
+		t.Fatal("config that was already fixed before recovery was never loaded (self-heal started watching but did not reload — issue #416)")
+	}
+	if _, err := manager.Current(); err != nil {
+		t.Fatalf("manager.Current() after self-heal = %v, want the fixed config applied", err)
 	}
 }
 
