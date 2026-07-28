@@ -463,7 +463,32 @@ image_key = "mine"
 			writer.write(path, contents, stall)
 			<-writer.truncated
 
+			// Two outcomes are correct here, and both satisfy the guarantee
+			// this test exists for: the load either settles on the real
+			// content, or refuses with ErrConfigBeingWritten so setup and
+			// settings decline to save a guess. Requiring err == nil asserts
+			// a latency property instead — how the stall lands relative to
+			// standaloneLoadSettleTimeout — which is not a contract and is
+			// load-dependent on CI (this failed on macos-latest at 250ms).
 			cfg, err := LoadPath(path)
+			if errors.Is(err, ErrConfigBeingWritten) {
+				before, readErr := os.ReadFile(path)
+				if readErr != nil {
+					t.Fatalf("read config after busy load: %v", readErr)
+				}
+				writer.wait(t)
+				after, readErr := os.ReadFile(path)
+				if readErr != nil {
+					t.Fatalf("read config after writer finished: %v", readErr)
+				}
+				if bytes.Contains(before, []byte("enabled = true")) {
+					t.Fatalf("%v stall: busy load left defaults on disk:\n%s", stall, before)
+				}
+				if !bytes.Contains(after, []byte("enabled = false")) {
+					t.Fatalf("%v stall: writer's own content lost:\n%s", stall, after)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("LoadPath() during %v non-atomic save = %v", stall, err)
 			}
