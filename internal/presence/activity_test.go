@@ -258,7 +258,7 @@ func TestActivityFromDetectionBoundsRenderedText(t *testing.T) {
 	}
 }
 
-func TestActivityFromDetectionOmitsAndLogsTooShortRenderedText(t *testing.T) {
+func TestActivityFromDetectionOmitsTooShortRenderedTextWithoutGlobalLogging(t *testing.T) {
 	originalLogOutput := log.Writer()
 	t.Cleanup(func() {
 		log.SetOutput(originalLogOutput)
@@ -277,8 +277,18 @@ func TestActivityFromDetectionOmitsAndLogsTooShortRenderedText(t *testing.T) {
 	if activity.Details != "" {
 		t.Fatalf("details = %q, want one-character text omitted", activity.Details)
 	}
-	if !strings.Contains(logs.String(), "omitting details: rendered value contains 1 character; minimum is 2") {
-		t.Fatalf("log output = %q, want details omission", logs.String())
+	if logs.Len() != 0 {
+		t.Fatalf("global log output = %q, want none", logs.String())
+	}
+
+	_, ok, omissions := ActivityFromDetectionWithOmissions(detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+	}, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if len(omissions) != 1 || omissions[0] != (ActivityTextOmission{Field: "details", Length: 1, Minimum: 2}) {
+		t.Fatalf("omissions = %#v, want details omission", omissions)
 	}
 }
 

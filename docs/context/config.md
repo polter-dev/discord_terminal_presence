@@ -23,7 +23,8 @@ so config does not expose a second directory formatter that could diverge from i
 Discord-facing config is rejected during load when it cannot produce a valid activity.
 Tool and custom-tool buttons allow at most two entries; labels are non-empty and at most
 32 characters, and URLs are absolute HTTP(S) URLs. Details/fallback text and custom-tool
-identity, display, and resolved image fields are bounded before registry construction.
+identity, display, and resolved image fields are bounded before registry construction;
+custom-tool display names must contain 2–128 characters.
 The feedback target is likewise bounded and restricted to an absolute HTTP(S) URL.
 Config reads are capped at 1 MiB before TOML decoding.
 

@@ -2,7 +2,6 @@ package presence
 
 import (
 	"fmt"
-	"log"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -78,6 +77,23 @@ type Button struct {
 	URL   string
 }
 
+// ActivityTextOmission describes a rendered optional field that was too short
+// for Discord and was therefore omitted from the mapped activity.
+type ActivityTextOmission struct {
+	Field   string
+	Length  int
+	Minimum int
+}
+
+// Message formats the diagnostic for a caller-provided debug logger.
+func (o ActivityTextOmission) Message() string {
+	characters := "characters"
+	if o.Length == 1 {
+		characters = "character"
+	}
+	return fmt.Sprintf("presence: omitting %s: rendered value contains %d %s; minimum is %d", o.Field, o.Length, characters, o.Minimum)
+}
+
 type activityValidationError struct {
 	message string
 }
@@ -140,8 +156,27 @@ func validHTTPURL(value string) bool {
 
 // ActivityFromDetection maps an active detector result into a Discord activity payload.
 func ActivityFromDetection(detection detector.Detection, options DisplayOptions) (Activity, bool) {
+	activity, ok, _ := ActivityFromDetectionWithOmissions(detection, options)
+	return activity, ok
+}
+
+// ActivityFromDetectionWithOmissions maps a detector result and reports optional
+// text fields omitted because they did not meet Discord's minimum length.
+func ActivityFromDetectionWithOmissions(detection detector.Detection, options DisplayOptions) (Activity, bool, []ActivityTextOmission) {
 	if detection.None {
-		return Activity{}, false
+		return Activity{}, false, nil
+	}
+	var omissions []ActivityTextOmission
+	boundText := func(field, value string) string {
+		bounded, omitted := boundActivityText(value)
+		if omitted {
+			omissions = append(omissions, ActivityTextOmission{
+				Field:   field,
+				Length:  utf8.RuneCountInString(value),
+				Minimum: minActivityTextLength,
+			})
+		}
+		return bounded
 	}
 
 	tool := detection.Featured.Tool
@@ -153,7 +188,7 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		LargeImage: Image{
 			Key:  tool.ImageKey,
 			URL:  tool.ImageURL,
-			Text: boundActivityText("large_image_text", tool.DisplayName),
+			Text: boundText("large_image_text", tool.DisplayName),
 		},
 	}
 
@@ -185,14 +220,14 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 			activity.Details = options.FallbackMessage
 		}
 	}
-	activity.Details = boundActivityText("details", activity.Details)
-	activity.State = boundActivityText("state", activity.State)
+	activity.Details = boundText("details", activity.Details)
+	activity.State = boundText("state", activity.State)
 	if options.SmallImage && len(detection.Others) > 0 {
 		other := detection.Others[0]
 		activity.SmallImage = Image{
 			Key:  other.ImageKey,
 			URL:  other.ImageURL,
-			Text: boundActivityText("small_image_text", other.DisplayName),
+			Text: boundText("small_image_text", other.DisplayName),
 		}
 	}
 	if options.ElapsedTimer && !detection.StartedAt.IsZero() {
@@ -203,19 +238,18 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		activity.Buttons = buttonsFromTool(tool)
 	}
 
-	return activity, true
+	return activity, true, omissions
 }
 
-func boundActivityText(field, value string) string {
+func boundActivityText(value string) (string, bool) {
 	length := utf8.RuneCountInString(value)
 	if length > 0 && length < minActivityTextLength {
-		log.Printf("presence: omitting %s: rendered value contains %d character; minimum is %d", field, length, minActivityTextLength)
-		return ""
+		return "", true
 	}
 	if length <= maxActivityTextLength {
-		return value
+		return value, false
 	}
-	return string([]rune(value)[:maxActivityTextLength-1]) + "…"
+	return string([]rune(value)[:maxActivityTextLength-1]) + "…", false
 }
 
 func renderDetails(format, toolName, directory string) string {

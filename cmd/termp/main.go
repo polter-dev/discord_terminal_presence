@@ -1178,9 +1178,12 @@ func buildActivity(cfg config.Config, detection detector.Detection, fallbackMess
 		ShowDirectory:         showDir,
 		DirectoryBasenameOnly: resolved.DirectoryBasenameOnly,
 	}
-	activity, ok := presence.ActivityFromDetection(detection, opts)
+	activity, ok, omissions := presence.ActivityFromDetectionWithOmissions(detection, opts)
 	if !ok {
 		return nil
+	}
+	for _, omission := range omissions {
+		debugf("%s", omission.Message())
 	}
 	if resolved.ButtonsEnabled {
 		activity.Buttons = activityButtons(resolved.Buttons, cfg.CTA)

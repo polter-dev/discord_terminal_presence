@@ -103,7 +103,7 @@ or built-in value.
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `id` | yes | Stable ID; reusing a built-in ID replaces it |
-| `display_name` | yes | User-facing name |
+| `display_name` | yes | User-facing name, 2–128 characters |
 | `match.name` or `match.regex` | one | Exact or regex match against process identity |
 | `exclude` | no | Regex rejecting an immediate helper subcommand |
 | `image_url`, `image_key`, or `icon_slug` | one | Image source |

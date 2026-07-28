@@ -18,9 +18,10 @@ dial IPC endpoints. `internal/presence/writer.go` owns client lifecycle.
 allowlisted display directory. Buttons are capped at two. One writer goroutine owns all
 client calls; the default activity write throttle remains 15 seconds. Final rendered
 details, state, and large/small image tooltip text are capped at 128 runes with an
-ellipsis. One-rune optional values are omitted and logged, so mapped output is either
-empty or 2–128 runes. The activity name has no minimum. Opted-in directory or collection
-placement does not depend on tool-name display.
+ellipsis. One-rune optional values are omitted, and the mapper returns omission diagnostics
+for callers to route through their verbose-gated debug logger, so mapped output is either
+empty or 2–128 runes without writing to the global logger. The activity name has no
+minimum. Opted-in directory or collection placement does not depend on tool-name display.
 
 The IPC boundary validates a per-field minimum for non-empty details, state, and image
 tooltip text, along with the other bounded activity text, image values, button
