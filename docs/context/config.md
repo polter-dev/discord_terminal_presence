@@ -97,15 +97,28 @@ dimension is then neutralized.
 
 A `[tools]` override key must be non-blank. `""` is the sentinel that posture comparison
 uses for the tool-agnostic global row, and `""` is also a legal TOML map key, so a
-`[tools.""]` section would occupy the same slot as the sentinel. `validate` rejects
-blank/whitespace override IDs, which removes that collision by construction instead of
-asking the guard to tolerate it, and matches the blank-ID rejection custom tools already
-have. A manager-level reproduction of an actual masked loosening through the collision was
-attempted and **not** obtained — the global allowlist gate held at ~320ms with `[tools.""]`
-present, in both file orderings tried, including the one where the section survives a
-top-down truncation. So this is defence in depth against a sentinel collision, not a fix
-for a demonstrated leak. No generated config has ever emitted such a section, so unlike the
-`directory_allowlist = []` case there is no upgrade exposure.
+`[tools.""]` section occupies the same slot as the sentinel. That was **a demonstrated
+guard bypass, not a theoretical one**: with a `[tools.""]` override that itself equalizes
+the dimension being dropped (`directory_allowlist = []`, the documented per-tool opt-out
+form), the `""` row reads unrestricted in both the previous and the next config, so the
+global allowlist can be truncated away with nothing left to proxy for the unoverridden
+real tools. Reproduced against the pre-fix code through the real manager, with the
+`[tools.""]` section ordered before `[privacy]` so a top-down truncation keeps it:
+
+    WITH [tools.""]        AFTER (321ms) DirectoryAllowed(/home/secret)=true   <- leaked
+    CONTROL (no tools."")  AFTER (324ms) DirectoryAllowed(/home/secret)=false  <- gated
+
+An earlier attempt to reproduce this used a `[tools.""]` override that left the allowlist
+dimension untouched; that keeps prev's `""` row restricted, so the gate fires and the leak
+is hidden. The equalizing override is the necessary ingredient — worth knowing before
+concluding a sentinel collision is unreachable.
+
+`validate` now rejects blank/whitespace override IDs, which closes it by construction
+rather than asking the guard to tolerate the collision, and matches the blank-ID rejection
+custom tools already have. Verified on the fixed code: the same config fails closed at load
+(`tools: override id must not be blank`) and the truncation is gated. `AnnotatedSample`
+emits no `[tools]` sections at all, so unlike the `directory_allowlist = []` case there is
+no upgrade exposure.
 `TestManagerReloadPreservesPerToolOptOutWhileGlobalEnabledAlsoLoosens` is the regression:
 a config with the global flag off and `[tools.vim] enabled = false` moves to a stalled
 partial containing only `enabled = true` (the per-tool override not yet rewritten), and

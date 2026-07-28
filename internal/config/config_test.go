@@ -470,6 +470,10 @@ image_key = "mine"
 			// a latency property instead — how the stall lands relative to
 			// standaloneLoadSettleTimeout — which is not a contract and is
 			// load-dependent on CI (this failed on macos-latest at 250ms).
+			// Caveat, measured: an implementation that ALWAYS returned
+			// ErrConfigBeingWritten would pass this test in isolation. It
+			// fails 62 other tests in this package, so the success path is
+			// anchored by the suite rather than by this test alone.
 			cfg, err := LoadPath(path)
 			if errors.Is(err, ErrConfigBeingWritten) {
 				before, readErr := os.ReadFile(path)
