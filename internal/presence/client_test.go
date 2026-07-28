@@ -164,7 +164,7 @@ func TestSetActivityWireHasNoRawControlOrBidiRunes(t *testing.T) {
 	// exactly like the button above.
 	bidiButtonActivity := normalizeActivity(Activity{
 		Name:    "Clean",
-		Buttons: []Button{{Label: "Go", URL: "https://example.test/a‮bcd"}},
+		Buttons: []Button{{Label: "Go", URL: "https://example.test/a\u202ebcd"}},
 	})
 	if err := validateActivity(bidiButtonActivity); err == nil {
 		t.Fatal("validateActivity() = nil for a bidi-rune button URL, want rejection")
@@ -172,7 +172,7 @@ func TestSetActivityWireHasNoRawControlOrBidiRunes(t *testing.T) {
 
 	bidiImageActivity := normalizeActivity(Activity{
 		Name:       "Clean",
-		LargeImage: Image{URL: "https://example.test/a‮bcd"},
+		LargeImage: Image{URL: "https://example.test/a\u202ebcd"},
 	})
 	if err := validateActivity(bidiImageActivity); err == nil {
 		t.Fatal("validateActivity() = nil for a bidi-rune image URL, want rejection")

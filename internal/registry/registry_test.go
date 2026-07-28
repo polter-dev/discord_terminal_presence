@@ -323,8 +323,8 @@ func TestValidateHTTPURLRejectsControlC1AndBidiRunes(t *testing.T) {
 		name string
 		url  string
 	}{
-		{"bidi RLO", "https://example.test/a‮bcd"},
-		{"C1 NEL", "https://example.test/abcd"},
+		{"bidi RLO", "https://example.test/a\u202ebcd"},
+		{"C1 NEL", "https://example.test/a\u0085bcd"},
 		{"ASCII control", "https://example.test/a\x01bcd"},
 	}
 	for _, tt := range tests {
@@ -341,7 +341,7 @@ func TestValidateHTTPURLRejectsControlC1AndBidiRunes(t *testing.T) {
 // hole at the two call sites that reach ValidateHTTPURL for Discord-facing
 // URLs: button URLs and image URLs.
 func TestValidateButtonsRejectsDisallowedRunesInURL(t *testing.T) {
-	err := ValidateButtons([]Button{{Label: "Hi", URL: "https://example.test/a‮bcd"}})
+	err := ValidateButtons([]Button{{Label: "Hi", URL: "https://example.test/a\u202ebcd"}})
 	if err == nil || !strings.Contains(err.Error(), "buttons[0].url must be a valid absolute http/https URL") {
 		t.Fatalf("ValidateButtons() error = %v, want URL rejection", err)
 	}
@@ -352,7 +352,7 @@ func TestNewWithCustomRejectsDisallowedRunesInImageURL(t *testing.T) {
 		ID:          "bidi-image",
 		DisplayName: "Bidi Image Tool",
 		Match:       CustomMatch{Name: "bidi-image"},
-		ImageURL:    "https://example.test/a‮bcd",
+		ImageURL:    "https://example.test/a\u202ebcd",
 	}
 	if _, err := NewWithCustom(tool); err == nil || !strings.Contains(err.Error(), "image_url must be a valid absolute http/https URL") {
 		t.Fatalf("NewWithCustom() error = %v, want URL rejection", err)
