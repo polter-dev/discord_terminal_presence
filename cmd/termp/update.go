@@ -130,9 +130,24 @@ func (automaticUpdatePlatformError) AutomaticUpdateSkipped() bool {
 	return true
 }
 
+type automaticManagedPackageError struct {
+	command string
+}
+
+func (e automaticManagedPackageError) Error() string {
+	return fmt.Sprintf("system package installation must be updated with %q", e.command)
+}
+
+func (automaticManagedPackageError) AutomaticUpdateSkipped() bool {
+	return true
+}
+
 func automaticUpdatePlatformPreflight(goos string, method updatepkg.InstallMethod) error {
 	if goos == "windows" && method == updatepkg.InstallGeneric {
 		return automaticUpdatePlatformError{}
+	}
+	if updatepkg.IsSystemPackageInstall(method) {
+		return automaticManagedPackageError{command: updatepkg.CommandForMethod(method, "")}
 	}
 	return nil
 }
@@ -181,6 +196,11 @@ func runUpdate(checkCtx, updateCtx context.Context, current string, checker late
 	}
 	if !updatepkg.IsNewer(current, result.Latest) {
 		fmt.Fprintf(stdout, "You're already on the latest version (%s).\n", result.Latest)
+		return nil
+	}
+	if updatepkg.IsSystemPackageInstall(result.Method) {
+		fmt.Fprintln(stdout, "termp is managed by your system package manager.")
+		fmt.Fprintf(stdout, "Update it with: %s\n", updatepkg.CommandForMethod(result.Method, result.Latest))
 		return nil
 	}
 	retryCommand, err := updatepkg.UpdateCommandForMethod(result.Method, result.Latest)

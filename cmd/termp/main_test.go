@@ -1520,6 +1520,9 @@ func TestAutomaticUpdatePlatformPreflightOnlyRejectsGenericWindows(t *testing.T)
 		{name: "Homebrew Windows", goos: "windows", method: updatepkg.InstallHomebrew},
 		{name: "generic Linux", goos: "linux", method: updatepkg.InstallGeneric},
 		{name: "generic macOS", goos: "darwin", method: updatepkg.InstallGeneric},
+		{name: "Debian package", goos: "linux", method: updatepkg.InstallDebian, want: true},
+		{name: "RPM package", goos: "linux", method: updatepkg.InstallRPM, want: true},
+		{name: "ambiguous system package", goos: "linux", method: updatepkg.InstallSystemPackage, want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := automaticUpdatePlatformPreflight(tt.goos, tt.method) != nil; got != tt.want {
@@ -1698,6 +1701,67 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 			if runner.calls != wantCalls || runner.command.Name != tt.want.Name ||
 				tt.method != updatepkg.InstallGeneric && strings.Join(runner.command.Args, "\x00") != strings.Join(tt.want.Args, "\x00") {
 				t.Fatalf("runner = (%d, %#v), want (%d, %#v)", runner.calls, runner.command, wantCalls, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunUpdatePrintsSystemPackageGuidanceWithoutInstalling(t *testing.T) {
+	tests := []struct {
+		method updatepkg.InstallMethod
+		want   string
+	}{
+		{method: updatepkg.InstallDebian, want: updatepkg.DebianCommand},
+		{method: updatepkg.InstallRPM, want: updatepkg.RPMCommand},
+		{method: updatepkg.InstallSystemPackage, want: updatepkg.SystemPackageCommand},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.method), func(t *testing.T) {
+			checker := stubLatestChecker{result: updatepkg.Result{
+				Current: "1.0.0",
+				Latest:  "v1.1.0",
+				Method:  tt.method,
+			}}
+			runner := &recordingUpdateRunner{}
+			var stdout bytes.Buffer
+			if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, &stdout, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			if runner.calls != 0 {
+				t.Fatalf("package-managed update ran %d commands, want none", runner.calls)
+			}
+			for _, want := range []string{"managed by your system package manager", tt.want} {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("update guidance %q missing %q", stdout.String(), want)
+				}
+			}
+		})
+	}
+}
+
+func TestAutomaticSystemPackageUpdateIsSkippedWithoutInstalling(t *testing.T) {
+	for _, method := range []updatepkg.InstallMethod{
+		updatepkg.InstallDebian,
+		updatepkg.InstallRPM,
+		updatepkg.InstallSystemPackage,
+	} {
+		t.Run(string(method), func(t *testing.T) {
+			_ = os.Unsetenv("NO_UPDATE_CHECK")
+			statePath := filepath.Join(t.TempDir(), "update-check.json")
+			checker := updatepkg.NewChecker(&staticReleaseSource{latest: "v1.1.0"}, statePath)
+			checker.DetectInstall = func() updatepkg.InstallMethod { return method }
+			runner := &recordingUpdateRunner{}
+			cfg := config.Default()
+			cfg.AutoUpdate = true
+
+			runAutomaticUpdateWithStatePath(context.Background(), cfg, "1.0.0", checker, runner, statePath)
+
+			if runner.calls != 0 {
+				t.Fatalf("package-managed automatic update ran %d commands, want none", runner.calls)
+			}
+			attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
+			if !ok || !attempt.Skipped || !strings.Contains(attempt.Error, updatepkg.CommandForMethod(method, "v1.1.0")) {
+				t.Fatalf("automatic attempt = (%+v, %t), want managed-package skip", attempt, ok)
 			}
 		})
 	}

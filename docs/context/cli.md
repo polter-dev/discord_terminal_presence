@@ -42,11 +42,13 @@ reports that partial outcome. Completion removal attempts every shell; details l
 [`completioninstall.md`](completioninstall.md).
 
 Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
-installs preflight `BINDIR` (default `/usr/local/bin`) and record a skipped reason when it
-is not writable. Generic Windows installs record an unsupported-platform skip; Go and
-Homebrew installs remain eligible. Attempts are visible in `termp status`, and a later
-success clears the reported failure/skip. A failed interactive `termp update` prints the
-exact retry command built for its detected Homebrew, Go, or generic install method.
+installs preflight the resolved running executable's directory and record a skipped
+reason when it is not writable. Generic Windows installs record an unsupported-platform
+skip; Go and Homebrew installs remain eligible. Debian/RPM-owned installs record a
+managed-package skip without invoking an updater. Attempts are visible in `termp status`,
+and a later success clears the reported failure/skip. Interactive `termp update` prints
+apt/dnf guidance without self-installing for a system package; a failed executable update
+prints the exact retry command built for its detected Homebrew, Go, or generic method.
 
 Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned
