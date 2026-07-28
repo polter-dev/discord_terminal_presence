@@ -312,6 +312,53 @@ func TestValidateCustomToolRejectsTooShortDisplayName(t *testing.T) {
 	}
 }
 
+// TestValidateHTTPURLRejectsControlC1AndBidiRunes guards #444:
+// url.ParseRequestURI only rejects ASCII control characters, so a bidi
+// override or a C1 control could otherwise reach an image or button URL and
+// make the visible link text read differently from the address it resolves
+// to. ValidateHTTPURL must reject these outright rather than accept a URL
+// that "parses" but still carries a spoofing-capable rune.
+func TestValidateHTTPURLRejectsControlC1AndBidiRunes(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"bidi RLO", "https://example.test/a\u202ebcd"},
+		{"C1 NEL", "https://example.test/a\u0085bcd"},
+		{"ASCII control", "https://example.test/a\x01bcd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateHTTPURL(tt.url); err == nil {
+				t.Fatalf("ValidateHTTPURL(%q) = nil, want rejection", tt.url)
+			}
+		})
+	}
+}
+
+// TestValidateButtonsRejectsDisallowedRunesInURL and
+// TestNewWithCustomRejectsDisallowedRunesInImageURL exercise the same #444
+// hole at the two call sites that reach ValidateHTTPURL for Discord-facing
+// URLs: button URLs and image URLs.
+func TestValidateButtonsRejectsDisallowedRunesInURL(t *testing.T) {
+	err := ValidateButtons([]Button{{Label: "Hi", URL: "https://example.test/a\u202ebcd"}})
+	if err == nil || !strings.Contains(err.Error(), "buttons[0].url must be a valid absolute http/https URL") {
+		t.Fatalf("ValidateButtons() error = %v, want URL rejection", err)
+	}
+}
+
+func TestNewWithCustomRejectsDisallowedRunesInImageURL(t *testing.T) {
+	tool := CustomTool{
+		ID:          "bidi-image",
+		DisplayName: "Bidi Image Tool",
+		Match:       CustomMatch{Name: "bidi-image"},
+		ImageURL:    "https://example.test/a\u202ebcd",
+	}
+	if _, err := NewWithCustom(tool); err == nil || !strings.Contains(err.Error(), "image_url must be a valid absolute http/https URL") {
+		t.Fatalf("NewWithCustom() error = %v, want URL rejection", err)
+	}
+}
+
 // TestValidateCustomToolAllowsLegitimateUnicodeDisplayNames guards against
 // the #422 review's concern that rejecting bidi formatting controls could
 // collaterally reject legitimate non-Latin or emoji display names: none of

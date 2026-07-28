@@ -42,13 +42,22 @@ contain a terminal escape sequence, C0/C1 control character, or Unicode bidi for
 control (via `firstDisallowedRune`, built on the same rune class `terminaltext.Sanitize`
 strips at terminal-rendering boundaries) — this gives the user an actionable config-load
 error naming the offending codepoint and its rune position (e.g. "found U+200F at position
-4") instead of letting raw control bytes reach the Discord IPC payload (#419). `image_url`
-needs no separate check: `url.ParseRequestURI` already rejects raw control characters, so
-it is covered by the existing URL validation below. Rejecting bidi formatting controls
-(not just C0/C1) is a deliberate anti-spoofing choice, and does not reject legitimate
-non-Latin display names — combining marks, joiners (ZWJ, Persian ZWNJ), and multi-codepoint
-emoji sequences are untouched; only the small set of explicit bidi override/embedding/mark
-codepoints is rejected. `ValidateHTTPURL` is the shared URL-scheme boundary.
+4") instead of letting raw control bytes reach the Discord IPC payload (#419). Rejecting
+bidi formatting controls (not just C0/C1) is a deliberate anti-spoofing choice, and does
+not reject legitimate non-Latin display names — combining marks, joiners (ZWJ, Persian
+ZWNJ), and multi-codepoint emoji sequences are untouched; only the small set of explicit
+bidi override/embedding/mark codepoints is rejected. `ValidateHTTPURL` is the shared
+URL-scheme boundary, used for `image_url` and every button URL — it requires an absolute
+HTTP(S) URL *and*, since #444, also runs `firstDisallowedRune` over the whole URL string.
+Before #444 it was only `url.ParseRequestURI` plus a host/scheme check: that rejects raw
+ASCII control bytes as an incidental side effect of URI parsing, but accepts a C1 control
+(e.g. U+0085 NEL) or a Unicode bidi override (e.g. U+202E RIGHT-TO-LEFT OVERRIDE) outright,
+and — because `normalizeActivity` in `internal/presence` deliberately never sanitizes
+URLs, to avoid corrupting them — that rune reached the Discord wire unchanged in both an
+image URL and a button URL, letting the visible link text read differently from the
+address it actually resolves to. `ValidateHTTPURL` is the *only* defence for this class of
+URL field, so it must reject the same rune classes the text fields reject, not merely
+validate the URL's shape and length.
 
 Do not replace identity matching with `gopsutil.Terminal()` filtering: it is not
 implemented on Darwin and would remove all macOS presence. Short exact catalog names

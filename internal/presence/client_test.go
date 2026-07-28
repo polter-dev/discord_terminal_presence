@@ -151,6 +151,32 @@ func TestSetActivityWireHasNoRawControlOrBidiRunes(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoRawControlOrBidiRunes(t, decoded, "$")
+
+	// #444: normalizeActivity deliberately does not sanitize URLs (doing so
+	// would corrupt them), so the structural walk above cannot see a
+	// control/bidi rune arriving via an image or button URL — the payload
+	// above only used a clean URL. The actual defense for URLs is
+	// validateActivity (registry.ValidateButtons / registry.ValidateHTTPURL)
+	// rejecting the activity outright before SetActivity ever builds a wire
+	// payload for it. Prove that rejection holds for both call sites: if
+	// either goes back to accepting these runes, an activity carrying one
+	// would sail through validateActivity and reach the wire unchecked,
+	// exactly like the button above.
+	bidiButtonActivity := normalizeActivity(Activity{
+		Name:    "Clean",
+		Buttons: []Button{{Label: "Go", URL: "https://example.test/a\u202ebcd"}},
+	})
+	if err := validateActivity(bidiButtonActivity); err == nil {
+		t.Fatal("validateActivity() = nil for a bidi-rune button URL, want rejection")
+	}
+
+	bidiImageActivity := normalizeActivity(Activity{
+		Name:       "Clean",
+		LargeImage: Image{URL: "https://example.test/a\u202ebcd"},
+	})
+	if err := validateActivity(bidiImageActivity); err == nil {
+		t.Fatal("validateActivity() = nil for a bidi-rune image URL, want rejection")
+	}
 }
 
 // assertNoRawControlOrBidiRunes recursively visits every string leaf of a

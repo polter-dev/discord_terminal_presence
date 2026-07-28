@@ -299,10 +299,21 @@ func ValidateCustomTool(tool CustomTool) error {
 	return nil
 }
 
-// ValidateHTTPURL requires an absolute HTTP or HTTPS URL.
+// ValidateHTTPURL requires an absolute HTTP or HTTPS URL. url.ParseRequestURI
+// rejects ASCII control characters but nothing else, so it does not by itself
+// stop a C1 control or a Unicode bidi formatting control (e.g. U+202E
+// RIGHT-TO-LEFT OVERRIDE) from reaching the wire in an image or button URL,
+// where it could make the visible link text read differently from the
+// address it resolves to (#444). normalizeActivity deliberately does not
+// sanitize URLs — sanitizing one would corrupt it — so this config-load
+// check is the only defence, and it rejects rather than strips: silently
+// rewriting a URL is worse than refusing it.
 func ValidateHTTPURL(value string) error {
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return errors.New("invalid URL")
+	}
+	if _, _, found := firstDisallowedRune(value); found {
 		return errors.New("invalid URL")
 	}
 	return nil
