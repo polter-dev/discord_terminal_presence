@@ -982,13 +982,23 @@ func TestManagerWatchReportsMalformedReload(t *testing.T) {
 	}
 
 	writeConfig(t, path, `scan_interval = "broken" =`)
-	select {
-	case reload := <-manager.Reloads():
-		if reload.Err == nil || !strings.Contains(reload.Err.Error(), "expected") {
-			t.Fatalf("reload failure = %v, want TOML parse error", reload.Err)
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
+
+waitForMalformedReload:
+	for {
+		select {
+		case reload := <-manager.Reloads():
+			if reload.Err == nil {
+				continue
+			}
+			if !strings.Contains(reload.Err.Error(), "expected") {
+				t.Fatalf("reload failure = %v, want TOML parse error", reload.Err)
+			}
+			break waitForMalformedReload
+		case <-timeout.C:
+			t.Fatal("timed out waiting for malformed reload failure")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for malformed reload failure")
 	}
 	current, err := manager.Current()
 	if err == nil {
