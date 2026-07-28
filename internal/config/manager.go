@@ -148,10 +148,17 @@ func (m *Manager) reload() error {
 }
 
 // acceptReloadLocked is the only place a successfully decoded reload can
-// replace current. Keeping the enabled guard at this state-commit choke point
-// makes it impossible for a new reload path to bypass the rule accidentally.
+// replace current. Keeping the loosening guard at this state-commit choke
+// point makes it impossible for a new reload path to bypass the rule
+// accidentally, and applying it to ANY privacy-loosening transition (not just
+// the global enabled flag) is what #447 requires: a truncating writer that
+// drops a directory allowlist, a show_directory/basename override, or a
+// per-tool opt-out is exactly as dangerous as one that drops enabled, and
+// used to have no protection at all.
 func (m *Manager) acceptReloadLocked(cfg Config, snap fileSnapshot, enabledDefined bool) {
-	if !m.current.Enabled && cfg.Enabled && !enabledDefined {
+	ambiguousEnabledLoosening := !m.current.Enabled && cfg.Enabled && !enabledDefined
+	globalEnabledChanged := m.current.Enabled != cfg.Enabled
+	if ambiguousEnabledLoosening || permissivenessLoosened(m.current, cfg, globalEnabledChanged) {
 		now := time.Now()
 		if !snapshotsEqual(m.pendingLoosening.snapshot, snap) || m.pendingLoosening.firstSeen.IsZero() {
 			m.clearPendingLooseningLocked()

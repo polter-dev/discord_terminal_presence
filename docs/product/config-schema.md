@@ -74,10 +74,15 @@ accent produces a warning and falls back to purple.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `show_directory` | bool | `false` | Opt in to directory display |
-| `directory_allowlist` | string[] | `[]` | Allowed path prefixes; an empty list allows any path after opt-in |
+| `directory_allowlist` | string[] | unset | Allowed path prefixes; unset allows any path after opt-in |
 | `directory_basename_only` | bool | `true` | Show only the final path component; false shows at most the last two components |
 
-Allowlist entries expand `~` and are compared by path components, not raw string prefix.
+Allowlist entries expand `~` and are compared by path components, not raw string prefix. An
+absent `directory_allowlist` key means "no restriction configured" (any path is allowed once
+`show_directory` is on). A present top-level `directory_allowlist` must contain at least one
+non-blank entry; a blank entry (e.g. `[""]`) or a present-but-empty `directory_allowlist = []`
+is a validation error rather than silently becoming allow-everything (#449). Remove the key
+entirely to allow all directories.
 
 ## CTA options (`[cta]`)
 
@@ -101,7 +106,10 @@ Each tool may override:
 - `buttons`
 
 An explicitly empty per-tool allowlist or button list replaces the corresponding global
-or built-in value.
+or built-in value (unlike the top-level allowlist, a present-but-empty per-tool
+`directory_allowlist = []` is valid: it deliberately opts that tool out of the global
+allowlist). A blank entry within a per-tool allowlist (e.g. `[""]`) is still a validation
+error, same as at the top level.
 
 ## Custom tools (`[[custom_tools]]`)
 

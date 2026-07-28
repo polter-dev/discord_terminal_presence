@@ -57,23 +57,69 @@ name makes the protection opt-out visible in review; no production caller curren
 either. The unexported `snapshotConfigFile` is the raw primitive used by the settle
 algorithm and those explicit exceptions.
 
-Every successfully decoded reload reaches one state-commit choke point. At that boundary,
-the guard applies specifically to the global top-level `enabled` key; it does not cover
-other default-true settings such as update checks or display/CTA options. An `enabled`
-transition from `false` to `true` applies immediately when TOML metadata says the file
-explicitly defined the top-level key. When the value came from the default because the
-key is absent, the candidate snapshot is recorded at the first sampled reload and must
-match the snapshot seen at later reload samples, including the retry fired for the
-separate three-second loosening horizon (#434). While a loosening is pending, the manager
-retains its current and accepted snapshots, leaves `LastError` unchanged, and publishes
-no reload result; daemon behavior and status therefore continue to reflect the active
-last-good config. A retry makes a deliberate blank, deletion, or trailing-line deletion
-take effect after the horizon even if no further filesystem event arrives. If a retry
-observes a different loosening snapshot, it starts a fresh horizon and arms another retry
-without relying on an fsnotify event. Transitions to `false`, non-`enabled` changes that
-retain `enabled = false`, and explicit `enabled = true` keep the normal settle latency.
+Every successfully decoded reload reaches one state-commit choke point,
+`Manager.acceptReloadLocked`. Until #447, the horizon guard there covered only the global
+top-level `enabled` key, so a truncating writer that stalled could silently revert a
+directory allowlist, a per-tool `show_directory`/`directory_basename_only` override, or a
+per-tool opt-out after only the ordinary ~300ms settle budget rather than the three-second
+horizon. The choke point now also gates on `permissivenessLoosened`, which resolves both
+the current and candidate `Config` through `Config.Resolve` (the same path presence
+mapping uses) for every tool ID present in either config plus the tool-agnostic global
+posture, and compares a small `privacyPosture` (enabled, show-directory, basename-only,
+whether the allowlist restricts anything) rather than a hand-written list of field names.
+Two tests (`TestPrivacyPostureCoversAllPrivacyFields`,
+`TestPrivacyPostureCoversToolOverridePrivacyFields` in `config_test.go`) use reflection
+over `Privacy` and `ToolOverride` to fail the day a new field is added without a conscious
+decision about whether the posture snapshot needs to grow — the actual defect this bug
+family (#410 → #425 → #434 → #435 → #438 → #440 → #447) kept regenerating.
+
+An `enabled` transition from `false` to `true` still applies immediately when TOML
+metadata says the file explicitly defined the top-level key (`enabledDefined`); when the
+global `enabled` flag itself changes, `permissivenessLoosened` skips its own enabled-only
+dimension so it cannot re-gate that already-vetted, explicit transition merely because
+every tool's resolved-enabled state also flips as a downstream consequence. Every *other*
+privacy dimension is still compared normally even when `enabled` changes at the same time,
+so a simultaneous, unrelated loosening (e.g. an explicit `enabled = true` arriving in the
+same edit that also happens to truncate away an allowlist) still pays the horizon.
+Beyond that one exemption, this fix does **not** implement a full explicit-vs-defaulted
+distinction for every field: unlike `enabled`, an explicit, deliberate loosening of
+`show_directory`, `directory_basename_only`, the global allowlist, or a per-tool override
+still pays the same three-second horizon as an ambiguous one. This is a disclosed,
+conservative trade-off (latency, not a privacy leak) rather than a silent gap; for
+`show_directory`/`directory_basename_only`, it is actually unreachable in practice, since
+their permissive values can only ever come from bytes explicitly present in the file (see
+below), never from an absent key.
+
+The candidate snapshot is recorded at the first sampled reload and must match the
+snapshot seen at later reload samples, including the retry fired for the separate
+three-second loosening horizon (#434). While a loosening is pending, the manager retains
+its current and accepted snapshots, leaves `LastError` unchanged, and publishes no reload
+result; daemon behavior and status therefore continue to reflect the active last-good
+config. A retry makes a deliberate blank, deletion, or trailing-line deletion take effect
+after the horizon even if no further filesystem event arrives. If a retry observes a
+different loosening snapshot, it starts a fresh horizon and arms another retry without
+relying on an fsnotify event. Transitions to `false`, non-loosening changes, and explicit
+`enabled = true` (absent any other simultaneous loosening) keep the normal settle latency.
 Reload attempts are serialized so concurrent fsnotify events cannot commit stale
 candidates around the guard.
+
+Because `Default().Privacy.ShowDirectory` is `false` and `Default().Privacy.DirectoryBasenameOnly`
+is `true` — both already the most restrictive value — a *global* loosening on either field
+(`false`→`true` or `true`→`false` respectively) can only be produced by bytes explicitly
+present in the surviving read; an absent key always resolves to the restrictive default.
+The ambiguous, truncation-vulnerable case for these two fields is therefore specifically a
+*per-tool* override (a `*bool` pointer) going from explicit-and-restrictive to nil/absent,
+falling back to a more permissive global or built-in value — exactly what
+`permissivenessLoosened`'s per-tool resolution catches. The global directory allowlist is
+different: because #449 now rejects a present-but-empty `directory_allowlist` at load, a
+successfully decoded config can only have an empty global allowlist when the key is
+genuinely absent, so any observed *global* allowlist loosening (non-empty → empty) reaching
+the choke point is always ambiguous with a truncation and is always gated — no
+metadata-based exemption is needed or would be safe there. A per-tool allowlist override
+carries its own explicit-vs-absent tracking already (`allowlistSet`, set from
+`meta.IsDefined("tools", id, "directory_allowlist")`), and an explicit, present-but-empty
+per-tool override remains a valid, deliberate way to opt that tool out of a restrictive
+global allowlist (see the `directory_allowlist` section below).
 
 `Manager` currently has no lifecycle/`Close` method. Its `time.AfterFunc` retry retains
 the manager until it fires and may read the config path after the daemon has otherwise
@@ -111,6 +157,25 @@ the on-disk bytes untouched. Explicitly read-only CLI paths use
 `LoadReadOnly`/`LoadPathReadOnly`, so they inherit the normal settle protection without
 paying the update horizon and render from the newest observed snapshot after the bound.
 
+Until #448, `settledConfigSnapshotForLoadWith`'s horizon loop could exit early in two
+ways: `boundedSettledConfigSnapshotWith` always passed an empty `accepted` snapshot, so a
+file that disappeared mid-horizon hit the same missing-and-no-history fast path used for a
+genuine first run and returned defaults immediately (route A); and the loop left as soon
+as it saw one non-blank read and returned whatever re-settled, without re-checking whether
+that re-settled result was itself still ambiguous (route B, a single-poll content flicker
+during a stalled truncation). Both routes reproduced the exact #438 harm the horizon
+exists to prevent, ~2.3s early. `boundedSettledConfigSnapshotWith` now takes an explicit
+`knownAccepted fileSnapshot` parameter: the horizon loop's first read still passes an
+empty snapshot (preserving the fast, first-run-safe path), but every re-settle attempt
+after an ambiguous-blank read has been observed passes `fileSnapshot{exists: true}`, so a
+subsequent disappearance is treated as provisional and must hold missing for a full settle
+budget, not just look missing once. On leaving the horizon loop, the result is also
+re-checked: if it is still ambiguous-blank, or missing after the file was known to exist,
+the loop continues instead of returning. `TestLoadPathHorizonSurvivesFileDeletionMidHorizon`
+(route A) and `TestLoadPathHorizonSurvivesContentFlickerMidHorizon` (route B) exercise this
+with an injected snapshot function and a virtual clock rather than real timing, per #441's
+own lesson about clock-driven flicker tests being flaky in CI.
+
 A candidate that becomes provisional-stable partway through the normal budget also
 cannot reach acceptance in that call: reload is a no-op, while standalone loads retry
 with the new content as their first snapshot. With no accepted baseline, a stable
@@ -120,6 +185,24 @@ two-read settle check.
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,
 so config does not expose a second directory formatter that could diverge from it.
+`DirectoryAllowed` treats a zero-length `DirectoryAllowlist` as "no restriction configured"
+(allow every directory once `show_directory` is on) — this is intentional for a genuinely
+absent key, but before #449, `expandPaths` silently dropped blank/whitespace-only entries,
+so a user-authored `directory_allowlist = [""]` (or any list whose every entry expanded to
+nothing) silently collapsed to the same zero-length, allow-everything slice, and `Save`
+then cemented it on disk as `[]`. `validate` now rejects any blank/whitespace-only
+allowlist entry, at both the top-level `[privacy]` allowlist and every per-tool override,
+with a validation error (consistent with #419's reject-don't-silently-strip approach) —
+the entry is never reached by `expandPaths`. A **top-level** `directory_allowlist` that is
+present but has zero entries (`directory_allowlist = []`, tracked via
+`meta.IsDefined("privacy", "directory_allowlist")`) is likewise rejected: there is no
+legitimate reason to write it explicitly instead of omitting the key, so treating it as a
+possible mistake costs nothing. A **per-tool** override with zero entries is deliberately
+*not* rejected the same way: `docs/product/config-schema.md` already documents an explicit,
+present-but-empty per-tool `directory_allowlist` as the way to opt that one tool out of a
+restrictive global allowlist, and `Config.Resolve` implements exactly that via
+`allowlistSet`. `AnnotatedSample`'s `directory_allowlist` line is now commented out (it used
+to emit an active, present-but-empty key that the new top-level check would itself reject).
 
 Discord-facing config is rejected during load when it cannot produce a valid activity.
 Tool and custom-tool buttons allow at most two entries; labels are non-empty and at most
