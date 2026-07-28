@@ -115,7 +115,8 @@ func TestUninstallAllUsesIsolatedPathsAndStopsBeforeDeleting(t *testing.T) {
 	if len(calls) < 4 || !reflect.DeepEqual(calls[:4], []string{"stop", "autostart", "stop", "completion"}) {
 		t.Fatalf("idempotent initial calls = %#v, want stop, autostart, stop, completion", calls)
 	}
-	if !strings.Contains(output.String(), "sudo rm "+filepath.Join(sandbox, "bin", "termp")) {
+	wantBinaryCommand := "sudo rm " + shellQuote(filepath.Join(sandbox, "bin", "termp"))
+	if !strings.Contains(output.String(), wantBinaryCommand) {
 		t.Fatalf("output missing resolved binary removal command:\n%s", output.String())
 	}
 }
@@ -214,12 +215,12 @@ func TestUninstallBinaryCommand(t *testing.T) {
 		goos   string
 		want   string
 	}{
-		{name: "generic", method: updatepkg.InstallGeneric, goos: "linux", want: "sudo rm '/custom install/bin/termp'"},
-		{name: "go", method: updatepkg.InstallGo, goos: "darwin", want: "rm '/custom install/bin/termp'"},
+		{name: "generic", method: updatepkg.InstallGeneric, goos: "linux", want: "sudo rm " + shellQuote(filepath.Join(binDir, "termp"))},
+		{name: "go", method: updatepkg.InstallGo, goos: "darwin", want: "rm " + shellQuote(filepath.Join(binDir, "termp"))},
 		{name: "homebrew", method: updatepkg.InstallHomebrew, goos: "darwin", want: "brew uninstall --cask termp"},
 		{name: "debian", method: updatepkg.InstallDebian, goos: "linux", want: "sudo apt remove termp"},
 		{name: "rpm", method: updatepkg.InstallRPM, goos: "linux", want: "sudo dnf remove termp"},
-		{name: "windows", method: updatepkg.InstallGeneric, goos: "windows", want: `del "/custom install/bin/termp.exe"`},
+		{name: "windows", method: updatepkg.InstallGeneric, goos: "windows", want: "del " + windowsCommandQuote(filepath.Join(binDir, "termp.exe"))},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
