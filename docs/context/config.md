@@ -39,13 +39,18 @@ must remain unchanged across the full settle budget before acceptance.
 
 If a provisional candidate changes during that budget, `Manager.Reload` leaves last-good
 and `LastError` untouched and relies on the save's completion to fire another fsnotify
-event. Standalone `Load`/`LoadPath` and manager construction have no last-good value to
-retain, so they retry until a settled snapshot is available. A deliberate deletion,
-blanking, or trailing-line deletion still loads after remaining stable for the full
-budget, preserving reset and shortening paths. A missing file is not provisional when
-there is no previously accepted file and returns immediately, keeping first run fast.
-That intentional first-run exception means a standalone load cannot distinguish a
-genuinely absent file from an unlink/recreate window without prior state.
+event. Standalone loads and manager construction have no last-good value to retain, so
+they retry only within a named 500ms standalone settle bound. At the bound,
+`LoadReadOnly`/`LoadPathReadOnly` and manager construction carry on with the newest
+snapshot, while destructive `Load`/`LoadPath` return the distinguishable
+`ErrConfigBeingWritten` ("config is being written right now; try again") so a
+whole-document editor cannot overwrite the file from an unsettled guess. A deliberate
+deletion, blanking, or trailing-line deletion still loads after remaining stable for the
+full ordinary settle budget, preserving reset and shortening paths. A missing file is
+not provisional when there is no previously accepted file and returns immediately,
+keeping first run fast. That intentional first-run exception means a standalone load
+cannot distinguish a genuinely absent file from an unlink/recreate window without prior
+state.
 
 `LoadUnsettled` and `LoadPathUnsettled` are the only exported single-read exceptions. The
 name makes the protection opt-out visible in review; no production caller currently uses
@@ -99,8 +104,12 @@ after the normal settle budget, these entry points treat it as ambiguous for the
 three-second loosening horizon used by `Manager`: content that appears within the
 horizon is settled and returned, while a blank that persists for the entire horizon is
 accepted as a deliberate reset. Normal nonblank loads still take only the ordinary
-settle interval. Explicitly read-only CLI paths use `LoadReadOnly`/`LoadPathReadOnly`, so
-they inherit the normal settle protection without paying the update horizon.
+settle interval. A file that changes continuously instead returns
+`ErrConfigBeingWritten` after the separate 500ms standalone bound. Setup and settings
+propagate that error before installing any save callback or entering their TUI, leaving
+the on-disk bytes untouched. Explicitly read-only CLI paths use
+`LoadReadOnly`/`LoadPathReadOnly`, so they inherit the normal settle protection without
+paying the update horizon and render from the newest observed snapshot after the bound.
 
 A candidate that becomes provisional-stable partway through the normal budget also
 cannot reach acceptance in that call: reload is a no-op, while standalone loads retry
@@ -128,7 +137,10 @@ normal settle budget, then asserts the saved TOML still contains `enabled = fals
 the user's `pin`. A fixed-seed randomized writer-schedule property test asserts that a
 save whose final content sets `enabled = false` never exposes `enabled = true` before
 completion. Schedules stalled beyond the loosening horizon are intentionally excluded
-as the documented residual.
+as the documented residual. A separate 2ms continuously rewriting fixture asserts
+read-only and destructive standalone loads return under an explicit test timeout, with
+the destructive path producing `ErrConfigBeingWritten`; command-level coverage asserts
+setup and settings leave the file byte-identical when they receive that error.
 
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically

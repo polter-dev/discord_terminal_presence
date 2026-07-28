@@ -480,6 +480,10 @@ func configInit(args []string) error {
 }
 
 func setup(args []string) error {
+	return setupWithConfigLoader(args, config.Load)
+}
+
+func setupWithConfigLoader(args []string, load func() (config.Config, error)) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	if err := parseCommandFlags(fs, args); err != nil {
@@ -488,7 +492,7 @@ func setup(args []string) error {
 	if err := rejectUnexpectedArgs(fs, "termp setup [--verbose]"); err != nil {
 		return err
 	}
-	cfg, err := config.Load()
+	cfg, err := load()
 	if err != nil {
 		return err
 	}
@@ -2092,6 +2096,11 @@ func abbreviateHome(path, homeDir string) string {
 }
 
 func settings(args []string) error {
+	terminal := isTerminal(os.Stdin) && isTerminal(os.Stdout)
+	return settingsWithConfigLoader(args, terminal, config.Load)
+}
+
+func settingsWithConfigLoader(args []string, terminal bool, load func() (config.Config, error)) error {
 	fs := flag.NewFlagSet("settings", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	if err := parseCommandFlags(fs, args); err != nil {
@@ -2100,11 +2109,11 @@ func settings(args []string) error {
 	if err := rejectUnexpectedArgs(fs, "termp settings [--verbose]"); err != nil {
 		return err
 	}
-	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+	if !terminal {
 		fmt.Fprintln(os.Stderr, "termp settings requires an interactive terminal (TTY)")
 		return errors.New("settings requires a TTY")
 	}
-	cfg, err := config.Load()
+	cfg, err := load()
 	if err != nil {
 		return err
 	}

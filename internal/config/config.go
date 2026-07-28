@@ -31,6 +31,10 @@ const BuiltInFallbackMessage = "Working on something"
 
 var defaultFallbackMessages = []string{BuiltInFallbackMessage, "In the terminal"}
 
+// ErrConfigBeingWritten reports that a whole-document load could not obtain
+// a settled snapshot without risking a destructive writeback from a guess.
+var ErrConfigBeingWritten = errors.New("config is being written right now; try again")
+
 // DefaultAccentColor preserves the original adaptive purple TUI palette.
 const DefaultAccentColor = "purple"
 
@@ -465,7 +469,11 @@ func Save(cfg Config, path string) error {
 // This load waits through the enabled-loosening horizon so a completed write
 // is returned instead of allowing defaults to overwrite it.
 func LoadPath(path string) (Config, error) {
-	return loadSnapshot(path, settledConfigSnapshotForLoad(path))
+	snap, err := settledConfigSnapshotForLoad(path)
+	if err != nil {
+		return invalidFallbackWithPath(path), err
+	}
+	return loadSnapshot(path, snap)
 }
 
 // LoadPathReadOnly reads a settled TOML config without extending an ambiguous
@@ -542,6 +550,11 @@ const (
 	// * reloadSettleAttempts, currently ~300ms). A subsequent fsnotify event
 	// once the write finishes triggers another attempt.
 	reloadSettleAttempts = 20
+	// standaloneLoadSettleTimeout bounds loads that cannot retain last-good
+	// state. It permits another chance beyond the ordinary ~300ms settle
+	// budget without making read-only commands wait for the 3s loosening
+	// horizon when another process keeps rewriting the file.
+	standaloneLoadSettleTimeout = 500 * time.Millisecond
 )
 
 // provisionalConfigSnapshot reports whether candidate could be an incomplete
@@ -573,6 +586,13 @@ func provisionalConfigSnapshot(candidate, accepted fileSnapshot) bool {
 // the caller should treat that as "no new information yet" rather than as
 // either a success or a failure.
 func settledConfigSnapshot(path string, accepted fileSnapshot) (fileSnapshot, bool) {
+	return settledConfigSnapshotUntil(path, accepted, time.Time{})
+}
+
+// settledConfigSnapshotUntil applies the normal settle rules but also stops at
+// deadline when it is non-zero. On an unsettled result it returns the newest
+// snapshot observed so read-only callers can make bounded forward progress.
+func settledConfigSnapshotUntil(path string, accepted fileSnapshot, deadline time.Time) (fileSnapshot, bool) {
 	candidate := snapshotConfigFile(path)
 	// A caller with no previously accepted file cannot distinguish a genuine
 	// first run from an unlink/recreate window. Missing-first-run defaults are
@@ -582,7 +602,15 @@ func settledConfigSnapshot(path string, accepted fileSnapshot) (fileSnapshot, bo
 	}
 	stableReads := 0
 	for i := 0; i < reloadSettleAttempts; i++ {
-		time.Sleep(reloadSettleInterval)
+		delay := reloadSettleInterval
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return candidate, false
+			}
+			delay = min(delay, remaining)
+		}
+		time.Sleep(delay)
 		next := snapshotConfigFile(path)
 		if snapshotsEqual(candidate, next) {
 			stableReads++
@@ -592,40 +620,55 @@ func settledConfigSnapshot(path string, accepted fileSnapshot) (fileSnapshot, bo
 			continue
 		}
 		if provisionalConfigSnapshot(candidate, accepted) {
-			return fileSnapshot{}, false
+			return next, false
 		}
 		candidate = next
 		stableReads = 0
 	}
-	return fileSnapshot{}, false
+	return candidate, false
 }
 
 // settledConfigSnapshotForRead retries changing snapshots until it has a
-// settled result. Unlike Manager.Reload, a standalone load has no last-good
-// state it can retain when a write changes during the settle budget.
+// settled result or the standalone bound expires. Unlike Manager.Reload, a
+// standalone read has no last-good state to retain, so after the bound it
+// returns the most recent snapshot and lets the read-only caller carry on.
 func settledConfigSnapshotForRead(path string) fileSnapshot {
+	snap, _ := boundedSettledConfigSnapshot(path)
+	return snap
+}
+
+func boundedSettledConfigSnapshot(path string) (fileSnapshot, bool) {
+	deadline := time.Now().Add(standaloneLoadSettleTimeout)
 	for {
-		snap, ok := settledConfigSnapshot(path, fileSnapshot{})
+		snap, ok := settledConfigSnapshotUntil(path, fileSnapshot{}, deadline)
 		if ok {
-			return snap
+			return snap, true
+		}
+		if !time.Now().Before(deadline) {
+			return snap, false
 		}
 	}
 }
 
 // settledConfigSnapshotForLoad extends the normal settled read only for an
 // existing blank snapshot. Whole-document editors must not seed a later Save
-// with defaults from a truncate-then-write window.
-func settledConfigSnapshotForLoad(path string) fileSnapshot {
+// with defaults from a truncate-then-write window. A continuously changing
+// file fails with ErrConfigBeingWritten rather than seeding a later Save from
+// the latest untrusted snapshot.
+func settledConfigSnapshotForLoad(path string) (fileSnapshot, error) {
 	started := time.Now()
-	snap := settledConfigSnapshotForRead(path)
+	snap, ok := boundedSettledConfigSnapshot(path)
+	if !ok {
+		return fileSnapshot{}, ErrConfigBeingWritten
+	}
 	if !ambiguousBlankConfigSnapshot(snap) {
-		return snap
+		return snap, nil
 	}
 
 	for {
 		remaining := enabledLooseningHorizon - time.Since(started)
 		if remaining <= 0 {
-			return snap
+			return snap, nil
 		}
 		delay := min(reloadSettleInterval, remaining)
 		time.Sleep(delay)
@@ -635,7 +678,11 @@ func settledConfigSnapshotForLoad(path string) fileSnapshot {
 			snap = next
 			continue
 		}
-		return settledConfigSnapshotForRead(path)
+		settled, ok := boundedSettledConfigSnapshot(path)
+		if !ok {
+			return fileSnapshot{}, ErrConfigBeingWritten
+		}
+		return settled, nil
 	}
 }
 
