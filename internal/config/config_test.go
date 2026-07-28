@@ -42,10 +42,28 @@ func canonicalTestPath(t *testing.T, path string) string {
 
 func writeConfig(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		t.Fatal(err)
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -982,13 +1000,23 @@ func TestManagerWatchReportsMalformedReload(t *testing.T) {
 	}
 
 	writeConfig(t, path, `scan_interval = "broken" =`)
-	select {
-	case reload := <-manager.Reloads():
-		if reload.Err == nil || !strings.Contains(reload.Err.Error(), "expected") {
-			t.Fatalf("reload failure = %v, want TOML parse error", reload.Err)
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
+
+waitForMalformedReload:
+	for {
+		select {
+		case reload := <-manager.Reloads():
+			if reload.Err == nil {
+				continue
+			}
+			if !strings.Contains(reload.Err.Error(), "expected") {
+				t.Fatalf("reload failure = %v, want TOML parse error", reload.Err)
+			}
+			break waitForMalformedReload
+		case <-timeout.C:
+			t.Fatal("timed out waiting for malformed reload failure")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for malformed reload failure")
 	}
 	current, err := manager.Current()
 	if err == nil {
