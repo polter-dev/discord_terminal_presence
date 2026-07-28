@@ -1618,6 +1618,7 @@ func TestAutomaticUpdatePlatformPreflightOnlyRejectsGenericWindows(t *testing.T)
 		{name: "generic Windows", goos: "windows", method: updatepkg.InstallGeneric, want: true},
 		{name: "Go Windows", goos: "windows", method: updatepkg.InstallGo},
 		{name: "Homebrew Windows", goos: "windows", method: updatepkg.InstallHomebrew},
+		{name: "Scoop Windows", goos: "windows", method: updatepkg.InstallScoop, want: true},
 		{name: "generic Linux", goos: "linux", method: updatepkg.InstallGeneric},
 		{name: "generic macOS", goos: "darwin", method: updatepkg.InstallGeneric},
 		{name: "Debian package", goos: "linux", method: updatepkg.InstallDebian, want: true},
@@ -1850,8 +1851,37 @@ func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 	}
 }
 
+func TestRunUpdatePrintsScoopGuidanceWithoutRunningCommand(t *testing.T) {
+	checker := stubLatestChecker{result: updatepkg.Result{
+		Current: "v0.1.0",
+		Latest:  "v0.1.1",
+		Method:  updatepkg.InstallScoop,
+	}}
+	runner := &recordingUpdateRunner{}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if err := runUpdate(context.Background(), context.Background(), "v0.1.0", checker, runner, nil, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	const want = "Update available: v0.1.0 -> v0.1.1\n\nTo update:\n  scoop update termp\n"
+	if stdout.String() != want {
+		t.Fatalf("Scoop update output = %q, want %q", stdout.String(), want)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("Scoop update ran %d commands, want 0", runner.calls)
+	}
+	if strings.Contains(stdout.String(), "system package manager") {
+		t.Fatalf("Scoop update used system-package preamble:\n%s", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("Scoop update stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestAutomaticSystemPackageUpdateIsSkippedWithoutInstalling(t *testing.T) {
 	for _, method := range []updatepkg.InstallMethod{
+		updatepkg.InstallScoop,
 		updatepkg.InstallDebian,
 		updatepkg.InstallRPM,
 		updatepkg.InstallSystemPackage,

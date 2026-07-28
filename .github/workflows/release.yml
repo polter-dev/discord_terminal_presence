@@ -81,3 +81,46 @@ jobs:
           fi
 
           gh api "${args[@]}"
+
+  publish-scoop-manifest:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download manifest from public release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .draft)" = "false"
+          mkdir -p dist/scoop
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern termp.json \
+            --dir dist/scoop
+
+      - name: Publish manifest to Scoop bucket
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          api_path="repos/polter-dev/scoop-bucket/contents/termp.json"
+          content="$(base64 -w 0 dist/scoop/termp.json)"
+          existing_sha="$(gh api "${api_path}" --jq .sha 2>/dev/null || true)"
+          generated_sha="$(git hash-object dist/scoop/termp.json)"
+
+          if [[ "${existing_sha}" == "${generated_sha}" ]]; then
+            echo "Scoop manifest is already current."
+            exit 0
+          fi
+
+          args=(
+            --method PUT
+            "${api_path}"
+            -f "message=chore: update termp manifest for ${RELEASE_TAG}"
+            -f "content=${content}"
+          )
+          if [[ -n "${existing_sha}" ]]; then
+            args+=(-f "sha=${existing_sha}")
+          fi
+
+          gh api "${args[@]}"

@@ -11,7 +11,8 @@ Windows also exposes `connect`. `install.sh` is the canonical generic release in
 usage/config wiring. `cmd/termp/connect.go` and `control_*` own daemon control.
 `cmd/termp/update.go` owns manual notices and opt-in automatic updates. `spawn_*`,
 `pidfile_*`, and `shutdown_*` contain platform lifecycle behavior. `install.sh` installs
-tag-pinned archives. `.github/workflows/release.yml` and `.goreleaser.yaml` own releases;
+tag-pinned archives. `.github/workflows/release.yml` and `.goreleaser.yaml` own releases,
+including gated Homebrew Cask and Scoop manifest publication;
 `.github/workflows/verify-release-secrets.yml` provides the manual publishing-token
 pre-flight check.
 
@@ -48,18 +49,21 @@ Plain `termp uninstall` remains the start-at-login removal alias and points user
 validates the daemon through the same process-image-aware stop path before deleting
 anything, then removes autostart, completions, config, state/cache, and the platform log.
 It never deletes the running executable. It reuses install ownership detection and the
-resolved generic install directory to print exact Homebrew, apt, dnf, Go, generic Unix,
-or Windows binary-removal guidance. Destructive tests inject paths beneath an asserted
-temporary home.
+resolved generic install directory to print exact Homebrew, Scoop, apt, dnf, Go, generic
+Unix, or Windows binary-removal guidance. Destructive tests inject paths beneath an
+asserted temporary home.
 
 Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
 installs preflight the resolved running executable's directory and record a skipped
 reason when it is not writable. Generic Windows installs record an unsupported-platform
-skip; Go and Homebrew installs remain eligible. Debian/RPM-owned installs record a
-managed-package skip without invoking an updater. Attempts are visible in `termp status`,
-and a later success clears the reported failure/skip. Interactive `termp update` for a
-known Debian/RPM-owned install downloads the exact-tag, architecture-specific release
-package and `checksums.txt` into private temporary files, verifies SHA-256 fail-closed,
+skip; Go and Homebrew installs remain eligible. Scoop- and Debian/RPM-owned installs
+record a managed-package skip without invoking an updater. Attempts are visible in
+`termp status`, and a later success clears the reported failure/skip. Interactive
+`termp update` on a Scoop install prints the available-version header and
+`To update: scoop update termp` guidance without a system-package preamble, an
+`Updating...` line, stderr output, or an installer command. For a known Debian/RPM-owned
+install it downloads the exact-tag, architecture-specific release package and
+`checksums.txt` into private temporary files, verifies SHA-256 fail-closed,
 and then runs `sudo apt install -y <file>` or `sudo dnf install -y <file>`. It never uses
 the generic installer or writes to `/usr/local/bin`. When sudo, the package manager, or a
 TTY is unavailable, package ownership is ambiguous, or download/checksum/install fails,
@@ -90,9 +94,10 @@ GitHub asset. Every fatal installer path prints the advertised fetch-and-pipe re
 command, with explicitly supplied `VERSION`, `BINDIR`, and `TERMP_DOWNLOAD_CHANNEL`
 preserved immediately before `sh`; atomic staging prevents failed installs from leaving
 a partial destination binary.
-Tag runs create a draft release (`release.draft: true`) and attach the generated Cask
-without writing the tap. Only `release.published` triggers a second job that verifies
-the release is public, downloads that exact Cask, and updates the tap.
+Tag runs create a draft release (`release.draft: true`) and attach the generated Cask and
+Scoop manifest without writing the tap or bucket. Only `release.published` triggers jobs
+that verify the release is public, download those exact generated files, and update the
+tap and bucket with sha-comparison idempotency.
 Before a tag is pushed, the manually dispatched **Verify release secrets** workflow
 checks that each cross-repository publishing token is present, can see its configured
 target, and has `permissions.push` access without writing to that repository. Its token

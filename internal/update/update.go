@@ -33,6 +33,7 @@ const (
 	cacheLockStaleAfter = 30 * time.Second
 
 	BrewCommand         = "brew upgrade polter-dev/tap/termp"
+	ScoopCommand        = "scoop update termp"
 	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
 	packageDownloadURL  = "https://github.com/polter-dev/discord_terminal_presence/releases/download/%s/%s"
 	workerDownloadURL   = "https://termp.polter.sh/dl/update/%s/%s/%s"
@@ -74,17 +75,18 @@ type InstallMethod string
 const (
 	InstallGeneric       InstallMethod = "generic"
 	InstallHomebrew      InstallMethod = "homebrew"
+	InstallScoop         InstallMethod = "scoop"
 	InstallGo            InstallMethod = "go"
 	InstallDebian        InstallMethod = "debian"
 	InstallRPM           InstallMethod = "rpm"
 	InstallSystemPackage InstallMethod = "system-package"
 )
 
-// IsSystemPackageInstall reports whether method is owned by a Linux package
-// manager.
+// IsSystemPackageInstall reports whether method is owned by a package manager
+// that must be updated outside termp.
 func IsSystemPackageInstall(method InstallMethod) bool {
 	switch method {
-	case InstallDebian, InstallRPM, InstallSystemPackage:
+	case InstallScoop, InstallDebian, InstallRPM, InstallSystemPackage:
 		return true
 	default:
 		return false
@@ -612,6 +614,8 @@ func GuidanceForMethod(method InstallMethod, tag string) Guidance {
 	switch method {
 	case InstallHomebrew:
 		return Guidance{Text: BrewCommand, Runnable: true}
+	case InstallScoop:
+		return Guidance{Text: ScoopCommand}
 	case InstallGo:
 		return Guidance{Text: GoCommand(tag), Runnable: true}
 	case InstallDebian:
@@ -669,6 +673,8 @@ func UpdateCommandForMethod(method InstallMethod, tag string) (Command, error) {
 			return Command{}, fmt.Errorf("invalid release tag %q", tag)
 		}
 		return Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@" + tag}}, nil
+	case InstallScoop:
+		return Command{}, fmt.Errorf("Scoop installation must be updated with %q", ScoopCommand)
 	case InstallDebian, InstallRPM, InstallSystemPackage:
 		return Command{}, fmt.Errorf("system package installation must be updated manually:\n%s", GuidanceForMethod(method, tag).Text)
 	default:
@@ -689,6 +695,10 @@ func PerformUpdate(ctx context.Context, method InstallMethod, tag string, runner
 	}
 	if method == InstallGeneric {
 		return performGenericUpdate(ctx, tag, runner, stdin, stdout, stderr)
+	}
+	if method == InstallScoop {
+		_, err := UpdateCommandForMethod(method, tag)
+		return err
 	}
 	if IsSystemPackageInstall(method) {
 		return performSystemPackageUpdate(ctx, method, tag, runner, stdin, stdout, stderr)
@@ -792,7 +802,8 @@ func genericUpdatePlatformError(goos, tag string) error {
 }
 
 // DetectInstallMethod resolves the running executable before examining its
-// location. Any resolution uncertainty falls back to the generic installer.
+// location. On Windows, an unresolved Scoop app path is also checked because
+// filepath.EvalSymlinks can reject Scoop's mid-path current junction.
 func DetectInstallMethod() InstallMethod {
 	executable, err := os.Executable()
 	if err != nil {
@@ -801,7 +812,8 @@ func DetectInstallMethod() InstallMethod {
 	home, _ := os.UserHomeDir()
 	goPaths := cachedGoInstallPaths()
 	goPath := strings.Join(nonEmptyStrings(goPaths.goPath, os.Getenv("GOPATH")), string(os.PathListSeparator))
-	return detectInstall(executable, filepath.EvalSymlinks, runtime.GOOS, detectSystemPackage, goPaths.goBin, goPath, home, cachedHomebrewPrefixes()...)
+	scoopRoots := scoopInstallRoots(home, os.Getenv("SCOOP"), os.Getenv("SCOOP_GLOBAL"), os.Getenv("ProgramData"))
+	return detectInstall(executable, filepath.EvalSymlinks, runtime.GOOS, detectSystemPackage, goPaths.goBin, goPath, home, scoopRoots, cachedHomebrewPrefixes()...)
 }
 
 func parseGoEnvPaths(output []byte, err error) goInstallPaths {
@@ -834,23 +846,31 @@ func detectInstall(
 	goos string,
 	systemPackage func(string) InstallMethod,
 	goBin, goPath, home string,
+	scoopRoots []string,
 	homebrewPrefixes ...string,
 ) InstallMethod {
 	resolved, err := evalSymlinks(executable)
 	if err != nil {
+		if goos == "windows" && isScoopInstall(executable, scoopRoots) {
+			return InstallScoop
+		}
 		return InstallGeneric
 	}
-	return detectResolvedInstall(resolved, goos, systemPackage, goBin, goPath, home, homebrewPrefixes...)
+	return detectResolvedInstall(resolved, goos, systemPackage, goBin, goPath, home, scoopRoots, homebrewPrefixes...)
 }
 
 func detectResolvedInstall(
 	executable, goos string,
 	systemPackage func(string) InstallMethod,
 	goBin, goPath, home string,
+	scoopRoots []string,
 	homebrewPrefixes ...string,
 ) InstallMethod {
 	if isHomebrewInstall(executable, homebrewPrefixes) {
 		return InstallHomebrew
+	}
+	if goos == "windows" && isScoopInstall(executable, scoopRoots) {
+		return InstallScoop
 	}
 	if goos == "linux" && filepath.Clean(executable) == filepath.Join(string(filepath.Separator), "usr", "bin", "termp") {
 		if systemPackage != nil {
@@ -879,6 +899,42 @@ func detectResolvedInstall(
 		}
 	}
 	return InstallGeneric
+}
+
+func scoopInstallRoots(home, scoop, scoopGlobal, programData string) []string {
+	var roots []string
+	if scoop = strings.TrimSpace(scoop); scoop != "" {
+		roots = append(roots, scoop)
+	} else if home != "" {
+		roots = append(roots, filepath.Join(home, "scoop"))
+	}
+	if scoopGlobal = strings.TrimSpace(scoopGlobal); scoopGlobal != "" {
+		roots = append(roots, scoopGlobal)
+	} else if programData != "" {
+		roots = append(roots, filepath.Join(programData, "scoop"))
+	}
+	return roots
+}
+
+func isScoopInstall(executable string, roots []string) bool {
+	executable = filepath.Clean(executable)
+	for _, root := range roots {
+		if root = strings.TrimSpace(root); root == "" {
+			continue
+		}
+		root = filepath.Clean(root)
+		if strings.EqualFold(executable, filepath.Join(root, "shims", "termp.exe")) {
+			return true
+		}
+		appVersionDir := filepath.Dir(executable)
+		version := filepath.Base(appVersionDir)
+		if version != "." && version != ".." && version != string(filepath.Separator) &&
+			strings.EqualFold(filepath.Base(executable), "termp.exe") &&
+			strings.EqualFold(filepath.Dir(appVersionDir), filepath.Join(root, "apps", "termp")) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectSystemPackage(executable string) InstallMethod {

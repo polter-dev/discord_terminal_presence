@@ -22,9 +22,15 @@ checks are cached for 24 hours and a short-lived lock prevents concurrent checks
 files older than 30 seconds are reclaimed so a crashed process cannot suppress checks for
 the cache lifetime. Release requests send only `termp/<version>` as User-Agent.
 
-Install detection resolves executable symlinks, then recognizes Homebrew, Linux system
-packages, Go, or generic ownership. A resolved `/usr/bin/termp` on Linux is
-package-managed. Bounded `dpkg-query --search` and `rpm --query --file` checks identify
+Install detection resolves executable symlinks, then recognizes Homebrew, Scoop, Linux
+system packages, Go, or generic ownership. Scoop detection accepts the exact user or
+global `shims/termp.exe` layout and `apps/termp/<one segment>/termp.exe`, including
+`current`, resolved version directories, and roots relocated by `SCOOP` or
+`SCOOP_GLOBAL`. If Windows cannot resolve Scoop's `current` junction, detection checks
+the unresolved path against those same anchored roots; other Scoop-like paths and
+resolution failures remain generic.
+A resolved `/usr/bin/termp` on Linux is package-managed. Bounded `dpkg-query --search`
+and `rpm --query --file` checks identify
 Debian versus RPM ownership; tool presence is the fallback, and ambiguous hosts retain a
 distinct system-package method whose guidance names both release-asset installation paths. Homebrew detection
 uses standard roots plus a once-cached, 500ms-bounded `brew --prefix`, and requires the
@@ -42,15 +48,17 @@ running executable's directory so a vanished custom environment does not create 
 second binary. The stored generic installer pipeline remains exact-tagged and
 injection-free, but user-facing notices deliberately print `termp update` instead of
 that pipeline so the resolved install directory is preserved. Windows generic self-update
-is unsupported. Interactive system-package updates download the matching exact-tag,
+is unsupported. Scoop exposes `scoop update termp` guidance but is rejected by
+`PerformUpdate`, preserving package-manager ownership. Interactive Linux system-package
+updates download the matching exact-tag,
 architecture-specific GitHub release `.deb` or `.rpm` and `checksums.txt` into private
 temporary files, require exactly one valid matching SHA-256 entry, and only then invoke
 `sudo apt install -y <file>` or `sudo dnf install -y <file>` as discrete argv. Temporary
 files are removed on every return path. A missing tool or TTY, ambiguous package type,
 download error, empty artifact, missing/invalid checksum, checksum mismatch, or install
 error fails closed and leaves the existing exact-tag manual package instructions as the
-interactive fallback. Package updates never use the generic installer or write a shadow
-binary under `/usr/local/bin`.
+interactive fallback. Scoop and Linux package updates never use the generic installer or
+write a shadow binary under `/usr/local/bin`.
 
 Automatic updates remain non-interactive: all system-package methods short-circuit before
 `PerformUpdate`, record a managed-package skip, and invoke no download, `sudo`, apt, or dnf

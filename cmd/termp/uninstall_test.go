@@ -218,6 +218,7 @@ func TestUninstallBinaryCommand(t *testing.T) {
 		{name: "generic", method: updatepkg.InstallGeneric, goos: "linux", want: "sudo rm " + shellQuote(filepath.Join(binDir, "termp"))},
 		{name: "go", method: updatepkg.InstallGo, goos: "darwin", want: "rm " + shellQuote(filepath.Join(binDir, "termp"))},
 		{name: "homebrew", method: updatepkg.InstallHomebrew, goos: "darwin", want: "brew uninstall --cask termp"},
+		{name: "scoop", method: updatepkg.InstallScoop, goos: "windows", want: "scoop uninstall termp"},
 		{name: "debian", method: updatepkg.InstallDebian, goos: "linux", want: "sudo apt remove termp"},
 		{name: "rpm", method: updatepkg.InstallRPM, goos: "linux", want: "sudo dnf remove termp"},
 		{name: "windows", method: updatepkg.InstallGeneric, goos: "windows", want: "del " + windowsCommandQuote(filepath.Join(binDir, "termp.exe"))},

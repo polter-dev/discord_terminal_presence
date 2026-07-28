@@ -226,6 +226,8 @@ func uninstallBinaryCommand(method updatepkg.InstallMethod, goos string, generic
 	switch method {
 	case updatepkg.InstallHomebrew:
 		return "brew uninstall --cask termp", nil
+	case updatepkg.InstallScoop:
+		return "scoop uninstall termp", nil
 	case updatepkg.InstallDebian:
 		return "sudo apt remove termp", nil
 	case updatepkg.InstallRPM:
