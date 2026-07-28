@@ -158,7 +158,7 @@ func TestWindowsTTYAtimeUnfocusedPastIdleTimeoutClearsPresence(t *testing.T) {
 		fakeTmuxSnapshot{},
 		source,
 	)
-	process := Process{
+	process := Process{Owned: true,
 		Pid:          1,
 		Name:         "claude",
 		CreateTime:   base.Add(-time.Hour),
@@ -210,7 +210,7 @@ func TestWindowsFocusedWorkingProcessDoesNotRequireUserInput(t *testing.T) {
 		fakeTmuxSnapshot{},
 		source,
 	)
-	process := Process{
+	process := Process{Owned: true,
 		Pid:          1,
 		Name:         "claude",
 		CreateTime:   base.Add(-time.Hour),
@@ -252,7 +252,7 @@ func TestWindowsFocusedProcessWithoutInputOrCPUEventuallyIdles(t *testing.T) {
 		fakeTmuxSnapshot{},
 		source,
 	)
-	process := Process{
+	process := Process{Owned: true,
 		Pid:          1,
 		Name:         "claude",
 		CreateTime:   base.Add(-time.Hour),
@@ -291,7 +291,7 @@ func TestWindowsFocusedPinnedInputStillRequiresCPUCorroboration(t *testing.T) {
 		fakeTmuxSnapshot{},
 		source,
 	)
-	process := Process{
+	process := Process{Owned: true,
 		Pid:          1,
 		Name:         "claude",
 		CreateTime:   base.Add(-time.Hour),

@@ -32,7 +32,7 @@ func newBenchmarkProcessLister(size int) *benchmarkProcessLister {
 		if match, ok := matches[i]; ok {
 			name = match
 		}
-		identity := Process{
+		identity := Process{Owned: true,
 			Pid:     pid,
 			Name:    name,
 			Exe:     "/usr/local/bin/" + name,

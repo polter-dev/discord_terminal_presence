@@ -29,6 +29,15 @@ type TTYAtimeSource interface {
 	Atime(tty string) (time.Time, error)
 }
 
+// OwnerResolver decides whether a process belongs to the current effective
+// user. An error means ownership could not be established (permission
+// denied, process exited mid-scan, platform unsupported); callers must treat
+// that identically to "not owned" rather than defaulting to include the
+// process. See Process.Owned.
+type OwnerResolver interface {
+	Owned(pid int32) (bool, error)
+}
+
 type episodeTTYAtimeSource interface {
 	AtimeWithEpisode(tty string, lastAtime time.Time, episodeExists bool) (time.Time, error)
 }
@@ -42,11 +51,12 @@ type presenceProcessEnricher struct {
 	resolver TTYResolver
 	tmux     TmuxPaneSnapshot
 	atime    TTYAtimeSource
+	owner    OwnerResolver
 	episodes *EpisodeStore
 }
 
-func newPresenceProcessEnricher(base ProcessEnricher, resolver TTYResolver, tmux TmuxPaneSnapshot, atime TTYAtimeSource) ProcessEnricher {
-	return &presenceProcessEnricher{base: base, resolver: resolver, tmux: tmux, atime: atime}
+func newPresenceProcessEnricher(base ProcessEnricher, resolver TTYResolver, tmux TmuxPaneSnapshot, atime TTYAtimeSource, owner OwnerResolver) ProcessEnricher {
+	return &presenceProcessEnricher{base: base, resolver: resolver, tmux: tmux, atime: atime, owner: owner}
 }
 
 func (e *presenceProcessEnricher) Enrich(process Process) Process {
@@ -60,6 +70,16 @@ func (e *presenceProcessEnricher) EnrichMatched(process Process, toolID string) 
 func (e *presenceProcessEnricher) enrich(process Process, toolID string) Process {
 	if e.base != nil {
 		process = e.base.Enrich(process)
+	}
+	// Resolved independently of TTY: ownership must exclude a foreign
+	// process even when it has no controlling terminal information at all,
+	// and must never be skipped just because TTY resolution below returns
+	// early (no resolver, no TTY, unresolved path).
+	process.Owned = false
+	if e.owner != nil {
+		if owned, err := e.owner.Owned(process.Pid); err == nil {
+			process.Owned = owned
+		}
 	}
 	if e.resolver == nil {
 		return process

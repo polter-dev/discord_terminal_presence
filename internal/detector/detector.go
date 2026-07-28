@@ -31,6 +31,16 @@ type Process struct {
 	CPUTime      float64
 	CPUTimeKnown bool
 	TTY          TTYInfo
+	// Owned is true only when ownership resolution affirmatively proved this
+	// process belongs to the current effective user. It defaults to false and
+	// stays false whenever resolution did not run or failed (permission
+	// denied, process exited mid-scan, platform unsupported): the selector
+	// treats "not proven mine" the same as "proven someone else's" and
+	// excludes the process. See presenceEligible's neighboring ownership
+	// check in Select/SelectWithEnricher, which is the single choke point
+	// every candidate passes through regardless of which set (featured or
+	// collection) it is being considered for.
+	Owned bool
 }
 
 // TTYState distinguishes a definitive lack of a controlling tty from an
@@ -353,6 +363,14 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			} else {
 				proc = enricher.Enrich(proc)
 			}
+		}
+		// Ownership gate: excludes every candidate not affirmatively proven to
+		// belong to the current effective user, before it can reach either the
+		// featured-eligibility path or the inactive-collection path below. This
+		// is deliberately upstream of both so a future third selection path
+		// inherits the filter automatically rather than needing its own check.
+		if !proc.Owned {
+			continue
 		}
 		episodeKey := EpisodeKey(tool.ID, proc.Pid, proc.CreateTime)
 		processActivity, cpuActivityAt, cpuActivityKnown := s.observeProcessCPU(episodeKey, proc.CPUTime, proc.CPUTimeKnown, now)

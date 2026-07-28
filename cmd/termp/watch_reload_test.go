@@ -44,7 +44,7 @@ func TestWatchConfigChangeMakesCustomToolDetectable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	det, err := detector.New(applied.registry, watchTestLister{processes: []detector.Process{{
+	det, err := detector.New(applied.registry, watchTestLister{processes: []detector.Process{{Owned: true,
 		Pid:  1,
 		Name: "watch-reload-tool",
 	}}}, applied.detectorConfig)

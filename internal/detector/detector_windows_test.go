@@ -45,6 +45,7 @@ func TestFirstUnfocusedObservationUsesPersistedEpisodeAtime(t *testing.T) {
 			lastInputMillis:  func() (uint32, bool) { return 0, true },
 			now:              func() time.Time { return now },
 		},
+		owner:    fakeOwnerResolver{},
 		episodes: episodes,
 	}
 	selector := newSelectorWithEpisodes(testRegistry(t), Config{
@@ -52,7 +53,7 @@ func TestFirstUnfocusedObservationUsesPersistedEpisodeAtime(t *testing.T) {
 		ActivitySwitching: true,
 	}, &fakeClock{now: now}, episodes, nil)
 
-	detection := selector.SelectWithEnricher([]Process{{
+	detection := selector.SelectWithEnricher([]Process{{Owned: true,
 		Pid:        1,
 		Name:       "claude",
 		CreateTime: created,
@@ -78,6 +79,7 @@ func TestFirstUnfocusedObservationWithoutEpisodeFallsBackToNow(t *testing.T) {
 			lastInputMillis:  func() (uint32, bool) { return 0, true },
 			now:              func() time.Time { return now },
 		},
+		owner:    fakeOwnerResolver{},
 		episodes: episodes,
 	}
 	selector := newSelectorWithEpisodes(testRegistry(t), Config{
@@ -85,7 +87,7 @@ func TestFirstUnfocusedObservationWithoutEpisodeFallsBackToNow(t *testing.T) {
 		ActivitySwitching: true,
 	}, &fakeClock{now: now}, episodes, nil)
 
-	detection := selector.SelectWithEnricher([]Process{{
+	detection := selector.SelectWithEnricher([]Process{{Owned: true,
 		Pid:        1,
 		Name:       "claude",
 		CreateTime: created,
@@ -119,8 +121,8 @@ func TestSelectorIncludesToolInUnfocusedWindowAsOther(t *testing.T) {
 	)
 
 	detection := selector.SelectWithEnricher([]Process{
-		{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour), CPUTime: 10, CPUTimeKnown: true},
-		{Pid: 2, Name: "codex", CreateTime: base.Add(-time.Minute), CPUTime: 10, CPUTimeKnown: true},
+		{Owned: true, Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour), CPUTime: 10, CPUTimeKnown: true},
+		{Owned: true, Pid: 2, Name: "codex", CreateTime: base.Add(-time.Minute), CPUTime: 10, CPUTimeKnown: true},
 	}, enricher)
 
 	if detection.None || detection.Tool.ID != "codex-cli" {
