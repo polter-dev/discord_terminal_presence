@@ -20,6 +20,13 @@ import (
 	"time"
 )
 
+// CacheLifetime is how long a recorded check suppresses the next release
+// lookup. Both successes and failures are recorded, so this also bounds how
+// often an offline machine retries. Exported so a long-lived caller (the
+// daemon) can size its re-check interval against the real cache lifetime
+// instead of hard-coding a number that can drift out of step with it.
+const CacheLifetime = cacheLifetime
+
 const (
 	latestReleaseURL    = "https://api.github.com/repos/polter-dev/discord_terminal_presence/releases/latest"
 	cacheLifetime       = 24 * time.Hour
@@ -230,8 +237,9 @@ func mergedEnvironment(base, overrides []string) []string {
 	return append(merged, overrides...)
 }
 
-// Checker limits release lookups to one per process and one per cacheLifetime.
-// Errors intentionally collapse to "no update" so callers can fail silently.
+// Checker limits release lookups to one per cacheLifetime, and — through
+// Check — to one per process. Errors intentionally collapse to "no update" so
+// callers can fail silently.
 type Checker struct {
 	Source        ReleaseSource
 	CachePath     string
@@ -278,10 +286,7 @@ func DefaultCachePath() string {
 // Check reports a newer release when checks are enabled. NO_UPDATE_CHECK takes
 // precedence over the config value, even when set to an empty string.
 func (c *Checker) Check(ctx context.Context, current string, configEnabled bool) (Result, bool) {
-	if !configEnabled || updateCheckDisabledByEnv() || isDevVersion(current) {
-		return Result{}, false
-	}
-	if _, ok := parseVersion(current); !ok {
+	if !c.lookupPermitted(current, configEnabled) {
 		return Result{}, false
 	}
 
@@ -291,13 +296,44 @@ func (c *Checker) Check(ctx context.Context, current string, configEnabled bool)
 	return c.result, c.available
 }
 
+// Refresh runs the same check as Check without the once-per-process guard, so
+// a long-lived process can keep the shared cache fresh past cacheLifetime.
+// The daemon is the only such process; short-lived CLI runs keep using Check
+// and keep their single-lookup-per-run behaviour, which is what the guard is
+// for (issue #460).
+//
+// It is not a way around the cache. A cache entry still fresh — written by
+// this process or by another one — short-circuits the lookup, and both
+// successes and failures are recorded for cacheLifetime, so calling Refresh in
+// a loop cannot turn into a retry storm against an unreachable source. It also
+// enforces the same opt-outs Check does: update_check = false, NO_UPDATE_CHECK,
+// and dev builds all return without touching the network.
+//
+// Refresh deliberately does not publish into Check's memoized result: Check
+// promises one lookup and one stable answer per process, and a concurrent
+// Refresh must not rewrite it.
+func (c *Checker) Refresh(ctx context.Context, current string, configEnabled bool) (Result, bool) {
+	if !c.lookupPermitted(current, configEnabled) {
+		return Result{}, false
+	}
+	return c.check(ctx, current)
+}
+
+// lookupPermitted reports whether a release lookup may happen at all. It is the
+// single privacy gate shared by every passive entry point, so an opt-out cannot
+// be honoured by one and missed by another.
+func (c *Checker) lookupPermitted(current string, configEnabled bool) bool {
+	if !configEnabled || updateCheckDisabledByEnv() || isDevVersion(current) {
+		return false
+	}
+	_, ok := parseVersion(current)
+	return ok
+}
+
 // CachedCheck reports an update using only a fresh cache entry. It never calls
 // the release source, making it suitable for latency-sensitive command alerts.
 func (c *Checker) CachedCheck(current string, configEnabled bool) (Result, bool) {
-	if !configEnabled || updateCheckDisabledByEnv() || isDevVersion(current) {
-		return Result{}, false
-	}
-	if _, ok := parseVersion(current); !ok {
+	if !c.lookupPermitted(current, configEnabled) {
 		return Result{}, false
 	}
 	now := time.Now()

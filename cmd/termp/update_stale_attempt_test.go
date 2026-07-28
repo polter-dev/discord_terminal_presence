@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,13 +18,24 @@ import (
 // passes for configEnabled, so tests can prove runAutomaticUpdate enforces the
 // update_check opt-out itself rather than relying on Checker to do it.
 type flagIgnoringChecker struct {
+	mu     sync.Mutex
 	latest string
 	calls  int
 }
 
-func (c *flagIgnoringChecker) Check(_ context.Context, current string, _ bool) (updatepkg.Result, bool) {
+func (c *flagIgnoringChecker) Refresh(_ context.Context, current string, _ bool) (updatepkg.Result, bool) {
+	c.mu.Lock()
 	c.calls++
+	c.mu.Unlock()
 	return updatepkg.Result{Current: current, Latest: c.latest, Method: updatepkg.InstallGo}, true
+}
+
+// callsSafe reads the counter under the lock, for tests that observe a
+// still-running daemon loop.
+func (c *flagIgnoringChecker) callsSafe() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
 }
 
 // seedFailedAttempt records a failed automatic-update attempt for target and
