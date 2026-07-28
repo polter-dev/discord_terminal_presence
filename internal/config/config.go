@@ -328,7 +328,9 @@ buttons = %t                # Show Discord activity buttons when available.
 
 [privacy]
 show_directory = %t         # Show the working directory on Discord. Off by default.
-directory_allowlist = []    # Optional path prefixes allowed when show_directory is true.
+# directory_allowlist = ["~/projects"] # Optional path prefixes allowed when show_directory is true.
+#                              Unset (the default) means no restriction. A key that is present must
+#                              have at least one non-blank entry: an empty or blank-only list is rejected.
 directory_basename_only = %t # Show only the final directory name; false shows at most the last two segments.
 
 [cta]
@@ -498,7 +500,7 @@ func loadPathReadOnlyWith(
 	now func() time.Time,
 	sleep func(time.Duration),
 ) (Config, error) {
-	snap, _ := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep)
+	snap, _ := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep, fileSnapshot{})
 	return loadSnapshot(path, snap)
 }
 
@@ -666,21 +668,30 @@ func settledConfigSnapshotUntilWith(
 // returns the most recent snapshot and lets the read-only caller carry on.
 func settledConfigSnapshotForRead(path string) fileSnapshot {
 	snap, _ := boundedSettledConfigSnapshotWith(
-		path, snapshotConfigFile, time.Now, time.Sleep,
+		path, snapshotConfigFile, time.Now, time.Sleep, fileSnapshot{},
 	)
 	return snap
 }
 
+// boundedSettledConfigSnapshotWith settles a snapshot within the standalone
+// bound. knownAccepted lets a caller that has already observed this file
+// exist during the current load thread that fact through to the settle
+// primitive: without it, a missing file always looks like a genuine first
+// run (the "no accepted state" fast path), which is exactly how #448 let a
+// file deleted mid-horizon be mistaken for one that never existed. Pass a
+// zero fileSnapshot{} when there is no such prior knowledge (first read of a
+// call, or manager construction), preserving the fast first-run path.
 func boundedSettledConfigSnapshotWith(
 	path string,
 	snapshot func(string) fileSnapshot,
 	now func() time.Time,
 	sleep func(time.Duration),
+	knownAccepted fileSnapshot,
 ) (fileSnapshot, bool) {
 	deadline := now().Add(standaloneLoadSettleTimeout)
 	for {
 		snap, ok := settledConfigSnapshotUntilWith(
-			path, fileSnapshot{}, deadline, snapshot, now, sleep,
+			path, knownAccepted, deadline, snapshot, now, sleep,
 		)
 		if ok {
 			return snap, true
@@ -703,13 +714,18 @@ func settledConfigSnapshotForLoadWith(
 	sleep func(time.Duration),
 ) (fileSnapshot, error) {
 	started := now()
-	snap, ok := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep)
+	snap, ok := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep, fileSnapshot{})
 	if !ok {
 		return fileSnapshot{}, ErrConfigBeingWritten
 	}
 	if !ambiguousBlankConfigSnapshot(snap) {
 		return snap, nil
 	}
+
+	// The file was observed to exist (blank) at least once during this load.
+	// Remember that so a later disappearance cannot take the missing-file
+	// fast path meant for a genuine first run (#448 route A).
+	existedDuringLoad := fileSnapshot{exists: true}
 
 	for {
 		remaining := enabledLooseningHorizon - now().Sub(started)
@@ -724,9 +740,19 @@ func settledConfigSnapshotForLoadWith(
 			snap = next
 			continue
 		}
-		settled, ok := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep)
+		settled, ok := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep, existedDuringLoad)
 		if !ok {
 			return fileSnapshot{}, ErrConfigBeingWritten
+		}
+		// Leaving the horizon loop must not hand back a result that is
+		// itself still ambiguous: a settle that lands back on blank (#448
+		// route B, a brief content flicker inside a stalled truncation), or
+		// one that lands on "missing" for a file we know existed moments ago
+		// (#448 route A) is not new information. Keep the horizon running
+		// instead of returning defaults before it elapses.
+		if ambiguousBlankConfigSnapshot(settled) || !settled.exists {
+			snap = settled
+			continue
 		}
 		return settled, nil
 	}
@@ -802,7 +828,8 @@ func loadSnapshotWithMetadata(path string, snap fileSnapshot) (Config, bool, err
 	cfg.Path = path
 	cfg.Warnings = unknownKeyWarnings(meta.Undecoded())
 	markDefinedFields(&cfg, meta)
-	if err := validate(&cfg); err != nil {
+	privacyAllowlistDefined := meta.IsDefined("privacy", "directory_allowlist")
+	if err := validate(&cfg, privacyAllowlistDefined); err != nil {
 		return invalidFallbackWithPath(path), false, err
 	}
 	return cloneConfig(cfg), meta.IsDefined("enabled"), nil
@@ -942,7 +969,120 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 	return false
 }
 
-func validate(cfg *Config) error {
+// privacyPosture is a comparable summary of everything that affects what a
+// resolved tool may disclose, computed from the SAME Config.Resolve path
+// presence mapping uses. It deliberately does not enumerate Config fields by
+// name beyond this one place: TestPrivacyPostureCoversAllPrivacyFields and
+// TestPrivacyPostureCoversToolOverridePrivacyFields (config_test.go) use
+// reflection to fail the build the day a new field is added to Privacy or
+// ToolOverride without a conscious decision about whether postureFor below
+// needs to grow with it. That is the actual defect this bug family (#410 ->
+// #425 -> #434 -> #435 -> #438 -> #440 -> #447) keeps regenerating: a rule
+// bound to an enumeration of one.
+type privacyPosture struct {
+	enabled               bool
+	showDirectory         bool
+	directoryBasenameOnly bool // true is MORE private: basename only
+	allowlistRestricted   bool // true means the allowlist actively narrows disclosure
+}
+
+func postureFor(r ResolvedTool) privacyPosture {
+	return privacyPosture{
+		enabled:               r.Enabled,
+		showDirectory:         r.ShowDirectory,
+		directoryBasenameOnly: r.DirectoryBasenameOnly,
+		allowlistRestricted:   len(r.DirectoryAllowlist) > 0,
+	}
+}
+
+// postureLoosened reports whether next could disclose something prev did
+// not, for one resolved tool.
+func postureLoosened(prev, next privacyPosture) bool {
+	if !prev.enabled && next.enabled {
+		return true
+	}
+	if !prev.showDirectory && next.showDirectory {
+		return true
+	}
+	if prev.directoryBasenameOnly && !next.directoryBasenameOnly {
+		return true
+	}
+	if prev.allowlistRestricted && !next.allowlistRestricted {
+		return true
+	}
+	return false
+}
+
+// unionToolIDs returns every tool ID overridden in either config plus "" for
+// the tool-agnostic (global) posture.
+func unionToolIDs(a, b Config) []string {
+	seen := map[string]struct{}{"": {}}
+	for id := range a.Tools {
+		seen[id] = struct{}{}
+	}
+	for id := range b.Tools {
+		seen[id] = struct{}{}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// permissivenessLoosened reports whether next could disclose more than prev
+// for any tool (including the tool-agnostic global posture), by resolving
+// both configs through Config.Resolve exactly as presence mapping would. A
+// new privacy field is covered automatically the moment it participates in
+// Resolve/ResolvedTool and postureFor, without a hand-written per-field
+// comparison at every call site.
+//
+// The top-level enabled flag already has its own explicit-vs-defaulted
+// tracking (enabledDefined, checked by the caller): an explicit
+// `enabled = true` must apply immediately even while other tools resolve as
+// newly-enabled purely as a downstream consequence of that same explicit
+// flip (every tool is forced disabled while the global flag is off). When
+// the global flag itself changes, skipEnabledDimension excludes the enabled
+// posture dimension from this generic comparison so that already-vetted,
+// explicit transition cannot be redundantly re-gated here; every other
+// privacy dimension is still compared normally.
+func permissivenessLoosened(prev, next Config, skipEnabledDimension bool) bool {
+	// Config.Resolve returns early when the global flag is off, BEFORE
+	// applying any per-tool override. If prev were resolved at its real,
+	// disabled value, a per-tool tightening (e.g. an explicit
+	// `[tools.vim] enabled = false`) would never be visible in prev's
+	// posture at all, and neutralizing the enabled dimension on top would
+	// then blind the guard completely for the disabled->enabled transition
+	// -- exactly the gap an independent reviewer found in round 3. Resolve
+	// prev with Enabled forced true so its per-tool overrides are actually
+	// applied and can be compared; this only affects the posture snapshot
+	// used for comparison here, not the real prev.Enabled used elsewhere.
+	prevForPosture := prev
+	if skipEnabledDimension {
+		prevForPosture.Enabled = true
+	}
+	for _, id := range unionToolIDs(prev, next) {
+		tool := registry.Tool{ID: id}
+		p := postureFor(prevForPosture.Resolve(tool))
+		n := postureFor(next.Resolve(tool))
+		if skipEnabledDimension && id == "" {
+			// The tool-agnostic global enabled dimension is already vetted
+			// by the caller's own enabledDefined check when the global flag
+			// itself changes; neutralize only this one dimension, for only
+			// the global posture, so it cannot be redundantly re-gated here.
+			// A per-tool id's enabled dimension is NOT neutralized: it is
+			// the only place a dropped per-tool opt-out would ever show up
+			// while the global flag is simultaneously turning on.
+			p.enabled = n.enabled
+		}
+		if postureLoosened(p, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func validate(cfg *Config, privacyAllowlistDefined bool) error {
 	if err := validateDuration("scan_interval", cfg.ScanInterval, false); err != nil {
 		return err
 	}
@@ -987,10 +1127,47 @@ func validate(cfg *Config) error {
 		cfg.UI.AccentColor = DefaultAccentColor
 	}
 
+	// #449: a blank allowlist entry (e.g. `[""]`) used to be silently dropped
+	// by expandPaths, leaving a zero-length allowlist that DirectoryAllowed
+	// treats as "no restriction configured" -- the exact opposite of what a
+	// user writing an allowlist entry intends. No generated config has ever
+	// contained a blank entry, so this is always a typo: reject it rather
+	// than guessing. An ABSENT key is unaffected and still means "no
+	// restriction configured".
+	if err := validateAllowlistEntries("privacy", cfg.Privacy.DirectoryAllowlist); err != nil {
+		return err
+	}
+	// A present-but-empty `directory_allowlist = []` at the TOP LEVEL is
+	// different: `termp config init`'s own AnnotatedSample emitted exactly
+	// this for every existing user before #449, so rejecting it outright
+	// would silently disable presence on upgrade for every one of them (the
+	// lead caught this in review). Warn instead of erroring: the config
+	// still loads and still means "no restriction configured" (identical to
+	// an absent key), but the ambiguity is no longer silent. A present-but-
+	// empty PER-TOOL override is unaffected by this warning and stays valid
+	// with no message: it is the documented way to opt one tool out of a
+	// restrictive global allowlist (docs/product/config-schema.md).
+	if privacyAllowlistDefined && len(cfg.Privacy.DirectoryAllowlist) == 0 {
+		cfg.Warnings = append(cfg.Warnings, "privacy.directory_allowlist is present but empty, which allows every directory; remove the key to make that explicit, or add at least one path to restrict it")
+	}
 	cfg.Privacy.DirectoryAllowlist = expandPaths(cfg.Privacy.DirectoryAllowlist)
 	for id, override := range cfg.Tools {
+		// A blank override ID is rejected for the same reason custom tools
+		// reject one: it matches no tool. It also matters structurally here,
+		// because "" is the sentinel permissivenessLoosened uses for the
+		// tool-agnostic global posture, and "" is a legal TOML map key — so
+		// a [tools.""] section would collide with that sentinel. Rejecting
+		// the key removes the collision by construction rather than relying
+		// on the guard to tolerate it. No generated config has ever emitted
+		// this section, so there is no upgrade exposure.
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("tools: override id must not be blank")
+		}
 		if err := registry.ValidateButtons(override.Buttons); err != nil {
 			return fmt.Errorf("tools.%s: %w", id, err)
+		}
+		if err := validateAllowlistEntries(fmt.Sprintf("tools.%s", id), override.DirectoryAllowlist); err != nil {
+			return err
 		}
 		override.DirectoryAllowlist = expandPaths(override.DirectoryAllowlist)
 		cfg.Tools[id] = override
@@ -1195,6 +1372,19 @@ func markDefinedFields(cfg *Config, meta toml.MetaData) {
 		}
 		cfg.Tools[id] = override
 	}
+}
+
+// validateAllowlistEntries rejects blank or whitespace-only allowlist
+// entries. Silently dropping them (the old expandPaths behavior) can turn a
+// restrictive, user-authored allowlist into an empty one, which
+// DirectoryAllowed treats as allow-everything. See #449.
+func validateAllowlistEntries(context string, entries []string) error {
+	for i, entry := range entries {
+		if strings.TrimSpace(entry) == "" {
+			return fmt.Errorf("%s.directory_allowlist[%d]: entry must not be blank", context, i)
+		}
+	}
+	return nil
 }
 
 func expandPaths(paths []string) []string {

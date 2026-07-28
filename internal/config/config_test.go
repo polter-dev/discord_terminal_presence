@@ -463,7 +463,36 @@ image_key = "mine"
 			writer.write(path, contents, stall)
 			<-writer.truncated
 
+			// Two outcomes are correct here, and both satisfy the guarantee
+			// this test exists for: the load either settles on the real
+			// content, or refuses with ErrConfigBeingWritten so setup and
+			// settings decline to save a guess. Requiring err == nil asserts
+			// a latency property instead — how the stall lands relative to
+			// standaloneLoadSettleTimeout — which is not a contract and is
+			// load-dependent on CI (this failed on macos-latest at 250ms).
+			// Caveat, measured: an implementation that ALWAYS returned
+			// ErrConfigBeingWritten would pass this test in isolation. It
+			// fails 62 other tests in this package, so the success path is
+			// anchored by the suite rather than by this test alone.
 			cfg, err := LoadPath(path)
+			if errors.Is(err, ErrConfigBeingWritten) {
+				before, readErr := os.ReadFile(path)
+				if readErr != nil {
+					t.Fatalf("read config after busy load: %v", readErr)
+				}
+				writer.wait(t)
+				after, readErr := os.ReadFile(path)
+				if readErr != nil {
+					t.Fatalf("read config after writer finished: %v", readErr)
+				}
+				if bytes.Contains(before, []byte("enabled = true")) {
+					t.Fatalf("%v stall: busy load left defaults on disk:\n%s", stall, before)
+				}
+				if !bytes.Contains(after, []byte("enabled = false")) {
+					t.Fatalf("%v stall: writer's own content lost:\n%s", stall, after)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("LoadPath() during %v non-atomic save = %v", stall, err)
 			}
@@ -2506,5 +2535,578 @@ func TestManagerWatchIgnoresTransientEmptyDuringNonAtomicWrite(t *testing.T) {
 	}
 	if current.ScanInterval != "9s" {
 		t.Fatalf("last-good scan interval = %q, want settled value 9s", current.ScanInterval)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #447: the loosening horizon must guard every privacy-loosening transition,
+// not just the global enabled flag.
+// ---------------------------------------------------------------------------
+
+// TestPrivacyPostureCoversAllPrivacyFields fails the day a field is added to
+// Privacy without a conscious decision about whether the loosening-horizon
+// posture snapshot (postureFor in config.go) needs to grow to cover it. That
+// enumeration-of-one failure mode is what let #447 happen: the #434 guard
+// covered exactly the enabled flag and nothing else.
+func TestPrivacyPostureCoversAllPrivacyFields(t *testing.T) {
+	// Every field of Privacy must be listed here. Add a new field to postureFor
+	// (and to permissivenessLoosened's reasoning about it) before adding it here.
+	covered := map[string]bool{
+		"ShowDirectory":         true,
+		"DirectoryAllowlist":    true,
+		"DirectoryBasenameOnly": true,
+	}
+	typ := reflect.TypeOf(Privacy{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		if !covered[name] {
+			t.Fatalf("Privacy field %q is not covered by the loosening-horizon posture snapshot; "+
+				"add it to postureFor/permissivenessLoosened in config.go and to this test's covered list", name)
+		}
+	}
+	if len(covered) != typ.NumField() {
+		t.Fatalf("covered-field list is stale: expected %d Privacy fields, list declares %d", typ.NumField(), len(covered))
+	}
+}
+
+// TestPrivacyPostureCoversToolOverridePrivacyFields is the ToolOverride
+// counterpart. ToolOverride mixes privacy fields (Enabled, ShowDirectory,
+// DirectoryAllowlist, DirectoryBasenameOnly) with display-only fields
+// (ToolName, ElapsedTimer, SmallImage, Buttons) that do not affect what is
+// disclosed. A new exported field must be explicitly classified into one of
+// the two lists below, so it cannot silently join neither.
+func TestPrivacyPostureCoversToolOverridePrivacyFields(t *testing.T) {
+	displayOnly := map[string]bool{
+		"ToolName":     true,
+		"ElapsedTimer": true,
+		"SmallImage":   true,
+		"Buttons":      true,
+	}
+	privacyRelevant := map[string]bool{
+		"Enabled":               true,
+		"ShowDirectory":         true,
+		"DirectoryAllowlist":    true,
+		"DirectoryBasenameOnly": true,
+	}
+	typ := reflect.TypeOf(ToolOverride{})
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name := field.Name
+		if displayOnly[name] {
+			continue
+		}
+		if !privacyRelevant[name] {
+			t.Fatalf("ToolOverride field %q is classified as neither display-only nor privacy-relevant; "+
+				"classify it in TestPrivacyPostureCoversToolOverridePrivacyFields and, if privacy-relevant, "+
+				"confirm postureFor/Config.Resolve cover it", name)
+		}
+	}
+}
+
+// assertPrivacyHoldsAcrossTruncationStall writes prefix immediately (leaving
+// a genuinely truncated, non-empty, stable-looking file on disk), stalls for
+// stall (which must exceed the ordinary ~300ms settle budget so the prefix
+// itself would otherwise be accepted as final), then appends suffix to
+// complete the original content. While the writer is stalled beyond the
+// ordinary settle budget but inside the enabledLooseningHorizon, check must
+// keep reporting the restrictive state on every observed reload.
+func assertPrivacyHoldsAcrossTruncationStall(t *testing.T, path string, manager *Manager, prefix, suffix string, stall time.Duration, check func(Config) error) {
+	t.Helper()
+	writer := newNonAtomicWriter(t)
+	defer writer.wait(t)
+	writer.writeChunked(path, prefix, suffix, stall)
+	<-writer.truncated
+
+	deadline := time.Now().Add(stall - 50*time.Millisecond)
+	if deadline.Before(time.Now().Add(reloadSettleInterval * (reloadSettleAttempts + 5))) {
+		t.Fatalf("test stall %v too short to observe the ordinary settle budget elapse", stall)
+	}
+	observed := 0
+	for time.Now().Before(deadline) {
+		_ = manager.Reload()
+		cfg, err := manager.Current()
+		if err != nil {
+			t.Fatalf("Current() during stall = %v", err)
+		}
+		if err := check(cfg); err != nil {
+			t.Fatalf("%v (observed %d times before this failure)", err, observed)
+		}
+		observed++
+		time.Sleep(20 * time.Millisecond)
+	}
+	if observed == 0 {
+		t.Fatal("test never actually observed a reload during the stall window")
+	}
+}
+
+// TestManagerReloadPreservesAllowlistAcrossTruncationStall is the #447
+// reproduction: a writer truncates the config to a strict prefix that drops
+// the directory_allowlist line, then stalls past the ordinary ~300ms settle
+// budget. Before this fix, the guard only covered the enabled flag, so the
+// truncated (unrestricted) allowlist was accepted as soon as it looked
+// stable, deep inside the 3s horizon.
+func TestManagerReloadPreservesAllowlistAcrossTruncationStall(t *testing.T) {
+	const prefix = "enabled = true\n" +
+		"[privacy]\n" +
+		"show_directory = true\n"
+	const suffix = "directory_allowlist = [\"/allowed/only\"]\n"
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, prefix+suffix)
+	manager := NewManagerPath(path)
+
+	before, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() before truncation = %v", err)
+	}
+	if resolved := before.Resolve(registry.Tool{ID: "any"}); resolved.DirectoryAllowed("/home/secret") {
+		t.Fatal("precondition failed: /home/secret should not be allowed before truncation")
+	}
+
+	assertPrivacyHoldsAcrossTruncationStall(t, path, manager, prefix, suffix, 900*time.Millisecond, func(cfg Config) error {
+		if resolved := cfg.Resolve(registry.Tool{ID: "any"}); resolved.DirectoryAllowed("/home/secret") {
+			return fmt.Errorf("allowlist lost to a stalled truncation before the loosening horizon elapsed: %#v", cfg.Privacy)
+		}
+		return nil
+	})
+}
+
+// TestManagerReloadPreservesPerToolShowDirectoryAcrossTruncationStall covers
+// a per-tool show_directory=false override (extra privacy for one tool) that
+// is lost to a truncating, stalling writer while the global show_directory
+// is true. Losing the override must not immediately re-expose that tool's
+// directory.
+func TestManagerReloadPreservesPerToolShowDirectoryAcrossTruncationStall(t *testing.T) {
+	const prefix = "enabled = true\n" +
+		"[privacy]\n" +
+		"show_directory = true\n"
+	const suffix = "[tools.claude-code]\n" +
+		"show_directory = false\n"
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, prefix+suffix)
+	manager := NewManagerPath(path)
+
+	assertPrivacyHoldsAcrossTruncationStall(t, path, manager, prefix, suffix, 900*time.Millisecond, func(cfg Config) error {
+		resolved := cfg.Resolve(registry.Tool{ID: "claude-code"})
+		if resolved.ShowDirectory {
+			return fmt.Errorf("per-tool show_directory=false lost to a stalled truncation before the loosening horizon elapsed: %#v", cfg.Tools)
+		}
+		return nil
+	})
+}
+
+// TestManagerReloadPreservesPerToolBasenameOnlyAcrossTruncationStall covers a
+// per-tool directory_basename_only=true override (extra privacy for one
+// tool, hiding nested path segments) that is lost to a truncating, stalling
+// writer while the global directory_basename_only is false.
+func TestManagerReloadPreservesPerToolBasenameOnlyAcrossTruncationStall(t *testing.T) {
+	const prefix = "enabled = true\n" +
+		"[privacy]\n" +
+		"show_directory = true\n" +
+		"directory_basename_only = false\n"
+	const suffix = "[tools.claude-code]\n" +
+		"directory_basename_only = true\n"
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, prefix+suffix)
+	manager := NewManagerPath(path)
+
+	assertPrivacyHoldsAcrossTruncationStall(t, path, manager, prefix, suffix, 900*time.Millisecond, func(cfg Config) error {
+		resolved := cfg.Resolve(registry.Tool{ID: "claude-code"})
+		if !resolved.DirectoryBasenameOnly {
+			return fmt.Errorf("per-tool directory_basename_only=true lost to a stalled truncation before the loosening horizon elapsed: %#v", cfg.Tools)
+		}
+		return nil
+	})
+}
+
+// TestManagerReloadPreservesPerToolOptOutAcrossTruncationStall is the #447
+// per-tool reproduction: a `[tools.<id>] enabled = false` opt-out is dropped
+// by a stalling truncation and must not silently re-enable that tool.
+func TestManagerReloadPreservesPerToolOptOutAcrossTruncationStall(t *testing.T) {
+	const prefix = "enabled = true\n"
+	const suffix = "[tools.claude-code]\n" +
+		"enabled = false\n"
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, prefix+suffix)
+	manager := NewManagerPath(path)
+
+	assertPrivacyHoldsAcrossTruncationStall(t, path, manager, prefix, suffix, 900*time.Millisecond, func(cfg Config) error {
+		resolved := cfg.Resolve(registry.Tool{ID: "claude-code"})
+		if resolved.Enabled {
+			return fmt.Errorf("per-tool opt-out lost to a stalled truncation before the loosening horizon elapsed: %#v", cfg.Tools)
+		}
+		return nil
+	})
+}
+
+// TestManagerReloadPreservesPerToolOptOutWhileGlobalEnabledAlsoLoosens is the
+// round-3 review finding: Config.Resolve returns early when the global flag
+// is off, before applying any per-tool override, so a naive
+// prev-posture-vs-next-posture comparison never sees a per-tool tightening
+// while the accepted config is globally disabled. Combine that with
+// skipEnabledDimension neutralizing the enabled dimension for an explicit
+// global enabled transition, and a per-tool opt-out that disappears in the
+// SAME edit that flips the global flag on used to pay no horizon at all --
+// `enabled` is the first key in the file, so a top-down writer stalling
+// after line 1 produces exactly this valid partial. Reproduced by the lead
+// at 16ms. permissivenessLoosened now resolves prev with Enabled forced true
+// so per-tool overrides are actually applied and compared; only the
+// tool-agnostic global posture's enabled dimension is neutralized, never a
+// real per-tool id's.
+func TestManagerReloadPreservesPerToolOptOutWhileGlobalEnabledAlsoLoosens(t *testing.T) {
+	const prefix = "enabled = true\n"
+	const suffix = "[tools.vim]\n" +
+		"enabled = false\n"
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = false\n"+suffix)
+	manager := NewManagerPath(path)
+
+	if resolved := mustCurrent(t, manager).Resolve(registry.Tool{ID: "vim"}); resolved.Enabled {
+		t.Fatal("precondition failed: vim should be disabled before the edit")
+	}
+
+	assertPrivacyHoldsAcrossTruncationStall(t, path, manager, prefix, suffix, 900*time.Millisecond, func(cfg Config) error {
+		resolved := cfg.Resolve(registry.Tool{ID: "vim"})
+		if resolved.Enabled {
+			return fmt.Errorf("per-tool opt-out for vim was lost the instant the global enabled flag also flipped true, before the loosening horizon elapsed: %#v", cfg.Tools)
+		}
+		return nil
+	})
+}
+
+// ---------------------------------------------------------------------------
+// #448: the blank-config horizon for whole-document loads must not exit early.
+// ---------------------------------------------------------------------------
+
+// TestLoadPathHorizonSurvivesFileDeletionMidHorizon is #448 route A, driven
+// by an injected snapshot sequence and virtual clock (not real timing, so it
+// cannot be flaky in CI): the file reads as blank, then "disappears" 700ms
+// (virtual) into the load. Before the fix, boundedSettledConfigSnapshotWith
+// always assumed no file had ever existed, so the missing-file fast path
+// fired and handed back defaults at ~700ms, deep inside the 3s horizon.
+func TestLoadPathHorizonSurvivesFileDeletionMidHorizon(t *testing.T) {
+	start := time.Unix(0, 0)
+	current := start
+	now := func() time.Time { return current }
+	sleep := func(d time.Duration) { current = current.Add(d) }
+
+	const deleteAt = 700 * time.Millisecond
+	snapshot := func(string) fileSnapshot {
+		if current.Sub(start) < deleteAt {
+			return fileSnapshot{exists: true, data: []byte("  \n")}
+		}
+		return fileSnapshot{exists: false}
+	}
+
+	snap, err := settledConfigSnapshotForLoadWith("config.toml", snapshot, now, sleep)
+	elapsed := current.Sub(start)
+	if err != nil {
+		t.Fatalf("settledConfigSnapshotForLoadWith() error = %v", err)
+	}
+	if elapsed < enabledLooseningHorizon {
+		t.Fatalf("returned after %v virtual time with snap=%#v; want at least the %v horizon before accepting a disappearance as a deliberate deletion", elapsed, snap, enabledLooseningHorizon)
+	}
+	if snap.exists {
+		t.Fatalf("snap = %#v, want missing (the deletion is stable at the point the horizon elapses)", snap)
+	}
+}
+
+// TestLoadPathHorizonSurvivesContentFlickerMidHorizon is #448 route B, also
+// driven by an injected snapshot sequence and virtual clock rather than real
+// timing (a clock-driven flicker test would be flaky in CI -- exactly the
+// mistake #441's first bounded-settle test made). The file reads as blank,
+// then for one settle-interval tick shows real content (a writer's single
+// exposed poll), then reverts to blank and stalls there for the rest of the
+// load. Before the fix, that one non-blank poll caused the horizon loop to
+// exit and re-settle once, landing back on blank and returning defaults
+// immediately instead of continuing the horizon.
+func TestLoadPathHorizonSurvivesContentFlickerMidHorizon(t *testing.T) {
+	start := time.Unix(0, 0)
+	current := start
+	now := func() time.Time { return current }
+	sleep := func(d time.Duration) { current = current.Add(d) }
+
+	const flickerAt = 933 * time.Millisecond
+	snapshot := func(string) fileSnapshot {
+		elapsed := current.Sub(start)
+		if elapsed >= flickerAt && elapsed < flickerAt+reloadSettleInterval {
+			return fileSnapshot{exists: true, data: []byte("pin = \"flicker\"\n")}
+		}
+		return fileSnapshot{exists: true, data: []byte("  \n")}
+	}
+
+	snap, err := settledConfigSnapshotForLoadWith("config.toml", snapshot, now, sleep)
+	elapsed := current.Sub(start)
+	if err != nil {
+		t.Fatalf("settledConfigSnapshotForLoadWith() error = %v", err)
+	}
+	if elapsed < enabledLooseningHorizon {
+		t.Fatalf("flicker returned after %v virtual time with snap=%#v; want at least the %v horizon", elapsed, snap, enabledLooseningHorizon)
+	}
+	if !ambiguousBlankConfigSnapshot(snap) {
+		t.Fatalf("snap = %#v, want ambiguous-blank (the flicker never produced a genuinely settled non-blank result)", snap)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #449: a blank directory_allowlist entry must not silently mean allow-all.
+// ---------------------------------------------------------------------------
+
+func TestDirectoryAllowlistBlankEntriesRejected(t *testing.T) {
+	cases := []string{
+		`directory_allowlist = [""]`,
+		`directory_allowlist = [" "]`,
+		`directory_allowlist = ["", ""]`,
+		`directory_allowlist = ["/allowed", " "]`,
+	}
+	for _, entriesLine := range cases {
+		t.Run(entriesLine, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			content := "enabled = true\n[privacy]\nshow_directory = true\n" + entriesLine + "\n"
+			writeConfig(t, path, content)
+
+			cfg, err := LoadPath(path)
+			if err == nil {
+				t.Fatalf("LoadPath() with blank allowlist entry = nil error, want a validation error; resolved allowlist = %#v", cfg.Privacy.DirectoryAllowlist)
+			}
+			if cfg.Enabled {
+				t.Fatalf("invalid config left presence enabled: %#v", cfg)
+			}
+		})
+	}
+}
+
+// TestDirectoryAllowlistPresentButEmptyWarnsAndAllowsAll covers the lead's
+// review finding on the original #449 fix: `termp config init`'s own
+// AnnotatedSample has always emitted a top-level `directory_allowlist = []`
+// for every existing user. Rejecting that outright at load would silently
+// disable presence on upgrade for every one of them (an invalid config loads
+// with presence off per the #395 policy) -- exactly the kind of silent
+// failure this issue family exists to eliminate, just moved to a new place.
+// A present-but-empty top-level allowlist must instead load successfully,
+// keep meaning "no restriction configured" (same as an absent key), and
+// surface a Config.Warnings entry so the ambiguity is visible, not silent.
+func TestDirectoryAllowlistPresentButEmptyWarnsAndAllowsAll(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = []\n")
+
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() with present-but-empty top-level allowlist = %v, want success", err)
+	}
+	if !cfg.Enabled {
+		t.Fatal("present-but-empty top-level allowlist disabled presence; want it to load as no-restriction, same as an absent key")
+	}
+	resolved := cfg.Resolve(registry.Tool{ID: "any"})
+	if !resolved.DirectoryAllowed("/anywhere/at/all") {
+		t.Fatal("present-but-empty top-level allowlist should mean no restriction, same as an absent key")
+	}
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "directory_allowlist") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no warning surfaced for a present-but-empty top-level allowlist; warnings = %#v", cfg.Warnings)
+	}
+}
+
+// TestDirectoryAllowlistLegacyAnnotatedSampleStillLoads is the lead's
+// requested regression: a byte-for-byte legacy config as `termp config init`
+// generated it before #449 (including the trailing comment) must still load
+// with presence enabled and a warning, not fail closed.
+func TestDirectoryAllowlistLegacyAnnotatedSampleStillLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	legacy := "enabled = true\n" +
+		"[privacy]\n" +
+		"show_directory = false         # Show the working directory on Discord. Off by default.\n" +
+		"directory_allowlist = []    # Optional path prefixes allowed when show_directory is true.\n" +
+		"directory_basename_only = true # Show only the final directory name; false shows at most the last two segments.\n"
+	writeConfig(t, path, legacy)
+
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() legacy config init output = %v, want success (this must not break every user who ever ran `termp config init`)", err)
+	}
+	if !cfg.Enabled {
+		t.Fatal("legacy config from `termp config init` lost presence on load; every existing user would silently stop publishing")
+	}
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "directory_allowlist") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("legacy config loaded but with no warning about the empty allowlist; warnings = %#v", cfg.Warnings)
+	}
+}
+
+// TestManagerReloadStillGatesGlobalAllowlistBecomingPresentButEmpty confirms
+// that downgrading the present-but-empty top-level allowlist from a hard
+// validation error to a warning (per the lead's review of the original #449
+// fix) did not accidentally route around #447's loosening horizon. The
+// resolved allowlist becomes empty (unrestricted) either way; #447's guard
+// operates on the resolved posture in Config.Resolve/permissivenessLoosened,
+// entirely independent of whether validate() treats the source form as an
+// error or a warning, so this transition must still be held pending rather
+// than applied on the very next Reload.
+func TestManagerReloadStillGatesGlobalAllowlistBecomingPresentButEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = [\"/allowed/only\"]\n")
+	manager := NewManagerPath(path)
+
+	if resolved := mustCurrent(t, manager).Resolve(registry.Tool{ID: "any"}); resolved.DirectoryAllowed("/home/secret") {
+		t.Fatal("precondition failed: /home/secret should not be allowed before the edit")
+	}
+
+	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = []\n")
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() = %v", err)
+	}
+
+	resolved := mustCurrent(t, manager).Resolve(registry.Tool{ID: "any"})
+	if resolved.DirectoryAllowed("/home/secret") {
+		t.Fatal("an explicit present-but-empty allowlist bypassed the loosening horizon on the very next reload; #449's warning downgrade must not affect #447's gate")
+	}
+}
+
+func mustCurrent(t *testing.T, manager *Manager) Config {
+	t.Helper()
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() = %v", err)
+	}
+	return cfg
+}
+
+func TestDirectoryAllowlistAbsentMeansNoRestriction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\n")
+
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() with absent allowlist = %v, want success", err)
+	}
+	resolved := cfg.Resolve(registry.Tool{ID: "any"})
+	if !resolved.DirectoryAllowed("/anywhere/at/all") {
+		t.Fatal("an absent directory_allowlist must still mean no restriction")
+	}
+}
+
+// TestDirectoryAllowlistToolOverrideEmptyAllowed confirms the #449 fix does
+// not regress the documented per-tool behavior (docs/product/config-schema.md):
+// an explicit, present-but-empty per-tool allowlist deliberately opts that
+// tool out of a restrictive global allowlist, and remains valid.
+func TestDirectoryAllowlistToolOverrideEmptyAllowed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := "enabled = true\n" +
+		"[privacy]\n" +
+		"show_directory = true\n" +
+		"directory_allowlist = [\"/restricted\"]\n" +
+		"[tools.claude-code]\n" +
+		"directory_allowlist = []\n"
+	writeConfig(t, path, content)
+
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() with empty per-tool allowlist override = %v, want success", err)
+	}
+	resolved := cfg.Resolve(registry.Tool{ID: "claude-code"})
+	if !resolved.DirectoryAllowed("/anywhere/at/all") {
+		t.Fatal("an explicit empty per-tool allowlist should opt that tool out of the global restriction")
+	}
+	other := cfg.Resolve(registry.Tool{ID: "other-tool"})
+	if other.DirectoryAllowed("/anywhere/at/all") {
+		t.Fatal("the global allowlist should still restrict tools without an override")
+	}
+}
+
+// TestDirectoryAllowlistToolOverrideBlankEntryRejected confirms blank entries
+// are rejected at the tool-override level too, not just the top level.
+func TestDirectoryAllowlistToolOverrideBlankEntryRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := "enabled = true\n" +
+		"[privacy]\n" +
+		"show_directory = true\n" +
+		"[tools.claude-code]\n" +
+		"directory_allowlist = [\"\"]\n"
+	writeConfig(t, path, content)
+
+	if _, err := LoadPath(path); err == nil {
+		t.Fatal("LoadPath() with blank per-tool allowlist entry = nil error, want a validation error")
+	}
+}
+
+// TestSaveDoesNotRewriteAllowlistMeaning is the #449 round-trip guard: a
+// valid, non-blank allowlist must come back byte-for-byte equivalent (as a
+// resolved value) after Save, and Save must never be reached with a config
+// whose allowlist entries were silently altered by loading.
+func TestSaveDoesNotRewriteAllowlistMeaning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	entry := filepath.Join(string(filepath.Separator), "allowed", "only")
+	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = [\""+filepath.ToSlash(entry)+"\"]\n")
+
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() = %v", err)
+	}
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+
+	// Assert the MEANING survives a save/reload round trip rather than the
+	// exact bytes: filepath.Clean normalizes separators per platform, so a
+	// byte comparison here asserts the host's path style, not the contract.
+	reloaded, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() after Save() = %v", err)
+	}
+	if got := len(reloaded.Privacy.DirectoryAllowlist); got != 1 {
+		t.Fatalf("allowlist has %d entries after Save(), want 1: %#v", got, reloaded.Privacy.DirectoryAllowlist)
+	}
+	tool := registry.Tool{ID: "claude-code"}
+	if !reloaded.Resolve(tool).DirectoryAllowed(entry) {
+		t.Fatalf("Save() changed the allowlist meaning: %q no longer allowed (allowlist=%#v)", entry, reloaded.Privacy.DirectoryAllowlist)
+	}
+	if reloaded.Resolve(tool).DirectoryAllowed(filepath.Join(string(filepath.Separator), "somewhere", "else")) {
+		t.Fatal("Save() widened the allowlist to allow an unlisted path")
+	}
+}
+
+func TestBlankToolOverrideIDIsRejected(t *testing.T) {
+	// "" is the sentinel permissivenessLoosened uses for the tool-agnostic
+	// global posture, and it is also a legal TOML map key. Rejecting the key
+	// removes that collision by construction. Custom tools already reject a
+	// blank id; this makes [tools] consistent with them.
+	for _, id := range []string{`""`, `" "`, `"\t"`} {
+		t.Run(id, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			writeConfig(t, path, "enabled = true\n[tools."+id+"]\nenabled = false\n")
+			cfg, err := LoadPath(path)
+			if err == nil {
+				t.Fatalf("LoadPath() = nil error for [tools.%s]; want rejection (tools=%#v)", id, cfg.Tools)
+			}
+		})
+	}
+}
+
+func TestNonBlankToolOverrideIDStillLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = true\n[tools.vim]\nenabled = false\n")
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() = %v, want nil", err)
+	}
+	if _, ok := cfg.Tools["vim"]; !ok {
+		t.Fatal("a normal per-tool override was lost")
 	}
 }
