@@ -273,10 +273,18 @@ func TestSetActivityRejectsInvalidPayloadBeforeTransport(t *testing.T) {
 	defer serverConn.Close()
 	client := &RichClient{conn: clientConn}
 
+	// Button count is not something normalizeActivity trims — it is a structural
+	// error the caller has to fix — so local validation must still stop the
+	// payload before any bytes reach the transport. (An over-long label is no
+	// longer an example of this: since #436 it is trimmed to fit and published.)
 	err := client.SetActivity(Activity{
-		Buttons: []Button{{Label: strings.Repeat("X", 33), URL: "https://example.test"}},
+		Buttons: []Button{
+			{Label: "One", URL: "https://example.test"},
+			{Label: "Two", URL: "https://example.test"},
+			{Label: "Three", URL: "https://example.test"},
+		},
 	})
-	if err == nil || !isPermanentActivityError(err) || !strings.Contains(err.Error(), "at most 32 characters") {
+	if err == nil || !isPermanentActivityError(err) || !strings.Contains(err.Error(), "at most 2 entries") {
 		t.Fatalf("SetActivity() error = %v, want permanent local validation error", err)
 	}
 	if client.conn == nil {

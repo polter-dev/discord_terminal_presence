@@ -10,6 +10,7 @@ import (
 
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
+	"github.com/polter-dev/discord_terminal_presence/internal/terminaltext"
 )
 
 // DefaultAppID is termp's public Discord Application ID. An application ID is
@@ -102,22 +103,132 @@ func (e *activityValidationError) Error() string {
 	return "presence: invalid activity: " + e.message
 }
 
-func validateActivity(activity Activity) error {
-	textFields := []struct {
-		name  string
-		value string
-		min   int
-	}{
-		{name: "name", value: activity.Name, min: 0},
-		{name: "details", value: activity.Details, min: minActivityTextLength},
-		{name: "state", value: activity.State, min: minActivityTextLength},
-		{name: "large_image_text", value: activity.LargeImage.Text, min: minActivityTextLength},
-		{name: "small_image_text", value: activity.SmallImage.Text, min: minActivityTextLength},
+// activityTextField describes one Discord-facing text field: where it lives on
+// an Activity, what it is called in errors, and the rune bounds Discord puts on
+// it. This slice is the single enumeration of Discord-facing activity text:
+// normalizeActivity sanitizes and bounds every entry, and validateActivity
+// checks every entry, so the two can never drift apart the way per-field call
+// sites did in #402 (details/state fixed, both image tooltips missed) and #422
+// (7 of 9 outbound fields fixed, both image keys missed). A wire field that is
+// not represented here is caught by TestSetActivityWireStringsAreBounded, which
+// walks the marshaled payload and fails on any string it has no bound for.
+type activityTextField struct {
+	name string
+	get  func(*Activity) string
+	set  func(*Activity, string)
+	min  int
+	max  int
+}
+
+func activityTextFields(activity *Activity) []activityTextField {
+	fields := []activityTextField{
+		{
+			name: "name",
+			get:  func(a *Activity) string { return a.Name },
+			set:  func(a *Activity, v string) { a.Name = v },
+			min:  0,
+			max:  maxActivityTextLength,
+		},
+		{
+			name: "details",
+			get:  func(a *Activity) string { return a.Details },
+			set:  func(a *Activity, v string) { a.Details = v },
+			min:  minActivityTextLength,
+			max:  maxActivityTextLength,
+		},
+		{
+			name: "state",
+			get:  func(a *Activity) string { return a.State },
+			set:  func(a *Activity, v string) { a.State = v },
+			min:  minActivityTextLength,
+			max:  maxActivityTextLength,
+		},
+		{
+			name: "large_image_text",
+			get:  func(a *Activity) string { return a.LargeImage.Text },
+			set:  func(a *Activity, v string) { a.LargeImage.Text = v },
+			min:  minActivityTextLength,
+			max:  maxActivityTextLength,
+		},
+		{
+			name: "small_image_text",
+			get:  func(a *Activity) string { return a.SmallImage.Text },
+			set:  func(a *Activity, v string) { a.SmallImage.Text = v },
+			min:  minActivityTextLength,
+			max:  maxActivityTextLength,
+		},
+		{
+			name: "large_image_key",
+			get:  func(a *Activity) string { return a.LargeImage.Key },
+			set:  func(a *Activity, v string) { a.LargeImage.Key = v },
+			min:  0,
+			max:  maxImageValueLength,
+		},
+		{
+			name: "small_image_key",
+			get:  func(a *Activity) string { return a.SmallImage.Key },
+			set:  func(a *Activity, v string) { a.SmallImage.Key = v },
+			min:  0,
+			max:  maxImageValueLength,
+		},
 	}
-	for _, field := range textFields {
-		length := utf8.RuneCountInString(field.value)
-		if length > maxActivityTextLength {
-			return &activityValidationError{message: fmt.Sprintf("%s must be at most %d characters", field.name, maxActivityTextLength)}
+	for i := range activity.Buttons {
+		index := i
+		fields = append(fields, activityTextField{
+			name: fmt.Sprintf("buttons[%d].label", index),
+			get:  func(a *Activity) string { return a.Buttons[index].Label },
+			set:  func(a *Activity, v string) { a.Buttons[index].Label = v },
+			// registry.ValidateButtons rejects an empty label outright, so the
+			// effective minimum is 1; normalizeActivity drops a button whose
+			// label sanitizes away entirely rather than failing the payload.
+			min: 1,
+			max: registry.MaxButtonLabelLength,
+		})
+	}
+	return fields
+}
+
+// normalizeActivity is the single choke point every Discord-facing text field
+// passes through before validation and before the wire payload is built. For
+// each field in activityTextFields it sanitizes first and bounds second, in
+// that order, because sanitization is not monotonically shortening: for the
+// same input SanitizeSingleLine expands each line break into a 3-rune " ; "
+// separator (so a value bounded to exactly 128 runes could land at 212 and be
+// rejected outright — #436), and since #427 Sanitize can also return more text
+// than it used to for an aborted escape sequence. Any bound applied before
+// sanitization is therefore unreliable by construction, and the pre-sanitize
+// bound in ActivityFromDetection is only there to produce omission diagnostics.
+// Because the bound runs last, validateActivity's length checks are guaranteed
+// to hold, so an over-long or sanitized-to-nothing field is trimmed or omitted
+// instead of silently suppressing the entire presence update.
+func normalizeActivity(activity Activity) Activity {
+	for _, field := range activityTextFields(&activity) {
+		value := terminaltext.SanitizeSingleLine(field.get(&activity))
+		bounded, _ := boundActivityText(value, field.min, field.max)
+		field.set(&activity, bounded)
+	}
+	if len(activity.Buttons) > 0 {
+		kept := make([]Button, 0, len(activity.Buttons))
+		for _, button := range activity.Buttons {
+			if button.Label == "" {
+				continue
+			}
+			kept = append(kept, button)
+		}
+		if len(kept) == 0 {
+			activity.Buttons = nil
+		} else {
+			activity.Buttons = kept
+		}
+	}
+	return activity
+}
+
+func validateActivity(activity Activity) error {
+	for _, field := range activityTextFields(&activity) {
+		length := utf8.RuneCountInString(field.get(&activity))
+		if length > field.max {
+			return &activityValidationError{message: fmt.Sprintf("%s must be at most %d characters", field.name, field.max)}
 		}
 		if length > 0 && length < field.min {
 			return &activityValidationError{message: fmt.Sprintf("%s must be at least %d characters when present", field.name, field.min)}
@@ -168,7 +279,7 @@ func ActivityFromDetectionWithOmissions(detection detector.Detection, options Di
 	}
 	var omissions []ActivityTextOmission
 	boundText := func(field, value string) string {
-		bounded, omitted := boundActivityText(value)
+		bounded, omitted := boundActivityText(value, minActivityTextLength, maxActivityTextLength)
 		if omitted {
 			omissions = append(omissions, ActivityTextOmission{
 				Field:   field,
@@ -241,15 +352,25 @@ func ActivityFromDetectionWithOmissions(detection detector.Detection, options Di
 	return activity, true, omissions
 }
 
-func boundActivityText(value string) (string, bool) {
+// boundActivityText forces value inside [min, max] runes: a non-empty value
+// shorter than min is dropped (reported as omitted), and a value longer than
+// max is truncated with an ellipsis. It is called twice on the path to Discord:
+// once pre-sanitization in ActivityFromDetectionWithOmissions, purely so a
+// too-short rendered value can be reported to the caller's debug logger, and
+// once post-sanitization in normalizeActivity, which is the call that actually
+// guarantees the bound (see #436).
+func boundActivityText(value string, min, max int) (string, bool) {
 	length := utf8.RuneCountInString(value)
-	if length > 0 && length < minActivityTextLength {
+	if length > 0 && length < min {
 		return "", true
 	}
-	if length <= maxActivityTextLength {
+	if length <= max {
 		return value, false
 	}
-	return string([]rune(value)[:maxActivityTextLength-1]) + "…", false
+	if max <= 0 {
+		return "", false
+	}
+	return string([]rune(value)[:max-1]) + "…", false
 }
 
 func renderDetails(format, toolName, directory string) string {

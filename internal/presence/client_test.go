@@ -62,15 +62,15 @@ func TestSetActivityPayloadIncludesFeaturedToolName(t *testing.T) {
 	}
 }
 
-// TestSanitizeActivityStripsControlCharactersFromEveryField proves the #419
-// fix at the sanitizeActivity unit level: every Discord-facing text field —
+// TestNormalizeActivityStripsControlCharactersFromEveryField proves the #419
+// fix at the normalizeActivity unit level: every Discord-facing text field —
 // name, details, state, both image keys, both image tooltips, and button
 // labels — loses its control characters, and an adjacent multi-byte
 // character survives. #397 was caused by covering only 2 of 4 fields that
 // needed a rule; #422 review caught that the first version of this fix
 // covered 5 of 7 (missing both image keys), so this test enumerates all
 // seven explicitly.
-func TestSanitizeActivityStripsControlCharactersFromEveryField(t *testing.T) {
+func TestNormalizeActivityStripsControlCharactersFromEveryField(t *testing.T) {
 	dirty := Activity{
 		Name:    "\x1b[31mEvil\x07Tool",
 		Details: "det\x00ails",
@@ -88,7 +88,7 @@ func TestSanitizeActivityStripsControlCharactersFromEveryField(t *testing.T) {
 		},
 	}
 
-	clean := sanitizeActivity(dirty)
+	clean := normalizeActivity(dirty)
 
 	const controlBytes = "\x1b\x07\x00\r"
 	fields := map[string]string{
@@ -122,10 +122,10 @@ func TestSanitizeActivityStripsControlCharactersFromEveryField(t *testing.T) {
 // missed large_image/small_image), it marshals the real wire payload to JSON,
 // decodes it into a generic tree, and recursively visits every string leaf.
 // A field added to activityPayload/assetsPayload/buttonPayload in the future
-// without going through sanitizeActivity first will fail this test
+// without going through normalizeActivity first will fail this test
 // automatically, with no enumeration to keep in sync.
 func TestSetActivityWireHasNoRawControlOrBidiRunes(t *testing.T) {
-	activity := sanitizeActivity(Activity{
+	activity := normalizeActivity(Activity{
 		Name:    "\x1b[31mEvil\x07Tool",
 		Details: "det\x00ails",
 		State:   "sta\rte",
@@ -178,7 +178,7 @@ func assertNoRawControlOrBidiRunes(t *testing.T, value any, path string) {
 }
 
 // TestSetActivitySanitizesControlCharactersEndToEnd proves the sanitization
-// happens on the real SetActivity call path (not just on sanitizeActivity in
+// happens on the real SetActivity call path (not just on normalizeActivity in
 // isolation) by capturing the exact bytes written to the wire over a real
 // frame round trip, including both image keys — the fields #422 review found
 // unsanitized in the first version of this fix.
@@ -260,40 +260,232 @@ func TestSetActivitySanitizesControlCharactersEndToEnd(t *testing.T) {
 	}
 }
 
-// TestSetActivityValidatesSanitizedLengthNotRawLength proves the #422 review's
-// second ordering finding: sanitizing after validating checks bytes that are
-// not the bytes actually sent. SetActivity must sanitize before validating,
-// so a value that only crosses Discord's length bound *after* substitution
-// (an embedded newline expands to the 3-rune " ; " separator) is caught, and
-// a value that only drops below the minimum after control characters are
-// stripped is also caught — instead of both silently reaching
-// newSetActivityPayload with the wrong bytes already validated.
-func TestSetActivityValidatesSanitizedLengthNotRawLength(t *testing.T) {
-	t.Run("expands past the maximum on substitution", func(t *testing.T) {
-		// 127 runes raw (passes the raw <=128 check); the embedded newline
-		// becomes " ; " (3 runes) once sanitized, mid-string so it is not
-		// trimmed as a leading/trailing separator, yielding 129 sanitized
-		// runes, which must be rejected.
-		details := strings.Repeat("a", 63) + "\n" + strings.Repeat("a", 63)
-		if got := utf8.RuneCountInString(details); got != 127 {
-			t.Fatalf("test setup: raw details = %d runes, want 127", got)
+// captureSetActivity runs one real SetActivity call over a net.Pipe, answers
+// the frame the way Discord would, and returns the SET_ACTIVITY payload exactly
+// as it was decoded from the wire. It exercises the whole normalize → validate →
+// encode path rather than any single helper.
+func captureSetActivity(t *testing.T, activity Activity) setActivityPayload {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	peerClosed := make(chan struct{})
+	client := &RichClient{conn: clearDeadlineAfterPeerCloseConn{Conn: clientConn, peerClosed: peerClosed}}
+	t.Cleanup(func() { client.Logout() })
+
+	captured := make(chan []byte, 1)
+	serverErr := make(chan error, 1)
+	go func() {
+		defer func() {
+			serverConn.Close()
+			close(peerClosed)
+		}()
+		frame, err := readFrame(serverConn)
+		if err != nil {
+			serverErr <- err
+			return
 		}
-		client := &RichClient{}
-		err := client.SetActivity(Activity{Name: "x", Details: details, State: "ok"})
-		if err == nil || !strings.Contains(err.Error(), "details must be at most 128 characters") {
-			t.Fatalf("SetActivity() error = %v, want a max-length error reflecting the sanitized (129-rune) value", err)
+		captured <- append([]byte(nil), frame.payload...)
+		if err := writeJSONFrame(serverConn, opcodeFrame, map[string]any{"evt": "READY", "data": map[string]any{}}); err != nil {
+			serverErr <- err
+			return
 		}
+		serverErr <- nil
+	}()
+
+	if err := client.SetActivity(activity); err != nil {
+		t.Fatalf("SetActivity() error = %v, want the activity to be trimmed to fit and published", err)
+	}
+	frame := <-captured
+	var payload setActivityPayload
+	if err := json.Unmarshal(frame, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverErr; err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+// TestSetActivityBoundsSanitizedLengthNotRawLength is the #436 regression test.
+// #422 correctly moved sanitization before validation so length checks run on
+// the bytes actually sent, but bounding still ran before sanitization, and
+// SanitizeSingleLine expands each line break into a 3-rune " ; " separator. A
+// value bounded to exactly 128 runes could therefore reach validateActivity at
+// 212 runes and be rejected, so *nothing* was published for that field — a
+// directory or custom tool name with a few line breaks was enough. The bound
+// now runs after sanitization, so the field is trimmed and published instead.
+func TestSetActivityBoundsSanitizedLengthNotRawLength(t *testing.T) {
+	// Exactly 128 runes (the bound) with several line breaks: sanitization
+	// turns each "\n" into " ; " and pushes the value well past 128.
+	details := strings.Repeat("a", 32) + "\n" + strings.Repeat("b", 32) + "\n" + strings.Repeat("c", 30) + "\n" + strings.Repeat("d", 31)
+	if got := utf8.RuneCountInString(details); got != 128 {
+		t.Fatalf("test setup: raw details = %d runes, want 128", got)
+	}
+	if got := utf8.RuneCountInString(terminaltext.SanitizeSingleLine(details)); got <= maxActivityTextLength {
+		t.Fatalf("test setup: sanitized details = %d runes, want more than %d so the defect is reachable", got, maxActivityTextLength)
+	}
+
+	payload := captureSetActivity(t, Activity{Name: "x", Details: details, State: "ok"})
+
+	published := payload.Args.Activity.Details
+	if published == "" {
+		t.Fatal("details was dropped from the published payload; it must be trimmed to fit, not omitted")
+	}
+	if got := utf8.RuneCountInString(published); got > maxActivityTextLength {
+		t.Fatalf("published details = %d runes, want at most %d", got, maxActivityTextLength)
+	}
+	if !strings.Contains(published, " ; ") {
+		t.Fatalf("published details = %q, want the sanitized separator to survive trimming", published)
+	}
+	if !strings.HasPrefix(published, strings.Repeat("a", 32)) {
+		t.Fatalf("published details = %q, want the leading text preserved", published)
+	}
+	if !strings.HasSuffix(published, "…") {
+		t.Fatalf("published details = %q, want an ellipsis marking the trim", published)
+	}
+	if payload.Args.Activity.State != "ok" {
+		t.Fatalf("published state = %q, want the rest of the activity unaffected", payload.Args.Activity.State)
+	}
+}
+
+// TestSetActivityOmitsFieldThatSanitizesBelowMinimum covers the other direction
+// of the same defect: sanitization can also *shorten* a value below Discord's
+// 2-rune minimum, which likewise made validateActivity reject the whole update.
+// The field is now dropped and the rest of the activity still publishes.
+func TestSetActivityOmitsFieldThatSanitizesBelowMinimum(t *testing.T) {
+	// "a\x1b" is 2 raw runes; ESC is stripped entirely, leaving 1 rune.
+	payload := captureSetActivity(t, Activity{Name: "x", Details: "a\x1b", State: "ok"})
+	if payload.Args.Activity.Details != "" {
+		t.Fatalf("published details = %q, want the sub-minimum field omitted", payload.Args.Activity.Details)
+	}
+	if payload.Args.Activity.Name != "x" || payload.Args.Activity.State != "ok" {
+		t.Fatalf("published activity = %+v, want the remaining fields published", payload.Args.Activity)
+	}
+}
+
+// TestSetActivityFromDetectionWithLineBreaksPublishes drives the same defect
+// from the user-facing entry point rather than a hand-built Activity: a custom
+// tool display name containing line breaks flows through ActivityFromDetection
+// (which bounds pre-sanitization) into SetActivity. Before the fix the whole
+// presence update was rejected; the tool name must now appear, trimmed.
+func TestSetActivityFromDetectionWithLineBreaksPublishes(t *testing.T) {
+	displayName := strings.Repeat("n", 40) + "\n" + strings.Repeat("m", 40) + "\n" + strings.Repeat("o", 46)
+	if got := utf8.RuneCountInString(displayName); got != 128 {
+		t.Fatalf("test setup: raw display name = %d runes, want 128", got)
+	}
+	tool := registry.Tool{ID: "custom", DisplayName: displayName}
+	activity, ok := ActivityFromDetection(detector.Detection{Tool: tool, Featured: detector.FeaturedTool{Tool: tool}}, DefaultDisplayOptions())
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+
+	payload := captureSetActivity(t, activity)
+	if payload.Args.Activity.Details == "" {
+		t.Fatal("details was dropped; a tool name with line breaks must still publish")
+	}
+	for name, value := range map[string]string{
+		"name":    payload.Args.Activity.Name,
+		"details": payload.Args.Activity.Details,
+	} {
+		if got := utf8.RuneCountInString(value); got > maxActivityTextLength {
+			t.Fatalf("published %s = %d runes, want at most %d", name, got, maxActivityTextLength)
+		}
+	}
+}
+
+// wireStringBounds maps every string-valued key of the marshaled SET_ACTIVITY
+// payload to the maximum rune count it is allowed to carry. It is deliberately
+// exhaustive: TestSetActivityWireStringsAreBounded fails on any string key it
+// does not find here, so a new Discord-facing field cannot be added to the wire
+// payload without someone confronting its bound — and the only way to satisfy
+// the bound is to route the field through normalizeActivity's field list.
+var wireStringBounds = map[string]int{
+	"cmd":         len("SET_ACTIVITY"),
+	"nonce":       36,
+	"name":        maxActivityTextLength,
+	"details":     maxActivityTextLength,
+	"state":       maxActivityTextLength,
+	"large_text":  maxActivityTextLength,
+	"small_text":  maxActivityTextLength,
+	"large_image": maxImageValueLength,
+	"small_image": maxImageValueLength,
+	"label":       registry.MaxButtonLabelLength,
+	"url":         registry.MaxButtonURLLength,
+}
+
+// TestSetActivityWireStringsAreBounded is the structural counterpart to
+// TestSetActivityWireHasNoRawControlOrBidiRunes for #436. Rather than listing
+// the fields that need bounding — the enumeration that let #402 miss both image
+// tooltips and #422 miss both image keys — it feeds every text field a value
+// that only exceeds its bound *after* sanitization, then walks every string
+// leaf of the real marshaled payload and checks it against its registered
+// bound. A field that bypasses normalizeActivity fails here automatically.
+func TestSetActivityWireStringsAreBounded(t *testing.T) {
+	grow := func(runes int, filler string) string {
+		// Half the runes as line breaks, so SanitizeSingleLine triples them.
+		value := strings.Repeat(filler+"\n", runes/2)
+		return value + strings.Repeat(filler, runes-utf8.RuneCountInString(value))
+	}
+	payload := captureSetActivity(t, Activity{
+		Name:    grow(maxActivityTextLength, "a"),
+		Details: grow(maxActivityTextLength, "b"),
+		State:   grow(maxActivityTextLength, "c"),
+		LargeImage: Image{
+			Key:  grow(maxImageValueLength, "d"),
+			Text: grow(maxActivityTextLength, "e"),
+		},
+		SmallImage: Image{
+			Key:  grow(maxImageValueLength, "f"),
+			Text: grow(maxActivityTextLength, "g"),
+		},
+		Buttons: []Button{
+			{Label: grow(registry.MaxButtonLabelLength, "h"), URL: "https://example.test"},
+		},
 	})
 
-	t.Run("drops below the minimum on stripping", func(t *testing.T) {
-		// "a\x1b" is 2 raw runes (passes the raw >=2 check); ESC is stripped
-		// entirely, leaving 1 sanitized rune, which must be rejected.
-		client := &RichClient{}
-		err := client.SetActivity(Activity{Name: "x", Details: "a\x1b", State: "ok"})
-		if err == nil || !strings.Contains(err.Error(), "details must be at least 2 characters") {
-			t.Fatalf("SetActivity() error = %v, want a minimum-length error reflecting the sanitized (1-rune) value", err)
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	visited := assertWireStringsBounded(t, decoded, "$", "")
+	if visited == 0 {
+		t.Fatal("walked no string leaves; the payload capture is not exercising the wire")
+	}
+}
+
+// assertWireStringsBounded recursively visits every string leaf of a generically
+// decoded JSON value, checking it against wireStringBounds under the key it was
+// found at. An unregistered key is a failure, not a skip.
+func assertWireStringsBounded(t *testing.T, value any, path, key string) int {
+	t.Helper()
+	switch v := value.(type) {
+	case string:
+		bound, ok := wireStringBounds[key]
+		if !ok {
+			t.Errorf("%s: wire field %q has no registered bound; route it through normalizeActivity's activityTextFields list and add it to wireStringBounds", path, key)
+			return 1
 		}
-	})
+		if got := utf8.RuneCountInString(v); got > bound {
+			t.Errorf("%s = %d runes, want at most %d (value %q)", path, got, bound, v)
+		}
+		return 1
+	case map[string]any:
+		count := 0
+		for childKey, child := range v {
+			count += assertWireStringsBounded(t, child, path+"."+childKey, childKey)
+		}
+		return count
+	case []any:
+		count := 0
+		for i, child := range v {
+			count += assertWireStringsBounded(t, child, fmt.Sprintf("%s[%d]", path, i), key)
+		}
+		return count
+	}
+	return 0
 }
 
 func TestSetActivityPayloadOmitsEmptyLargeImage(t *testing.T) {

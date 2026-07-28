@@ -58,16 +58,18 @@ Consequently, sanitization is no longer monotonically shortening: for the same i
 payload is now preserved (for example, `"proj\x1b]"` followed by `"a"` and 200 combining
 acute accents grows from 4 runes to 205); this is not a new character exposure—every such
 character is equally reachable in a name without an escape prefix—but callers that reason
-about output length, particularly `internal/presence`, which bounds text before sanitizing,
-must account for it.
+about output length must account for it. `internal/presence` does: since #436 its
+`normalizeActivity` bounds each Discord-facing field *after* sanitizing it, so neither the
+separator expansion above nor a preserved aborted-sequence payload can push a value past a
+Discord limit.
 (An escape sequence, or an OSC title, that already spanned what were two lines before
 substitution is still stripped as a unit when properly terminated, exactly as a same-line
 escape or OSC title is.)
 
 **Depends on / used by:** Depends on Charm's ANSI parser; used by `cmd/termp` and
-`internal/tui` at terminal/log rendering boundaries, `internal/presence` (`client.go`'s
-`sanitizeActivity`) to sanitize every Discord-facing activity field before it is
-validated or leaves the process, and `internal/registry` (`ValidateCustomTool`,
+`internal/tui` at terminal/log rendering boundaries, `internal/presence` (`activity.go`'s
+`normalizeActivity`) to sanitize every Discord-facing activity field before it is bounded,
+validated, or leaves the process, and `internal/registry` (`ValidateCustomTool`,
 `ValidateButtons`, via `IsControlOrBidi`) to reject control characters in `display_name`,
 `image_key`, and button labels at config load (#419).
 
