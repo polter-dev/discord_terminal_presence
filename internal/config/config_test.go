@@ -2716,6 +2716,42 @@ func TestManagerReloadPreservesPerToolOptOutAcrossTruncationStall(t *testing.T) 
 	})
 }
 
+// TestManagerReloadPreservesPerToolOptOutWhileGlobalEnabledAlsoLoosens is the
+// round-3 review finding: Config.Resolve returns early when the global flag
+// is off, before applying any per-tool override, so a naive
+// prev-posture-vs-next-posture comparison never sees a per-tool tightening
+// while the accepted config is globally disabled. Combine that with
+// skipEnabledDimension neutralizing the enabled dimension for an explicit
+// global enabled transition, and a per-tool opt-out that disappears in the
+// SAME edit that flips the global flag on used to pay no horizon at all --
+// `enabled` is the first key in the file, so a top-down writer stalling
+// after line 1 produces exactly this valid partial. Reproduced by the lead
+// at 16ms. permissivenessLoosened now resolves prev with Enabled forced true
+// so per-tool overrides are actually applied and compared; only the
+// tool-agnostic global posture's enabled dimension is neutralized, never a
+// real per-tool id's.
+func TestManagerReloadPreservesPerToolOptOutWhileGlobalEnabledAlsoLoosens(t *testing.T) {
+	const prefix = "enabled = true\n"
+	const suffix = "[tools.vim]\n" +
+		"enabled = false\n"
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = false\n"+suffix)
+	manager := NewManagerPath(path)
+
+	if resolved := mustCurrent(t, manager).Resolve(registry.Tool{ID: "vim"}); resolved.Enabled {
+		t.Fatal("precondition failed: vim should be disabled before the edit")
+	}
+
+	assertPrivacyHoldsAcrossTruncationStall(t, path, manager, prefix, suffix, 900*time.Millisecond, func(cfg Config) error {
+		resolved := cfg.Resolve(registry.Tool{ID: "vim"})
+		if resolved.Enabled {
+			return fmt.Errorf("per-tool opt-out for vim was lost the instant the global enabled flag also flipped true, before the loosening horizon elapsed: %#v", cfg.Tools)
+		}
+		return nil
+	})
+}
+
 // ---------------------------------------------------------------------------
 // #448: the blank-config horizon for whole-document loads must not exit early.
 // ---------------------------------------------------------------------------

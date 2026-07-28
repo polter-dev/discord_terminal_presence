@@ -1047,11 +1047,32 @@ func unionToolIDs(a, b Config) []string {
 // explicit transition cannot be redundantly re-gated here; every other
 // privacy dimension is still compared normally.
 func permissivenessLoosened(prev, next Config, skipEnabledDimension bool) bool {
+	// Config.Resolve returns early when the global flag is off, BEFORE
+	// applying any per-tool override. If prev were resolved at its real,
+	// disabled value, a per-tool tightening (e.g. an explicit
+	// `[tools.vim] enabled = false`) would never be visible in prev's
+	// posture at all, and neutralizing the enabled dimension on top would
+	// then blind the guard completely for the disabled->enabled transition
+	// -- exactly the gap an independent reviewer found in round 3. Resolve
+	// prev with Enabled forced true so its per-tool overrides are actually
+	// applied and can be compared; this only affects the posture snapshot
+	// used for comparison here, not the real prev.Enabled used elsewhere.
+	prevForPosture := prev
+	if skipEnabledDimension {
+		prevForPosture.Enabled = true
+	}
 	for _, id := range unionToolIDs(prev, next) {
 		tool := registry.Tool{ID: id}
-		p := postureFor(prev.Resolve(tool))
+		p := postureFor(prevForPosture.Resolve(tool))
 		n := postureFor(next.Resolve(tool))
-		if skipEnabledDimension {
+		if skipEnabledDimension && id == "" {
+			// The tool-agnostic global enabled dimension is already vetted
+			// by the caller's own enabledDefined check when the global flag
+			// itself changes; neutralize only this one dimension, for only
+			// the global posture, so it cannot be redundantly re-gated here.
+			// A per-tool id's enabled dimension is NOT neutralized: it is
+			// the only place a dropped per-tool opt-out would ever show up
+			// while the global flag is simultaneously turning on.
 			p.enabled = n.enabled
 		}
 		if postureLoosened(p, n) {

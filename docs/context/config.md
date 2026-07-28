@@ -76,19 +76,43 @@ family (#410 → #425 → #434 → #435 → #438 → #440 → #447) kept regener
 An `enabled` transition from `false` to `true` still applies immediately when TOML
 metadata says the file explicitly defined the top-level key (`enabledDefined`); when the
 global `enabled` flag itself changes, `permissivenessLoosened` skips its own enabled-only
-dimension so it cannot re-gate that already-vetted, explicit transition merely because
-every tool's resolved-enabled state also flips as a downstream consequence. Every *other*
-privacy dimension is still compared normally even when `enabled` changes at the same time,
-so a simultaneous, unrelated loosening (e.g. an explicit `enabled = true` arriving in the
-same edit that also happens to truncate away an allowlist) still pays the horizon.
-Beyond that one exemption, this fix does **not** implement a full explicit-vs-defaulted
-distinction for every field: unlike `enabled`, an explicit, deliberate loosening of
-`show_directory`, `directory_basename_only`, the global allowlist, or a per-tool override
-still pays the same three-second horizon as an ambiguous one. This is a disclosed,
-conservative trade-off (latency, not a privacy leak) rather than a silent gap; for
-`show_directory`/`directory_basename_only`, it is actually unreachable in practice, since
-their permissive values can only ever come from bytes explicitly present in the file (see
-below), never from an absent key.
+dimension, but **only for the tool-agnostic global posture** (tool ID `""`), so it cannot
+re-gate that already-vetted, explicit transition merely because the global posture's own
+resolved-enabled state flips. This neutralization is deliberately *not* applied to any
+real per-tool ID's enabled dimension.
+
+That distinction matters because of a second, independent subtlety in `Config.Resolve`:
+it returns early when the global flag is off, *before applying any per-tool override at
+all*. If prev were resolved at its real, disabled value, a per-tool tightening (e.g. an
+explicit `[tools.vim] enabled = false`) would never show up in prev's posture in the first
+place — and neutralizing the enabled dimension on top of that would have blinded the guard
+completely for the disabled→enabled transition specifically, which is exactly the shape of
+a top-down non-atomic writer stalling after line 1 of a file that starts with `enabled =
+true`. An independent reviewer found and reproduced this in round 3, at 16ms instead of the
+3s horizon. `permissivenessLoosened` now resolves **prev** with `Enabled` forced to `true`
+before computing its posture (a local copy used only for this comparison, not the real
+`prev.Enabled` used anywhere else), so per-tool overrides are actually applied and can be
+compared against next's resolved state; only the global (`""`) posture's own enabled
+dimension is then neutralized.
+`TestManagerReloadPreservesPerToolOptOutWhileGlobalEnabledAlsoLoosens` is the regression:
+a config with the global flag off and `[tools.vim] enabled = false` moves to a stalled
+partial containing only `enabled = true` (the per-tool override not yet rewritten), and
+vim must stay resolved-disabled until the horizon elapses even though the global flag
+itself is allowed to flip immediately.
+
+With that fixed, every *other* privacy dimension — including a per-tool ID's own enabled
+dimension — is genuinely compared normally even when the global `enabled` changes at the
+same time, so a simultaneous, unrelated loosening (e.g. an explicit `enabled = true`
+arriving in the same edit that also happens to truncate away an allowlist, or drops a
+per-tool opt-out) still pays the horizon. Beyond the one global-posture exemption above,
+this fix does **not** implement a full explicit-vs-defaulted distinction for every field:
+unlike `enabled`, an explicit, deliberate loosening of `show_directory`,
+`directory_basename_only`, the global allowlist, or a per-tool override still pays the same
+three-second horizon as an ambiguous one. This is a disclosed, conservative trade-off
+(latency, not a privacy leak) rather than a silent gap; for `show_directory`/
+`directory_basename_only`, it is actually unreachable in practice, since their permissive
+values can only ever come from bytes explicitly present in the file (see below), never
+from an absent key.
 
 The candidate snapshot is recorded at the first sampled reload and must match the
 snapshot seen at later reload samples, including the retry fired for the separate
@@ -123,6 +147,19 @@ override carries its own explicit-vs-absent tracking already (`allowlistSet`, se
 `meta.IsDefined("tools", id, "directory_allowlist")`), and an explicit, present-but-empty
 per-tool override remains a valid, deliberate way to opt that tool out of a restrictive
 global allowlist (see the `directory_allowlist` section below).
+
+`privacyPosture`'s `allowlistRestricted` is a boolean (whether the resolved allowlist has
+any entries at all), not a comparison of the entries themselves. It does not notice
+entry-level widening: `["/a/b"]` → `["/a"]` is a broader allowlist but still reads as
+"restricted", and a disjoint swap (`["/a"]` → `["/b"]`) is invisible the same way. This is
+a known, accepted limit rather than an oversight: no strict byte-prefix of a TOML array
+parses as valid TOML, so a truncating, stalling writer cannot produce a widened-but-valid
+allowlist the way it can drop an allowlist to empty or drop a per-tool override to absent —
+only a complete, deliberate rewrite can change specific entries, and the guard is not
+required to delay a config that was never truncated in the first place. If a future
+allowlist representation ever became reachable through a partial write (or a caller started
+constructing `Config` values from something other than a fully-decoded TOML document), this
+reasoning would need to be revisited.
 
 `Manager` currently has no lifecycle/`Close` method. Its `time.AfterFunc` retry retains
 the manager until it fires and may read the config path after the daemon has otherwise
