@@ -461,6 +461,20 @@ func ReadAutomaticUpdateAttempt(path string) (AutomaticUpdateAttempt, bool) {
 	return *entry.AutomaticUpdate, true
 }
 
+// ClearAutomaticUpdateAttempt removes any recorded automatic install attempt,
+// retaining the release-check metadata stored in the same cache. Callers are
+// expected to have already established the attempt is stale (see IsNewer)
+// before calling this; it unconditionally clears whatever is recorded.
+func ClearAutomaticUpdateAttempt(path string) error {
+	return cacheTransaction(path, func(entry cacheEntry) (cacheEntry, bool) {
+		if entry.AutomaticUpdate == nil {
+			return entry, false
+		}
+		entry.AutomaticUpdate = nil
+		return entry, true
+	})
+}
+
 // RecordAutomaticUpdateAttempt replaces the last automatic install attempt
 // while retaining the release-check metadata stored in the same cache.
 func RecordAutomaticUpdateAttempt(path, target string, attemptedAt time.Time, updateErr error) error {

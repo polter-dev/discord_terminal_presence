@@ -36,6 +36,7 @@ type Writer struct {
 	clock            writeClock
 	debugf           func(string, ...any)
 	connectionState  func(bool)
+	publicationState func(error)
 }
 
 type reconnectRequest struct {
@@ -91,6 +92,23 @@ func WithConnectionState(connectionState func(bool)) WriterOption {
 	}
 }
 
+// WithPublicationState registers a hook for whether the current activity is
+// permanently rejected, reported separately from connection health
+// (WithConnectionState). It fires with the rejection error whenever Discord
+// permanently rejects a payload (for example classic IPC code 4000), and
+// with a nil error the moment that rejection clears — either because a
+// later publish succeeds or because presence is cleared (nothing left to
+// reject). It only fires on that rejected/not-rejected transition, never on
+// every successful write (which would otherwise include every periodic
+// reapply), so a caller persisting this to disk is not writing on every tick.
+func WithPublicationState(publicationState func(error)) WriterOption {
+	return func(writer *Writer) {
+		if publicationState != nil {
+			writer.publicationState = publicationState
+		}
+	}
+}
+
 func withWriteClock(clock writeClock) WriterOption {
 	return func(writer *Writer) {
 		if clock != nil {
@@ -125,6 +143,7 @@ func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, e
 		clock:            realWriteClock{},
 		debugf:           func(string, ...any) {},
 		connectionState:  func(bool) {},
+		publicationState: func(error) {},
 	}
 	for _, option := range options {
 		option(writer)
@@ -206,6 +225,14 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		wrote     bool
 		pending   bool
 		rejected  *activityPayload
+
+		// publicationRejected mirrors the default, unreported state: no
+		// activity has ever been permanently rejected. reportPublication
+		// only calls the hook when this actually changes, so a successful
+		// write never fires it (avoiding a call on literally every write,
+		// including each defaultReapplyInterval tick) — it only fires once
+		// per genuine rejection and once per genuine recovery from one.
+		publicationRejected bool
 	)
 
 	setConnected := func(next bool) {
@@ -214,6 +241,15 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		}
 		connected = next
 		w.connectionState(next)
+	}
+
+	reportPublication := func(err error) {
+		next := err != nil
+		if next == publicationRejected {
+			return
+		}
+		publicationRejected = next
+		w.publicationState(err)
 	}
 
 	stopRetry := func() {
@@ -281,6 +317,9 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 			_ = w.client.Logout()
 			setConnected(false)
 		}
+		// Nothing left to reject. reportPublication is itself a no-op
+		// unless a rejection was actually outstanding.
+		reportPublication(nil)
 	}
 
 	applyDesired := func() error {
@@ -309,6 +348,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 				stopWrite()
 				stopRetry()
 				stopReapply()
+				reportPublication(err)
 				return err
 			}
 			if connected {
@@ -327,6 +367,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		stopRetry()
 		w.retryDelay.Reset()
 		scheduleReapply()
+		reportPublication(nil)
 		return nil
 	}
 
@@ -425,6 +466,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 						rejectedPayload := activityPayloadFor(*desired)
 						rejected = &rejectedPayload
 						pending = false
+						reportPublication(err)
 						request.result <- reconnectResult{err: err}
 						continue
 					}
@@ -440,6 +482,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 				wrote = true
 				pending = false
 				scheduleReapply()
+				reportPublication(nil)
 			}
 			request.result <- reconnectResult{}
 		case <-ctx.Done():

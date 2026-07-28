@@ -9,8 +9,8 @@ release lookup and caching. `DefaultCachePath` resolves update state. `InstallMe
 `DetectInstallMethod`, `IsSystemPackageInstall`, `GuidanceForMethod`,
 `UpdateCommandForMethod`, `GenericInstallDir`, and `PerformUpdate` select/run an
 install-aware exact-tag updater. `AutomaticUpdateAttempt`,
-`ReadAutomaticUpdateAttempt`, and `RecordAutomaticUpdateAttempt` persist automation
-status.
+`ReadAutomaticUpdateAttempt`, `RecordAutomaticUpdateAttempt`, and
+`ClearAutomaticUpdateAttempt` persist and retire automation status.
 
 **Key files:** `internal/update/update.go` contains anonymous GitHub lookup, semver,
 cache/lock handling, attempt persistence, updater commands, install detection, and generic

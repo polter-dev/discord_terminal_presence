@@ -894,14 +894,80 @@ func start(args []string) error {
 	// loop, but can never delay or prevent daemon startup.
 	go runAutomaticUpdate(ctx, cfg, version, releaseChecker, updatepkg.ExecRunner{Interactive: false})
 
-	if err := config.EnsureConfigDir(cfg.Path); err == nil {
-		if err := manager.Watch(ctx); err != nil {
-			log.Printf("config watch disabled: %v", err)
-		}
-		return run(ctx, manager, control)
-	}
+	startConfigWatchWithRetry(ctx, manager, cfg.Path)
 
 	return run(ctx, manager, control)
+}
+
+// configWatchRetryInterval bounds how long a user who fixes the config
+// directory/file after a failed watch start (issue #416) waits for the
+// daemon to notice on its own, without a restart.
+const configWatchRetryInterval = 30 * time.Second
+
+// startConfigWatchWithRetry starts the config file watcher, logging exactly
+// like `termp watch` does (config.EnsureConfigDir failing here previously
+// left no log line at all — issue #416) when it cannot start immediately. A
+// watch that fails to start is not a permanent condition: the directory can
+// be a stray file that gets removed, or a permission problem that gets
+// fixed, so this keeps retrying in the background instead of leaving the
+// daemon's "presence is off until the config is valid" startup message
+// permanently unfulfillable.
+func startConfigWatchWithRetry(ctx context.Context, manager *config.Manager, path string) {
+	if tryStartConfigWatch(ctx, manager, path, log.Printf) {
+		return
+	}
+	go retryConfigWatch(ctx, manager, path, configWatchRetryInterval)
+}
+
+// tryStartConfigWatch attempts to start the watcher once, logging any
+// failure through logf (retryConfigWatch passes nil to avoid repeating the
+// same failure every interval). The watcher goroutine started by a
+// successful manager.Watch is bound to ctx, so it still stops on shutdown.
+func tryStartConfigWatch(ctx context.Context, manager *config.Manager, path string, logf func(string, ...any)) bool {
+	if err := config.EnsureConfigDir(path); err != nil {
+		if logf != nil {
+			logf("config watch disabled: %v", err)
+		}
+		return false
+	}
+	if err := manager.Watch(ctx); err != nil {
+		if logf != nil {
+			logf("config watch disabled: %v", err)
+		}
+		return false
+	}
+	return true
+}
+
+// retryConfigWatch periodically retries starting the watch until it
+// succeeds or ctx is cancelled. interval is a parameter (rather than always
+// reading the configWatchRetryInterval constant) so tests can exercise
+// self-healing without a 30-second wait.
+func retryConfigWatch(ctx context.Context, manager *config.Manager, path string, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Quiet on repeated failure so a permanently broken config
+			// directory does not spam the log every interval; the first
+			// failure was already logged by startConfigWatchWithRetry.
+			if tryStartConfigWatch(ctx, manager, path, nil) {
+				log.Print("config watch recovered")
+				// manager.Watch only reacts to fsnotify events from here
+				// on; it never loads the file that is already sitting on
+				// disk. In the #416 repro the user fixes the directory and
+				// drops in a valid config in one burst, before the watch
+				// exists to see any event for it, so without this the
+				// daemon would stay on its stale startup error until a
+				// second, unrelated edit happened to arrive.
+				_ = manager.Reload()
+				return
+			}
+		}
+	}
 }
 
 func startupConfigError(path string, err error) string {
@@ -1001,6 +1067,7 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	writerOptions := []presence.WriterOption{}
 	statePublishers := runDaemonDiscordStatePublisher(ctx, daemonDiscordStatePath(), daemonDiscordStateWriteInterval, os.Getpid(), initialConfigErr)
 	writerOptions = append(writerOptions, presence.WithConnectionState(statePublishers.connection))
+	writerOptions = append(writerOptions, presence.WithPublicationState(statePublishers.publication))
 	if verbose {
 		writerOptions = append(writerOptions, presence.WithDebugf(debugf))
 	}
@@ -1095,6 +1162,13 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 				applied = next
 				haveGoodConfig = true
 				statePublishers.config(nil, false)
+				// A reload-introduced warning previously reached `termp
+				// status` (a fresh config.Load() there recomputes the same
+				// warnings) but never the daemon log, unlike a startup
+				// warning logged via the same helper (issue #416 comment).
+				// Routing both origins through logConfigWarnings keeps a
+				// future call site from silently omitting the log.
+				logConfigWarnings(next.config.Warnings)
 				if usageStore != nil {
 					usageStore.Prune(registryToolIDs(applied.registry.Tools()), time.Now())
 				}
@@ -1426,10 +1500,14 @@ func status(args []string) error {
 	}
 	daemonState, daemonStateOK := readFreshDaemonDiscordState(daemonDiscordStatePath(), time.Now(), daemonDiscordStateStaleAfter)
 	configOK, configError, configUsingLastGood := statusConfigHealth(loadErr, daemonPID, daemonState, daemonStateOK)
+	publicationRejected, publicationError, publicationAt := statusPublicationHealth(daemonPID, daemonState, daemonStateOK)
 	info := statusInfo{
 		running:             running,
 		discord:             probes.discord,
 		detectedTool:        probes.detectedTool,
+		publicationRejected: publicationRejected,
+		publicationError:    publicationError,
+		publicationAt:       publicationAt,
 		serviceSupported:    serviceState.Supported,
 		serviceInstalled:    serviceState.Installed,
 		serviceLoaded:       serviceState.Loaded,
@@ -1442,7 +1520,7 @@ func status(args []string) error {
 		configError:         configError,
 		configUsingLastGood: configUsingLastGood,
 		configWarnings:      cfg.Warnings,
-		updateFailure:       automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, runtime.GOOS, updateMethod),
+		updateFailure:       automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, version, runtime.GOOS, updateMethod),
 		homeDir:             homeDir,
 	}
 
@@ -1485,6 +1563,23 @@ func statusConfigHealth(loadErr error, daemonPID int, state daemonDiscordState, 
 		usingLastGood = true
 	}
 	return configOK, configError, usingLastGood
+}
+
+// statusPublicationHealth reports the daemon's last publication result,
+// separate from Discord connection health: a healthy IPC connection can
+// still have its most recent activity permanently rejected (classic IPC code
+// 4000). It only trusts a fresh state record from the currently running
+// daemon, and reports "not rejected" once that daemon has recorded a
+// successful publish or cleared presence after any earlier rejection.
+func statusPublicationHealth(daemonPID int, state daemonDiscordState, stateOK bool) (bool, string, time.Time) {
+	if !stateOK || daemonPID <= 0 || state.PID != daemonPID || state.PublicationOK == nil || *state.PublicationOK {
+		return false, "", time.Time{}
+	}
+	var at time.Time
+	if state.PublicationAt != nil {
+		at = *state.PublicationAt
+	}
+	return true, state.PublicationError, at
 }
 
 type statusProbeFuncs struct {
@@ -1586,6 +1681,19 @@ type daemonDiscordState struct {
 	ConfigOK            *bool     `json:"config_ok,omitempty"`
 	ConfigError         string    `json:"config_error,omitempty"`
 	ConfigUsingLastGood bool      `json:"config_using_last_good,omitempty"`
+	// PublicationOK records the outcome of the most recent activity
+	// publication attempt, separate from Connected (transport health).
+	// Discord IPC can permanently reject a payload (classic IPC code 4000)
+	// while the connection stays healthy, so status must be able to tell
+	// "connected" apart from "published". It clears (returns to nil/"")
+	// the moment a later publish succeeds or presence is cleared; see
+	// presence.WithPublicationState. PublicationAt is a pointer (not a bare
+	// time.Time) because encoding/json's omitempty never omits a zero-value
+	// struct field, so a bare time.Time would always render as
+	// "0001-01-01T00:00:00Z" before anything was ever published.
+	PublicationOK    *bool      `json:"publication_ok,omitempty"`
+	PublicationError string     `json:"publication_error,omitempty"`
+	PublicationAt    *time.Time `json:"publication_at,omitempty"`
 }
 
 func daemonDiscordStatePath() string {
@@ -1593,8 +1701,9 @@ func daemonDiscordStatePath() string {
 }
 
 type daemonStatePublishers struct {
-	connection func(bool)
-	config     func(error, bool)
+	connection  func(bool)
+	config      func(error, bool)
+	publication func(error)
 }
 
 func runDaemonDiscordStatePublisher(ctx context.Context, path string, interval time.Duration, pid int, initialConfigErr error) daemonStatePublishers {
@@ -1663,6 +1772,15 @@ func runDaemonDiscordStatePublisher(ctx context.Context, path string, interval t
 				state.ConfigOK = &ok
 				state.ConfigError = errorString(err)
 				state.ConfigUsingLastGood = err != nil && usingLastGood
+			})
+		},
+		publication: func(err error) {
+			publish(func(state *daemonDiscordState) {
+				ok := err == nil
+				at := time.Now()
+				state.PublicationOK = &ok
+				state.PublicationError = errorString(err)
+				state.PublicationAt = &at
 			})
 		},
 	}
@@ -1758,12 +1876,27 @@ func processIdentityMatches(pid int, expectedStartTime uint64, alive, looksLikeT
 	return actualStartTime == expectedStartTime
 }
 
+// formatDiscordStatus reports what the probe actually established, not more.
+// Each branch above the default asserts something concrete because the
+// matched sentinel error establishes it (e.g. ErrDiscordIPCNotFound means no
+// endpoint was found at all, so "not running" is warranted). The fallback
+// below previously repeated the ErrDiscordIPCUnreachable wording —
+// "Discord is running but unreachable" — for *any* unmatched error,
+// including ones that say nothing about Discord running at all (issue
+// flagged during the PR #423 review: a malformed DISCORD_IPC_PATH override
+// would render this way too, which is actively misleading). An unrecognized
+// error only proves the probe couldn't determine Discord's state; it must
+// not claim the more specific "running but unreachable" diagnosis it never
+// established.
 func formatDiscordStatus(err error) string {
 	if err == nil {
 		return "connected"
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "unknown (probe timed out)"
+	}
+	if errors.Is(err, presence.ErrDiscordIPCOverrideInvalid) {
+		return "misconfigured (DISCORD_IPC_PATH override is invalid)"
 	}
 	if errors.Is(err, presence.ErrDiscordIPCNotFound) {
 		return "not running (start Discord to show presence)"
@@ -1774,7 +1907,7 @@ func formatDiscordStatus(err error) string {
 	if errors.Is(err, presence.ErrDiscordIPCHandshakeTimeout) {
 		return "not responding (Discord IPC handshake timed out)"
 	}
-	return "connection failed (Discord is running but unreachable)"
+	return fmt.Sprintf("unknown (%v)", err)
 }
 
 func applyStatusStageResult(results *statusProbeResults, result statusStageResult) {
@@ -1792,6 +1925,9 @@ type statusInfo struct {
 	running             bool
 	discord             string
 	detectedTool        string
+	publicationRejected bool
+	publicationError    string
+	publicationAt       time.Time
 	serviceSupported    bool
 	serviceInstalled    bool
 	serviceLoaded       string
@@ -1842,12 +1978,20 @@ func formatStatus(info statusInfo) string {
 		configFields = append(configFields, outputField{label: "Warning", value: warning})
 	}
 
+	daemonFields := []outputField{
+		{label: "Running", value: yesNo(info.running)},
+		{label: "Discord", value: info.discord},
+		{label: "Detected tool", value: info.detectedTool},
+	}
+	if info.publicationRejected {
+		daemonFields = append(daemonFields, outputField{
+			label: "Published",
+			value: fmt.Sprintf("rejected at %s: %s", info.publicationAt.Local().Format(time.RFC3339), info.publicationError),
+		})
+	}
+
 	sections := []outputSection{
-		outputSection{header: "Daemon", fields: []outputField{
-			{label: "Running", value: yesNo(info.running)},
-			{label: "Discord", value: info.discord},
-			{label: "Detected tool", value: info.detectedTool},
-		}},
+		outputSection{header: "Daemon", fields: daemonFields},
 		outputSection{header: "Autostart", fields: autostart},
 		outputSection{header: "Config", fields: configFields},
 	}
@@ -1859,9 +2003,14 @@ func formatStatus(info statusInfo) string {
 	return formatSections("termp status", sections...)
 }
 
-func automaticUpdateFailure(path string) string {
+// automaticUpdateFailure renders the cached automatic-update attempt, if any
+// is still actionable. A recorded attempt is stale — and suppressed — once
+// current is no longer behind the attempted target: that covers both a later
+// automatic success and a manual update (`termp update`, brew upgrade, a
+// package manager) that independently reached the same or a newer version.
+func automaticUpdateFailure(path, current string) string {
 	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
-	if !ok || attempt.Error == "" {
+	if !ok || attempt.Error == "" || !updatepkg.IsNewer(current, attempt.Target) {
 		return ""
 	}
 	outcome := "failed"
@@ -1876,21 +2025,27 @@ func automaticUpdateFailure(path string) string {
 	)
 }
 
-func automaticUpdateStatus(path string, enabled bool, goos string, method updatepkg.InstallMethod) string {
-	if enabled {
-		attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
-		var target []string
-		if ok {
-			target = []string{attempt.Target}
-		}
-		if err := automaticUpdatePlatformPreflight(goos, method, target...); err != nil {
-			if ok && attempt.Skipped && attempt.Error == err.Error() {
-				return automaticUpdateFailure(path)
-			}
-			return fmt.Sprintf("skipped: %s", err)
-		}
+// automaticUpdateStatus reports the automatic-update section for `termp
+// status`. It renders nothing when automatic updates are disabled: the
+// "Automatic" line describes automatic-update behavior, and a stale failure
+// from before the user turned it off is no longer actionable advice about a
+// feature that is not running.
+func automaticUpdateStatus(path string, enabled bool, current, goos string, method updatepkg.InstallMethod) string {
+	if !enabled {
+		return ""
 	}
-	return automaticUpdateFailure(path)
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
+	var target []string
+	if ok {
+		target = []string{attempt.Target}
+	}
+	if err := automaticUpdatePlatformPreflight(goos, method, target...); err != nil {
+		if ok && attempt.Skipped && attempt.Error == err.Error() {
+			return automaticUpdateFailure(path, current)
+		}
+		return fmt.Sprintf("skipped: %s", err)
+	}
+	return automaticUpdateFailure(path, current)
 }
 
 func autostartLocationLabel(goos string) string {

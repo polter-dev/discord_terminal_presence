@@ -298,6 +298,182 @@ func assertConnectionStates(t *testing.T, mu *sync.Mutex, got *[]bool, want []bo
 	}
 }
 
+func TestWriterPublicationStateHookReportsRejectionAndChangedActivityClearsIt(t *testing.T) {
+	client := newFakeClient(nil)
+	client.setSetErrors(&discordIPCError{code: 4000, message: "validation failed"}, nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	var mu sync.Mutex
+	var results []error
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(0),
+		withReapplyInterval(time.Second),
+		withWriteClock(clock),
+		WithPublicationState(func(pubErr error) {
+			mu.Lock()
+			defer mu.Unlock()
+			results = append(results, pubErr)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	// Connection health (WithConnectionState) stays healthy across a
+	// permanent per-payload rejection — status must be able to tell that
+	// apart from whether the activity was actually published (issue #404).
+	sendActivity(t, ctx, activities, &Activity{Details: "rejected"})
+	client.waitForSet(t, 1)
+	waitForPublicationResults(t, &mu, &results, 1)
+	mu.Lock()
+	if results[0] == nil {
+		mu.Unlock()
+		t.Fatal("publication hook did not report the permanent rejection")
+	}
+	mu.Unlock()
+
+	// A later successful publish (a changed activity) is what clears a
+	// reported rejection — never merely the passage of time.
+	sendActivity(t, ctx, activities, &Activity{Details: "changed"})
+	client.waitForSet(t, 2)
+	waitForPublicationResults(t, &mu, &results, 2)
+	mu.Lock()
+	if results[1] != nil {
+		t.Fatalf("publication hook left rejection reported after a successful publish: %v", results[1])
+	}
+	mu.Unlock()
+
+	cancel()
+	<-done
+}
+
+func TestWriterPublicationStateHookClearsOnPresenceCleared(t *testing.T) {
+	client := newFakeClient(nil)
+	client.setSetErrors(&discordIPCError{code: 4000, message: "validation failed"}, nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	var mu sync.Mutex
+	var results []error
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(0),
+		withReapplyInterval(time.Second),
+		withWriteClock(clock),
+		WithPublicationState(func(pubErr error) {
+			mu.Lock()
+			defer mu.Unlock()
+			results = append(results, pubErr)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "rejected"})
+	client.waitForSet(t, 1)
+	waitForPublicationResults(t, &mu, &results, 1)
+
+	// Clearing presence entirely (detector reports "none") leaves nothing to
+	// reject; the rejection record must clear here too, not just on a later
+	// successful publish with new content.
+	sendActivity(t, ctx, activities, nil)
+	client.waitForLogout(t, 1)
+	waitForPublicationResults(t, &mu, &results, 2)
+	mu.Lock()
+	if results[1] != nil {
+		t.Fatalf("publication hook left rejection reported after presence was cleared: %v", results[1])
+	}
+	mu.Unlock()
+
+	cancel()
+	<-done
+}
+
+func TestWriterPublicationStateHookIgnoresRepeatedSuccessfulReapply(t *testing.T) {
+	client := newFakeClient(nil)
+	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))
+	var mu sync.Mutex
+	var results []error
+	writer, err := NewWriter(client, "app-id",
+		WithRetryDelays(0),
+		WithMinWriteInterval(0),
+		withReapplyInterval(15*time.Second),
+		withWriteClock(clock),
+		WithPublicationState(func(pubErr error) {
+			mu.Lock()
+			defer mu.Unlock()
+			results = append(results, pubErr)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	activities := make(chan *Activity)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writer.RunActivities(ctx, activities)
+	}()
+
+	sendActivity(t, ctx, activities, &Activity{Details: "steady"})
+	client.waitForSet(t, 1)
+	clock.waitForTimerCount(t, 1) // reapply scheduled
+
+	// Two more successful writes via the periodic reapply timer, with no
+	// rejection ever recorded. A caller persisting every publicationState
+	// call to disk (as cmd/termp does) would otherwise write on every one
+	// of these ticks for no reason: nothing about "is the last publish
+	// rejected" ever changed.
+	clock.Advance(15 * time.Second)
+	client.waitForSet(t, 2)
+	clock.Advance(15 * time.Second)
+	client.waitForSet(t, 3)
+
+	mu.Lock()
+	if len(results) != 0 {
+		t.Fatalf("publication hook fired %d times across 3 successful writes with no rejection ever recorded: %v", len(results), results)
+	}
+	mu.Unlock()
+
+	cancel()
+	<-done
+}
+
+func waitForPublicationResults(t *testing.T, mu *sync.Mutex, got *[]error, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(*got)
+		mu.Unlock()
+		if n >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d publication results, got %d", want, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestWriterReappliesActivityAfterRemoteClose(t *testing.T) {
 	client := newFakeClient(nil)
 	clock := newFakeWriteClock(time.Date(2026, 7, 4, 13, 0, 0, 0, time.UTC))

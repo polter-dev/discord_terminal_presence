@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -961,6 +962,78 @@ func TestStatusConfigHealthDistinguishesStartupFromReloadFailure(t *testing.T) {
 	}
 }
 
+func TestStatusPublicationHealthReportsRejectionSeparatelyFromConnection(t *testing.T) {
+	rejected := false
+	at := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+
+	// Connected (Connected: true) but the last publish was rejected — issue
+	// #404's exact scenario: connection health must not paper over this.
+	gotRejected, gotErr, gotAt := statusPublicationHealth(42, daemonDiscordState{
+		PID:              42,
+		Connected:        true,
+		PublicationOK:    &rejected,
+		PublicationError: "code 4000: rejected",
+		PublicationAt:    &at,
+	}, true)
+	if !gotRejected || gotErr != "code 4000: rejected" || !gotAt.Equal(at) {
+		t.Fatalf("statusPublicationHealth() = (%t, %q, %v), want (true, %q, %v)", gotRejected, gotErr, gotAt, "code 4000: rejected", at)
+	}
+
+	// A later successful publish (PublicationOK: true) clears the rejection.
+	ok := true
+	gotRejected, gotErr, _ = statusPublicationHealth(42, daemonDiscordState{
+		PID:           42,
+		PublicationOK: &ok,
+	}, true)
+	if gotRejected || gotErr != "" {
+		t.Fatalf("statusPublicationHealth() after success = (%t, %q), want (false, \"\")", gotRejected, gotErr)
+	}
+
+	// Stale/mismatched/absent daemon state never reports a rejection this
+	// process cannot vouch for.
+	for name, args := range map[string]struct {
+		daemonPID int
+		state     daemonDiscordState
+		stateOK   bool
+	}{
+		"stale state":     {daemonPID: 42, state: daemonDiscordState{PID: 42, PublicationOK: &rejected}, stateOK: false},
+		"pid mismatch":    {daemonPID: 42, state: daemonDiscordState{PID: 7, PublicationOK: &rejected}, stateOK: true},
+		"no daemon":       {daemonPID: 0, state: daemonDiscordState{PID: 42, PublicationOK: &rejected}, stateOK: true},
+		"never published": {daemonPID: 42, state: daemonDiscordState{PID: 42}, stateOK: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gotRejected, gotErr, _ := statusPublicationHealth(args.daemonPID, args.state, args.stateOK)
+			if gotRejected || gotErr != "" {
+				t.Fatalf("statusPublicationHealth() = (%t, %q), want (false, \"\")", gotRejected, gotErr)
+			}
+		})
+	}
+}
+
+func TestFormatStatusReportsRejectedPublicationInDaemonSection(t *testing.T) {
+	at := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	got := formatStatus(statusInfo{
+		discord:             "connected",
+		configOK:            true,
+		publicationRejected: true,
+		publicationError:    "discord ipc: code 4000: rejected",
+		publicationAt:       at,
+	})
+	if !strings.Contains(got, "Discord") || !strings.Contains(got, "connected") {
+		t.Fatalf("formatStatus() lost connection health:\n%s", got)
+	}
+	wantPublished := fmt.Sprintf("rejected at %s: discord ipc: code 4000: rejected", at.Local().Format(time.RFC3339))
+	if !strings.Contains(got, "Published") || !strings.Contains(got, wantPublished) {
+		t.Fatalf("formatStatus() missing rejected-publication line %q:\n%s", wantPublished, got)
+	}
+
+	// A healthy publication renders no "Published" line at all.
+	clean := formatStatus(statusInfo{discord: "connected", configOK: true})
+	if strings.Contains(clean, "Published") {
+		t.Fatalf("formatStatus() reported a publication line with nothing rejected:\n%s", clean)
+	}
+}
+
 func TestFormatStatusSanitizesExternallyDerivedText(t *testing.T) {
 	got := formatStatus(statusInfo{
 		detectedTool:   "safe\x1b]52;c;clipboard\x07\u200fevil",
@@ -1258,6 +1331,43 @@ func TestWriteDaemonDiscordStateUses0600(t *testing.T) {
 	assertPIDFileMode(t, path)
 }
 
+func TestDaemonDiscordStatePublicationAtOmittedWhenNeverPublished(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "discord.json")
+	state := daemonDiscordState{
+		Connected: true,
+		UpdatedAt: time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC),
+		PID:       1234,
+	}
+	if err := writeDaemonDiscordState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PublicationAt is a *time.Time specifically because encoding/json's
+	// omitempty never omits a zero-value struct field: a bare time.Time
+	// would always render "0001-01-01T00:00:00Z" here even though nothing
+	// was ever published. Assert the field is actually absent, not just
+	// present-with-a-nonsense-value.
+	if strings.Contains(string(data), "publication_at") {
+		t.Fatalf("daemon.json included publication_at before anything was published:\n%s", data)
+	}
+
+	at := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	state.PublicationAt = &at
+	if err := writeDaemonDiscordState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"publication_at": "2026-07-28T09:00:00Z"`) {
+		t.Fatalf("daemon.json did not record a real publication_at once set:\n%s", data)
+	}
+}
+
 func writeDaemonDiscordStateFixture(t *testing.T, state daemonDiscordState) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "discord.json")
@@ -1287,6 +1397,24 @@ func TestRunStatusProbesDiscordStateMapping(t *testing.T) {
 			name: "handshake timeout",
 			err:  presence.ErrDiscordIPCHandshakeTimeout,
 			want: "not responding (Discord IPC handshake timed out)",
+		},
+		{
+			// A malformed DISCORD_IPC_PATH override (#423) is a
+			// configuration problem, not "Discord is running but
+			// unreachable" — it must get its own honest diagnosis rather
+			// than falling into either the specific unreachable case or the
+			// generic unknown fallback.
+			name: "invalid DISCORD_IPC_PATH override",
+			err:  presence.ErrDiscordIPCOverrideInvalid,
+			want: "misconfigured (DISCORD_IPC_PATH override is invalid)",
+		},
+		{
+			// An unrecognized error must not fall through to the specific
+			// "Discord is running but unreachable" diagnosis: the probe
+			// never established that Discord is running at all.
+			name: "unrecognized error",
+			err:  errors.New("boom"),
+			want: "unknown (boom)",
 		},
 	}
 	for _, tt := range tests {
@@ -1701,7 +1829,7 @@ func TestAutomaticGenericWindowsUpdateRecordsLimitation(t *testing.T) {
 			t.Fatalf("recorded skip %q missing %q", attempt.Error, want)
 		}
 	}
-	status := automaticUpdateStatus(statePath, true, "windows", updatepkg.InstallGeneric)
+	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric)
 	for _, want := range []string{"skipped for v1.1.0", "not supported on Windows", "run `termp update`"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status update reason %q missing %q", status, want)
@@ -1711,7 +1839,7 @@ func TestAutomaticGenericWindowsUpdateRecordsLimitation(t *testing.T) {
 
 func TestAutomaticUpdateStatusReportsGenericWindowsLimitationBeforeAttempt(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "missing-update-check.json")
-	status := automaticUpdateStatus(statePath, true, "windows", updatepkg.InstallGeneric)
+	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric)
 	for _, want := range []string{"skipped:", "not supported on Windows", "run `termp update`"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status update reason %q missing %q", status, want)
@@ -1721,7 +1849,7 @@ func TestAutomaticUpdateStatusReportsGenericWindowsLimitationBeforeAttempt(t *te
 	if !strings.Contains(rendered, "Updates\n  Automatic  "+status+"\n") {
 		t.Fatalf("status did not report generic Windows automatic-update limitation:\n%s", rendered)
 	}
-	if got := automaticUpdateStatus(statePath, false, "windows", updatepkg.InstallGeneric); got != "" {
+	if got := automaticUpdateStatus(statePath, false, "1.0.0", "windows", updatepkg.InstallGeneric); got != "" {
 		t.Fatalf("disabled automatic update status = %q, want empty", got)
 	}
 }
@@ -1855,7 +1983,7 @@ func TestAutomaticUpdateFailureIsReportedAndLaterSuccessClearsIt(t *testing.T) {
 	runner := &recordingUpdateRunner{err: errors.New("permission denied")}
 	runAutomaticUpdateWithStatePath(context.Background(), cfg, "1.0.0", checker, runner, statePath)
 
-	failure := automaticUpdateFailure(statePath)
+	failure := automaticUpdateFailure(statePath, "1.0.0")
 	for _, want := range []string{"failed for v1.1.0", "permission denied", "run `termp update` manually"} {
 		if !strings.Contains(failure, want) {
 			t.Fatalf("automatic update failure %q missing %q", failure, want)
@@ -1868,12 +1996,82 @@ func TestAutomaticUpdateFailureIsReportedAndLaterSuccessClearsIt(t *testing.T) {
 
 	runner.err = nil
 	runAutomaticUpdateWithStatePath(context.Background(), cfg, "1.0.0", checker, runner, statePath)
-	if failure := automaticUpdateFailure(statePath); failure != "" {
+	if failure := automaticUpdateFailure(statePath, "1.0.0"); failure != "" {
 		t.Fatalf("successful automatic update left stale failure %q", failure)
 	}
 	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
 	if !ok || attempt.Target != "v1.1.0" || attempt.Error != "" {
 		t.Fatalf("successful automatic update attempt = (%+v, %t), want cleared v1.1.0 attempt", attempt, ok)
+	}
+}
+
+func TestAutomaticUpdateFailureSuppressedWhenRunningVersionAlreadySatisfiesTarget(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "update-check.json")
+	attemptedAt := time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
+	if err := updatepkg.RecordAutomaticUpdateAttempt(statePath, "v1.1.0", attemptedAt, errors.New("download installer: exit status 22")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A user who updated manually to the recorded target (or past it) is
+	// proof the failure is stale (issue #418): it must not render, even
+	// though the record itself was never touched again.
+	for _, current := range []string{"v1.1.0", "v1.2.0"} {
+		if got := automaticUpdateFailure(statePath, current); got != "" {
+			t.Fatalf("automaticUpdateFailure(%q) = %q, want suppressed (already satisfies v1.1.0)", current, got)
+		}
+	}
+
+	// Still behind the recorded target: the failure is genuinely actionable
+	// and must keep rendering unchanged.
+	if got := automaticUpdateFailure(statePath, "v1.0.0"); !strings.Contains(got, "failed for v1.1.0") {
+		t.Fatalf("automaticUpdateFailure(%q) = %q, want the unresolved v1.1.0 failure", "v1.0.0", got)
+	}
+}
+
+func TestAutomaticUpdateStatusSuppressedWhenAutoUpdateDisabled(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "update-check.json")
+	attemptedAt := time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
+	if err := updatepkg.RecordAutomaticUpdateAttempt(statePath, "v1.1.0", attemptedAt, errors.New("download installer: exit status 22")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Even though the recorded failure is still for a genuinely newer
+	// version, turning auto_update off retires the "Automatic" status line:
+	// it describes automatic-update behavior, and automatic updates are not
+	// running (issue #418).
+	if got := automaticUpdateStatus(statePath, false, "v1.0.0", "linux", updatepkg.InstallGo); got != "" {
+		t.Fatalf("automaticUpdateStatus() with auto_update disabled = %q, want empty", got)
+	}
+	if got := automaticUpdateStatus(statePath, true, "v1.0.0", "linux", updatepkg.InstallGo); got == "" {
+		t.Fatal("automaticUpdateStatus() with auto_update enabled unexpectedly empty; want the still-actionable failure")
+	}
+}
+
+func TestAutomaticUpdateCheckClearsStaleAttemptWhenNoLongerNewer(t *testing.T) {
+	_ = os.Unsetenv("NO_UPDATE_CHECK")
+	statePath := filepath.Join(t.TempDir(), "update-check.json")
+	attemptedAt := time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
+	if err := updatepkg.RecordAutomaticUpdateAttempt(statePath, "v1.1.0", attemptedAt, errors.New("download installer: exit status 22")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The user is already running the recorded target; a fresh check finds
+	// no newer release (checker.Check returns ok=false), which previously
+	// left the stale record in place until some future release's automatic
+	// attempt happened to succeed (issue #418, item 2).
+	source := &staticReleaseSource{latest: "v1.1.0"}
+	checker := updatepkg.NewChecker(source, statePath)
+	cfg := config.Default()
+	cfg.AutoUpdate = true
+	runner := &recordingUpdateRunner{}
+
+	runAutomaticUpdateWithStatePath(context.Background(), cfg, "v1.1.0", checker, runner, statePath)
+
+	if runner.calls != 0 {
+		t.Fatalf("update runner invoked %d times, want 0 (no newer release)", runner.calls)
+	}
+	if _, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath); ok {
+		t.Fatal("stale automatic update attempt was not cleared once the target was no longer newer")
 	}
 }
 
@@ -2075,7 +2273,7 @@ func TestAutomaticSystemPackageUpdateIsSkippedWithoutInstalling(t *testing.T) {
 			if !ok || !attempt.Skipped || !strings.Contains(attempt.Error, updatepkg.GuidanceForMethod(method, "v1.1.0").Text) {
 				t.Fatalf("automatic attempt = (%+v, %t), want managed-package skip", attempt, ok)
 			}
-			status := automaticUpdateStatus(statePath, true, "linux", method)
+			status := automaticUpdateStatus(statePath, true, "1.0.0", "linux", method)
 			if !strings.Contains(status, "skipped for v1.1.0") || !strings.Contains(status, updatepkg.GuidanceForMethod(method, "v1.1.0").Text) {
 				t.Fatalf("automatic package status = %q, want recorded release-package guidance", status)
 			}
@@ -2417,6 +2615,95 @@ func TestConfigWarningLogBoundariesSanitizeTerminalText(t *testing.T) {
 
 	if got := output.String(); got != "bad warning\nanother ; warning\n" {
 		t.Fatalf("warning output = %q, want sanitized log lines", got)
+	}
+}
+
+func TestTryStartConfigWatchLogsExactlyLikeWatchCommand(t *testing.T) {
+	dir := t.TempDir()
+	confDir := filepath.Join(dir, "termp")
+	// Stray file where the config directory should be — the exact #416 repro.
+	if err := os.WriteFile(confDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(confDir, "config.toml")
+	manager := config.NewManagerPath(configPath)
+
+	var logs []string
+	logf := func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+
+	if tryStartConfigWatch(context.Background(), manager, configPath, logf) {
+		t.Fatal("tryStartConfigWatch() succeeded against a stray file, want failure")
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "config watch disabled") {
+		t.Fatalf("tryStartConfigWatch() logs = %v, want exactly one \"config watch disabled\" line (previously missing entirely — issue #416)", logs)
+	}
+}
+
+func TestConfigWatchSelfHealsOnceDirectoryBecomesAvailable(t *testing.T) {
+	dir := t.TempDir()
+	confDir := filepath.Join(dir, "termp")
+	if err := os.WriteFile(confDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(confDir, "config.toml")
+	manager := config.NewManagerPath(configPath)
+
+	if tryStartConfigWatch(context.Background(), manager, configPath, func(string, ...any) {}) {
+		t.Fatal("tryStartConfigWatch() unexpectedly succeeded against a stray file")
+	}
+
+	// The user fixes everything in one burst — exactly like the issue #416
+	// repro (`rm stray && mkdir && cp config`) — entirely BEFORE the retry
+	// loop ever gets a chance to look again. By the time retryConfigWatch's
+	// ticker fires, the valid config is already sitting on disk unchanged,
+	// so manager.Watch's fsnotify listener never sees a Write/Create event
+	// for it: manager.Watch only reacts to *future* filesystem events, it
+	// does not load whatever is already there. A version of the fix that
+	// only starts the watcher (without also reloading once) would leave
+	// haveGoodConfig false and the daemon on its stale startup error
+	// forever — this test must fail against that version, not just pass
+	// once "enough" edits eventually happen after recovery.
+	if err := os.Remove(confDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(confDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("scan_interval = \"5s\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		retryConfigWatch(ctx, manager, configPath, 5*time.Millisecond)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retryConfigWatch never recovered once the config directory became available (presence would stay off forever — issue #416)")
+	}
+
+	// No further edit happens from here on. The already-fixed config must
+	// have been picked up as part of recovering the watch itself — if
+	// recovery only starts the watcher without reloading once, this times
+	// out, because nothing ever touches the file again to generate an
+	// fsnotify event.
+	select {
+	case result := <-manager.Reloads():
+		if result.Err != nil {
+			t.Fatalf("reload after self-heal failed: %v", result.Err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("config that was already fixed before recovery was never loaded (self-heal started watching but did not reload — issue #416)")
+	}
+	if _, err := manager.Current(); err != nil {
+		t.Fatalf("manager.Current() after self-heal = %v, want the fixed config applied", err)
 	}
 }
 

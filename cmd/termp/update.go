@@ -82,6 +82,19 @@ func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.
 	cancelCheck()
 	if !ok {
 		debugf("automatic update check skipped or found no newer release")
+		// A previously recorded failure/skip can outlive its own relevance:
+		// the user may have updated manually, or a later check may simply
+		// no longer see a newer release. Once the recorded target is no
+		// longer newer than the running version, it is stale — clear it
+		// here too, rather than waiting for some future automatic attempt
+		// to happen to succeed (issue #418).
+		if attempt, attemptOK := updatepkg.ReadAutomaticUpdateAttempt(statePath); attemptOK && attempt.Error != "" && !updatepkg.IsNewer(current, attempt.Target) {
+			if err := updatepkg.ClearAutomaticUpdateAttempt(statePath); err != nil {
+				debugf("stale automatic update attempt could not be cleared: %v", err)
+			} else {
+				debugf("cleared stale automatic update attempt for %s", attempt.Target)
+			}
+		}
 		return
 	}
 
