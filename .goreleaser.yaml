@@ -87,9 +87,9 @@ homebrew_casks:
 
       +------------------------------------------------------------------------------+
       |                                                                              |
-      |   TERMP INSTALLED                                                            |
+      |   TERMP SETUP                                                                |
       |                                                                              |
-      |   NEXT STEP - RUN THIS NOW:                                                  |
+      |   AFTER HOMEBREW FINISHES, RUN:                                              |
       |                                                                              |
       |                            >>>  termp setup  <<<                             |
       |                                                                              |
