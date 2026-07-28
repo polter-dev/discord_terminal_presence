@@ -1,4 +1,17 @@
 #!/bin/sh
 
-printf '%s\n' 'Run `termp setup`; Discord stays blank until you do.' || :
+printf '%s\n' \
+	'' \
+	'+------------------------------------------------------------------------------+' \
+	'|                                                                              |' \
+	'|   TERMP INSTALLED                                                            |' \
+	'|                                                                              |' \
+	'|   NEXT STEP - RUN THIS NOW:                                                  |' \
+	'|                                                                              |' \
+	'|                            >>>  termp setup  <<<                             |' \
+	'|                                                                              |' \
+	'|   Discord stays blank until you do.                                          |' \
+	'|                                                                              |' \
+	'+------------------------------------------------------------------------------+' \
+	'' || :
 exit 0

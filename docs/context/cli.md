@@ -51,9 +51,13 @@ exact retry command built for its detected Homebrew, Go, or generic install meth
 Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned
 hand-written Formula draft was removed under #303.
-Homebrew Cask installs and deb/rpm postinstall scripts print the same plain-text setup
-instruction; the package script always exits successfully so guidance cannot break an
-install.
+Homebrew Cask installs and deb/rpm postinstall scripts print the same prominent,
+fixed-width 80-column ASCII setup box. Homebrew prints Cask caveats unindented at
+column 0, so the box renders intact. GoReleaser's caveats templating trims the
+authored padding blank lines, so deb/rpm is the only channel whose padding comes
+from this repo; Homebrew renders the box directly under its own `==> Caveats`
+header, followed by a single trailing blank line that Homebrew itself emits. The
+package script always exits successfully so guidance cannot break an install.
 
 The installer resolves one tag for archive/checksum, prefers
 `https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}`, and falls back to the tag-pinned
