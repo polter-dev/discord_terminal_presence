@@ -512,10 +512,14 @@ const (
 )
 
 // provisionalConfigSnapshot reports whether candidate could be an incomplete
-// non-atomic rewrite: an existing empty file, or a strict prefix of the last
-// successfully accepted file content.
+// non-atomic rewrite: a previously accepted file that is now missing, an
+// existing empty file, or a strict prefix of the last successfully accepted
+// file content.
 func provisionalConfigSnapshot(candidate, accepted fileSnapshot) bool {
-	if !candidate.exists || candidate.err != nil {
+	if !candidate.exists {
+		return accepted.exists && accepted.err == nil
+	}
+	if candidate.err != nil {
 		return false
 	}
 	if len(candidate.data) == 0 {

@@ -25,19 +25,21 @@ last-good config; daemon/watch rendering labels them as watcher errors instead o
 failures. Windows migrates legacy state to the native config directory on a best-effort
 basis.
 
-`Manager.Reload` defends against non-atomic (truncate-then-write) saves, which is what a
-transient empty or partial file — often still syntactically valid TOML on its own — comes
-from. Before accepting a read as a reload result, `settledConfigSnapshot` normally waits
-for two consecutive reads of the file to agree, reading every ~15ms, up to 20 attempts
-(~300ms budget). A candidate is instead provisional when it is an existing empty file,
-or when its bytes are a strict prefix of the manager's last successfully accepted,
-error-free file snapshot. Provisional candidates must remain byte-identical across the
-full settle budget before acceptance. If one changes during that budget, the reload
-leaves last-good and `LastError` untouched and relies on the write's completion to fire
-another fsnotify event. A deliberately blanked config and a deliberate trailing-line
-deletion still load after remaining stable for the full budget, preserving the reset and
-shortening paths with extra latency only for those provisional states. `LoadPath` remains
-a single-read operation and does not use settle semantics.
+`Manager.Reload` defends against non-atomic saves, including truncate-then-write and
+unlink-then-recreate. Those saves can expose a transient missing, empty, or partial file;
+an empty or partial file is often still syntactically valid TOML on its own. Before
+accepting a read as a reload result, `settledConfigSnapshot` normally waits for two
+consecutive reads of the file to agree, reading every ~15ms, up to 20 attempts (~300ms
+budget). A candidate is instead provisional when a previously accepted file is now
+missing, when it is an existing empty file, or when its bytes are a strict prefix of the
+manager's last successfully accepted, error-free file snapshot. Provisional candidates
+must remain unchanged across the full settle budget before acceptance. If one changes
+during that budget, the reload leaves last-good and `LastError` untouched and relies on
+the save's completion to fire another fsnotify event. A deliberate deletion, blanking, or
+trailing-line deletion still loads after remaining stable for the full budget, preserving
+the reset and shortening paths. A missing file is not provisional when the manager has
+never accepted an existing file, so first-run reloads do not incur the settle budget.
+`LoadPath` remains a single-read operation and does not use settle semantics.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,

@@ -1612,6 +1612,73 @@ func TestManagerReloadPreservesEnabledFalseAcrossNonAtomicRewrite(t *testing.T) 
 	}
 }
 
+func TestManagerReloadPreservesEnabledFalseAcrossUnlinkRecreateWindow(t *testing.T) {
+	const contents = "enabled = false\nscan_interval = \"9s\"\n"
+	path := withConfigHome(t)
+	writeConfig(t, path, contents)
+	manager := NewManagerPath(path)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		time.Sleep(120 * time.Millisecond)
+		writeDone <- os.WriteFile(path, []byte(contents), 0o600)
+	}()
+	defer func() {
+		if err := <-writeDone; err != nil {
+			t.Errorf("recreate config: %v", err)
+		}
+	}()
+
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload during unlink-recreate window returned error: %v", err)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("enabled flipped to true after Reload observed the missing-file window of an unlink-recreate save")
+	}
+	if cfg.ScanInterval != "9s" {
+		t.Fatalf("scan interval = %q, want unchanged last-good value 9s during unlink-recreate save", cfg.ScanInterval)
+	}
+}
+
+func TestManagerReloadAcceptsStableConfigDeletion(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+	manager := NewManagerPath(path)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload after deliberate deletion returned error: %v", err)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v, want defaults after deliberate deletion", err)
+	}
+	if !cfg.Enabled || cfg.ScanInterval != Default().ScanInterval {
+		t.Fatalf("config after deliberate deletion = enabled %t, scan interval %q; want defaults", cfg.Enabled, cfg.ScanInterval)
+	}
+}
+
+func TestProvisionalConfigSnapshotMissingDependsOnAcceptedFile(t *testing.T) {
+	missing := fileSnapshot{}
+	if provisionalConfigSnapshot(missing, fileSnapshot{}) {
+		t.Fatal("missing first-run candidate is provisional without a previously accepted file")
+	}
+	if !provisionalConfigSnapshot(missing, fileSnapshot{exists: true, data: []byte("enabled = false\n")}) {
+		t.Fatal("missing candidate is not provisional after a file was previously accepted")
+	}
+}
+
 func TestManagerReloadRejectsEmptySnapshotThatChangesDuringFullSettleBudget(t *testing.T) {
 	path := withConfigHome(t)
 	writeConfig(t, path, "scan_interval = \"9s\"\nenabled = false\n")

@@ -78,8 +78,9 @@ func (m *Manager) WatchErrors() <-chan error {
 // Reload reloads the file, preserving the last-good config on error.
 //
 // Before accepting a result, it waits for the file to settle (consecutive
-// reads agreeing) so a non-atomic save's transient empty or partial state —
-// which can parse as syntactically valid TOML — never becomes last-good.
+// reads agreeing) so a non-atomic save's transient missing, empty, or partial
+// state — which can parse as syntactically valid TOML — never becomes
+// last-good.
 // See settledConfigSnapshot and #410. If the file is still changing when the
 // settle budget runs out, Reload is a no-op: it leaves last-good and
 // LastError untouched and returns nil, relying on a later fsnotify event
