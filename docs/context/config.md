@@ -280,7 +280,10 @@ with a warning instead of failing.
 A **per-tool** override with zero entries is not warned on at all: `docs/product/config-schema.md`
 already documents an explicit, present-but-empty per-tool `directory_allowlist` as the way
 to opt that one tool out of a restrictive global allowlist, and `Config.Resolve` implements
-exactly that via `allowlistSet` — there is nothing ambiguous to flag there.
+exactly that via `allowlistSet` — there is nothing ambiguous to flag there. `Save` preserves
+that explicit empty override as a non-nil empty slice, so the TOML encoder emits the key and
+the opt-out survives a save/reload round trip; tools without an override continue to inherit
+the global allowlist.
 
 Discord-facing config is rejected during load when it cannot produce a valid activity.
 Tool and custom-tool buttons allow at most two entries; labels are non-empty and at most

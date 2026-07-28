@@ -1295,7 +1295,7 @@ func saveTools(tools map[string]ToolOverride) map[string]any {
 			entry["show_directory"] = *override.ShowDirectory
 		}
 		if override.allowlistSet || len(override.DirectoryAllowlist) > 0 {
-			entry["directory_allowlist"] = append([]string(nil), override.DirectoryAllowlist...)
+			entry["directory_allowlist"] = append(make([]string, 0, len(override.DirectoryAllowlist)), override.DirectoryAllowlist...)
 		}
 		if override.DirectoryBasenameOnly != nil {
 			entry["directory_basename_only"] = *override.DirectoryBasenameOnly
