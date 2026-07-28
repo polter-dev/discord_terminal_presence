@@ -117,10 +117,16 @@ Structured CLI output, verbose log messages, and daemon/watch config warnings sa
 externally derived terminal text. Detection logs resolve the working directory through
 the same effective privacy policy and path-reduction helper as presence output, cap
 expanded paths at their final two components, and report `hidden` when directory display
-is not allowed. Labelled status values and single-line log records replace embedded line
-breaks with a visible ` ; ` separator before sanitizing, preserving multi-step update
-commands without breaking status-column alignment, gluing tokens, or permitting log-line
-injection.
+is not allowed. Labelled status values, single-line log records, and the interactive
+watch TUI's warning banner replace embedded line breaks with a visible ` ; ` separator
+before sanitizing, preserving multi-step update commands without breaking status-column
+alignment, gluing tokens, or permitting log-line injection. The substitution recognizes
+every line/record-break character a terminal or log pipeline could honor (not just
+CR/LF; see [`terminaltext.md`](terminaltext.md) for the exact list), collapses runs of
+separators, and trims leading/trailing separators so a leading/trailing or blank-line
+break in the source value never leaves dangling or doubled punctuation. The
+package-manager-unknown update guidance from `internal/update` is the concrete case that
+motivated the collapsing: it joins Debian and RPM instructions with a blank line.
 Per-tool enablement is passed into detector selection, and hot reloads that change it
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
 Live watch loads the daemon's episode anchors for matching elapsed-time display but runs
@@ -129,7 +135,9 @@ It shares the daemon's config-change transaction and hot-reconfigures detector s
 display-only changes re-render the last detection without forcing another scan.
 When initial config loading fails, `watch --once` warns on stderr that built-in defaults
 are active and points to `termp status`; interactive watch shows the same warning inside
-the alternate-screen view so it remains visible without corrupting the terminal.
+the alternate-screen view so it remains visible without corrupting the terminal. That
+banner renders through `SanitizeSingleLine`, matching every other single-line render
+boundary in the CLI.
 
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.

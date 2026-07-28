@@ -1458,6 +1458,36 @@ func TestDisplayValueSeparatesDebianUpdateGuidance(t *testing.T) {
 	}
 }
 
+func TestDisplayValueCollapsesBlankLineInCombinedGuidance(t *testing.T) {
+	// InstallSystemPackage is used when the distro can't be narrowed to
+	// Debian or RPM, so update.go joins both sets of instructions with a
+	// blank line: "Debian/Ubuntu:\n<debian>\n\nRPM-based Linux:\n<rpm>".
+	// Before the #390 fix, the blank line rendered as a doubled " ;  ; ".
+	guidance := updatepkg.GuidanceForMethod(updatepkg.InstallSystemPackage, "v0.1.1").Text
+	if !strings.Contains(guidance, "\n\n") {
+		t.Fatalf("test fixture no longer contains a blank line, update the scenario: %q", guidance)
+	}
+
+	got := displayValue(guidance)
+
+	if strings.Contains(got, ";  ;") {
+		t.Fatalf("displayValue() left a doubled separator from the blank line: %q", got)
+	}
+	if strings.HasPrefix(got, ";") || strings.HasSuffix(got, ";") {
+		t.Fatalf("displayValue() left a dangling separator at an edge: %q", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("displayValue() contains a raw newline: %q", got)
+	}
+}
+
+func TestDisplayValueRestoresNAPlaceholderAfterTrailingNewline(t *testing.T) {
+	got := displayValue("n/a\n")
+	if got != "—" {
+		t.Fatalf("displayValue(%q) = %q, want the em-dash placeholder", "n/a\n", got)
+	}
+}
+
 func TestWrappedUpdateCommandsRemainCopyPasteable(t *testing.T) {
 	for _, command := range []string{updatepkg.BrewCommand, updatepkg.GoCommand("v1.1.0"), updatepkg.GenericCommand("v1.1.0")} {
 		for _, width := range []int{20, 40, 80} {
