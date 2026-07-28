@@ -145,11 +145,18 @@ always refused, so the `/usr/local/bin` before/after snapshot only proves a refu
 update writes nothing — it compares empty to empty, not a real shadowing binary against
 the package-managed one.
 
-The openSUSE leg additionally removes the RPM and installs the real unsigned snapshot
-artifact with `zypper --non-interactive --no-gpg-checks install`, matching the updater
-argv, then re-runs the package-ownership assertion. This guards the observed zypper
+Every rpm-method leg sets a matrix `rpm_frontend` and asserts it is non-empty before
+proceeding, so a typo'd or omitted matrix key fails loudly instead of silently skipping
+the front-end exercise below and passing having installed nothing (#406). The fedora leg
+(`rpm_frontend: dnf`) and the openSUSE leg (`rpm_frontend: zypper`) each remove the RPM
+and install the real unsigned snapshot artifact with their claimed front-end — `dnf
+install -y` or `zypper --non-interactive --no-gpg-checks install`, matching the updater
+argv — then re-run the package-ownership assertion and additionally assert
+`DetectRPMManager()` (printed by the probe binary's `rpm-manager` argument) equals the
+claimed front-end, so the leg proves the manager termp would actually pick, not just the
+broader install method (#405, #406). The openSUSE case guards the observed zypper
 behavior: plain `--non-interactive` chooses the safe default and aborts on the unsigned
-RPM.
+RPM. A `yum`/CentOS 7 leg was considered but skipped as lower priority.
 
 The installer labels `termp uninstall` as a login-only action rather than implying that
 it removes the binary. It resolves one tag for archive/checksum, prefers

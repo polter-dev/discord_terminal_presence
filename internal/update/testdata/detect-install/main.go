@@ -11,9 +11,19 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "serve-release" {
-		serveRelease()
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "serve-release":
+			serveRelease()
+			return
+		case "rpm-manager":
+			// Prints DetectRPMManager() directly so CI legs that claim a
+			// specific RPM front-end (e.g. via matrix rpm_frontend) can
+			// assert the manager termp would actually pick, rather than
+			// only asserting the broader install method (#406).
+			fmt.Println(updatepkg.DetectRPMManager())
+			return
+		}
 	}
 	fmt.Println(updatepkg.DetectInstallMethod())
 }

@@ -62,16 +62,19 @@ temporary files, require exactly one valid matching SHA-256 entry, and only then
 `sudo apt install -y <file>` (deb) or the detected RPM front-end (rpm) as discrete argv.
 The RPM front-end is probed with `exec.LookPath` in preference order `dnf`, `zypper`,
 `yum`, `rpm` (cached once per process, injectable for tests) and produces
-`sudo dnf install -y <file>`,
-`sudo zypper --non-interactive --no-gpg-checks install <file>`,
+`sudo dnf install -y <file>`, a version-adaptive zypper invocation (below),
 `sudo yum install -y <file>`, or `sudo rpm -U <file>`; plain `rpm` is last because it does
-not resolve dependencies. The zypper execution uses the long-standing global
-`--no-gpg-checks` option because plain `--non-interactive` aborts at the safe default
-when the unsigned release RPM reaches signature verification. It deliberately avoids
-the newer install-command option `--allow-unsigned-rpm`, which zypper 1.13 does not
-support. Printed zypper guidance remains interactive and omits both flags so the user
-can decide at the prompt. This keeps openSUSE/SLES and RHEL/CentOS 7 working instead of
-assuming `dnf`. When no front-end is present the update fails before any download and
+not resolve dependencies. The zypper execution additionally probes `zypper --version`
+once (cached the same way as front-end detection, injectable for tests) and uses the
+newer, semantically scoped install-command option `--allow-unsigned-rpm` on zypper
+>= 1.14; on 1.13, or any version that fails to parse, it falls back to the long-standing
+global `--no-gpg-checks` option chosen in #394. Both flags exist because plain
+`--non-interactive` alone aborts at the safe default when the unsigned release RPM
+reaches signature verification; `--allow-unsigned-rpm` is not proposed as a replacement
+for 1.13 because it is an unknown option there. Printed zypper guidance remains
+interactive and omits both flags so the user can decide at the prompt. This keeps
+openSUSE/SLES and RHEL/CentOS 7 working instead of assuming `dnf`. When no front-end is
+present the update fails before any download and
 the printed guidance names no specific tool. Guidance, `termp uninstall --all`
 binary-removal text (`sudo <manager> remove termp`, `sudo rpm -e termp`), and the
 executed argv all use the same detected manager, so printed instructions are always

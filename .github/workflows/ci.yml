@@ -176,6 +176,7 @@ jobs:
             image: fedora:latest@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898
             extension: rpm
             method: rpm
+            rpm_frontend: dnf
           - distribution: opensuse/leap:latest
             image: opensuse/leap:latest@sha256:f239b4819f4dd322d99509f1b5b14f2107bf23857f9ccd3c14333f0928a2bcc6
             extension: rpm
@@ -295,20 +296,58 @@ jobs:
               detected_reinstalled=$(/usr/bin/termp)
               test "$detected_reinstalled" = "$EXPECTED_METHOD"
 
-              # Exercise the interactive updater argv against the real unsigned
-              # snapshot package. Plain --non-interactive aborts at the
-              # signature decision, so match the compatibility-safe updater
-              # global option (supported before --allow-unsigned-rpm existed).
-              if test "$RPM_FRONTEND" = "zypper"; then
+              # Exercise the real, unsigned RPM against whichever front-end
+              # the matrix claims for this image. RPM_FRONTEND being unset or
+              # empty (a typo in the matrix key, or a value that matches
+              # nothing below) must fail loudly rather than silently skip
+              # this whole check and let the job pass having installed
+              # nothing (#406) -- every rpm-method leg is expected to name a
+              # front-end.
+              if test "$EXPECTED_METHOD" = "rpm"; then
+                test -n "$RPM_FRONTEND"
                 rpm -e termp
-                # The integration container has networking disabled. Disable
-                # its repositories so unrelated refresh errors do not mask the
-                # local RPM signature and installation result.
-                zypper modifyrepo --all --disable
-                zypper --non-interactive --no-gpg-checks install /tmp/termp-package.rpm
+                case "$RPM_FRONTEND" in
+                  dnf)
+                    # #405: dnf is first in the real probe order and, until
+                    # now, was never exercised against an actual unsigned
+                    # local RPM -- only reasoned about. The integration
+                    # container has networking disabled, so disable repos to
+                    # keep unrelated metadata-refresh errors from masking the
+                    # install result; this does not change the argv the
+                    # updater itself runs (dnf install -y <file>).
+                    dnf --disablerepo='*' install -y /tmp/termp-package.rpm
+                    ;;
+                  yum)
+                    yum --disablerepo='*' install -y /tmp/termp-package.rpm
+                    ;;
+                  zypper)
+                    # Plain --non-interactive aborts at the signature
+                    # decision, so match the compatibility-safe updater
+                    # global option (supported before --allow-unsigned-rpm
+                    # existed). The integration container has networking
+                    # disabled; disable repositories so unrelated refresh
+                    # errors do not mask the local RPM signature and
+                    # installation result.
+                    zypper modifyrepo --all --disable
+                    zypper --non-interactive --no-gpg-checks install /tmp/termp-package.rpm
+                    ;;
+                  *)
+                    echo "unsupported RPM_FRONTEND: $RPM_FRONTEND" >&2
+                    exit 1
+                    ;;
+                esac
                 cp /tmp/detect-install /usr/bin/termp
                 detected_frontend=$(/usr/bin/termp)
                 test "$detected_frontend" = "$EXPECTED_METHOD"
+                # DetectInstallMethod only reports the install *method*
+                # (rpm), not which front-end termp would use to update it.
+                # Assert DetectRPMManager() directly so this leg actually
+                # proves the claimed front-end is what termp would pick --
+                # otherwise a platform shipping an unexpected front-end
+                # (e.g. dnf on openSUSE) would silently bypass the fix it
+                # is meant to cover and nothing would notice (#406).
+                detected_manager=$(/usr/bin/termp rpm-manager)
+                test "$detected_manager" = "$RPM_FRONTEND"
               fi
               cp /tmp/packaged-termp /usr/bin/termp
 
