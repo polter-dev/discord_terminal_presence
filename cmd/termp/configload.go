@@ -22,12 +22,12 @@ var readOnlyConfigLoader = config.LoadReadOnly
 // real work and print this same alert from that result (see setup/settings),
 // so skipping them here avoids paying config's settle/horizon wait twice for
 // no benefit (issue #442).
-func maybePrintCommandUpdateAlert(command string, args []string, interactive bool, stderr io.Writer) {
-	if commandsLoadConfigForOwnAlert[command] || !eligibleForUpdateAlert(command, args, interactive) {
+func maybePrintCommandUpdateAlert(command string, args []string, stderrTerminal bool, stderr io.Writer) {
+	if commandsLoadConfigForOwnAlert[command] || !eligibleForUpdateAlert(command, args, stderrTerminal) {
 		return
 	}
 	cfg, loadErr := loadConfigWithNotice(readOnlyConfigLoader, stderr)
-	printCommandUpdateAlert(command, args, interactive, cfg, loadErr, stderr)
+	printCommandUpdateAlert(command, args, stderrTerminal, cfg, loadErr, stderr)
 }
 
 // checkingConfigNoticeDelay bounds how long a config load may run silently

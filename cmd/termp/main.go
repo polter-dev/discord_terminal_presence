@@ -84,6 +84,12 @@ func main() {
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) && len(os.Args) == 1 {
 			if isTerminal(os.Stdin) && isTerminal(os.Stdout) {
+				// Bare `termp` runs the watch TUI without going through
+				// dispatchCommand, so it used to return below before ever
+				// reaching the pre-dispatch alert — the one invocation most
+				// likely to be a human's was the only one that never told them
+				// about a new version (issue #457).
+				maybePrintCommandUpdateAlert("watch", nil, isTerminal(os.Stderr), os.Stderr)
 				if err := watch(nil); err != nil {
 					log.Fatal(err)
 				}
@@ -103,8 +109,7 @@ func main() {
 		return
 	}
 
-	interactive := isTerminal(os.Stdin) && isTerminal(os.Stdout)
-	maybePrintCommandUpdateAlert(command, args, interactive, os.Stderr)
+	maybePrintCommandUpdateAlert(command, args, isTerminal(os.Stderr), os.Stderr)
 
 	err = dispatchCommand(command, args)
 	if printDispatchUsageError(err, os.Stderr) {
@@ -496,7 +501,7 @@ func setupWithConfigLoader(args []string, load func() (config.Config, error)) er
 	if err != nil {
 		return err
 	}
-	printCommandUpdateAlert("setup", args, interactive, cfg, nil, os.Stderr)
+	printCommandUpdateAlert("setup", args, isTerminal(os.Stderr), cfg, nil, os.Stderr)
 	save := func(cfg config.Config) (string, error) {
 		path := config.DefaultPath()
 		return path, config.Save(cfg, path)
@@ -897,8 +902,9 @@ func start(args []string) error {
 	}
 	logConfigWarnings(cfg.Warnings)
 
-	// Updating is best-effort and asynchronous: it is triggered before the run
-	// loop, but can never delay or prevent daemon startup.
+	// Refreshing the update-check cache (and, if auto_update is on, installing)
+	// is best-effort and asynchronous: it is triggered before the run loop, but
+	// can never delay or prevent daemon startup.
 	go runAutomaticUpdate(ctx, cfg, version, releaseChecker, updatepkg.ExecRunner{Interactive: false})
 
 	return run(ctx, manager, control)
@@ -2118,7 +2124,7 @@ func settingsWithConfigLoader(args []string, terminal bool, load func() (config.
 	if err != nil {
 		return err
 	}
-	printCommandUpdateAlert("settings", args, terminal, cfg, nil, os.Stderr)
+	printCommandUpdateAlert("settings", args, isTerminal(os.Stderr), cfg, nil, os.Stderr)
 	reg, err := registry.NewWithCustom(cfg.CustomTools...)
 	if err != nil {
 		return err
