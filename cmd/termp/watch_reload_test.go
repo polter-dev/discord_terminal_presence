@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,12 +54,12 @@ func TestWatchConfigChangeMakesCustomToolDetectable(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	changes := make(chan config.Config)
+	reloads := make(chan config.ReloadResult)
 	updates := make(chan watchActivityUpdate, 4)
 	detections := det.RunReadOnly(ctx)
-	go bridgeWatchActivityUpdates(ctx, changes, det, applied, detections, func(cfg config.Config, detection detector.Detection) {
+	go bridgeWatchActivityUpdates(ctx, reloads, det, applied, detections, func(cfg config.Config, detection detector.Detection) {
 		updates <- watchActivityUpdate{config: cfg, detection: detection}
-	})
+	}, func(string) {})
 
 	select {
 	case initial := <-updates:
@@ -76,7 +77,7 @@ func TestWatchConfigChangeMakesCustomToolDetectable(t *testing.T) {
 		Match:       registry.CustomMatch{Name: "watch-reload-tool"},
 		ImageKey:    "watch-reload",
 	}}
-	changes <- nextCfg
+	reloads <- config.ReloadResult{Config: nextCfg}
 
 	select {
 	case reloaded := <-updates:
@@ -96,13 +97,13 @@ func TestWatchDisplayOnlyChangeRerendersWithoutReconfigure(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	changes := make(chan config.Config)
+	reloads := make(chan config.ReloadResult)
 	detections := make(chan detector.Detection)
 	updates := make(chan watchActivityUpdate, 2)
 	reconfigurer := &watchTestReconfigurer{}
-	go bridgeWatchActivityUpdates(ctx, changes, reconfigurer, applied, detections, func(cfg config.Config, detection detector.Detection) {
+	go bridgeWatchActivityUpdates(ctx, reloads, reconfigurer, applied, detections, func(cfg config.Config, detection detector.Detection) {
 		updates <- watchActivityUpdate{config: cfg, detection: detection}
-	})
+	}, func(string) {})
 
 	detection := detector.Detection{Tool: registry.Tool{ID: "claude-code", DisplayName: "Claude Code"}}
 	detections <- detection
@@ -110,7 +111,7 @@ func TestWatchDisplayOnlyChangeRerendersWithoutReconfigure(t *testing.T) {
 
 	nextCfg := cfg
 	nextCfg.Privacy.ShowDirectory = true
-	changes <- nextCfg
+	reloads <- config.ReloadResult{Config: nextCfg}
 	select {
 	case update := <-updates:
 		if !update.config.Privacy.ShowDirectory || update.detection.Tool.ID != detection.Tool.ID {
@@ -132,12 +133,15 @@ func TestWatchRejectsInvalidConfigAndKeepsSessionRunning(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	changes := make(chan config.Config)
+	reloads := make(chan config.ReloadResult)
 	detections := make(chan detector.Detection)
 	updates := make(chan watchActivityUpdate, 2)
+	warnings := make(chan string, 1)
 	reconfigurer := &watchTestReconfigurer{err: errors.New("Reconfigure must not be called")}
-	go bridgeWatchActivityUpdates(ctx, changes, reconfigurer, applied, detections, func(cfg config.Config, detection detector.Detection) {
+	go bridgeWatchActivityUpdates(ctx, reloads, reconfigurer, applied, detections, func(cfg config.Config, detection detector.Detection) {
 		updates <- watchActivityUpdate{config: cfg, detection: detection}
+	}, func(warning string) {
+		warnings <- warning
 	})
 
 	invalid := cfg
@@ -148,7 +152,15 @@ func TestWatchRejectsInvalidConfigAndKeepsSessionRunning(t *testing.T) {
 		Match:       registry.CustomMatch{Regex: "["},
 		ImageKey:    "broken",
 	}}
-	changes <- invalid
+	reloads <- config.ReloadResult{Config: invalid}
+	select {
+	case warning := <-warnings:
+		if want := "config reload failed; keeping last-good behavior"; !strings.Contains(warning, want) {
+			t.Fatalf("watch warning = %q, want %q", warning, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for rejected-config warning")
+	}
 
 	detection := detector.Detection{Tool: registry.Tool{ID: "codex-cli", DisplayName: "Codex CLI"}}
 	detections <- detection

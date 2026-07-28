@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -911,9 +912,9 @@ func TestManagerChangesDeliversSingleReload(t *testing.T) {
 	}
 
 	select {
-	case cfg := <-manager.Changes():
-		if cfg.ScanInterval != "8s" {
-			t.Fatalf("notified scan interval = %q, want 8s", cfg.ScanInterval)
+	case reload := <-manager.Reloads():
+		if reload.Err != nil || reload.Config.ScanInterval != "8s" {
+			t.Fatalf("notified reload = %#v, want scan interval 8s", reload)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for config reload notification")
@@ -935,9 +936,9 @@ func TestManagerChangesCoalescesBurstyReloadsToNewest(t *testing.T) {
 	}
 
 	select {
-	case cfg := <-manager.Changes():
-		if cfg.ScanInterval != "9s" {
-			t.Fatalf("notified scan interval = %q, want newest value 9s", cfg.ScanInterval)
+	case reload := <-manager.Reloads():
+		if reload.Err != nil || reload.Config.ScanInterval != "9s" {
+			t.Fatalf("notified reload = %#v, want newest value 9s", reload)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for coalesced config reload notification")
@@ -949,6 +950,51 @@ func TestManagerChangesCoalescesBurstyReloadsToNewest(t *testing.T) {
 	}
 	if current.ScanInterval != "9s" {
 		t.Fatalf("current scan interval = %q, want 9s", current.ScanInterval)
+	}
+
+	writeConfig(t, path, `scan_interval = "10s"`)
+	if err := manager.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, path, `scan_interval = "broken" =`)
+	if err := manager.Reload(); err == nil {
+		t.Fatal("expected malformed reload error")
+	}
+	select {
+	case reload := <-manager.Reloads():
+		if reload.Err == nil {
+			t.Fatalf("coalesced reload = %#v, want newest failure", reload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for coalesced failure")
+	}
+}
+
+func TestManagerWatchReportsMalformedReload(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `scan_interval = "7s"`)
+	manager := NewManagerPath(path)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := manager.Watch(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	writeConfig(t, path, `scan_interval = "broken" =`)
+	select {
+	case reload := <-manager.Reloads():
+		if reload.Err == nil || !strings.Contains(reload.Err.Error(), "expected") {
+			t.Fatalf("reload failure = %v, want TOML parse error", reload.Err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for malformed reload failure")
+	}
+	current, err := manager.Current()
+	if err == nil {
+		t.Fatal("Current() error = nil after malformed watched reload")
+	}
+	if current.ScanInterval != "7s" {
+		t.Fatalf("last-good scan interval = %q, want 7s", current.ScanInterval)
 	}
 }
 

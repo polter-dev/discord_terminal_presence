@@ -75,6 +75,20 @@ func TestWatchModelSanitizesWarning(t *testing.T) {
 	}
 }
 
+func TestWatchModelWarningMessageReplacesAndClearsBanner(t *testing.T) {
+	model := NewWatchModelWithClock(time.Now)
+	updated, _ := model.Update(WarningMsg("config reload failed"))
+	model = updated.(WatchModel)
+	if view := model.View(); !strings.Contains(view, "config reload failed") {
+		t.Fatalf("view missing dynamic warning:\n%s", view)
+	}
+	updated, _ = model.Update(WarningMsg(""))
+	model = updated.(WatchModel)
+	if view := model.View(); strings.Contains(view, "config reload failed") {
+		t.Fatalf("view retained cleared warning:\n%s", view)
+	}
+}
+
 func TestWatchModelWarningNeverRendersRawNewline(t *testing.T) {
 	model := NewWatchModelWithClock(time.Now)
 	model.SetWarning("first line\nsecond line")

@@ -36,11 +36,6 @@ func spawnDetachedStart(enableVerbose bool) (int, string, error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return 0, "", fmt.Errorf("create detached daemon log directory: %w", err)
 	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return 0, "", fmt.Errorf("open detached daemon log: %w", err)
-	}
-	defer logFile.Close()
 	nullFile, err := os.Open(os.DevNull)
 	if err != nil {
 		return 0, "", fmt.Errorf("open null input: %w", err)
@@ -49,8 +44,8 @@ func spawnDetachedStart(enableVerbose bool) (int, string, error) {
 
 	command := exec.Command(executable, detachedChildArgs(enableVerbose)...)
 	command.Stdin = nullFile
-	command.Stdout = logFile
-	command.Stderr = logFile
+	command.Stdout = nullFile
+	command.Stderr = nullFile
 	if err := startDetachedProcess(command); err != nil {
 		return 0, "", fmt.Errorf("start detached daemon: %w", err)
 	}

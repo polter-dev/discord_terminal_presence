@@ -22,6 +22,9 @@ type ActivityMsg struct {
 // ConnMsg reports whether Discord IPC is reachable.
 type ConnMsg bool
 
+// WarningMsg replaces the persistent warning banner in the live watch view.
+type WarningMsg string
+
 type tickMsg time.Time
 
 // WatchModel is the testable Bubble Tea model for termp watch.
@@ -106,6 +109,8 @@ func (m WatchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case ConnMsg:
 		m.connected = bool(msg)
+	case WarningMsg:
+		m.warningText = string(msg)
 	case tickMsg:
 		m.now = time.Time(msg)
 		return m, tickCmd()

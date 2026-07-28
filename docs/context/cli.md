@@ -53,7 +53,8 @@ It never deletes the running executable. It reuses install ownership detection a
 resolved generic install directory to print exact Homebrew, Scoop, apt, detected RPM
 front-end (`dnf`/`zypper`/`yum`, or `rpm -e`), Go, generic
 Unix, or Windows binary-removal guidance. Destructive tests inject paths beneath an
-asserted temporary home.
+asserted temporary home. Full uninstall also removes the daemon log's rotation lock and
+three retained generations.
 
 Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
 installs preflight the resolved running executable's directory and record a skipped
@@ -177,9 +178,20 @@ are active with presence disabled and points to `termp status`; interactive watc
 the same warning inside the alternate-screen view so it remains visible without
 corrupting the terminal. At daemon startup an invalid existing config is reported to the
 invoking stderr and daemon log, the daemon stays running with presence off, and a valid
-hot reload restores normal operation. `termp status` labels presence as off beside the
-config error. That banner and startup error render through `SanitizeSingleLine`,
-matching every other single-line render boundary in the CLI.
+hot reload restores normal operation. A failed hot reload keeps last-good behavior,
+writes a sanitized daemon log line, and updates the live watch warning banner without
+writing through the global logger from the watch goroutine. The existing daemon state
+record carries config health, so `termp status` distinguishes startup failure (`off`)
+from reload failure (`using last-good config`) while showing the error. A successful
+reload clears that health error and the watch banner.
+
+Detached daemon logging uses a dependency-free rotating writer with a 1 MiB threshold
+and three retained generations. Rotation happens before a complete logger write, uses
+rename rather than copy/truncate, and coordinates writers through a cross-process lock;
+a writer whose open file was rotated reopens the current path before its next line.
+This keeps individual log records intact and bounds normal verbose/crash-loop growth.
+The banner, startup error, and reload error render through `SanitizeSingleLine`, matching
+every other single-line render boundary in the CLI.
 
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.

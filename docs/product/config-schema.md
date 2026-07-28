@@ -7,9 +7,11 @@ native user config directory, normally `%AppData%\termp\config.toml`.
 The format is TOML. Valid changes hot-reload; an invalid edit leaves a running daemon's
 last-good behavior in place. If an existing config is already invalid when the daemon
 starts, the daemon stays running but disables presence until a valid change reloads.
-Missing config files still use enabled first-run defaults. Load failures are surfaced
-through stderr, daemon logs, and `termp status`. Unknown keys produce warnings instead
-of aborting the load.
+Missing config files still use enabled first-run defaults. Startup load failures are
+surfaced through stderr, daemon logs, `termp status`, and the watch warning banner.
+Hot-reload failures are surfaced through the daemon log, status, and the live watch
+banner; status reports that last-good behavior remains active instead of claiming
+presence is off. Unknown keys produce warnings instead of aborting the load.
 
 Generate the current fully commented schema with:
 
