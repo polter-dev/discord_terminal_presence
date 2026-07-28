@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -147,6 +149,72 @@ func (w *nonAtomicWriter) wait(t *testing.T) {
 	if err := <-w.done; err != nil {
 		t.Fatalf("non-atomic writer failed: %v", err)
 	}
+}
+
+type scheduledConfigWrite struct {
+	ready <-chan struct{}
+	done  <-chan error
+}
+
+func startScheduledConfigWrite(write func(ready chan<- struct{}) error) scheduledConfigWrite {
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- write(ready)
+	}()
+	return scheduledConfigWrite{ready: ready, done: done}
+}
+
+func waitScheduledConfigWrite(t *testing.T, write scheduledConfigWrite) {
+	t.Helper()
+	if err := <-write.done; err != nil {
+		t.Fatalf("scheduled config write failed: %v", err)
+	}
+}
+
+func waitScheduledConfigReady(t *testing.T, write scheduledConfigWrite) {
+	t.Helper()
+	select {
+	case <-write.ready:
+	case err := <-write.done:
+		t.Fatalf("scheduled config write failed before ready: %v", err)
+	}
+}
+
+func assertManagerEnabledFalse(t *testing.T, manager *Manager, stage string) {
+	t.Helper()
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() %s = error %v", stage, err)
+	}
+	if cfg.Enabled {
+		t.Fatalf("enabled observed true %s", stage)
+	}
+}
+
+func writeChunks(f *os.File, data []byte, sizes []int, pauses []time.Duration) error {
+	offset := 0
+	for i, size := range sizes {
+		if offset >= len(data) {
+			break
+		}
+		end := offset + size
+		if end > len(data) {
+			end = len(data)
+		}
+		if _, err := f.Write(data[offset:end]); err != nil {
+			return err
+		}
+		offset = end
+		if offset < len(data) && i < len(pauses) {
+			time.Sleep(pauses[i])
+		}
+	}
+	if offset < len(data) {
+		_, err := f.Write(data[offset:])
+		return err
+	}
+	return nil
 }
 
 func boolPtr(v bool) *bool {
@@ -1557,25 +1625,35 @@ func TestManagerReloadRejectsChangingNonAtomicTruncationWindow(t *testing.T) {
 	}
 }
 
-// TestManagerReloadDeliberatelyEmptiedConfigLoadsDefaults confirms the fix for
-// #410 does not regress the legitimate case: a config that is blanked and
-// stays blank (an atomic write, so it never observes a transient state) must
-// still load defaults, not be rejected as if it were invalid.
+// TestManagerReloadDeliberatelyEmptiedConfigLoadsDefaults confirms that the
+// extended guard delays, but does not reject, an intentional reset.
 func TestManagerReloadDeliberatelyEmptiedConfigLoadsDefaults(t *testing.T) {
-	path := withConfigHome(t)
-	writeConfig(t, path, `scan_interval = "7s"`)
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = false\nscan_interval = \"7s\"\n")
 	manager := NewManagerPath(path)
 
 	writeConfig(t, path, ``)
 	if err := manager.Reload(); err != nil {
 		t.Fatalf("Reload of a deliberately emptied config returned error: %v", err)
 	}
-	cfg, err := manager.Current()
-	if err != nil {
-		t.Fatalf("Current() error = %v, want defaults after deliberate blank", err)
+	assertManagerEnabledFalse(t, manager, "while deliberate blank is pending")
+	if manager.LastError() != nil {
+		t.Fatalf("LastError() = %v while deliberate blank is pending", manager.LastError())
 	}
-	if cfg.ScanInterval != Default().ScanInterval {
-		t.Fatalf("scan interval after deliberate blank = %q, want default %q", cfg.ScanInterval, Default().ScanInterval)
+	select {
+	case reload := <-manager.Reloads():
+		t.Fatalf("pending deliberate blank published a misleading reload: %#v", reload)
+	default:
+	}
+
+	select {
+	case reload := <-manager.Reloads():
+		if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != Default().ScanInterval {
+			t.Fatalf("deliberate blank reload = %#v, want enabled defaults", reload)
+		}
+	case <-time.After(enabledLooseningHorizon + time.Second):
+		t.Fatal("timed out waiting for deliberate blank to load defaults")
 	}
 }
 
@@ -1649,7 +1727,8 @@ func TestManagerReloadPreservesEnabledFalseAcrossUnlinkRecreateWindow(t *testing
 }
 
 func TestManagerReloadAcceptsStableConfigDeletion(t *testing.T) {
-	path := withConfigHome(t)
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
 	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
 	manager := NewManagerPath(path)
 
@@ -1660,12 +1739,14 @@ func TestManagerReloadAcceptsStableConfigDeletion(t *testing.T) {
 		t.Fatalf("Reload after deliberate deletion returned error: %v", err)
 	}
 
-	cfg, err := manager.Current()
-	if err != nil {
-		t.Fatalf("Current() error = %v, want defaults after deliberate deletion", err)
-	}
-	if !cfg.Enabled || cfg.ScanInterval != Default().ScanInterval {
-		t.Fatalf("config after deliberate deletion = enabled %t, scan interval %q; want defaults", cfg.Enabled, cfg.ScanInterval)
+	assertManagerEnabledFalse(t, manager, "while deliberate deletion is pending")
+	select {
+	case reload := <-manager.Reloads():
+		if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != Default().ScanInterval {
+			t.Fatalf("deliberate deletion reload = %#v, want defaults", reload)
+		}
+	case <-time.After(enabledLooseningHorizon + time.Second):
+		t.Fatal("timed out waiting for deliberate deletion to load defaults")
 	}
 }
 
@@ -1731,7 +1812,8 @@ func TestManagerReloadRejectsPrefixSnapshotThatChangesDuringFullSettleBudget(t *
 }
 
 func TestManagerReloadAcceptsStableTrailingLineDeletion(t *testing.T) {
-	path := withConfigHome(t)
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
 	writeConfig(t, path, "scan_interval = \"9s\"\nenabled = false\n")
 	manager := NewManagerPath(path)
 
@@ -1740,15 +1822,408 @@ func TestManagerReloadAcceptsStableTrailingLineDeletion(t *testing.T) {
 		t.Fatalf("Reload after deliberate trailing-line deletion returned error: %v", err)
 	}
 
+	assertManagerEnabledFalse(t, manager, "while trailing-line deletion is pending")
+	select {
+	case reload := <-manager.Reloads():
+		if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != "9s" {
+			t.Fatalf("trailing-line deletion reload = %#v, want enabled=true and scan interval 9s", reload)
+		}
+	case <-time.After(enabledLooseningHorizon + time.Second):
+		t.Fatal("timed out waiting for trailing-line deletion to load")
+	}
+}
+
+func TestManagerReloadRetryRearmsForChangedLoosening(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+	manager := NewManagerPath(path)
+
+	writeConfig(t, path, "")
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() for initial blank = %v", err)
+	}
+	assertManagerEnabledFalse(t, manager, "while initial blank is pending")
+
+	// Change to a different loosening before the first retry fires. There is
+	// deliberately no further Reload call: the retry that observes this new
+	// snapshot must start a fresh horizon and arrange its own successor.
+	time.Sleep(500 * time.Millisecond)
+	writeConfig(t, path, "scan_interval = \"5s\"\n")
+
+	select {
+	case reload := <-manager.Reloads():
+		if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != "5s" {
+			t.Fatalf("changed loosening reload = %#v, want enabled=true and scan interval 5s", reload)
+		}
+	case <-time.After(2*enabledLooseningHorizon + 2*time.Second):
+		t.Fatal("timed out waiting for retry to apply changed loosening without another Reload call")
+	}
+}
+
+func TestManagerReloadEnabledGuardKnownWriterEscapes(t *testing.T) {
+	const (
+		initial = "scan_interval = \"9s\"\nenabled = false\n"
+		final   = "scan_interval = \"5s\"\nenabled = false\n"
+	)
+
+	tests := []struct {
+		name  string
+		start func(string) scheduledConfigWrite
+	}{
+		{
+			name: "divergent partial",
+			start: func(path string) scheduledConfigWrite {
+				return startScheduledConfigWrite(func(ready chan<- struct{}) error {
+					f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+					if err != nil {
+						return err
+					}
+					if _, err := f.WriteString("scan_interval = \"5s\"\n"); err != nil {
+						_ = f.Close()
+						return err
+					}
+					close(ready)
+					time.Sleep(80 * time.Millisecond)
+					if _, err := f.WriteString("enabled = false\n"); err != nil {
+						_ = f.Close()
+						return err
+					}
+					return f.Close()
+				})
+			},
+		},
+		{
+			name: "chunked growing divergent",
+			start: func(path string) scheduledConfigWrite {
+				return startScheduledConfigWrite(func(ready chan<- struct{}) error {
+					f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+					if err != nil {
+						return err
+					}
+					if _, err := f.WriteString("scan_interval = \"5s\"\n"); err != nil {
+						_ = f.Close()
+						return err
+					}
+					close(ready)
+					time.Sleep(55 * time.Millisecond)
+					if _, err := f.WriteString("idle_clear_timeout = \"10m\"\n"); err != nil {
+						_ = f.Close()
+						return err
+					}
+					time.Sleep(55 * time.Millisecond)
+					if _, err := f.WriteString("enabled = false\n"); err != nil {
+						_ = f.Close()
+						return err
+					}
+					return f.Close()
+				})
+			},
+		},
+		{
+			name: "shrinking divergent",
+			start: func(path string) scheduledConfigWrite {
+				return startScheduledConfigWrite(func(ready chan<- struct{}) error {
+					const partial = "scan_interval = \"5s\"\nidle_clear_timeout = \"10m\"\n"
+					if err := os.WriteFile(path, []byte(partial), 0o600); err != nil {
+						return err
+					}
+					close(ready)
+					time.Sleep(55 * time.Millisecond)
+					if err := os.Truncate(path, int64(len("scan_interval = \"5s\"\n"))); err != nil {
+						return err
+					}
+					time.Sleep(55 * time.Millisecond)
+					f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+					if err != nil {
+						return err
+					}
+					if _, err := f.WriteString("enabled = false\n"); err != nil {
+						_ = f.Close()
+						return err
+					}
+					return f.Close()
+				})
+			},
+		},
+		{
+			name: "empty beyond settle budget",
+			start: func(path string) scheduledConfigWrite {
+				return startScheduledConfigWrite(func(ready chan<- struct{}) error {
+					f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+					if err != nil {
+						return err
+					}
+					close(ready)
+					time.Sleep(450 * time.Millisecond)
+					if _, err := f.WriteString(final); err != nil {
+						_ = f.Close()
+						return err
+					}
+					return f.Close()
+				})
+			},
+		},
+		{
+			name: "missing beyond settle budget",
+			start: func(path string) scheduledConfigWrite {
+				return startScheduledConfigWrite(func(ready chan<- struct{}) error {
+					if err := os.Remove(path); err != nil {
+						return err
+					}
+					close(ready)
+					time.Sleep(450 * time.Millisecond)
+					return os.WriteFile(path, []byte(final), 0o600)
+				})
+			},
+		},
+		{
+			name: "prefix beyond settle budget",
+			start: func(path string) scheduledConfigWrite {
+				return startScheduledConfigWrite(func(ready chan<- struct{}) error {
+					f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+					if err != nil {
+						return err
+					}
+					if _, err := f.WriteString("scan_interval = \"9s\"\n"); err != nil {
+						_ = f.Close()
+						return err
+					}
+					close(ready)
+					time.Sleep(450 * time.Millisecond)
+					if _, err := f.WriteString("enabled = false\n"); err != nil {
+						_ = f.Close()
+						return err
+					}
+					return f.Close()
+				})
+			},
+		},
+		{
+			name: "rename partial then append",
+			start: func(path string) scheduledConfigWrite {
+				return startScheduledConfigWrite(func(ready chan<- struct{}) error {
+					tmp := path + ".partial"
+					if err := os.WriteFile(tmp, []byte("scan_interval = \"5s\"\n"), 0o600); err != nil {
+						return err
+					}
+					if err := os.Rename(tmp, path); err != nil {
+						return err
+					}
+					close(ready)
+					time.Sleep(80 * time.Millisecond)
+					f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+					if err != nil {
+						return err
+					}
+					if _, err := f.WriteString("enabled = false\n"); err != nil {
+						_ = f.Close()
+						return err
+					}
+					return f.Close()
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			writeConfig(t, path, initial)
+			manager := NewManagerPath(path)
+			write := tt.start(path)
+			waitScheduledConfigReady(t, write)
+
+			if err := manager.Reload(); err != nil {
+				t.Fatalf("Reload() during partial write = %v", err)
+			}
+			assertManagerEnabledFalse(t, manager, "after partial reload")
+			waitScheduledConfigWrite(t, write)
+			if err := manager.Reload(); err != nil {
+				t.Fatalf("Reload() after writer completion = %v", err)
+			}
+			assertManagerEnabledFalse(t, manager, "after final reload")
+		})
+	}
+}
+
+func TestManagerReloadExplicitEnabledTrueHasNoExtendedDelay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+	manager := NewManagerPath(path)
+	writeConfig(t, path, "enabled = true\nscan_interval = \"5s\"\n")
+
+	start := time.Now()
+	if err := manager.Reload(); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := manager.Current()
-	if err != nil {
-		t.Fatalf("Current() error = %v", err)
+	if err != nil || !cfg.Enabled || cfg.ScanInterval != "5s" {
+		t.Fatalf("explicit true Current() = (%#v, %v)", cfg, err)
 	}
-	if !cfg.Enabled {
-		t.Fatal("stable trailing-line deletion was not accepted; enabled remained false instead of returning to its default")
+	if elapsed := time.Since(start); elapsed >= enabledLooseningHorizon {
+		t.Fatalf("explicit enabled=true took %v, want less than extended horizon %v", elapsed, enabledLooseningHorizon)
 	}
-	if cfg.ScanInterval != "9s" {
-		t.Fatalf("scan interval = %q, want retained value 9s", cfg.ScanInterval)
+}
+
+func TestManagerReloadNormalEditKeepsEnabledFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+	manager := NewManagerPath(path)
+	writeConfig(t, path, "enabled = false\nscan_interval = \"5s\"\n")
+
+	if err := manager.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := manager.Current()
+	if err != nil || cfg.Enabled || cfg.ScanInterval != "5s" {
+		t.Fatalf("normal enabled=false edit Current() = (%#v, %v)", cfg, err)
+	}
+}
+
+// TestManagerReloadRandomWriterSchedules is the load-bearing property for
+// #434. Every randomized schedule ends with an explicit enabled=false, and
+// the invariant is that Manager never exposes enabled=true while getting
+// there. The fixed seed set keeps CI reproducible while varying chunk sizes,
+// pauses, and save strategy.
+//
+// Stalls longer than enabledLooseningHorizon are deliberately excluded. Such
+// a valid key-omitting snapshot is indistinguishable from an intentional
+// blank reset and is the documented residual of the time-bounded guard.
+func TestManagerReloadRandomWriterSchedules(t *testing.T) {
+	const schedulesPerSeed = 10
+	seeds := []int64{434, 410, 425}
+
+	for _, seed := range seeds {
+		for schedule := 0; schedule < schedulesPerSeed; schedule++ {
+			seed := seed
+			schedule := schedule
+			t.Run(fmt.Sprintf("seed_%d_schedule_%02d", seed, schedule), func(t *testing.T) {
+				t.Parallel()
+				rng := rand.New(rand.NewSource(seed*1000 + int64(schedule)))
+				path := filepath.Join(t.TempDir(), "config.toml")
+				writeConfig(t, path, "scan_interval = \"9s\"\nenabled = false\n")
+				manager := NewManagerPath(path)
+				var enabledObservations atomic.Int64
+				stopObserver := make(chan struct{})
+				observerDone := make(chan struct{})
+				var stopObserverOnce sync.Once
+				stopAndWaitForObserver := func() {
+					stopObserverOnce.Do(func() {
+						close(stopObserver)
+						<-observerDone
+					})
+				}
+				t.Cleanup(stopAndWaitForObserver)
+				go func() {
+					defer close(observerDone)
+					for {
+						select {
+						case <-stopObserver:
+							return
+						default:
+						}
+						cfg, _ := manager.Current()
+						if cfg.Enabled {
+							enabledObservations.Add(1)
+						}
+					}
+				}()
+
+				scanSeconds := 4 + rng.Intn(5)
+				firstLine := fmt.Sprintf("scan_interval = \"%ds\"\n", scanSeconds)
+				suffix := []byte("idle_clear_timeout = \"10m\"\nenabled = false\n")
+				var sizes []int
+				var pauses []time.Duration
+				for remaining := len(suffix); remaining > 0; {
+					size := 1 + rng.Intn(12)
+					sizes = append(sizes, size)
+					pauses = append(pauses, time.Duration(3+rng.Intn(15))*time.Millisecond)
+					remaining -= size
+				}
+				initialPause := time.Duration(45+rng.Intn(70)) * time.Millisecond
+
+				var write scheduledConfigWrite
+				switch rng.Intn(3) {
+				case 0:
+					write = startScheduledConfigWrite(func(ready chan<- struct{}) error {
+						f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+						if err != nil {
+							return err
+						}
+						if _, err := f.WriteString(firstLine); err != nil {
+							_ = f.Close()
+							return err
+						}
+						close(ready)
+						time.Sleep(initialPause)
+						if err := writeChunks(f, suffix, sizes, pauses); err != nil {
+							_ = f.Close()
+							return err
+						}
+						return f.Close()
+					})
+				case 1:
+					write = startScheduledConfigWrite(func(ready chan<- struct{}) error {
+						if err := os.Remove(path); err != nil {
+							return err
+						}
+						close(ready)
+						// Missing snapshots use the existing ~300ms settle
+						// budget, so exercise stalls beyond that budget while
+						// remaining far below the extended horizon.
+						time.Sleep(time.Duration(350+rng.Intn(150)) * time.Millisecond)
+						f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+						if err != nil {
+							return err
+						}
+						if _, err := f.WriteString(firstLine); err != nil {
+							_ = f.Close()
+							return err
+						}
+						if err := writeChunks(f, suffix, sizes, pauses); err != nil {
+							_ = f.Close()
+							return err
+						}
+						return f.Close()
+					})
+				default:
+					write = startScheduledConfigWrite(func(ready chan<- struct{}) error {
+						tmp := path + ".partial"
+						if err := os.WriteFile(tmp, []byte(firstLine), 0o600); err != nil {
+							return err
+						}
+						if err := os.Rename(tmp, path); err != nil {
+							return err
+						}
+						close(ready)
+						time.Sleep(initialPause)
+						f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+						if err != nil {
+							return err
+						}
+						if err := writeChunks(f, suffix, sizes, pauses); err != nil {
+							_ = f.Close()
+							return err
+						}
+						return f.Close()
+					})
+				}
+
+				waitScheduledConfigReady(t, write)
+				if err := manager.Reload(); err != nil {
+					t.Fatalf("Reload() during randomized write = %v", err)
+				}
+				waitScheduledConfigWrite(t, write)
+				if err := manager.Reload(); err != nil {
+					t.Fatalf("Reload() after randomized write = %v", err)
+				}
+				stopAndWaitForObserver()
+				if got := enabledObservations.Load(); got != 0 {
+					t.Fatalf("Current() exposed enabled=true %d times during randomized write", got)
+				}
+			})
+		}
 	}
 }
 

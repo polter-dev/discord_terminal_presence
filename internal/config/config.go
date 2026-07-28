@@ -564,14 +564,22 @@ func settledConfigSnapshot(path string, accepted fileSnapshot) (fileSnapshot, bo
 // loadSnapshot decodes an already-read snapshot into a Config, applying the
 // same defaulting, validation, and fail-closed rules as LoadPath.
 func loadSnapshot(path string, snap fileSnapshot) (Config, error) {
+	cfg, _, err := loadSnapshotWithMetadata(path, snap)
+	return cfg, err
+}
+
+// loadSnapshotWithMetadata also reports whether enabled was explicitly
+// defined. The manager needs that distinction to tell an intentional
+// enabled=true from the default produced by an absent key.
+func loadSnapshotWithMetadata(path string, snap fileSnapshot) (Config, bool, error) {
 	cfg := Default()
 	cfg.Path = path
 
 	if snap.err != nil {
-		return invalidFallbackWithPath(path), snap.err
+		return invalidFallbackWithPath(path), false, snap.err
 	}
 	if !snap.exists {
-		return cloneConfig(cfg), nil
+		return cloneConfig(cfg), false, nil
 	}
 	data := snap.data
 
@@ -596,7 +604,7 @@ func loadSnapshot(path string, snap fileSnapshot) (Config, error) {
 	}
 	meta, err := toml.Decode(string(data), &raw)
 	if err != nil {
-		return invalidFallbackWithPath(path), err
+		return invalidFallbackWithPath(path), false, err
 	}
 	cfg.Enabled = raw.Enabled
 	cfg.StartAtLogin = raw.StartAtLogin
@@ -620,9 +628,9 @@ func loadSnapshot(path string, snap fileSnapshot) (Config, error) {
 	cfg.Warnings = unknownKeyWarnings(meta.Undecoded())
 	markDefinedFields(&cfg, meta)
 	if err := validate(&cfg); err != nil {
-		return invalidFallbackWithPath(path), err
+		return invalidFallbackWithPath(path), false, err
 	}
-	return cloneConfig(cfg), nil
+	return cloneConfig(cfg), meta.IsDefined("enabled"), nil
 }
 
 func convertCustomTools(raw []customTool) []registry.CustomTool {

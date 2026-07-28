@@ -41,21 +41,48 @@ the reset and shortening paths. A missing file is not provisional when the manag
 never accepted an existing file, so first-run reloads do not incur the settle budget.
 `LoadPath` remains a single-read operation and does not use settle semantics.
 
-This is a mitigation, not a guarantee, and one gap is known and tracked. A stalled
-partial write whose bytes are **not** a prefix of the last accepted content (a writer that
-changes an early byte before stalling) is not classified as provisional, settles on two
-agreeing reads, and can still revert `enabled = false` to the default (#434) — the
-provisional rule is bound to a content relationship, so any writer that diverges early
-escapes it. The **daemon and interactive-watch** entry points close the formerly eventless
-startup gap (#435) by installing the watcher before an explicit settled `Manager.Reload`,
-then using only the post-reload `Current` config; a completion event during that sequence
-is therefore queued instead of missed. `NewManagerPath` itself still performs a single
+Every successfully decoded reload reaches one state-commit choke point. At that boundary,
+the guard applies specifically to the global top-level `enabled` key; it does not cover
+other default-true settings such as update checks or display/CTA options. An `enabled`
+transition from `false` to `true` applies immediately when TOML metadata says the file
+explicitly defined the top-level key. When the value came from the default because the
+key is absent, the candidate snapshot is recorded at the first sampled reload and must
+match the snapshot seen at later reload samples, including the retry fired for the
+separate three-second loosening horizon (#434). While a loosening is pending, the manager
+retains its current and accepted snapshots, leaves `LastError` unchanged, and publishes
+no reload result; daemon behavior and status therefore continue to reflect the active
+last-good config. A retry makes a deliberate blank, deletion, or trailing-line deletion
+take effect after the horizon even if no further filesystem event arrives. If a retry
+observes a different loosening snapshot, it starts a fresh horizon and arms another retry
+without relying on an fsnotify event. Transitions to `false`, non-`enabled` changes that
+retain `enabled = false`, and explicit `enabled = true` keep the normal settle latency.
+Reload attempts are serialized so concurrent fsnotify events cannot commit stale
+candidates around the guard.
+
+`Manager` currently has no lifecycle/`Close` method. Its `time.AfterFunc` retry retains
+the manager until it fires and may read the config path after the daemon has otherwise
+shut down or an isolated path has been removed. Reload tolerates a missing file, so this
+is harmless today; any future manager lifecycle must stop the pending retry.
+
+The guard is deliberately time-bounded, not an absolute guarantee. A writer that stalls
+longer than the three-second horizon while the file is a valid partial omitting
+`enabled` can still revert the opt-out. That residual is inherent because the stalled
+snapshot is byte-and-time indistinguishable from a deliberate blank, which must
+eventually restore defaults.
+
+The **daemon and interactive-watch** entry points close the formerly eventless startup
+gap (#435) by installing the watcher before an explicit settled `Manager.Reload`, then
+using only the post-reload `Current` config; a completion event during that sequence is
+therefore queued instead of missed. `NewManagerPath` itself still performs a single
 **unsettled** read and stores it as the `accepted` baseline — the compensation lives in
-those two callers, not in the constructor, so a new caller that loads config directly does
-not inherit it. `config.Load`/`LoadPath` are likewise single unsettled reads, which is why
-the load-then-save commands are tracked separately (#438). A candidate that becomes provisional-stable partway through the budget
-also cannot reach acceptance in that call, which is safe: the reload is a no-op and the
-next fsnotify event starts a fresh budget with the settled content as its first read.
+those two callers, not in the constructor, so a new caller that loads config directly
+does not inherit it. The constructor's unsettled read can also seed `enabled = true`,
+which disarms this guard for that manager's lifetime because the guard protects only a
+`false`-to-`true` transition (#440). `config.Load`/`LoadPath` are likewise single
+unsettled reads, which is why the load-then-save commands are tracked separately (#438).
+A candidate that becomes provisional-stable partway through the budget also cannot
+reach acceptance in that call, which is safe: the reload is a no-op and the next
+fsnotify event starts a fresh budget with the settled content as its first read.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,
@@ -70,8 +97,11 @@ The feedback target is likewise bounded and restricted to an absolute HTTP(S) UR
 Config reads are capped at 1 MiB before TOML decoding.
 
 Most watch tests write config changes atomically so they exercise malformed content
-rather than a truncation window; a dedicated set of tests (see `nonAtomicWriter` in
-`config_test.go`) writes non-atomically on purpose to cover the settle behavior above.
+rather than a truncation window. Dedicated regression tests use deliberately divergent,
+chunked, shrinking, unlink/recreate, and rename/append writers, and a fixed-seed
+randomized writer-schedule property test asserts that a save whose final content sets
+`enabled = false` never exposes `enabled = true` before completion. Schedules stalled
+beyond the loosening horizon are intentionally excluded as the documented residual.
 
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically
