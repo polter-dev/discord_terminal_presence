@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/csv"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/user"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode/utf16"
 )
@@ -27,6 +29,9 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 	status := s.Status()
 	if status.ForeignTask && !force {
 		return status, foreignTaskError(status.Message)
+	}
+	if canonical, err := canonicalWindowsExecutable(exe); err == nil {
+		exe = canonical
 	}
 	username := ""
 	if current, err := user.Current(); err == nil && current != nil {
@@ -138,7 +143,7 @@ func (s windowsService) Uninstall(force bool) (State, error) {
 		return status, fmt.Errorf("schtasks end failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	if out, err := s.runner.Run("schtasks", "/Delete", "/TN", TaskName, "/F"); err != nil {
-		if isTaskNotFound(out, err) {
+		if exists, queryErr := s.taskExists(context.Background()); queryErr == nil && !exists {
 			return State{Supported: true, Path: TaskName, Loaded: "false", Enabled: "false"}, nil
 		}
 		return State{Supported: true, Path: TaskName}, fmt.Errorf("schtasks delete failed: %w: %s", err, strings.TrimSpace(string(out)))
@@ -158,7 +163,7 @@ func (s windowsService) Disable() (State, error) {
 		return status, nil
 	}
 	if out, err := s.runner.Run("schtasks", "/Change", "/TN", TaskName, "/DISABLE"); err != nil {
-		if isTaskNotFound(out, err) {
+		if exists, queryErr := s.taskExists(context.Background()); queryErr == nil && !exists {
 			return State{Supported: true, Path: TaskName, Loaded: "false", Enabled: "false"}, nil
 		}
 		return State{Supported: true, Installed: true, Path: TaskName}, fmt.Errorf("schtasks disable failed: %w: %s", err, strings.TrimSpace(string(out)))
@@ -188,7 +193,7 @@ func (s windowsService) Enable() (State, error) {
 		return status, nil
 	}
 	if out, err := s.runner.Run("schtasks", "/Change", "/TN", TaskName, "/ENABLE"); err != nil {
-		if isTaskNotFound(out, err) {
+		if exists, queryErr := s.taskExists(context.Background()); queryErr == nil && !exists {
 			return State{Supported: true, Path: TaskName, Loaded: "false", Enabled: "false"}, nil
 		}
 		return State{Supported: true, Installed: true, Path: TaskName}, fmt.Errorf("schtasks enable failed: %w: %s", err, strings.TrimSpace(string(out)))
@@ -212,13 +217,19 @@ func (s windowsService) Status() State {
 
 func (s windowsService) StatusContext(ctx context.Context) State {
 	state := State{Supported: true, Path: TaskName, Loaded: "unknown", Enabled: "unknown"}
+	exists, err := s.taskExists(ctx)
+	if err != nil {
+		state.Installed = true
+		state.Message = fmt.Sprintf("schtasks query failed: %v", err)
+		return state
+	}
+	if !exists {
+		state.Loaded = "false"
+		state.Enabled = "false"
+		return state
+	}
 	out, err := runStatusCommand(ctx, s.runner, "schtasks", "/Query", "/TN", TaskName, "/XML")
 	if err != nil {
-		if isTaskNotFound(out, err) {
-			state.Loaded = "false"
-			state.Enabled = "false"
-			return state
-		}
 		state.Installed = true
 		state.Message = fmt.Sprintf("schtasks query failed: %v: %s", err, strings.TrimSpace(string(out)))
 		return state
@@ -268,12 +279,69 @@ func foreignTaskError(message string) error {
 }
 
 func sameWindowsExecutable(taskCommand, executable string) bool {
-	taskCommand = strings.Trim(strings.TrimSpace(taskCommand), `"`)
-	executable = strings.Trim(strings.TrimSpace(executable), `"`)
+	taskCommand = normalizeWindowsPath(taskCommand)
+	executable = normalizeResolvedWindowsPath(executable)
 	if taskCommand == "" || executable == "" {
 		return false
 	}
-	return strings.EqualFold(filepath.Clean(taskCommand), filepath.Clean(executable))
+	if same, determined := sameWindowsFileIdentity(taskCommand, executable); determined {
+		return same
+	}
+	taskCanonical, taskErr := canonicalWindowsExecutable(taskCommand)
+	exeCanonical, exeErr := canonicalWindowsExecutable(executable)
+	if taskErr == nil && exeErr == nil {
+		return strings.EqualFold(taskCanonical, exeCanonical)
+	}
+	return strings.EqualFold(taskCommand, executable)
+}
+
+func (s windowsService) taskExists(ctx context.Context) (bool, error) {
+	// The targeted query is fast and its exit status is locale-independent:
+	// success means the task exists and a normal schtasks exit means it does
+	// not. Fall back to enumeration only when the command could not run
+	// normally (for example, a transient runner failure).
+	_, err := runStatusCommand(
+		ctx, s.runner, "schtasks", "/Query", "/TN", TaskName, "/FO", "CSV", "/NH",
+	)
+	if err == nil {
+		return true, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) {
+		return false, nil
+	}
+
+	out, err := runStatusCommand(ctx, s.runner, "schtasks", "/Query", "/FO", "CSV", "/NH")
+	found, parseErr := windowsTaskCSVContains(out, TaskName)
+	if parseErr != nil {
+		return false, parseErr
+	}
+	if found {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return false, nil
+}
+
+func windowsTaskCSVContains(data []byte, taskName string) (bool, error) {
+	reader := csv.NewReader(bytes.NewReader(data))
+	reader.FieldsPerRecord = -1
+	reader.LazyQuotes = true
+	records, err := reader.ReadAll()
+	if err != nil {
+		return false, fmt.Errorf("parse schtasks CSV: %w", err)
+	}
+	for _, record := range records {
+		if len(record) > 0 && strings.EqualFold(strings.TrimSpace(record[0]), taskName) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func unmarshalTaskXML(data []byte, value any) error {
@@ -312,36 +380,41 @@ func unmarshalTaskXML(data []byte, value any) error {
 
 func (s windowsService) runTask() error {
 	out, err := s.runner.Run("schtasks", "/Run", "/TN", TaskName)
-	if err == nil || isTaskNotFound(out, err) || isTaskAlreadyRunning(out, err) {
+	if err == nil {
+		return nil
+	}
+	queryOut, queryErr := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/FO", "CSV", "/V", "/NH")
+	if queryErr == nil && windowsTaskCSVIsRunning(queryOut) {
+		return nil
+	}
+	if exists, queryErr := s.taskExists(context.Background()); queryErr == nil && !exists {
 		return nil
 	}
 	return fmt.Errorf("schtasks run failed: %w: %s", err, strings.TrimSpace(string(out)))
 }
 
-// isTaskNotFound best-effort matches the English schtasks absence messages.
-// Localized Windows output may not match and will be reported as an operational
-// query failure instead of being mistaken for a task that is not installed.
-func isTaskNotFound(out []byte, err error) bool {
-	text := string(out)
+func windowsTaskCSVIsRunning(data []byte) bool {
+	// Verbose CSV column names and status text are localized. The numeric Last
+	// Run Result is not; SCHED_S_TASK_RUNNING is 0x41301 on every locale.
+	const schedSTaskRunning = uint64(0x00041301)
+	reader := csv.NewReader(bytes.NewReader(data))
+	reader.FieldsPerRecord = -1
+	reader.LazyQuotes = true
+	records, err := reader.ReadAll()
 	if err != nil {
-		text += "\n" + err.Error()
+		return false
 	}
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.ToLower(strings.TrimSpace(line))
-		if !strings.HasPrefix(line, "error:") {
-			continue
-		}
-		if strings.Contains(line, "cannot find") || strings.Contains(line, "does not exist") {
-			return true
+	for _, record := range records {
+		for _, field := range record {
+			value := strings.TrimSpace(field)
+			base := 10
+			if strings.HasPrefix(strings.ToLower(value), "0x") {
+				base = 0
+			}
+			if result, err := strconv.ParseUint(value, base, 32); err == nil && result == schedSTaskRunning {
+				return true
+			}
 		}
 	}
 	return false
-}
-
-func isTaskAlreadyRunning(out []byte, err error) bool {
-	text := string(out)
-	if err != nil {
-		text += "\n" + err.Error()
-	}
-	return containsAnyFold(text, "already running", "instance of this task is currently running")
 }

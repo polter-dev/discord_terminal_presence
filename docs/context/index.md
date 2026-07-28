@@ -10,7 +10,7 @@ Start here, then read the module entry before opening source.
 | Detector | [`detector.md`](detector.md) | `internal/detector` | Scans processes, applies terminal-activity rules, and selects the featured and other present tools. |
 | Presence | [`presence.md`](presence.md) | `internal/presence` | Maps detections to defensively bounded activity, reports optional-field omissions for caller-gated diagnostics, and classifies payload versus transport IPC failures. |
 | Registry | [`registry.md`](registry.md) | `internal/registry` | Defines built-in/custom tools, validates Discord-facing custom fields, resolves logos, and matches process identity to tools. |
-| Service | [`service.md`](service.md) | `internal/service` | Manages per-OS login services and context-bounded status queries. |
+| Service | [`service.md`](service.md) | `internal/service` | Manages per-OS login services, canonical Windows task ownership, and bounded locale-independent status queries. |
 | Terminal text | [`terminaltext.md`](terminaltext.md) | `internal/terminaltext` | Sanitizes externally derived text and safely flattens multi-line values at single-line terminal and log rendering boundaries. |
 | TUI | [`tui.md`](tui.md) | `internal/tui` | Owns setup, settings, confirmation, watch, and card UI with shared safe rendering. |
 | Update | [`update.md`](update.md) | `internal/update` | Checks releases, persists outcomes, detects generic/Homebrew/Scoop/Go/system-package ownership, and selects safe update guidance or execution. |

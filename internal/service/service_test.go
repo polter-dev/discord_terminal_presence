@@ -37,6 +37,35 @@ type foreignThenInstalledRunner struct {
 	firstQuery string
 }
 
+type scriptedRunnerResult struct {
+	out string
+	err error
+}
+
+type scriptedRunner struct {
+	calls   []string
+	results map[string]scriptedRunnerResult
+}
+
+type simulatedExitError struct {
+	code int
+}
+
+func (e simulatedExitError) Error() string {
+	return fmt.Sprintf("exit status %d", e.code)
+}
+
+func (e simulatedExitError) ExitCode() int {
+	return e.code
+}
+
+func (r *scriptedRunner) Run(name string, args ...string) ([]byte, error) {
+	call := name + " " + strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	result := r.results[call]
+	return []byte(result.out), result.err
+}
+
 func (*blockingContextRunner) Run(string, ...string) ([]byte, error) {
 	panic("StatusContext used Runner.Run instead of Runner.RunContext")
 }
@@ -53,10 +82,25 @@ func (r *recordingRunner) Run(name string, args ...string) ([]byte, error) {
 	if err := r.fail[call]; err != nil {
 		return []byte(r.out[call]), err
 	}
+	if call == "schtasks /Query /TN "+TaskName+" /FO CSV /NH" && r.out[call] == "" {
+		xmlQuery := "schtasks /Query /TN " + TaskName + " /XML"
+		if strings.HasPrefix(strings.TrimSpace(r.out[xmlQuery]), "<") {
+			return []byte(`"` + TaskName + `","N/A","Ready"` + "\n"), nil
+		}
+		return nil, simulatedExitError{code: 1}
+	}
+	if call == "schtasks /Query /FO CSV /NH" && r.out[call] == "" {
+		xmlQuery := "schtasks /Query /TN " + TaskName + " /XML"
+		if strings.HasPrefix(strings.TrimSpace(r.out[xmlQuery]), "<") {
+			return []byte(`"` + TaskName + `","N/A","Ready"` + "\n"), nil
+		}
+		return nil, nil
+	}
 	if name == "schtasks" && len(args) > 0 && args[0] == "/Delete" {
 		query := "schtasks /Query /TN " + TaskName + " /XML"
 		r.fail[query] = errors.New("exit status 1")
 		r.out[query] = "ERROR: The specified task name does not exist in the system.\n"
+		r.out["schtasks /Query /FO CSV /NH"] = ""
 	}
 	return []byte(r.out[call]), nil
 }
@@ -79,6 +123,15 @@ func (r *windowsInstallRunner) Run(name string, args ...string) ([]byte, error) 
 		}
 	}
 	if name == "schtasks" && len(args) > 0 && args[0] == "/Query" {
+		if hasArg(args, "/FO") {
+			if !r.created {
+				if hasArg(args, "/TN") {
+					return nil, simulatedExitError{code: 1}
+				}
+				return nil, nil
+			}
+			return []byte(`"` + TaskName + `","N/A","Ready"` + "\n"), nil
+		}
 		if !r.created {
 			return []byte("ERROR: The specified task name does not exist in the system.\n"), errors.New("exit status 1")
 		}
@@ -88,7 +141,12 @@ func (r *windowsInstallRunner) Run(name string, args ...string) ([]byte, error) 
 }
 
 func (r *foreignThenInstalledRunner) Run(name string, args ...string) ([]byte, error) {
-	if name == "schtasks" && len(args) > 0 && args[0] == "/Query" && r.firstQuery == "" {
+	if name == "schtasks" && hasArg(args, "/FO") && r.firstQuery == "" && !r.created {
+		call := append([]string{name}, args...)
+		r.calls = append(r.calls, call)
+		return []byte(`"` + TaskName + `","N/A","Ready"` + "\n"), nil
+	}
+	if name == "schtasks" && hasArg(args, "/XML") && r.firstQuery == "" {
 		call := append([]string{name}, args...)
 		r.calls = append(r.calls, call)
 		r.firstQuery = strings.Join(call, " ")
@@ -1478,13 +1536,13 @@ func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 	if state.Installed || state.Enabled != "false" || state.Loaded != "false" {
 		t.Fatalf("state = %+v, want not installed enabled false loaded false", state)
 	}
-	if len(runner.calls) < 3 {
+	if len(runner.calls) < 4 {
 		t.Fatalf("Uninstall calls = %#v, want query, end, then delete", runner.calls)
 	}
-	if want := "schtasks /End /TN " + TaskName; runner.calls[1] != want {
-		t.Fatalf("second Uninstall call = %q, want %q", runner.calls[1], want)
+	if want := "schtasks /End /TN " + TaskName; runner.calls[2] != want {
+		t.Fatalf("third Uninstall call = %q, want %q", runner.calls[2], want)
 	}
-	delete := runner.calls[2]
+	delete := runner.calls[3]
 	for _, want := range []string{
 		"schtasks /Delete",
 		"/TN " + TaskName,
@@ -1553,35 +1611,174 @@ func TestWindowsUninstallTreatsMissingTaskAsSuccess(t *testing.T) {
 	if state.Installed || state.Loaded != "false" || state.Enabled != "false" {
 		t.Fatalf("Uninstall() = %+v, want clean absent state", state)
 	}
-	if len(runner.calls) != 1 || runner.calls[0] != "schtasks /Query /TN "+TaskName+" /XML" {
-		t.Fatalf("Uninstall calls = %#v, want only absent-state query", runner.calls)
+	if len(runner.calls) != 1 || runner.calls[0] != "schtasks /Query /TN "+TaskName+" /FO CSV /NH" {
+		t.Fatalf("Uninstall calls = %#v, want only targeted absent-state query", runner.calls)
 	}
 }
 
 func TestWindowsRunToleratesBenignRaces(t *testing.T) {
-	runCall := "schtasks /Run /TN " + TaskName
-	queryCall := "schtasks /Query /TN " + TaskName + " /XML"
 	tests := []struct {
-		name string
-		out  string
+		name     string
+		out      string
+		queryOut string
+		listOut  string
 	}{
-		{name: "already running", out: "ERROR: An instance of this task is currently running.\n"},
-		{name: "task removed", out: "ERROR: The specified task name does not exist in the system.\n"},
+		{
+			name:     "already running with German output",
+			out:      "FEHLER: Eine Instanz dieser Aufgabe wird bereits ausgeführt.\n",
+			queryOut: `"COMPUTER","` + TaskName + `","Nicht zutreffend","Bereit","0x41301"` + "\r\n",
+			listOut:  `"` + TaskName + `","Nicht zutreffend","Bereit"` + "\r\n",
+		},
+		{
+			name:    "task removed with Japanese output",
+			out:     "エラー: 指定されたファイルが見つかりません。\n",
+			listOut: "\n",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			runCall := "schtasks /Run /TN " + TaskName
+			verboseCall := "schtasks /Query /TN " + TaskName + " /FO CSV /V /NH"
+			listCall := "schtasks /Query /FO CSV /NH"
 			runner := &recordingRunner{
 				fail: map[string]error{runCall: errors.New("exit status 1")},
 				out: map[string]string{
-					runCall:   tt.out,
-					queryCall: windowsEnabledTaskXML,
+					runCall:     tt.out,
+					verboseCall: tt.queryOut,
+					listCall:    tt.listOut,
 				},
 			}
-			if _, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false); err != nil {
+			if err := (windowsService{runner: runner}).runTask(); err != nil {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestWindowsTaskCSVContainsIgnoresLocalizedColumns(t *testing.T) {
+	japanese := []byte(
+		`"\Microsoft\Windows\UpdateOrchestrator\Schedule Scan","次回の実行時刻なし","準備完了"` + "\r\n" +
+			`"` + TaskName + `","次回の実行時刻なし","実行中"` + "\r\n",
+	)
+	found, err := windowsTaskCSVContains(japanese, TaskName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatalf("windowsTaskCSVContains() = false, want task found in Japanese sample")
+	}
+
+	found, err = windowsTaskCSVContains([]byte(`"\Andere Aufgabe","Nicht zutreffend","Bereit"`+"\r\n"), TaskName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatalf("windowsTaskCSVContains() = true, want absent task in German sample")
+	}
+}
+
+func TestWindowsTaskCSVContainsToleratesUnrelatedErrorRows(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "schtasks", "list-with-error.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := windowsTaskCSVContains(fixture, TaskName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("windowsTaskCSVContains() = false, want task after unrelated error row")
+	}
+}
+
+func TestWindowsTaskCSVIsRunningToleratesUndoubledCommandQuotes(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "schtasks", "verbose-running-undoubled-quotes.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !windowsTaskCSVIsRunning(fixture) {
+		t.Fatal("windowsTaskCSVIsRunning() = false, want 0x41301 from realistic verbose row")
+	}
+}
+
+func TestWindowsTaskExistsUsesTargetedQueryFastPath(t *testing.T) {
+	targeted := "schtasks /Query /TN " + TaskName + " /FO CSV /NH"
+	runner := &scriptedRunner{results: map[string]scriptedRunnerResult{
+		targeted: {out: `"` + TaskName + `","N/A","Ready"`},
+	}}
+
+	found, err := (windowsService{runner: runner}).taskExists(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("taskExists() = false, want targeted-query success to mean present")
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != targeted {
+		t.Fatalf("taskExists() calls = %#v, want only targeted query", runner.calls)
+	}
+}
+
+func TestWindowsTaskExistsUsesParsedFallbackDespiteExitError(t *testing.T) {
+	targeted := "schtasks /Query /TN " + TaskName + " /FO CSV /NH"
+	list := "schtasks /Query /FO CSV /NH"
+	fixture, err := os.ReadFile(filepath.Join("testdata", "schtasks", "list-with-error.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &scriptedRunner{results: map[string]scriptedRunnerResult{
+		targeted: {err: errors.New("start schtasks: transient failure")},
+		list: {
+			out: string(fixture),
+			err: errors.New("exit status 1"),
+		},
+	}}
+
+	found, err := (windowsService{runner: runner}).taskExists(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("taskExists() = false, want parsed task row despite listing exit error")
+	}
+	if len(runner.calls) != 2 || runner.calls[0] != targeted || runner.calls[1] != list {
+		t.Fatalf("taskExists() calls = %#v, want targeted query then fallback listing", runner.calls)
+	}
+}
+
+func TestWindowsTaskExistsTreatsTargetedCommandExitAsAbsent(t *testing.T) {
+	targeted := "schtasks /Query /TN " + TaskName + " /FO CSV /NH"
+	runner := &scriptedRunner{results: map[string]scriptedRunnerResult{
+		targeted: {err: simulatedExitError{code: 1}},
+	}}
+
+	found, err := (windowsService{runner: runner}).taskExists(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("taskExists() = true, want targeted-query command exit to mean absent")
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != targeted {
+		t.Fatalf("taskExists() calls = %#v, want no full-list fallback", runner.calls)
+	}
+}
+
+func TestWindowsStatusContextDoesNotTreatTimeoutAsAbsence(t *testing.T) {
+	runner := &blockingContextRunner{}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	state := (Manager{GOOS: "windows", Runner: runner}).StatusContext(ctx)
+	if !state.Installed || state.Loaded != "unknown" || state.Enabled != "unknown" {
+		t.Fatalf("StatusContext() = %+v, want ambiguous installed state after timeout", state)
+	}
+	if !strings.Contains(state.Message, context.DeadlineExceeded.Error()) {
+		t.Fatalf("StatusContext().Message = %q, want deadline error", state.Message)
+	}
+	if runner.contextCalls != 1 {
+		t.Fatalf("RunContext calls = %d, want only targeted query before timeout", runner.contextCalls)
 	}
 }
 
@@ -1638,12 +1835,20 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			query := "schtasks /Query /TN " + TaskName + " /XML"
+			targetedQuery := "schtasks /Query /TN " + TaskName + " /FO CSV /NH"
+			listQuery := "schtasks /Query /FO CSV /NH"
 			runner := &recordingRunner{
 				fail: map[string]error{},
 				out:  map[string]string{query: tt.queryOut},
 			}
 			if tt.queryErr != nil {
-				runner.fail[query] = tt.queryErr
+				if tt.wantMessage {
+					runner.fail[targetedQuery] = errors.New("start schtasks: access denied")
+					runner.fail[listQuery] = tt.queryErr
+					runner.out[listQuery] = tt.queryOut
+				} else {
+					runner.fail[query] = tt.queryErr
+				}
 			}
 
 			state := (Manager{GOOS: "windows", Runner: runner}).Status()
@@ -1695,6 +1900,59 @@ func TestWindowsStatusVerifiesTaskExecutable(t *testing.T) {
 				t.Fatalf("Status().Message = %q, want substring %q", state.Message, tt.wantMessage)
 			}
 		})
+	}
+}
+
+func TestSameWindowsExecutableNormalizesPathSyntaxAndEnvironment(t *testing.T) {
+	t.Setenv("ProgramFiles", `C:\Program Files`)
+	tests := []struct {
+		name       string
+		task       string
+		executable string
+		want       bool
+	}{
+		{
+			name:       "case quotes separators and dot segments",
+			task:       `"c:/PROGRAM FILES/termp/./termp.exe"`,
+			executable: `C:\Program Files\termp\termp.exe`,
+			want:       true,
+		},
+		{
+			name:       "percent environment variable",
+			task:       `%PROGRAMFILES%\termp\termp.exe`,
+			executable: `C:\Program Files\termp\termp.exe`,
+			want:       true,
+		},
+		{
+			name:       "different executable",
+			task:       `C:\Program Files\termp\termp.exe`,
+			executable: `C:\Program Files\other\termp.exe`,
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameWindowsExecutable(tt.task, tt.executable); got != tt.want {
+				t.Fatalf("sameWindowsExecutable(%q, %q) = %t, want %t", tt.task, tt.executable, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeResolvedWindowsPathDoesNotExpandEnvironment(t *testing.T) {
+	t.Setenv("TEMP", `C:\Windows\Temp`)
+	const resolved = `C:\dir%TEMP%name\termp.exe`
+	got := normalizeResolvedWindowsPath(resolved)
+	if got != resolved {
+		t.Fatalf("normalizeResolvedWindowsPath(%q) = %q, want literal percent path unchanged", resolved, got)
+	}
+}
+
+func TestNormalizeWindowsPathClampsAtDriveRoot(t *testing.T) {
+	const input = `C:\a\b\..\..\..\..\x.exe`
+	if got, want := normalizeWindowsPath(input), `C:\x.exe`; got != want {
+		t.Fatalf("normalizeWindowsPath(%q) = %q, want %q", input, got, want)
 	}
 }
 
@@ -1754,8 +2012,8 @@ func TestWindowsMutationsRefuseForeignTask(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "different installation") || !strings.Contains(err.Error(), "--force") {
 			t.Fatalf("Install error = %v, want ownership refusal", err)
 		}
-		if len(runner.calls) != 1 || runner.calls[0] != query {
-			t.Fatalf("Install calls = %#v, want ownership query only", runner.calls)
+		if len(runner.calls) != 2 || runner.calls[0] != "schtasks /Query /TN "+TaskName+" /FO CSV /NH" || runner.calls[1] != query {
+			t.Fatalf("Install calls = %#v, want presence and ownership queries only", runner.calls)
 		}
 	})
 
@@ -1785,8 +2043,8 @@ func TestWindowsMutationsRefuseForeignTask(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "different installation") || !strings.Contains(err.Error(), "--force") {
 				t.Fatalf("%s error = %v, want ownership refusal", action.name, err)
 			}
-			if len(runner.calls) != 1 || runner.calls[0] != query {
-				t.Fatalf("%s calls = %#v, want ownership query only", action.name, runner.calls)
+			if len(runner.calls) != 2 || runner.calls[0] != "schtasks /Query /TN "+TaskName+" /FO CSV /NH" || runner.calls[1] != query {
+				t.Fatalf("%s calls = %#v, want presence and ownership queries only", action.name, runner.calls)
 			}
 		})
 	}
@@ -1859,7 +2117,6 @@ func TestWindowsForceUninstallRemovesForeignTask(t *testing.T) {
 }
 
 func TestWindowsDisableAndEnableReturnQueryFailures(t *testing.T) {
-	query := "schtasks /Query /TN " + TaskName + " /XML"
 	tests := []struct {
 		name string
 		run  func(Manager) (State, error)
@@ -1870,9 +2127,14 @@ func TestWindowsDisableAndEnableReturnQueryFailures(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			targetedQuery := "schtasks /Query /TN " + TaskName + " /FO CSV /NH"
+			listQuery := "schtasks /Query /FO CSV /NH"
 			runner := &recordingRunner{
-				fail: map[string]error{query: errors.New("exit status 1")},
-				out:  map[string]string{query: "ERROR: Access is denied.\n"},
+				fail: map[string]error{
+					targetedQuery: errors.New("start schtasks: access denied"),
+					listQuery:     errors.New("exit status 1"),
+				},
+				out: map[string]string{listQuery: "ERROR: Access is denied.\n"},
 			}
 			state, err := tt.run(Manager{GOOS: "windows", Runner: runner})
 			if err == nil || !strings.Contains(err.Error(), "Access is denied") {
@@ -1881,8 +2143,8 @@ func TestWindowsDisableAndEnableReturnQueryFailures(t *testing.T) {
 			if state.Message == "" || state.Loaded != "unknown" || state.Enabled != "unknown" {
 				t.Fatalf("%s() state = %+v, want visible ambiguous query state", tt.name, state)
 			}
-			if len(runner.calls) != 1 || runner.calls[0] != query {
-				t.Fatalf("%s() calls = %#v, want only query", tt.name, runner.calls)
+			if len(runner.calls) != 2 || runner.calls[0] != targetedQuery || runner.calls[1] != listQuery {
+				t.Fatalf("%s() calls = %#v, want targeted query then fallback listing", tt.name, runner.calls)
 			}
 		})
 	}

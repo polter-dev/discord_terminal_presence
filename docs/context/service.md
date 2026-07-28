@@ -18,11 +18,16 @@ Windows uses the stable scheduled-task name `\Terminal Presence\termp`. Keeping
 one well-known task preserves existing autostart registrations during upgrades
 and avoids leaving obsolete per-installation tasks behind.
 
-The task definition's executable command is its ownership check. Status counts
-the task as this installation's autostart only when that command matches the
-running executable (case-insensitively, as Windows paths are). If the stable
-task targets another executable, status reports that conflict explicitly and
-install, uninstall, enable, and disable refuse to modify it by default.
+The task definition's executable command is its ownership check. Windows expands
+percent-style environment variables and normalizes quotes, separators, dot
+segments, and trailing separators, then compares paths case-insensitively. It
+expands environment variables only in the raw task command, not in resolved
+filesystem paths, and clamps parent traversal at a drive root. On Windows it
+then opens both paths and compares volume/file identity, which recognizes 8.3
+names, junctions, and drive-substituted aliases; final handle paths are stored
+in new task definitions when available. If the stable task targets another
+executable, status reports that conflict explicitly and install, uninstall,
+enable, and disable refuse to modify it by default.
 `autostart install --force` deliberately replaces a foreign task, while
 `autostart uninstall --force` deliberately removes one. Reinstalling from the
 same executable still replaces the definition, preserving the reconciliation
@@ -44,7 +49,23 @@ intervals. Disable and uninstall treat `schtasks /End` as required: disable
 surfaces an end failure, and uninstall refuses to delete the task definition
 unless the running task was ended successfully.
 
+Windows lifecycle decisions do not parse localized `schtasks` prose. Presence is
+checked first with a fast targeted headerless CSV query, whose command exit
+status distinguishes presence from absence. Full enumeration is reserved for
+failures where the targeted command did not exit normally; tolerant CSV parsing
+still accepts usable task rows when enumeration also exits nonzero. If `/Run`
+fails, verbose CSV's numeric Task Scheduler result `0x41301` identifies an
+already-running task; a presence query identifies a concurrently removed task.
+Synthetic Japanese and German CSV fixtures run on every OS. Separate realistic
+fixtures cover variable-width/error rows and a 30-column verbose row containing
+an embedded quoted executable command. The Windows integration test installs
+through a real directory junction, an available 8.3 short name, and an
+available substituted drive.
+
 **Depends on / used by:** Uses OS service commands through an injectable runner; used by
 CLI autostart, setup reconciliation, and status.
 
-**Open questions / TODO:** None currently.
+**Open questions / TODO:** Confirm the Windows lifecycle on non-English real
+hardware and ownership through real 8.3, junction, and substituted-drive paths;
+CI coverage is not a substitute for the hardware verification tracked with
+Windows testing issue #275.
