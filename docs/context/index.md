@@ -4,7 +4,7 @@ Start here, then read the module entry before opening source.
 
 | Module | Context | Source | Purpose |
 | --- | --- | --- | --- |
-| CLI | [`cli.md`](cli.md) | `cmd/termp`, `install.sh`, `.github/workflows/release.yml`, `.github/workflows/verify-release-secrets.yml`, `.goreleaser.yaml` | Owns commands, daemon lifecycle and status, setup wiring, updates, and the gated release path. |
+| CLI | [`cli.md`](cli.md) | `cmd/termp`, `install.sh`, `.github/workflows/release.yml`, `.github/workflows/verify-release-secrets.yml`, `.goreleaser.yaml` | Owns commands, daemon lifecycle and status, setup wiring, updates, and gated Homebrew/Scoop publication. |
 | Completion install | [`completioninstall.md`](completioninstall.md) | `internal/completioninstall` | Installs and removes generated completions for bash, zsh, and fish. |
 | Config | [`config.md`](config.md) | `internal/config` | Defines, validates (including Discord field bounds), migrates, watches, initializes, loads, and saves user configuration. |
 | Detector | [`detector.md`](detector.md) | `internal/detector` | Scans processes, applies terminal-activity rules, and selects the featured and other present tools. |
@@ -13,7 +13,7 @@ Start here, then read the module entry before opening source.
 | Service | [`service.md`](service.md) | `internal/service` | Manages per-OS login services and context-bounded status queries. |
 | Terminal text | [`terminaltext.md`](terminaltext.md) | `internal/terminaltext` | Sanitizes externally derived text, including config warnings, at terminal and log rendering boundaries. |
 | TUI | [`tui.md`](tui.md) | `internal/tui` | Owns setup, settings, confirmation, watch, and card UI with shared safe rendering. |
-| Update | [`update.md`](update.md) | `internal/update` | Checks releases, persists outcomes, detects generic/Homebrew/Go/system-package ownership, and selects safe update guidance or execution. |
+| Update | [`update.md`](update.md) | `internal/update` | Checks releases, persists outcomes, detects generic/Homebrew/Scoop/Go/system-package ownership, and selects safe update guidance or execution. |
 | Usage | [`usage.md`](usage.md) | `internal/usage` | Stores bounded local tool-usage history for settings ranking. |
 
 Platform-specific test contracts live with their module entries: launchd/systemd and

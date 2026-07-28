@@ -284,6 +284,7 @@ func TestSystemPackageGuidance(t *testing.T) {
 		method InstallMethod
 		want   string
 	}{
+		{method: InstallScoop, want: ScoopCommand},
 		{method: InstallDebian, want: debian},
 		{method: InstallRPM, want: rpm},
 		{method: InstallSystemPackage, want: "Debian/Ubuntu:\n" + debian + "\n\nRPM-based Linux:\n" + rpm},
@@ -296,6 +297,16 @@ func TestSystemPackageGuidance(t *testing.T) {
 			}
 			if _, err := UpdateCommandForMethod(tt.method, "v2.3.4"); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("UpdateCommandForMethod(%q) error = %v, want package guidance", tt.method, err)
+			}
+			if tt.method == InstallScoop {
+				runner := &recordingRunner{}
+				err := PerformUpdate(context.Background(), tt.method, "v2.3.4", runner, nil, io.Discard, io.Discard)
+				if err == nil || !strings.Contains(err.Error(), tt.want) {
+					t.Fatalf("PerformUpdate(%q) error = %v, want package guidance", tt.method, err)
+				}
+				if runner.calls != 0 {
+					t.Fatalf("PerformUpdate(%q) ran %d commands, want none", tt.method, runner.calls)
+				}
 			}
 		})
 	}
@@ -402,10 +413,14 @@ func TestInstallMethodDetection(t *testing.T) {
 	goBin := filepath.Join(string(filepath.Separator), "Users", "test", "bin")
 	goPath := filepath.Join(string(filepath.Separator), "opt", "gopath")
 	homebrewPrefixes := []string{"/opt/homebrew", "/usr/local"}
+	defaultScoop := filepath.Join(home, "scoop")
+	relocatedScoop := filepath.Join(string(filepath.Separator), "tools", "scoop")
+	globalScoop := filepath.Join(string(filepath.Separator), "ProgramData", "scoop")
 	tests := []struct {
 		name          string
 		path          string
 		goos          string
+		scoopRoots    []string
 		systemPackage InstallMethod
 		want          InstallMethod
 	}{
@@ -414,6 +429,14 @@ func TestInstallMethodDetection(t *testing.T) {
 		{name: "unrelated Cellar", path: filepath.Join("/home/alice/Cellar/archive/termp"), goos: "linux", want: InstallGeneric},
 		{name: "wrong Cellar package", path: filepath.Join("/opt/homebrew/Cellar/archive/1.2.3/bin/termp"), goos: "darwin", want: InstallGeneric},
 		{name: "wrong Caskroom layout", path: filepath.Join("/usr/local/Caskroom/termp/1.2.3/bin/termp"), goos: "darwin", want: InstallGeneric},
+		{name: "Scoop shim", path: filepath.Join(defaultScoop, "shims", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, "", "", ""), want: InstallScoop},
+		{name: "Scoop app", path: filepath.Join(defaultScoop, "apps", "termp", "current", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, "", "", ""), want: InstallScoop},
+		{name: "Scoop versioned app", path: filepath.Join(defaultScoop, "apps", "termp", "0.1.0", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, "", "", ""), want: InstallScoop},
+		{name: "relocated SCOOP", path: filepath.Join(relocatedScoop, "apps", "termp", "current", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, relocatedScoop, "", ""), want: InstallScoop},
+		{name: "relocated SCOOP_GLOBAL", path: filepath.Join(globalScoop, "shims", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, "", globalScoop, ""), want: InstallScoop},
+		{name: "global Scoop", path: filepath.Join(globalScoop, "apps", "termp", "current", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, "", "", filepath.Dir(globalScoop)), want: InstallScoop},
+		{name: "unrecognized Scoop-like path", path: filepath.Join(home, "elsewhere", "apps", "termp", "current", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, "", "", ""), want: InstallGeneric},
+		{name: "nested Scoop app path", path: filepath.Join(defaultScoop, "apps", "termp", "0.1.0", "bin", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, "", "", ""), want: InstallGeneric},
 		{name: "GOBIN", path: filepath.Join(goBin, "termp"), goos: "linux", want: InstallGo},
 		{name: "GOPATH bin", path: filepath.Join(goPath, "bin", "termp"), goos: "linux", want: InstallGo},
 		{name: "default home Go bin", path: filepath.Join(home, "go", "bin", "termp"), goos: "linux", want: InstallGo},
@@ -426,7 +449,7 @@ func TestInstallMethodDetection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			systemPackage := func(string) InstallMethod { return tt.systemPackage }
-			got := detectInstall(tt.path, func(path string) (string, error) { return path, nil }, tt.goos, systemPackage, goBin, goPath, home, homebrewPrefixes...)
+			got := detectInstall(tt.path, func(path string) (string, error) { return path, nil }, tt.goos, systemPackage, goBin, goPath, home, tt.scoopRoots, homebrewPrefixes...)
 			if got != tt.want {
 				t.Fatalf("detectInstall(%q) = %q, want %q", tt.path, got, tt.want)
 			}
@@ -442,10 +465,10 @@ func TestParseGoEnvPaths(t *testing.T) {
 		if got != (goInstallPaths{goBin: goBin, goPath: goPath}) {
 			t.Fatalf("parseGoEnvPaths() = %#v", got)
 		}
-		if method := detectResolvedInstall(filepath.Join(goBin, "termp"), "linux", nil, got.goBin, got.goPath, ""); method != InstallGo {
+		if method := detectResolvedInstall(filepath.Join(goBin, "termp"), "linux", nil, got.goBin, got.goPath, "", nil); method != InstallGo {
 			t.Fatalf("go env GOBIN install = %q, want %q", method, InstallGo)
 		}
-		if method := detectResolvedInstall(filepath.Join(goPath, "bin", "termp"), "linux", nil, got.goBin, got.goPath, ""); method != InstallGo {
+		if method := detectResolvedInstall(filepath.Join(goPath, "bin", "termp"), "linux", nil, got.goBin, got.goPath, "", nil); method != InstallGo {
 			t.Fatalf("custom go env GOPATH install = %q, want %q", method, InstallGo)
 		}
 	})
@@ -456,10 +479,10 @@ func TestParseGoEnvPaths(t *testing.T) {
 			t.Fatalf("parseGoEnvPaths() = %#v, want empty paths", got)
 		}
 		rawGoPath := filepath.Join(string(filepath.Separator), "fallback", "gopath")
-		if method := detectResolvedInstall(filepath.Join(rawGoPath, "bin", "termp"), "linux", nil, got.goBin, rawGoPath, ""); method != InstallGo {
+		if method := detectResolvedInstall(filepath.Join(rawGoPath, "bin", "termp"), "linux", nil, got.goBin, rawGoPath, "", nil); method != InstallGo {
 			t.Fatalf("raw GOPATH fallback install = %q, want %q", method, InstallGo)
 		}
-		if method := detectResolvedInstall(filepath.Join(string(filepath.Separator), "usr", "local", "bin", "termp"), "linux", nil, got.goBin, "", ""); method != InstallGeneric {
+		if method := detectResolvedInstall(filepath.Join(string(filepath.Separator), "usr", "local", "bin", "termp"), "linux", nil, got.goBin, "", "", nil); method != InstallGeneric {
 			t.Fatalf("unknown install without toolchain = %q, want %q", method, InstallGeneric)
 		}
 	})
@@ -493,7 +516,7 @@ func TestInstallDetectionResolvesSymlinkBeforeMatching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := detectInstall(link, filepath.EvalSymlinks, runtime.GOOS, nil, "", "", root, resolvedRoot); got != InstallHomebrew {
+	if got := detectInstall(link, filepath.EvalSymlinks, runtime.GOOS, nil, "", "", root, nil, resolvedRoot); got != InstallHomebrew {
 		t.Fatalf("symlinked Homebrew install = %q, want %q", got, InstallHomebrew)
 	}
 }
@@ -511,19 +534,43 @@ func TestInstallDetectionResolvesSymlinkBeforeSystemPackageMatching(t *testing.T
 			t.Fatalf("evalSymlinks(%q), want %q", path, link)
 		}
 		return "/usr/bin/termp", nil
-	}, "linux", systemPackage, "", "", "")
+	}, "linux", systemPackage, "", "", "", nil)
 	if got != InstallDebian {
 		t.Fatalf("symlinked system package install = %q, want %q", got, InstallDebian)
 	}
 }
 
 func TestInstallDetectionFallsBackWhenResolutionFails(t *testing.T) {
-	got := detectInstall("/opt/homebrew/Cellar/termp/1.2.3/termp", func(string) (string, error) {
-		return "", errors.New("cannot resolve")
-	}, "darwin", nil, "", "", "")
-	if got != InstallGeneric {
-		t.Fatalf("ambiguous install = %q, want generic", got)
-	}
+	t.Run("Scoop junction", func(t *testing.T) {
+		root := filepath.Join(string(filepath.Separator), "Users", "test", "scoop")
+		executable := filepath.Join(root, "apps", "termp", "current", "termp.exe")
+		got := detectInstall(executable, func(string) (string, error) {
+			return "", errors.New("cannot resolve junction")
+		}, "windows", nil, "", "", "", []string{root})
+		if got != InstallScoop {
+			t.Fatalf("unresolved Scoop install = %q, want %q", got, InstallScoop)
+		}
+	})
+
+	t.Run("non-Scoop Windows path", func(t *testing.T) {
+		root := filepath.Join(string(filepath.Separator), "Users", "test", "scoop")
+		executable := filepath.Join(string(filepath.Separator), "tools", "termp.exe")
+		got := detectInstall(executable, func(string) (string, error) {
+			return "", errors.New("cannot resolve")
+		}, "windows", nil, "", "", "", []string{root})
+		if got != InstallGeneric {
+			t.Fatalf("unresolved non-Scoop install = %q, want %q", got, InstallGeneric)
+		}
+	})
+
+	t.Run("non-Windows path", func(t *testing.T) {
+		got := detectInstall("/opt/homebrew/Cellar/termp/1.2.3/termp", func(string) (string, error) {
+			return "", errors.New("cannot resolve")
+		}, "darwin", nil, "", "", "", nil)
+		if got != InstallGeneric {
+			t.Fatalf("ambiguous install = %q, want %q", got, InstallGeneric)
+		}
+	})
 }
 
 func TestClassifySystemPackage(t *testing.T) {
