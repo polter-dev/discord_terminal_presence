@@ -7,7 +7,10 @@ rendering boundary.
 bidirectional formatting controls while preserving ordinary Unicode text.
 `SanitizeSingleLine` additionally folds every recognized line/record-break character into
 a single visible ` ; ` separator, collapsing runs and trimming leading/trailing
-separators, before sanitizing.
+separators, before sanitizing. `IsControlOrBidi(r rune) bool` exports the exact per-rune
+predicate `Sanitize` strips by, so a caller that needs to *reject* rather than silently
+strip (e.g. `internal/registry` at config load) classifies a rune identically instead of
+maintaining a second copy of the rule that can drift from this one.
 
 **Separator coverage (exact):** `SanitizeSingleLine` normalizes CRLF, CR (`\r`), LF
 (`\n`), vertical tab (`\v`, 0x0B), form feed (`\f`, 0x0C), NUL (0x00), RS (0x1E, RECORD
@@ -42,6 +45,10 @@ underlying ANSI parser, exactly as a same-line escape or OSC title already is; t
 unchanged pre-existing behavior, not something substitution introduces.)
 
 **Depends on / used by:** Depends on Charm's ANSI parser; used by `cmd/termp` and
-`internal/tui`.
+`internal/tui` at terminal/log rendering boundaries, `internal/presence` (`client.go`'s
+`sanitizeActivity`) to sanitize every Discord-facing activity field before it is
+validated or leaves the process, and `internal/registry` (`ValidateCustomTool`,
+`ValidateButtons`, via `IsControlOrBidi`) to reject control characters in `display_name`,
+`image_key`, and button labels at config load (#419).
 
 **Open questions / TODO:** None currently.

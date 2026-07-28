@@ -31,12 +31,33 @@ come from Discord's Social SDK references for
 [`discordpp::Activity`](https://discord.com/developers/docs/social-sdk/classdiscordpp_1_1Activity.html)
 and
 [`discordpp::ActivityAssets`](https://discord.com/developers/docs/social-sdk/classdiscordpp_1_1ActivityAssets.html).
-termp publishes through classic IPC via `rich-go`; a whole-payload rejection for violating
-these constraints on that transport is inferred rather than observed. If classic IPC
+termp's IPC client is first-party (`client.go`, `conn_unix.go`, `conn_windows.go`,
+`writer.go` — no third-party client dependency); a whole-payload rejection for violating
+these constraints on classic IPC is inferred rather than observed. If classic IPC
 returns code 4000, the writer currently classifies it as a permanent rejection for that
 payload: it keeps the connection, does not schedule transport backoff or reapply the
 payload, and attempts normally again when the desired activity changes. Transport,
 timeout, and connection failures retain the existing reconnect backoff.
+
+`SetActivity` calls `sanitizeActivity` (in `client.go`) before validating or building the
+wire payload: it runs `terminaltext.SanitizeSingleLine` on every Discord-facing text
+field — name, details, state, both image keys, both image tooltip texts, and button
+labels (seven fields total) — so raw control characters (e.g. ESC, BEL, NUL) and terminal
+escape sequences cannot reach the wire payload verbatim (#419). Sanitizing before
+validating also means `validateActivity`'s length checks run against the same bytes that
+reach Discord, not pre-sanitization bytes that can cross a length boundary in either
+direction once substituted. `newSetActivityPayload` itself does no sanitizing — it is a
+plain copy of an already-clean `Activity` — and a generic walk of the marshaled JSON
+(`TestSetActivityWireHasNoRawControlOrBidiRunes`) is the regression backstop if a future
+field bypasses `sanitizeActivity`. `registry.ValidateCustomTool` and `ValidateButtons`
+add a second, independent guard at config load for `display_name`, `image_key`, and
+button labels, rejecting control characters outright so the user sees an actionable
+error. `details` and `state` have **no** config-load guard — they are built at runtime
+from directory names via `DirectoryDisplay`, not from static config — so `sanitizeActivity`
+is their only sanitization on any path; it is not merely defense-in-depth for those two
+fields. Whether Discord itself rejects or mis-renders unsanitized bytes was never verified
+before this fix (no live-Discord testing in this harness); the defect was that unsanitized
+bytes left the process, not a confirmed Discord-side failure mode.
 
 Directory path reduction is centralized in `DirectoryDisplay`: basename-only mode returns
 one component and expanded mode returns at most the final two. Presence adds the folder

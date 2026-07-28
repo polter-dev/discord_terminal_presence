@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/polter-dev/discord_terminal_presence/internal/terminaltext"
 )
 
 const (
@@ -188,6 +190,34 @@ func NewWithCustom(custom ...CustomTool) (*Registry, error) {
 	return New(tools...)
 }
 
+// firstDisallowedRune returns the rune-offset position and codepoint of the
+// first terminal escape byte, C0/C1 control character, or Unicode bidi
+// formatting control in value — the same class terminaltext.Sanitize strips
+// at rendering boundaries. There is no legitimate use for a control
+// character in Discord-facing display text, so config load rejects it
+// outright rather than silently stripping or truncating it (see #419).
+// Rejecting a bidi formatting control (e.g. U+200F RIGHT-TO-LEFT MARK) is a
+// deliberate anti-spoofing decision, not an accident of reusing the same
+// stripper terminal rendering uses; controlCharacterError names the actual
+// codepoint so a legitimate RTL display name isn't told it contains a
+// "control character" when what it actually contains is a bidi mark.
+func firstDisallowedRune(value string) (position int, r rune, found bool) {
+	for _, candidate := range value {
+		if terminaltext.IsControlOrBidi(candidate) {
+			return position, candidate, true
+		}
+		position++
+	}
+	return 0, 0, false
+}
+
+// controlCharacterError names the offending codepoint and its position so a
+// user does not have to guess which of "control character" or "bidi
+// formatting control" they actually typed.
+func controlCharacterError(field string, r rune, position int) error {
+	return fmt.Errorf("%s must not contain control characters (found U+%04X at position %d)", field, r, position)
+}
+
 // ValidateButtons enforces Discord's Rich Presence button constraints.
 func ValidateButtons(buttons []Button) error {
 	if len(buttons) > MaxButtonCount {
@@ -200,6 +230,9 @@ func ValidateButtons(buttons []Button) error {
 		}
 		if labelLength > MaxButtonLabelLength {
 			return fmt.Errorf("buttons[%d].label must be at most %d characters", i, MaxButtonLabelLength)
+		}
+		if position, r, found := firstDisallowedRune(button.Label); found {
+			return controlCharacterError(fmt.Sprintf("buttons[%d].label", i), r, position)
 		}
 		if utf8.RuneCountInString(button.URL) > MaxButtonURLLength {
 			return fmt.Errorf("buttons[%d].url must be at most %d characters", i, MaxButtonURLLength)
@@ -223,6 +256,9 @@ func ValidateCustomTool(tool CustomTool) error {
 	if displayNameLength > MaxDisplayNameLength {
 		return fmt.Errorf("display_name must be at most %d characters", MaxDisplayNameLength)
 	}
+	if position, r, found := firstDisallowedRune(tool.DisplayName); found {
+		return controlCharacterError("display_name", r, position)
+	}
 	resolved := Tool{
 		ImageKey:   tool.ImageKey,
 		ImageURL:   tool.ImageURL,
@@ -240,6 +276,14 @@ func ValidateCustomTool(tool CustomTool) error {
 	}
 	if utf8.RuneCountInString(resolved.ImageKey) > MaxImageValueLength {
 		return fmt.Errorf("%s must be at most %d characters", imageKeyField, MaxImageValueLength)
+	}
+	// image_url is validated as an absolute HTTP(S) URL below, and
+	// url.ParseRequestURI already rejects raw control characters in a URL, so
+	// only image_key needs an explicit check here: it is free text with no
+	// such built-in guard (#422 review — this was the one field
+	// ValidateCustomTool did not gate, and it reached the wire unsanitized).
+	if position, r, found := firstDisallowedRune(resolved.ImageKey); found {
+		return controlCharacterError(imageKeyField, r, position)
 	}
 	if utf8.RuneCountInString(resolved.ImageURL) > MaxImageValueLength {
 		return fmt.Errorf("%s must be at most %d characters", imageURLField, MaxImageValueLength)

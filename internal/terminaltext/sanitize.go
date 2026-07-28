@@ -8,6 +8,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// IsControlOrBidi reports whether r is a C0/C1 control character, DEL, or a
+// Unicode bidirectional formatting control. This is the exact rune class
+// Sanitize strips; it is exported so other packages (e.g. registry, which
+// rejects these at config load rather than silently stripping them) can
+// classify a rune the same way without duplicating or drifting from this
+// definition.
+func IsControlOrBidi(r rune) bool {
+	return r <= 0x1f || r == 0x7f || r >= 0x80 && r <= 0x9f ||
+		r == 0x061c || r == 0x200e || r == 0x200f ||
+		r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069
+}
+
 // Sanitize removes terminal escape sequences, control characters, and Unicode
 // bidirectional formatting controls from value.
 func Sanitize(value string) string {
@@ -15,9 +27,7 @@ func Sanitize(value string) string {
 	var cleaned strings.Builder
 	cleaned.Grow(len(value))
 	for _, r := range value {
-		if r <= 0x1f || r == 0x7f || r >= 0x80 && r <= 0x9f ||
-			r == 0x061c || r == 0x200e || r == 0x200f ||
-			r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 {
+		if IsControlOrBidi(r) {
 			continue
 		}
 		cleaned.WriteRune(r)
