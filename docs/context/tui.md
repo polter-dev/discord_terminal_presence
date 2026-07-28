@@ -6,8 +6,8 @@ the Discord-card preview.
 **Public surface:** `NewSettingsModel` creates the progressive settings editor.
 `NewSetupModel` creates onboarding and `WithCompletion` adds its default-off completion
 choice. `ConfirmDialog` provides reusable Yes/No confirmation. `RenderCard` is the pure
-preview renderer. `NewWatchModel*`, `ActivityMsg`, and `ConnMsg` form the live-watch
-boundary.
+preview renderer. `NewWatchModelWithClock`, `NewWatchModelWithConfig`, `ActivityMsg`, and
+`ConnMsg` form the live-watch boundary.
 
 **Key files:** `internal/tui/settings.go` contains Miller-style columns, fuzzy pin search,
 usage-ranked results, save, and feedback. `setup.go` applies config/autostart/completion.

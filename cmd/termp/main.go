@@ -844,7 +844,7 @@ func start(args []string) error {
 		log.Printf("config load error, using last-good/default config: %v", loadErr)
 	}
 	for _, warning := range cfg.Warnings {
-		log.Print(warning)
+		logDaemonConfigWarning(warning)
 	}
 
 	// Updating is best-effort and asynchronous: it is triggered before the run
@@ -859,6 +859,10 @@ func start(args []string) error {
 	}
 
 	return run(ctx, manager, control)
+}
+
+func logDaemonConfigWarning(warning string) {
+	log.Print(terminaltext.Sanitize(warning))
 }
 
 type startOptions struct {
@@ -1812,7 +1816,7 @@ func watch(args []string) error {
 	manager := config.NewManager()
 	cfg, loadErr := manager.Current()
 	for _, warning := range cfg.Warnings {
-		log.Print(warning)
+		logWatchConfigWarning(warning)
 	}
 	if err := config.EnsureConfigDir(cfg.Path); err != nil {
 		log.Printf("config watch disabled: %v", err)
@@ -1842,6 +1846,10 @@ func watch(args []string) error {
 	_, err = program.Run()
 	cancel()
 	return err
+}
+
+func logWatchConfigWarning(warning string) {
+	log.Print(terminaltext.Sanitize(warning))
 }
 
 func watchSnapshot(now time.Time) (string, []string, error) {

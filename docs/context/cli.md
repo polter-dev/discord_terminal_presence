@@ -69,10 +69,11 @@ Config initialization safety is documented in [`config.md`](config.md), terminal
 rendering in [`tui.md`](tui.md), update cache/detection in [`update.md`](update.md), and
 usage retention in [`usage.md`](usage.md).
 
-Structured CLI output and verbose log messages sanitize externally derived terminal
-text. Detection logs resolve the working directory through the same effective privacy
-policy and path-reduction helper as presence output, cap expanded paths at their final
-two components, and report `hidden` when directory display is not allowed.
+Structured CLI output, verbose log messages, and daemon/watch config warnings sanitize
+externally derived terminal text. Detection logs resolve the working directory through
+the same effective privacy policy and path-reduction helper as presence output, cap
+expanded paths at their final two components, and report `hidden` when directory display
+is not allowed.
 Per-tool enablement is passed into detector selection, and hot reloads that change it
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
 Live watch loads the daemon's episode anchors for matching elapsed-time display but runs

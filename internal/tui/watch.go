@@ -38,15 +38,6 @@ type WatchModel struct {
 	warningText  string
 }
 
-// NewWatchModel creates a watch model using the real clock.
-func NewWatchModel() WatchModel {
-	cfg, err := config.Load()
-	if err != nil {
-		cfg = config.Default()
-	}
-	return newWatchModel(cfg.UI.AccentColor, time.Now)
-}
-
 // NewWatchModelWithClock creates a watch model with an injected clock.
 func NewWatchModelWithClock(nowFunc func() time.Time) WatchModel {
 	return newWatchModel(defaultAccentColor(), nowFunc)
