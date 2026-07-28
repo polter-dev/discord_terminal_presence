@@ -3,6 +3,7 @@ package terminaltext
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSanitize(t *testing.T) {
@@ -28,6 +29,158 @@ func TestSanitize(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSanitizeEscapeSequenceBounds(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		// A conservative filter may remove a complete sequence or the
+		// introducer of an incomplete one. It must not discard payload merely
+		// because the sequence reached end-of-input without a terminator.
+		{name: "plain text is unchanged", input: "alpha 日本語 omega", want: "alpha 日本語 omega"},
+		{name: "lone ESC is removed", input: "a\x1b", want: "a"},
+		{name: "complete ESC letter sequence is removed", input: "a\x1bZb", want: "ab"},
+		{name: "screen ESC k remains conservatively bounded", input: "large\x1bkeyimg", want: "largeeyimg"},
+		{name: "unterminated CSI loses its introducer but preserves parameters", input: "a\x1b[31", want: "a31"},
+		{name: "unterminated OSC preserves payload", input: "a\x1b]title", want: "atitle"},
+		{name: "unterminated OSC preserves UTF-8 containing an ST continuation byte", input: "a\x1b]\u00dc", want: "a\u00dc"},
+		{name: "BEL terminated OSC is removed whole", input: "a\x1b]0;title\x07b", want: "ab"},
+		{name: "ST terminated OSC is removed whole", input: "a\x1b]0;title\x1b\\b", want: "ab"},
+		{name: "unterminated DCS preserves payload", input: "a\x1bPqdata", want: "aqdata"},
+		{name: "unterminated APC preserves payload", input: "a\x1b_payload", want: "apayload"},
+		{name: "unterminated PM preserves payload", input: "a\x1b^payload", want: "apayload"},
+		{name: "unterminated SOS preserves payload", input: "a\x1bXpayload", want: "apayload"},
+		{name: "complete CSI is removed whole", input: "a\x1b[31mred", want: "ared"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Sanitize(tt.input); got != tt.want {
+				t.Fatalf("Sanitize(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeStringSequenceTermination(t *testing.T) {
+	const name = "important-folder-name"
+
+	tests := []struct {
+		name       string
+		introducer string
+	}{
+		{name: "OSC", introducer: "\x1b]"},
+		{name: "DCS", introducer: "\x1bP"},
+		{name: "APC", introducer: "\x1b_"},
+		{name: "PM", introducer: "\x1b^"},
+		{name: "SOS", introducer: "\x1bX"},
+		{name: "8-bit OSC", introducer: "\x9d"},
+		{name: "8-bit DCS", introducer: "\x90"},
+		{name: "8-bit APC", introducer: "\x9f"},
+		{name: "8-bit PM", introducer: "\x9e"},
+		{name: "8-bit SOS", introducer: "\x98"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("ESC abort preserves payload", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x1b]x"
+				if got := Sanitize(input); got != "start"+name+"x" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "start"+name+"x")
+				}
+			})
+			t.Run("CAN abort preserves payload", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x18after"
+				if got := Sanitize(input); got != "start"+name+"after" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "start"+name+"after")
+				}
+			})
+			t.Run("SUB abort preserves payload", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x1aafter"
+				if got := Sanitize(input); got != "start"+name+"after" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "start"+name+"after")
+				}
+			})
+			t.Run("end-of-input preserves payload", func(t *testing.T) {
+				input := "start" + tt.introducer + name
+				if got := Sanitize(input); got != "start"+name {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "start"+name)
+				}
+			})
+			t.Run("BEL terminator removes whole sequence", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x07after"
+				if got := Sanitize(input); got != "startafter" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "startafter")
+				}
+			})
+			t.Run("ST terminator removes whole sequence", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x1b\\after"
+				if got := Sanitize(input); got != "startafter" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "startafter")
+				}
+			})
+			t.Run("8-bit ST terminator removes whole sequence", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x9cafter"
+				if got := Sanitize(input); got != "startafter" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "startafter")
+				}
+			})
+		})
+	}
+}
+
+func TestSanitizeUnterminatedSequenceDoesNotPreserveControls(t *testing.T) {
+	var payload strings.Builder
+	payload.WriteString("visible")
+	for r := rune(0); r <= utf8.MaxRune; r++ {
+		// These bytes alter the outer OSC's syntax, so they are not payload
+		// in an OSC that remains unterminated through end-of-input.
+		if r == '\x07' || r == '\x18' || r == '\x1a' || r == '\x1b' {
+			continue
+		}
+		if IsControlOrBidi(r) {
+			payload.WriteRune(r)
+		}
+	}
+
+	got := Sanitize("\x1b]" + payload.String())
+	if got != "visible" {
+		t.Fatalf("Sanitize(unterminated OSC with every non-syntax control/bidi rune) = %q, want %q", got, "visible")
+	}
+	for _, r := range got {
+		if IsControlOrBidi(r) {
+			t.Fatalf("Sanitize output %q retained control/bidi rune %U", got, r)
+		}
+	}
+}
+
+func FuzzSanitizeUnterminatedSequencePreservesPayload(f *testing.F) {
+	f.Add("ordinary payload")
+	f.Add("controls\x00\x03\x1f\u0085remain filtered")
+	f.Add("bidi\u061c\u202e\u2069remain filtered")
+	f.Add("unicode 日本語 🦊")
+
+	f.Fuzz(func(t *testing.T, payload string) {
+		// Keep the generated OSC unterminated. Valid UTF-8 makes "character"
+		// precise; ESC, BEL, CAN, and SUB are excluded because they can
+		// terminate or cancel the outer OSC rather than belong to its payload.
+		payload = strings.ToValidUTF8(payload, "\ufffd")
+		payload = strings.NewReplacer("\x1b", "", "\x07", "", "\x18", "", "\x1a", "").Replace(payload)
+
+		var want strings.Builder
+		for _, r := range payload {
+			if !IsControlOrBidi(r) {
+				want.WriteRune(r)
+			}
+		}
+
+		if got := Sanitize("\x1b]" + payload); got != want.String() {
+			t.Fatalf("Sanitize(unterminated OSC + %q) = %q, want payload filtered to %q", payload, got, want.String())
+		}
+	})
 }
 
 func TestSanitizeSingleLine(t *testing.T) {

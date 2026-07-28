@@ -4,6 +4,7 @@ package terminaltext
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -21,9 +22,12 @@ func IsControlOrBidi(r rune) bool {
 }
 
 // Sanitize removes terminal escape sequences, control characters, and Unicode
-// bidirectional formatting controls from value.
+// bidirectional formatting controls from value. Complete escape sequences are
+// removed conservatively. If a string sequence is aborted by ESC, CAN, SUB, or
+// end-of-input, only its introducer is removed; its payload is sanitized as
+// ordinary text.
 func Sanitize(value string) string {
-	value = ansi.Strip(value)
+	value = stripANSIWithBoundedSequences(value)
 	var cleaned strings.Builder
 	cleaned.Grow(len(value))
 	for _, r := range value {
@@ -33,6 +37,97 @@ func Sanitize(value string) string {
 		cleaned.WriteRune(r)
 	}
 	return cleaned.String()
+}
+
+// stripANSIWithBoundedSequences removes properly terminated string sequences
+// whole. An ESC, CAN, SUB, or end-of-input aborts one instead: only the
+// introducer is removed, then its payload is processed again as ordinary
+// input. Other terminal sequences retain ansi.Strip's behavior, except that an
+// incomplete sequence is bounded in the same way at end-of-input.
+func stripANSIWithBoundedSequences(value string) string {
+	var bounded strings.Builder
+	bounded.Grow(len(value))
+
+	for len(value) > 0 {
+		if introducerLen := stringSequenceIntroducerLen(value); introducerLen > 0 {
+			payload := value[introducerLen:]
+			terminator, terminated := stringSequenceTerminator(payload)
+			if terminated {
+				value = payload[terminator:]
+			} else {
+				value = payload
+			}
+			continue
+		}
+
+		sequence, _, n, state := ansi.DecodeSequence(value, ansi.NormalState, nil)
+		if n == 0 {
+			// DecodeSequence can make no progress on an invalid UTF-8 byte.
+			// Retain it here so ansi.Strip preserves its existing handling.
+			bounded.WriteByte(value[0])
+			value = value[1:]
+			continue
+		}
+
+		if state != ansi.NormalState {
+			introducerLen := 1
+			if sequence[0] == ansi.ESC && len(sequence) > 1 {
+				// The introducer is ESC plus the following introducer byte.
+				introducerLen = 2
+			}
+			value = value[introducerLen:]
+			continue
+		}
+
+		bounded.WriteString(sequence)
+		value = value[n:]
+	}
+
+	return ansi.Strip(bounded.String())
+}
+
+func stringSequenceIntroducerLen(value string) int {
+	if len(value) >= 2 && value[0] == ansi.ESC {
+		switch value[1] {
+		case ']', 'P', '_', '^', 'X':
+			return 2
+		}
+	}
+
+	if len(value) > 0 {
+		switch value[0] {
+		case 0x9d, 0x90, 0x9f, 0x9e, 0x98:
+			return 1
+		}
+	}
+
+	return 0
+}
+
+// stringSequenceTerminator returns the number of payload bytes through a
+// legitimate BEL or ST terminator. ESC not followed by '\', CAN, SUB, and
+// end-of-input abort the sequence.
+func stringSequenceTerminator(payload string) (n int, terminated bool) {
+	// Advancing by utf8.DecodeRuneInString's size keeps the ansi.ST byte
+	// comparison safe from UTF-8 continuation bytes that equal 0x9C.
+	for offset := 0; offset < len(payload); {
+		switch payload[offset] {
+		case ansi.BEL, ansi.ST:
+			return offset + 1, true
+		case ansi.ESC:
+			if offset+1 < len(payload) && payload[offset+1] == '\\' {
+				return offset + 2, true
+			}
+			return 0, false
+		case ansi.CAN, ansi.SUB:
+			return 0, false
+		}
+
+		_, size := utf8.DecodeRuneInString(payload[offset:])
+		offset += size
+	}
+
+	return 0, false
 }
 
 // separatorSentinel is a stand-in control character (RS, 0x1E) used
