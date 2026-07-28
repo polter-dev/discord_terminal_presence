@@ -872,7 +872,7 @@ func start(args []string) error {
 
 	// Updating is best-effort and asynchronous: it is triggered before the run
 	// loop, but can never delay or prevent daemon startup.
-	go runAutomaticUpdate(ctx, cfg, version, releaseChecker, updatepkg.ExecRunner{})
+	go runAutomaticUpdate(ctx, cfg, version, releaseChecker, updatepkg.ExecRunner{Interactive: false})
 
 	if err := config.EnsureConfigDir(cfg.Path); err == nil {
 		if err := manager.Watch(ctx); err != nil {

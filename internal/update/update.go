@@ -190,10 +190,15 @@ type CommandRunner interface {
 	Run(context.Context, Command, io.Reader, io.Writer, io.Writer) error
 }
 
-// ExecRunner executes update commands on the local machine.
-type ExecRunner struct{}
+// ExecRunner executes update commands on the local machine. Interactive
+// runners remain in the caller's foreground process group so commands such as
+// sudo can read from the controlling terminal. Non-interactive runners use a
+// separate process group so cancellation can terminate the whole command tree.
+type ExecRunner struct {
+	Interactive bool
+}
 
-func (ExecRunner) Run(ctx context.Context, command Command, stdin io.Reader, stdout, stderr io.Writer) error {
+func (runner ExecRunner) Run(ctx context.Context, command Command, stdin io.Reader, stdout, stderr io.Writer) error {
 	cmd := exec.Command(command.Name, command.Args...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
@@ -201,7 +206,7 @@ func (ExecRunner) Run(ctx context.Context, command Command, stdin io.Reader, std
 	if len(command.Env) > 0 {
 		cmd.Env = mergedEnvironment(os.Environ(), command.Env)
 	}
-	return runUpdateCommand(ctx, cmd)
+	return runUpdateCommand(ctx, cmd, runner.Interactive)
 }
 
 func mergedEnvironment(base, overrides []string) []string {
@@ -691,7 +696,7 @@ func UpdateCommandForMethod(method InstallMethod, tag string) (Command, error) {
 // separate from release checking for reuse by opt-in automation.
 func PerformUpdate(ctx context.Context, method InstallMethod, tag string, runner CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {
 	if runner == nil {
-		runner = ExecRunner{}
+		runner = ExecRunner{Interactive: false}
 	}
 	if method == InstallGeneric {
 		return performGenericUpdate(ctx, tag, runner, stdin, stdout, stderr)

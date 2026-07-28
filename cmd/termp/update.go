@@ -192,7 +192,7 @@ func updateCommand(args []string) error {
 	}
 	checkCtx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
 	defer cancel()
-	return runUpdate(checkCtx, context.Background(), version, releaseChecker, updatepkg.ExecRunner{}, os.Stdin, os.Stdout, os.Stderr)
+	return runUpdate(checkCtx, context.Background(), version, releaseChecker, updatepkg.ExecRunner{Interactive: true}, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func runUpdate(checkCtx, updateCtx context.Context, current string, checker latestChecker, runner updatepkg.CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {

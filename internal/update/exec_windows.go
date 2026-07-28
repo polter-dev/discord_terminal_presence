@@ -7,7 +7,7 @@ import (
 	"os/exec"
 )
 
-func runUpdateCommand(ctx context.Context, cmd *exec.Cmd) error {
+func runUpdateCommand(ctx context.Context, cmd *exec.Cmd, _ bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

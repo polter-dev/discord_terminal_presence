@@ -62,7 +62,11 @@ write a shadow binary under `/usr/local/bin`.
 
 Automatic updates remain non-interactive: all system-package methods short-circuit before
 `PerformUpdate`, record a managed-package skip, and invoke no download, `sudo`, apt, or dnf
-command. Failed interactive Homebrew and Go updates display the retry command produced
+command. On Unix, interactive update commands remain in the caller's foreground process
+group so `sudo` and the generic installer can read a password from the controlling
+terminal. Non-interactive automatic update commands run in a separate process group so
+context cancellation kills the complete command tree; their existing preflights prevent
+any path that could prompt. Failed interactive Homebrew and Go updates display the retry command produced
 by `UpdateCommandForMethod`; generic failures tell users to resolve the reported error and
 retry `termp update`, avoiding a fallback installer invocation that could drift `BINDIR`.
 

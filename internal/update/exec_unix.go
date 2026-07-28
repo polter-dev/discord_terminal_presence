@@ -9,11 +9,11 @@ import (
 	"syscall"
 )
 
-func runUpdateCommand(ctx context.Context, cmd *exec.Cmd) error {
+func runUpdateCommand(ctx context.Context, cmd *exec.Cmd, interactive bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureUpdateCommand(cmd, interactive)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -27,10 +27,22 @@ func runUpdateCommand(ctx context.Context, cmd *exec.Cmd) error {
 	case err := <-wait:
 		return err
 	case <-ctx.Done():
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		pid := cmd.Process.Pid
+		if !interactive {
+			pid = -pid
+		}
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			_ = cmd.Process.Kill()
 		}
 		<-wait
 		return ctx.Err()
 	}
+}
+
+func configureUpdateCommand(cmd *exec.Cmd, interactive bool) {
+	if interactive {
+		cmd.SysProcAttr = nil
+		return
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }

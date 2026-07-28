@@ -7,18 +7,47 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os/exec"
 	"strconv"
 	"syscall"
 	"testing"
 	"time"
 )
 
-func TestExecRunnerCancellationKillsInstallerProcessGroup(t *testing.T) {
+func TestExecRunnerProcessGroupMatchesInteractivity(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		interactive bool
+		wantSetpgid bool
+	}{
+		{name: "interactive", interactive: true, wantSetpgid: false},
+		{name: "automatic", interactive: false, wantSetpgid: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("true")
+			configureUpdateCommand(cmd, tt.interactive)
+			if tt.interactive {
+				if cmd.SysProcAttr != nil {
+					t.Fatalf("interactive command SysProcAttr = %#v, want nil", cmd.SysProcAttr)
+				}
+				return
+			}
+			if cmd.SysProcAttr == nil {
+				t.Fatal("automatic command has nil SysProcAttr")
+			}
+			if got := cmd.SysProcAttr.Setpgid; got != tt.wantSetpgid {
+				t.Fatalf("configured command Setpgid = %t, want %t", got, tt.wantSetpgid)
+			}
+		})
+	}
+}
+
+func TestAutomaticExecRunnerCancellationKillsInstallerProcessGroup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	stdoutReader, stdoutWriter := io.Pipe()
 	result := make(chan error, 1)
 	go func() {
-		result <- (ExecRunner{}).Run(ctx, Command{
+		result <- (ExecRunner{Interactive: false}).Run(ctx, Command{
 			Name: "sh",
 			Args: []string{"-c", "sleep 30 & child=$!; echo $child; wait"},
 		}, nil, stdoutWriter, io.Discard)

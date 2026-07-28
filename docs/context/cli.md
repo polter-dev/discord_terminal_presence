@@ -57,7 +57,11 @@ Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
 installs preflight the resolved running executable's directory and record a skipped
 reason when it is not writable. Generic Windows installs record an unsupported-platform
 skip; Go and Homebrew installs remain eligible. Scoop- and Debian/RPM-owned installs
-record a managed-package skip without invoking an updater. Attempts are visible in
+record a managed-package skip without invoking an updater. Automatic Unix commands use
+a separate process group so timeout cancellation terminates their full process tree.
+Interactive `termp update` commands stay in the foreground process group, allowing
+`sudo` in both generic and deb/rpm updates to read from the controlling terminal.
+Attempts are visible in
 `termp status`, and a later success clears the reported failure/skip. Interactive
 `termp update` on a Scoop install prints the available-version header and
 `To update: scoop update termp` guidance without a system-package preamble, an
