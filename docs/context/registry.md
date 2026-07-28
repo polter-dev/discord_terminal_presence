@@ -37,7 +37,18 @@ keys/URLs, and buttons before converting them into runtime tools. Display names 
 custom configuration before publication. Resolved images are bounded to Discord's limit
 and resolved URLs must be absolute HTTP(S). Button labels are non-empty and at most 32
 characters, each URL is absolute HTTP(S), and no activity receives more than two buttons.
-`ValidateHTTPURL` is the shared URL-scheme boundary.
+Display names, resolved `image_key`, and button labels are also rejected outright if they
+contain a terminal escape sequence, C0/C1 control character, or Unicode bidi formatting
+control (via `firstDisallowedRune`, built on the same rune class `terminaltext.Sanitize`
+strips at terminal-rendering boundaries) — this gives the user an actionable config-load
+error naming the offending codepoint and its rune position (e.g. "found U+200F at position
+4") instead of letting raw control bytes reach the Discord IPC payload (#419). `image_url`
+needs no separate check: `url.ParseRequestURI` already rejects raw control characters, so
+it is covered by the existing URL validation below. Rejecting bidi formatting controls
+(not just C0/C1) is a deliberate anti-spoofing choice, and does not reject legitimate
+non-Latin display names — combining marks, joiners (ZWJ, Persian ZWNJ), and multi-codepoint
+emoji sequences are untouched; only the small set of explicit bidi override/embedding/mark
+codepoints is rejected. `ValidateHTTPURL` is the shared URL-scheme boundary.
 
 Do not replace identity matching with `gopsutil.Terminal()` filtering: it is not
 implemented on Darwin and would remove all macOS presence. Short exact catalog names

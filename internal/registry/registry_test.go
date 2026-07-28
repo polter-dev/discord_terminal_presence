@@ -237,6 +237,18 @@ func TestNewWithCustomValidatesDiscordFields(t *testing.T) {
 			want: "image_key must be at most 256 characters",
 		},
 		{
+			// image_url and icon_slug/URL are incidentally covered by
+			// ValidateHTTPURL (url.ParseRequestURI rejects raw control bytes),
+			// but image_key is free text with no such built-in guard — this
+			// was the field #422 review found reaching the wire unsanitized.
+			name: "image key control characters",
+			mutate: func(tool *CustomTool) {
+				tool.ImageURL = ""
+				tool.ImageKey = "ev\x1b[31mil\x07key"
+			},
+			want: "image_key must not contain control characters",
+		},
+		{
 			name: "resolved URL shape",
 			mutate: func(tool *CustomTool) {
 				tool.ImageURL = ""
@@ -261,6 +273,20 @@ func TestNewWithCustomValidatesDiscordFields(t *testing.T) {
 			},
 			want: "buttons[0].label must not be empty",
 		},
+		{
+			name: "display name control characters",
+			mutate: func(tool *CustomTool) {
+				tool.DisplayName = "\x1b[31mEvil\x07Tool"
+			},
+			want: "display_name must not contain control characters",
+		},
+		{
+			name: "button label control characters",
+			mutate: func(tool *CustomTool) {
+				tool.Buttons = []Button{{Label: "Go\x07od", URL: "https://example.test"}}
+			},
+			want: "buttons[0].label must not contain control characters",
+		},
 	}
 
 	for _, tt := range tests {
@@ -283,6 +309,45 @@ func TestValidateCustomToolRejectsTooShortDisplayName(t *testing.T) {
 	err := ValidateCustomTool(CustomTool{DisplayName: "界"})
 	if err == nil || !strings.Contains(err.Error(), "display_name must be at least 2 characters") {
 		t.Fatalf("ValidateCustomTool() error = %v, want minimum-length error", err)
+	}
+}
+
+// TestValidateCustomToolAllowsLegitimateUnicodeDisplayNames guards against
+// the #422 review's concern that rejecting bidi formatting controls could
+// collaterally reject legitimate non-Latin or emoji display names: none of
+// these contain U+061C/U+200E/U+200F/U+202A-E/U+2066-9 (the rejected set),
+// only ordinary script characters, combining marks, joiners (ZWJ U+200D,
+// Persian ZWNJ U+200C — distinct from the rejected bidi marks), variation
+// selectors, and multi-codepoint emoji sequences.
+func TestValidateCustomToolAllowsLegitimateUnicodeDisplayNames(t *testing.T) {
+	names := []string{
+		"🚀 Rocket",
+		"👨‍👩‍👧‍👦 Family",
+		"🇺🇸 USA Tool",
+		"🇯🇵 Japan Tool",
+		"café Tool",   // combining acute accent
+		"Zürich Tool", // combining diaeresis
+		"日本語ツール",
+		"한글도구",
+		"כלי עברי",
+		"أداة عربية",
+		"ابزار\u200cفارسی", // Persian ZWNJ (U+200C), not a rejected bidi mark
+		"Ω Omega Tool",
+		"Кириллица Tool",
+		"ไทยเครื่องมือ",
+		"கருவி தமிழ்",
+		"🏳️‍🌈 Pride Tool",
+		"👍🏽 ThumbsUp Tool",
+		"naïve Tool",
+		"Björk Tool",
+		"🎉🎊 Party Tool",
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateCustomTool(CustomTool{DisplayName: name}); err != nil {
+				t.Fatalf("ValidateCustomTool(%q) error = %v, want no error", name, err)
+			}
+		})
 	}
 }
 
