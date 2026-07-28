@@ -580,8 +580,24 @@ const (
 
 // provisionalConfigSnapshot reports whether candidate could be an incomplete
 // non-atomic rewrite: a previously accepted file that is now missing, an
-// existing empty file, or a strict prefix of the last successfully accepted
-// file content.
+// existing empty file, a strict prefix of the last successfully accepted file
+// content, or bytes that are not even syntactically valid TOML.
+//
+// The prefix rule alone only recognises a writer that re-emits the accepted
+// bytes verbatim before appending. A writer that also changes an earlier line
+// (the common case — an editor saving an edited document) diverges from the
+// accepted content on its very first chunk, so every later mid-write read is
+// a non-prefix, and used to be accepted as settled the moment two polls
+// happened to straddle one inter-chunk pause. That is #462: Reload() handed a
+// file truncated mid-string-value to the decoder and surfaced
+//
+//	toml: line 2 (last key "idle_clear_timeout"): unexpected EOF; expected '"'
+//
+// to the caller, which the settled-read model forbids. Undecodable bytes are
+// therefore provisional too: they must stay byte-identical across the full
+// settle budget before anyone sees the parse error. That keeps a genuinely
+// broken config an error (after ~300ms, not forever) while a torn write is
+// waited out and retried.
 func provisionalConfigSnapshot(candidate, accepted fileSnapshot) bool {
 	if !candidate.exists {
 		return accepted.exists && accepted.err == nil
@@ -592,10 +608,23 @@ func provisionalConfigSnapshot(candidate, accepted fileSnapshot) bool {
 	if len(candidate.data) == 0 {
 		return true
 	}
-	return accepted.exists &&
+	if accepted.exists &&
 		accepted.err == nil &&
 		len(candidate.data) < len(accepted.data) &&
-		bytes.HasPrefix(accepted.data, candidate.data)
+		bytes.HasPrefix(accepted.data, candidate.data) {
+		return true
+	}
+	return !parsesAsTOML(candidate.data)
+}
+
+// parsesAsTOML reports whether data is syntactically valid TOML. It decodes
+// into a generic map so only *syntax* decides the answer: unknown keys,
+// wrong-typed values, and failed semantic validation are real config errors
+// that must still surface, not evidence of a write in flight.
+func parsesAsTOML(data []byte) bool {
+	var probe map[string]any
+	_, err := toml.Decode(string(data), &probe)
+	return err == nil
 }
 
 // settledConfigSnapshot waits for two consecutive reads of path to agree
@@ -635,6 +664,9 @@ func settledConfigSnapshotUntilWith(
 		return candidate, true
 	}
 	stableReads := 0
+	// Memoised so the TOML syntax probe runs once per distinct candidate
+	// rather than once per poll.
+	provisional := provisionalConfigSnapshot(candidate, accepted)
 	for i := 0; i < reloadSettleAttempts; i++ {
 		delay := reloadSettleInterval
 		if !deadline.IsZero() {
@@ -648,15 +680,16 @@ func settledConfigSnapshotUntilWith(
 		next := snapshot(path)
 		if snapshotsEqual(candidate, next) {
 			stableReads++
-			if !provisionalConfigSnapshot(candidate, accepted) || stableReads == reloadSettleAttempts {
+			if !provisional || stableReads == reloadSettleAttempts {
 				return candidate, true
 			}
 			continue
 		}
-		if provisionalConfigSnapshot(candidate, accepted) {
+		if provisional {
 			return next, false
 		}
 		candidate = next
+		provisional = provisionalConfigSnapshot(candidate, accepted)
 		stableReads = 0
 	}
 	return candidate, false
