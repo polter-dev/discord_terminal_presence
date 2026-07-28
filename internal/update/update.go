@@ -670,8 +670,9 @@ func rpmInstallArgs(manager, path string) []string {
 		return []string{manager, "install", "-y", path}
 	case "zypper":
 		// --non-interactive is a global option accepted by every zypper
-		// release; `install <file.rpm>` upgrades in place.
-		return []string{manager, "--non-interactive", "install", path}
+		// release. --no-gpg-checks is also global (including zypper 1.13),
+		// so an unsigned release RPM does not abort at the safe default.
+		return []string{manager, "--non-interactive", "--no-gpg-checks", "install", path}
 	case "rpm":
 		return []string{manager, "-U", path}
 	default:
