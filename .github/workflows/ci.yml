@@ -141,3 +141,170 @@ jobs:
           if ($method.Trim() -ne 'scoop') {
             throw "DetectInstallMethod returned '$method', want 'scoop'"
           }
+
+  linux-package-integration:
+    name: Linux package integration (${{ matrix.distribution }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distribution: debian:stable
+            image: debian:stable@sha256:8e109a974a9659354791cab2c001e5c3e3153805c344ccec7c1ef98d814187e7
+            extension: deb
+            method: debian
+          - distribution: fedora:latest
+            image: fedora:latest@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898
+            extension: rpm
+            method: rpm
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build snapshot packages
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.0
+          args: release --snapshot --clean --skip=publish
+
+      - name: Build detection and release probes
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/detect-install" ./internal/update/testdata/detect-install
+
+      - name: Generate local release endpoint certificate
+        run: |
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout "$RUNNER_TEMP/release-stub.key" \
+            -out "$RUNNER_TEMP/release-stub.crt" \
+            -subj "/CN=api.github.com" \
+            -addext "subjectAltName=DNS:api.github.com"
+
+      - name: Install package and exercise updater
+        env:
+          CONTAINER_IMAGE: ${{ matrix.image }}
+          EXPECTED_METHOD: ${{ matrix.method }}
+          PACKAGE_EXTENSION: ${{ matrix.extension }}
+        run: |
+          package="$(find dist -maxdepth 1 -type f -name "termp_*_linux_amd64.${PACKAGE_EXTENSION}" -print -quit)"
+          test -n "$package"
+          test "$(find dist -maxdepth 1 -type f -name "termp_*_linux_amd64.${PACKAGE_EXTENSION}" | wc -l)" -eq 1
+
+          mkdir "$RUNNER_TEMP/network-guard"
+          printf '%s\n' '#!/bin/sh' 'touch /tmp/curl-was-called' 'exit 97' > "$RUNNER_TEMP/network-guard/curl"
+          chmod +x "$RUNNER_TEMP/network-guard/curl"
+
+          # Containers run as root, so sudo does not prompt. This matrix cannot test
+          # the interactive password prompt (#382), which needs a pty and a human.
+          # It also cannot test #364 shadowing on a *successful* update: the update
+          # here is refused (no interactive terminal for sudo), so it only proves the
+          # package code path is selected and that a refused update writes nothing to
+          # /usr/local/bin -- the before/after snapshot compares empty to empty, not a
+          # real shadowing binary against the package-managed one.
+          docker run --rm -i --network none \
+            --add-host api.github.com:127.0.0.1 \
+            -e EXPECTED_METHOD \
+            -v "$PWD/$package:/tmp/termp-package:ro" \
+            -v "$RUNNER_TEMP/detect-install:/tmp/detect-install:ro" \
+            -v "$RUNNER_TEMP/network-guard:/tmp/network-guard:ro" \
+            -v "$RUNNER_TEMP/release-stub.crt:/tmp/release-stub.crt:ro" \
+            -v "$RUNNER_TEMP/release-stub.key:/tmp/release-stub.key:ro" \
+            "$CONTAINER_IMAGE" /bin/sh -euxc '
+              case "$EXPECTED_METHOD" in
+                debian) dpkg --install /tmp/termp-package ;;
+                rpm) rpm --upgrade --verbose --hash /tmp/termp-package ;;
+                *) echo "unsupported method: $EXPECTED_METHOD" >&2; exit 1 ;;
+              esac
+
+              # classifySystemPackage falls back to a tool-presence check (dpkg-query
+              # present and rpm absent, or vice versa) when ownership lookup finds no
+              # owner. debian:stable ships dpkg-query with no rpm, and fedora:latest
+              # ships rpm with no dpkg-query, so that fallback alone reproduces the
+              # expected answer even if the real ownership query is completely broken.
+              # Plant a disabled stub for the *other* tool so both tools appear
+              # present; the fallback then always resolves to system-package, so a
+              # debian/rpm result below can only come from a real, successful
+              # ownership query. /usr/sbin is on PATH in this image. Do not plant into
+              # /usr/local/bin -- it is covered by the before/after snapshot below.
+              case "$EXPECTED_METHOD" in
+                debian) printf "#!/bin/sh\nexit 1\n" > /usr/sbin/rpm && chmod +x /usr/sbin/rpm ;;
+                rpm) printf "#!/bin/sh\nexit 1\n" > /usr/sbin/dpkg-query && chmod +x /usr/sbin/dpkg-query ;;
+              esac
+
+              cp /usr/bin/termp /tmp/packaged-termp
+              cp /tmp/detect-install /usr/bin/termp
+              detected=$(/usr/bin/termp)
+              test "$detected" = "$EXPECTED_METHOD"
+
+              # Negative control: DetectInstallMethod only calls into ownership
+              # detection at all when the executable path is exactly /usr/bin/termp,
+              # so the control has to run there too -- an unrelated path (e.g.
+              # /tmp/detect-install) short-circuits to generic before ever reaching
+              # the ownership check and would prove nothing. Remove the package
+              # (deleting its ownership record along with the file at /usr/bin/termp),
+              # put the probe there by hand, and confirm detection now reports
+              # system-package for a path neither tool owns. Then reinstall the real
+              # package so ownership and the packaged binary are back in place for the
+              # update exercise below.
+              case "$EXPECTED_METHOD" in
+                debian) dpkg --purge termp ;;
+                rpm) rpm -e termp ;;
+              esac
+              cp /tmp/detect-install /usr/bin/termp
+              detected_unowned=$(/usr/bin/termp)
+              test "$detected_unowned" = "system-package"
+
+              case "$EXPECTED_METHOD" in
+                debian) dpkg --install /tmp/termp-package ;;
+                rpm) rpm --upgrade --verbose --hash /tmp/termp-package ;;
+              esac
+              cp /tmp/detect-install /usr/bin/termp
+              detected_reinstalled=$(/usr/bin/termp)
+              test "$detected_reinstalled" = "$EXPECTED_METHOD"
+              cp /tmp/packaged-termp /usr/bin/termp
+
+              snapshot_local_bin() {
+                if test ! -d /usr/local/bin; then
+                  echo absent
+                  return
+                fi
+                find /usr/local/bin -mindepth 1 -printf "%P|%y|%s|%l\n" | sort
+                find /usr/local/bin -type f -exec sha256sum {} + | sort
+              }
+              before=$(snapshot_local_bin)
+
+              /tmp/detect-install serve-release \
+                /tmp/release-stub.crt /tmp/release-stub.key \
+                /tmp/release-stub.ready /tmp/release-stub.requests &
+              stub_pid=$!
+              trap "kill $stub_pid 2>/dev/null || :" EXIT
+              tries=0
+              until test -f /tmp/release-stub.ready; do
+                tries=$((tries + 1))
+                test "$tries" -lt 100
+                sleep 0.05
+              done
+
+              output=$(
+                PATH="/tmp/network-guard:$PATH" \
+                SSL_CERT_FILE=/tmp/release-stub.crt \
+                HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= \
+                NO_PROXY=api.github.com \
+                XDG_CACHE_HOME=/tmp/termp-cache \
+                /usr/bin/termp update 2>&1
+              )
+              printf "%s\n" "$output"
+              printf "%s\n" "$output" | grep -F "interactive terminal required for sudo"
+              test ! -e /tmp/curl-was-called
+              test "$(cat /tmp/release-stub.requests)" = "/repos/polter-dev/discord_terminal_presence/releases/latest"
+
+              after=$(snapshot_local_bin)
+              test "$before" = "$after"
+            ' < /dev/null

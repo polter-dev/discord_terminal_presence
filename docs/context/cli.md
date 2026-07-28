@@ -14,7 +14,8 @@ usage/config wiring. `cmd/termp/connect.go` and `control_*` own daemon control.
 tag-pinned archives. `.github/workflows/release.yml` and `.goreleaser.yaml` own releases,
 including gated Homebrew Cask and Scoop manifest publication;
 `.github/workflows/verify-release-secrets.yml` provides the manual publishing-token
-pre-flight check.
+pre-flight check. `.github/workflows/ci.yml` owns cross-platform tests and real
+package-layout integration probes.
 
 **Invariants / gotchas:** Start treats the validated PID file as final arbiter, also
 recognizes a fresh same-user/same-executable `discord.json` publisher, and waits for
@@ -98,6 +99,31 @@ authored padding blank lines, so deb/rpm is the only channel whose padding comes
 from this repo; Homebrew renders the box directly under its own `==> Caveats`
 header, followed by a single trailing blank line that Homebrew itself emits. The
 package script always exits successfully so guidance cannot break an install.
+
+CI snapshot-builds and installs the real deb and rpm artifacts in digest-pinned
+`debian:stable` and `fedora:latest` containers. Before the detection probe runs, the job
+plants a disabled stub for the *other* package tool (`rpm` on the debian job,
+`dpkg-query` on the fedora job) into `/usr/sbin`, never `/usr/local/bin`. Without that
+stub, `classifySystemPackage`'s tool-presence fallback alone reproduces the expected
+`debian`/`rpm` answer in these images (each image ships exactly one of the two tools),
+so the assertion could pass even if live ownership detection were completely broken.
+With both tools appearing present, the fallback always resolves to `system-package`, so
+a `debian`/`rpm` result from the package-owned `/usr/bin/termp` probe can only come from
+a real, successful `dpkg-query`/`rpm` ownership query. `DetectInstallMethod` only calls
+into ownership detection when the executable path is exactly `/usr/bin/termp`, so the
+job's negative control has to run there too: it purges the package (removing both the
+ownership record and the file), places the probe at `/usr/bin/termp` by hand, and asserts
+detection now reports `system-package` for that same path once neither tool owns it. It
+then reinstalls the real package and re-checks the positive `debian`/`rpm` result before
+restoring the packaged binary, so ownership is genuinely back in place for the update
+exercise below. The packaged CLI then uses a local TLS release
+stub with outbound networking disabled; the job asserts a redirected update refuses
+before `curl` and leaves `/usr/local/bin` unchanged. Because the containers run as root,
+this does not cover an interactive sudo password prompt (#382), which needs a pty and a
+human. It also cannot cover #364 shadowing on a *successful* update: the update here is
+always refused, so the `/usr/local/bin` before/after snapshot only proves a refused
+update writes nothing — it compares empty to empty, not a real shadowing binary against
+the package-managed one.
 
 The installer labels `termp uninstall` as a login-only action rather than implying that
 it removes the binary. It resolves one tag for archive/checksum, prefers
