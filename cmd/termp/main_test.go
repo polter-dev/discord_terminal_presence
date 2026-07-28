@@ -1399,12 +1399,19 @@ func TestRunStatusProbesDiscordStateMapping(t *testing.T) {
 			want: "not responding (Discord IPC handshake timed out)",
 		},
 		{
+			// A malformed DISCORD_IPC_PATH override (#423) is a
+			// configuration problem, not "Discord is running but
+			// unreachable" — it must get its own honest diagnosis rather
+			// than falling into either the specific unreachable case or the
+			// generic unknown fallback.
+			name: "invalid DISCORD_IPC_PATH override",
+			err:  presence.ErrDiscordIPCOverrideInvalid,
+			want: "misconfigured (DISCORD_IPC_PATH override is invalid)",
+		},
+		{
 			// An unrecognized error must not fall through to the specific
 			// "Discord is running but unreachable" diagnosis: the probe
-			// never established that Discord is running at all. This was
-			// flagged during PR #423 review, which adds a new sentinel
-			// error (ErrDiscordIPCOverrideInvalid, not present on this
-			// branch) that would previously have rendered this way too.
+			// never established that Discord is running at all.
 			name: "unrecognized error",
 			err:  errors.New("boom"),
 			want: "unknown (boom)",

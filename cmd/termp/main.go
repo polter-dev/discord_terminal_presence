@@ -1888,19 +1888,15 @@ func processIdentityMatches(pid int, expectedStartTime uint64, alive, looksLikeT
 // error only proves the probe couldn't determine Discord's state; it must
 // not claim the more specific "running but unreachable" diagnosis it never
 // established.
-//
-// NOTE: PR #423 (internal/presence, not yet merged as of this change) adds
-// presence.ErrDiscordIPCOverrideInvalid for a malformed DISCORD_IPC_PATH.
-// That case isn't handled explicitly here because the error doesn't exist on
-// this branch yet; once #423 lands, add an errors.Is branch for it here
-// (something like "not running (DISCORD_IPC_PATH override is invalid)") so
-// it doesn't fall through to the generic "unknown" case below.
 func formatDiscordStatus(err error) string {
 	if err == nil {
 		return "connected"
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "unknown (probe timed out)"
+	}
+	if errors.Is(err, presence.ErrDiscordIPCOverrideInvalid) {
+		return "misconfigured (DISCORD_IPC_PATH override is invalid)"
 	}
 	if errors.Is(err, presence.ErrDiscordIPCNotFound) {
 		return "not running (start Discord to show presence)"

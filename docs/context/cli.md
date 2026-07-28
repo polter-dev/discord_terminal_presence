@@ -35,10 +35,9 @@ CLI adds its user-facing prefix while retaining proper-noun capitalization.
 `formatDiscordStatus`'s unmatched-error fallback reports `unknown (<err>)` rather than
 asserting the specific "Discord is running but unreachable" diagnosis it has not
 established; only the sentinel errors that actually mean that (`ErrDiscordIPCUnreachable`)
-render that text. (`internal/presence` PR #423, if/when merged, adds
-`ErrDiscordIPCOverrideInvalid` for a malformed `DISCORD_IPC_PATH`; it needs its own
-`errors.Is` branch here once that lands, or it will fall through to the honest-but-generic
-`unknown` case instead of a more specific one.)
+render that text. A malformed `DISCORD_IPC_PATH` override (`ErrDiscordIPCOverrideInvalid`,
+`internal/presence`) gets its own `misconfigured (DISCORD_IPC_PATH override is invalid)`
+line rather than falling into either the unreachable or the generic unknown case.
 
 `termp status` reports Discord *connection* health (`Discord: connected`) and the last
 activity *publication* result (`Published:` — present only when the most recent publish
