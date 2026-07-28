@@ -4,7 +4,7 @@ Start here, then read the module entry before opening source.
 
 | Module | Context | Source | Purpose |
 | --- | --- | --- | --- |
-| CLI | [`cli.md`](cli.md) | `cmd/termp`, `install.sh`, `.github/workflows/release.yml`, `.github/workflows/verify-release-secrets.yml`, `.goreleaser.yaml` | Owns commands, daemon lifecycle and status, setup wiring, updates, and the gated release path. |
+| CLI | [`cli.md`](cli.md) | `cmd/termp`, `install.sh`, `.github/workflows/release.yml`, `.github/workflows/verify-release-secrets.yml`, `.goreleaser.yaml` | Owns commands, daemon lifecycle and status, setup wiring, updates, full uninstall, and the gated release path. |
 | Completion install | [`completioninstall.md`](completioninstall.md) | `internal/completioninstall` | Installs and removes generated completions for bash, zsh, and fish. |
 | Config | [`config.md`](config.md) | `internal/config` | Defines, validates (including Discord field bounds), migrates, watches, initializes, loads, and saves user configuration. |
 | Detector | [`detector.md`](detector.md) | `internal/detector` | Scans processes, applies terminal-activity rules, and selects the featured and other present tools. |

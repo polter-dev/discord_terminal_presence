@@ -90,7 +90,7 @@ status 2; use `termp watch --once` for a non-interactive snapshot.
 | `termp watch` | Opens a live terminal preview. Use `--once` for one snapshot. |
 | `termp autostart <install\|uninstall\|enable\|disable\|status>` | Manages start-at-login with grouped actions. |
 | `termp install` | Alias for `termp autostart install`: installs start-at-login and starts termp using a Windows scheduled task, macOS LaunchAgent, or Linux systemd user service. It does not install the binary. |
-| `termp uninstall` | Removes start-at-login. It does not remove the binary. |
+| `termp uninstall` | Removes start-at-login. It does not remove the binary; use `--all` to remove termp-created data and get the correct binary removal command. |
 | `termp enable` / `termp disable` | Resumes or pauses start-at-login without removing it. |
 | `termp settings` | Opens the interactive settings menu. |
 | `termp setup` | Runs first-time setup; without an interactive terminal, writes the config, skips autostart, and prints the next steps. |
@@ -144,6 +144,7 @@ termp install     # install the login service and start it
 termp disable     # pause it without removing it
 termp enable      # resume it
 termp uninstall   # remove the login service
+termp uninstall --all   # remove all termp data and print binary removal guidance
 ```
 
 On Windows, this creates and immediately runs the Task Scheduler task

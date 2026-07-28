@@ -168,16 +168,31 @@ func installOutputWidth(output *os.File) int {
 func uninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	force := fs.Bool("force", false, "remove a task belonging to another installation")
+	all := fs.Bool("all", false, "remove all termp-created files and print binary removal guidance")
+	yes := fs.Bool("yes", false, "skip confirmation when used with --all")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
 	}
-	if err := rejectUnexpectedArgs(fs, "termp autostart uninstall [--force]"); err != nil {
+	if err := rejectUnexpectedArgs(fs, "termp uninstall [--all] [--yes] [--force]"); err != nil {
 		return err
 	}
+	if *yes && !*all {
+		return fmt.Errorf("%w: --yes requires --all", errCommandUsage)
+	}
+	if *all {
+		return uninstallAll(*force, *yes)
+	}
+	if err := uninstallAutostart(*force, true); err != nil {
+		return err
+	}
+	return nil
+}
+
+func uninstallAutostart(force, stopAfter bool) error {
 	manager := newAutostartManager()
 	preState := manager.Status()
 	wasInstalled := preState.Installed || preState.ForeignTask
-	state, err := manager.Uninstall(*force)
+	state, err := manager.Uninstall(force)
 	if errors.Is(err, service.ErrUnsupported) {
 		fmt.Println(state.Message)
 		return err
@@ -185,12 +200,14 @@ func uninstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	stoppedPID, stopped, stopErr := stopDaemonAfterAutostart()
-	if stopErr != nil {
-		return fmt.Errorf("autostart was removed, but the daemon could not be stopped: %w", stopErr)
-	}
-	if stopped {
-		fmt.Printf("stopped daemon (pid %d)\n", stoppedPID)
+	if stopAfter {
+		stoppedPID, stopped, stopErr := stopDaemonAfterAutostart()
+		if stopErr != nil {
+			return fmt.Errorf("autostart was removed, but the daemon could not be stopped: %w", stopErr)
+		}
+		if stopped {
+			fmt.Printf("stopped daemon (pid %d)\n", stoppedPID)
+		}
 	}
 	if !wasInstalled {
 		fmt.Println("autostart not installed (nothing to remove)")
