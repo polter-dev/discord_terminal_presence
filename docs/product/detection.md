@@ -35,6 +35,21 @@ The detector emits one featured tool plus other present tools:
 Other tools are ordered by recent activity, priority, episode start, and ID. Up to three
 are rendered in the collection text.
 
+## Ownership boundary (shared hosts)
+
+A candidate process must be affirmatively proven to belong to the current effective user
+before it can be featured or appear in the collection at all — proof, not TTY presence,
+is the gate. On Unix this compares gopsutil's reported effective UID against the daemon's
+own `os.Geteuid()`; on Windows it compares process token-owner SIDs. If ownership cannot
+be established (permission denied, the process exited mid-scan, or the platform is
+unsupported), the process is excluded — the opposite of the terminal-presence fields
+above, which fail open on an inspection failure. This exists because, without it, another
+local user's TTY-attached tool session on a shared host (lab machine, shared build
+server, multi-user `ssh` box) could be featured on your Discord profile and could
+influence which tool it claims to be. The Unix comparison has real unit coverage; the
+Windows token-SID comparison currently only cross-compiles and vets and has not been
+exercised on Windows hardware (see `docs/context/detector.md`).
+
 ## Terminal presence and idle behavior
 
 - A process definitively lacking a controlling terminal, or a detached tmux process, is

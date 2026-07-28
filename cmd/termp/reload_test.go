@@ -56,8 +56,8 @@ func TestApplyConfigChangeReloadsPin(t *testing.T) {
 
 	base := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	selection := detector.NewSelector(next.registry, next.detectorConfig, nil).Select([]detector.Process{
-		{Pid: 1, Name: "claude", CreateTime: base},
-		{Pid: 2, Name: "codex", CreateTime: base.Add(time.Minute)},
+		{Owned: true, Pid: 1, Name: "claude", CreateTime: base},
+		{Owned: true, Pid: 2, Name: "codex", CreateTime: base.Add(time.Minute)},
 	})
 	if selection.None || selection.Tool.ID != "claude-code" {
 		t.Fatalf("pinned selection = %#v, want claude-code", selection)
@@ -74,8 +74,8 @@ func TestDisabledFeaturedToolFallsBackBeforeSelection(t *testing.T) {
 	}
 	selector := detector.NewSelector(current.registry, current.detectorConfig, nil)
 	processes := []detector.Process{
-		{Pid: 1, Name: "claude", Cwd: "/work/claude-project"},
-		{Pid: 2, Name: "codex", Cwd: "/work/codex-project"},
+		{Owned: true, Pid: 1, Name: "claude", Cwd: "/work/claude-project"},
+		{Owned: true, Pid: 2, Name: "codex", Cwd: "/work/codex-project"},
 	}
 	if initial := selector.Select(processes); initial.None || initial.Tool.ID != "claude-code" {
 		t.Fatalf("initial selection = %#v, want pinned claude-code", initial)
@@ -158,8 +158,8 @@ func TestAllRunningToolsDisabledClearsPresence(t *testing.T) {
 		t.Fatal(err)
 	}
 	detection := detector.NewSelector(runtime.registry, runtime.detectorConfig, nil).Select([]detector.Process{
-		{Pid: 1, Name: "claude", Cwd: "/work/claude-project"},
-		{Pid: 2, Name: "codex", Cwd: "/work/codex-project"},
+		{Owned: true, Pid: 1, Name: "claude", Cwd: "/work/claude-project"},
+		{Owned: true, Pid: 2, Name: "codex", Cwd: "/work/codex-project"},
 	})
 	if !detection.None {
 		t.Fatalf("selection = %#v, want none when every running tool is disabled", detection)

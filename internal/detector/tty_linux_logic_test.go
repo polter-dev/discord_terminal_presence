@@ -159,7 +159,7 @@ func TestLinuxUngatedAtimeNeverReachesSelector(t *testing.T) {
 		fakeTmuxSnapshot{},
 		atime,
 	)
-	process := enricher.Enrich(Process{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)})
+	process := enricher.Enrich(Process{Owned: true, Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)})
 	if process.TTY.AtimeKnown || statCalled {
 		t.Fatalf("untrusted atime leaked through enrichment: tty=%#v statCalled=%v", process.TTY, statCalled)
 	}
@@ -201,7 +201,7 @@ func TestLinuxAtimeKnownGateMatrix(t *testing.T) {
 				fakeTmuxSnapshot{},
 				source,
 			)
-			process := enricher.Enrich(Process{Pid: 1})
+			process := enricher.Enrich(Process{Owned: true, Pid: 1})
 			if process.TTY.AtimeKnown != test.wantKnown {
 				t.Fatalf("AtimeKnown = %v, want %v", process.TTY.AtimeKnown, test.wantKnown)
 			}

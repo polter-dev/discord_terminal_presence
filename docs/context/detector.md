@@ -16,6 +16,36 @@ reporting. `gopsutil.go` preserves structured argv and enriches selected identit
 name/executable/argv0 and recognized runtime entrypoints. Catalog regexes never inspect
 later arguments; exclusions see identity plus only the immediate subcommand.
 
+Every matched candidate must be affirmatively proven to belong to the current effective
+user before it can be considered for either the featured tool or the `Others` collection
+(#450: a shared-host process with a resolved controlling terminal previously had no
+ownership check at all and could be featured on another user's Discord profile). `Process`
+carries an `Owned bool` that defaults to `false`; `presenceProcessEnricher.enrich`
+(`tty.go`) resolves it via an `OwnerResolver` (`unixOwnerResolver` compares gopsutil's
+effective UID via `Uids()` to `os.Geteuid()`; `windowsOwnerResolver` compares process
+token-owner SIDs via `OpenProcessToken`/`GetTokenUser`, since gopsutil does not implement
+`Uids()` on Windows) independently of TTY resolution, so it still gates a process with no
+terminal information at all. `SelectWithEnricher` checks `!proc.Owned` immediately after
+enrichment and before either `presenceEligible` or `inactiveCollectionEligible` run — this
+is the single choke point both selection paths pass through, so a future third selection
+path inherits the filter by construction rather than needing its own check. Any resolver
+error (permission denied, pid exited mid-scan, platform unsupported) fails closed: the
+process stays excluded rather than defaulting to included. This is the opposite default
+from `TTYState`'s documented "unknown fails open" — deliberate, since ownership is a
+security boundary rather than a presence/UX signal, and losing a detection is preferable
+to leaking a foreign user's tool identity and elapsed timer onto the caller's Discord.
+Verified: Unix path (effective-UID comparison, fail-closed-on-lookup-failure, and the
+Selector-level exclusion/inclusion contract) has real unit coverage exercised on this
+machine (`owner_unix_test.go`, `detector_test.go`). The Windows token-SID path
+cross-compiles and vets (`GOOS=windows go build|vet`) but has **not** been executed on
+Windows hardware; treat it as implemented-but-unverified until a Windows run confirms it.
+The original cross-user leak was reasoned from the code path, not reproduced with a real
+second OS user account (no multi-user box was available); the reproduction that *was*
+done is a direct unit-level demonstration that pre-fix `SelectWithEnricher` accepted and
+even featured a `Process{Owned: false}` candidate over an owned one (see
+`TestSelectorExcludesForeignOwnedProcess` / `TestSelectorExcludesProcessWhenOwnerLookupFails`,
+confirmed failing against the pre-fix selector before the gate was added).
+
 Presence and featured eligibility differ on Windows. Losing foreground starts
 the terminal idle clock; the window's last foreground time is retained across
 scans, and `idle_clear_timeout` controls the resulting grace period. While the

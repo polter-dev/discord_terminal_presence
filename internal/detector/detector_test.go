@@ -26,7 +26,7 @@ type countingLister struct {
 
 func (l *countingLister) List() ([]Process, error) {
 	l.calls.Add(1)
-	return []Process{{Name: "bash"}}, nil
+	return []Process{{Owned: true, Name: "bash"}}, nil
 }
 
 func (f *fakeLister) List() ([]Process, error) {
@@ -357,8 +357,27 @@ func (f fakeAtimeSource) Atime(tty string) (time.Time, error) {
 	return f.atimes[tty], f.errors[tty]
 }
 
+// fakeOwnerResolver defaults every pid to "owned by the current user" so
+// tests that are exercising TTY/atime/tmux logic (not ownership) do not need
+// to separately fake up UID plumbing. Tests that specifically exercise the
+// ownership gate configure owned/errs explicitly.
+type fakeOwnerResolver struct {
+	owned map[int32]bool
+	errs  map[int32]error
+}
+
+func (f fakeOwnerResolver) Owned(pid int32) (bool, error) {
+	if err, ok := f.errs[pid]; ok {
+		return false, err
+	}
+	if owned, ok := f.owned[pid]; ok {
+		return owned, nil
+	}
+	return true, nil
+}
+
 func presenceEnricher(resolver TTYResolver, tmux TmuxPaneSnapshot, atime TTYAtimeSource) ProcessEnricher {
-	return newPresenceProcessEnricher(nil, resolver, tmux, atime)
+	return newPresenceProcessEnricher(nil, resolver, tmux, atime, fakeOwnerResolver{})
 }
 
 func (f *fakeClock) Now() time.Time {
@@ -372,8 +391,8 @@ func (f *fakeClock) Advance(d time.Duration) {
 func TestActiveDetectionPicksMostRecentlyStarted(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	detection := ActiveDetection(testRegistry(t), []Process{
-		{Name: "claude", CreateTime: base, Cwd: "/old"},
-		{Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/new"},
+		{Owned: true, Name: "claude", CreateTime: base, Cwd: "/old"},
+		{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/new"},
 	})
 
 	if detection.None {
@@ -392,16 +411,16 @@ func TestActiveDetectionWithPresenceUsesScanEnricherEligibility(t *testing.T) {
 	now := time.Now()
 	lister := &fakePresenceLister{
 		processes: []Process{
-			{Pid: 1, Name: "claude", CreateTime: now.Add(-4 * time.Minute)},
-			{Pid: 2, Name: "codex", CreateTime: now.Add(-3 * time.Minute)},
-			{Pid: 3, Name: "tie-high", CreateTime: now.Add(-2 * time.Minute)},
-			{Pid: 4, Name: "tie-low", CreateTime: now.Add(-time.Minute)},
+			{Owned: true, Pid: 1, Name: "claude", CreateTime: now.Add(-4 * time.Minute)},
+			{Owned: true, Pid: 2, Name: "codex", CreateTime: now.Add(-3 * time.Minute)},
+			{Owned: true, Pid: 3, Name: "tie-high", CreateTime: now.Add(-2 * time.Minute)},
+			{Owned: true, Pid: 4, Name: "tie-low", CreateTime: now.Add(-time.Minute)},
 		},
 		enricher: newFakeEnricher([]Process{
-			{Pid: 1, Name: "claude", CreateTime: now.Add(-4 * time.Minute), TTY: TTYInfo{State: TTYResolved, Path: "/dev/ttys001", Atime: now.Add(-21 * time.Minute), AtimeKnown: true}},
-			{Pid: 2, Name: "codex", CreateTime: now.Add(-3 * time.Minute), TTY: TTYInfo{State: TTYResolved, Path: "/dev/ttys002", Atime: now, AtimeKnown: true, DetachedTmux: true}},
-			{Pid: 3, Name: "tie-high", CreateTime: now.Add(-2 * time.Minute), TTY: TTYInfo{State: TTYUnknown}},
-			{Pid: 4, Name: "tie-low", CreateTime: now.Add(-time.Minute), TTY: TTYInfo{State: TTYResolved, Path: "/dev/ttys004", Atime: now, AtimeKnown: true}},
+			{Owned: true, Pid: 1, Name: "claude", CreateTime: now.Add(-4 * time.Minute), TTY: TTYInfo{State: TTYResolved, Path: "/dev/ttys001", Atime: now.Add(-21 * time.Minute), AtimeKnown: true}},
+			{Owned: true, Pid: 2, Name: "codex", CreateTime: now.Add(-3 * time.Minute), TTY: TTYInfo{State: TTYResolved, Path: "/dev/ttys002", Atime: now, AtimeKnown: true, DetachedTmux: true}},
+			{Owned: true, Pid: 3, Name: "tie-high", CreateTime: now.Add(-2 * time.Minute), TTY: TTYInfo{State: TTYUnknown}},
+			{Owned: true, Pid: 4, Name: "tie-low", CreateTime: now.Add(-time.Minute), TTY: TTYInfo{State: TTYResolved, Path: "/dev/ttys004", Atime: now, AtimeKnown: true}},
 		}),
 	}
 
@@ -440,8 +459,8 @@ func TestActiveDetectionWithPresenceLoadsEpisodesReadOnly(t *testing.T) {
 	}
 
 	lister := &fakePresenceLister{
-		processes: []Process{{Pid: 7, Name: "tie-high", CreateTime: created}},
-		enricher: newFakeEnricher([]Process{{
+		processes: []Process{{Owned: true, Pid: 7, Name: "tie-high", CreateTime: created}},
+		enricher: newFakeEnricher([]Process{{Owned: true,
 			Pid:        7,
 			Name:       "tie-high",
 			CreateTime: created,
@@ -473,8 +492,8 @@ func TestSelectorPinOverridesHeadliner(t *testing.T) {
 	}, clock)
 
 	detection := selector.Select([]Process{
-		{Name: "claude", CreateTime: base, Cwd: "/claude", CPUTime: 1, CPUTimeKnown: true},
-		{Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex", CPUTime: 100, CPUTimeKnown: true},
+		{Owned: true, Name: "claude", CreateTime: base, Cwd: "/claude", CPUTime: 1, CPUTimeKnown: true},
+		{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex", CPUTime: 100, CPUTimeKnown: true},
 	})
 
 	if detection.Tool.ID != "claude-code" {
@@ -485,14 +504,88 @@ func TestSelectorPinOverridesHeadliner(t *testing.T) {
 	}
 }
 
+// TestSelectorExcludesForeignOwnedProcess is the #450 reproduction: a
+// process belonging to another local user must not become featured and must
+// not leak into Others either, even when it has a much stronger CPU/recency
+// signal than the caller's own process. Before the ownership gate landed in
+// SelectWithEnricher this test failed with tool ID "codex-cli" and codex-cli
+// present in Others.
+func TestSelectorExcludesForeignOwnedProcess(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
+
+	detection := selector.Select([]Process{
+		{Owned: true, Name: "claude", CreateTime: base, Cwd: "/claude", CPUTime: 1, CPUTimeKnown: true},
+		// codex belongs to another local user: far more CPU activity and a
+		// newer process, which would otherwise win featured selection.
+		{Owned: false, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex", CPUTime: 100, CPUTimeKnown: true},
+	})
+
+	if detection.None || detection.Tool.ID != "claude-code" {
+		t.Fatalf("tool ID = %#v, want claude-code featured (foreign-owned codex must never be selected)", detection)
+	}
+	for _, other := range detection.Others {
+		if other.ID == "codex-cli" {
+			t.Fatalf("others = %#v, foreign-owned codex must not appear in the collection either", detection.Others)
+		}
+	}
+}
+
+// TestSelectorStillSelectsCurrentUserProcess proves the ownership gate does
+// not regress normal, single-user detection: a process affirmatively proven
+// to belong to the current effective user is still detected and featured.
+func TestSelectorStillSelectsCurrentUserProcess(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
+
+	detection := selector.Select([]Process{
+		{Owned: true, Name: "claude", CreateTime: base, Cwd: "/claude"},
+	})
+
+	if detection.None || detection.Tool.ID != "claude-code" {
+		t.Fatalf("detection = %#v, want claude-code featured for a process owned by the current user", detection)
+	}
+}
+
+// TestSelectorExcludesProcessWhenOwnerLookupFails drives the indeterminate
+// case through the real enrichment path (tty.go's presenceProcessEnricher),
+// not just a hand-set Process.Owned literal: a TTY-resolvable process whose
+// ownership lookup errors (permission denied, process exited mid-scan) must
+// still fail closed and be excluded, exactly like a confirmed-foreign one.
+func TestSelectorExcludesProcessWhenOwnerLookupFails(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
+
+	resolver := fakeTTYResolver{resolutions: map[int32]TTYResolution{7: {Path: "/dev/ttys007"}}}
+	atime := fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys007": base}}
+	owner := fakeOwnerResolver{errs: map[int32]error{7: errors.New("permission denied reading /proc/7/status")}}
+	enricher := newPresenceProcessEnricher(nil, resolver, fakeTmuxSnapshot{}, atime, owner)
+
+	process := enricher.Enrich(Process{Pid: 7, Name: "claude", CreateTime: base})
+	if process.Owned {
+		t.Fatalf("enriched process.Owned = true, want false after a failed ownership lookup")
+	}
+	if process.TTY.State != TTYResolved {
+		t.Fatalf("TTY state = %v, want resolved (ownership must gate independently of TTY)", process.TTY.State)
+	}
+
+	detection := selector.Select([]Process{process})
+	if !detection.None {
+		t.Fatalf("detection = %#v, want none: indeterminate ownership must fail closed", detection)
+	}
+}
+
 func TestSelectorStickyKeepsPreviousHeadliner(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
 
 	first := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1, CPUTimeKnown: true},
-		{Name: "claude", CreateTime: base, CPUTime: 1, CPUTimeKnown: true},
+		{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1, CPUTimeKnown: true},
+		{Owned: true, Name: "claude", CreateTime: base, CPUTime: 1, CPUTimeKnown: true},
 	})
 	if first.Tool.ID != "codex-cli" {
 		t.Fatalf("first tool = %q, want codex-cli", first.Tool.ID)
@@ -500,8 +593,8 @@ func TestSelectorStickyKeepsPreviousHeadliner(t *testing.T) {
 
 	clock.Advance(time.Second)
 	next := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1, CPUTimeKnown: true},
-		{Name: "claude", CreateTime: base, CPUTime: 1.5, CPUTimeKnown: true},
+		{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 1, CPUTimeKnown: true},
+		{Owned: true, Name: "claude", CreateTime: base, CPUTime: 1.5, CPUTimeKnown: true},
 	})
 	if next.Tool.ID != "codex-cli" {
 		t.Fatalf("sticky tool = %q, want codex-cli", next.Tool.ID)
@@ -517,8 +610,8 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 	}, clock)
 
 	first := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10, CPUTimeKnown: true},
-		{Name: "claude", CreateTime: base, CPUTime: 1, CPUTimeKnown: true},
+		{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10, CPUTimeKnown: true},
+		{Owned: true, Name: "claude", CreateTime: base, CPUTime: 1, CPUTimeKnown: true},
 	})
 	if first.Tool.ID != "codex-cli" {
 		t.Fatalf("first tool = %q, want codex-cli", first.Tool.ID)
@@ -526,8 +619,8 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 
 	clock.Advance(time.Second)
 	sticky := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10, CPUTimeKnown: true},
-		{Name: "claude", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
+		{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10, CPUTimeKnown: true},
+		{Owned: true, Name: "claude", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
 	})
 	if sticky.Tool.ID != "codex-cli" {
 		t.Fatalf("tool before timeout = %q, want codex-cli", sticky.Tool.ID)
@@ -535,8 +628,8 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 
 	clock.Advance(31 * time.Second)
 	switched := selector.Select([]Process{
-		{Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10, CPUTimeKnown: true},
-		{Name: "claude", CreateTime: base, CPUTime: 4, CPUTimeKnown: true},
+		{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), CPUTime: 10, CPUTimeKnown: true},
+		{Owned: true, Name: "claude", CreateTime: base, CPUTime: 4, CPUTimeKnown: true},
 	})
 	if switched.Tool.ID != "claude-code" {
 		t.Fatalf("tool after timeout = %q, want claude-code", switched.Tool.ID)
@@ -559,13 +652,13 @@ func TestSelectorStaleAtimeExcludedFromCandidatesAndOthers(t *testing.T) {
 		fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys001": base.Add(-21 * time.Minute), "/dev/ttys002": base}},
 	)
 	detection := selector.SelectWithEnricher([]Process{
-		{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)},
-		{Pid: 2, Name: "codex", CreateTime: base.Add(-time.Minute)},
+		{Owned: true, Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)},
+		{Owned: true, Pid: 2, Name: "codex", CreateTime: base.Add(-time.Minute)},
 	}, enricher)
 	if detection.None || detection.Tool.ID != "codex-cli" || len(detection.Others) != 0 {
 		t.Fatalf("detection = %#v, want only fresh codex", detection)
 	}
-	if staleOnly := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)}}, enricher); !staleOnly.None {
+	if staleOnly := selector.SelectWithEnricher([]Process{{Owned: true, Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)}}, enricher); !staleOnly.None {
 		t.Fatalf("stale-only detection = %#v, want none", staleOnly)
 	}
 }
@@ -578,7 +671,7 @@ func TestSelectorIdleClearDisabledNeverClears(t *testing.T) {
 		ActivitySwitching: true,
 	}, clock)
 
-	processes := []Process{{Name: "claude", CreateTime: base, CPUTime: 0}}
+	processes := []Process{{Owned: true, Name: "claude", CreateTime: base, CPUTime: 0}}
 	first := selector.Select(processes)
 	if first.None {
 		t.Fatal("expected detection while idle clear is disabled")
@@ -599,7 +692,7 @@ func TestSelectorCPUIdleCorroborationDisabledPreservesAtimeBehavior(t *testing.T
 		CorroborateIdleWithCPU: false,
 		ActivitySwitching:      true,
 	}, clock)
-	process := Process{
+	process := Process{Owned: true,
 		Pid:          1,
 		Name:         "claude",
 		CreateTime:   base.Add(-time.Hour),
@@ -626,7 +719,7 @@ func TestSelectorCPUIdleCorroborationExcludesFlatProcessAfterTimeout(t *testing.
 		CorroborateIdleWithCPU: true,
 		ActivitySwitching:      true,
 	}, clock)
-	process := Process{
+	process := Process{Owned: true,
 		Pid:          1,
 		Name:         "claude",
 		CreateTime:   base.Add(-time.Hour),
@@ -653,7 +746,7 @@ func TestSelectorCPUIdleCorroborationKeepsMovingProcessEligible(t *testing.T) {
 		CorroborateIdleWithCPU: true,
 		ActivitySwitching:      true,
 	}, clock)
-	process := Process{
+	process := Process{Owned: true,
 		Pid:          1,
 		Name:         "claude",
 		CreateTime:   base.Add(-time.Hour),
@@ -674,7 +767,7 @@ func TestSelectorCPUIdleCorroborationKeepsMovingProcessEligible(t *testing.T) {
 func TestSelectorUnknownAtimeFallsBackToCPUActivity(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	const episodeKey = "claude-code:1:episode"
-	process := Process{
+	process := Process{Owned: true,
 		TTY: TTYInfo{State: TTYResolved},
 	}
 	tests := []struct {
@@ -718,7 +811,7 @@ func TestSelectorUnknownAtimeUnavailableCPURemainsEligible(t *testing.T) {
 	selector := NewSelector(testRegistry(t), Config{
 		IdleClearTimeout: 20 * time.Minute,
 	}, clock)
-	process := Process{
+	process := Process{Owned: true,
 		Pid:        1,
 		Name:       "claude",
 		CreateTime: base.Add(-time.Hour),
@@ -746,7 +839,7 @@ func TestSelectorFreshAndFutureAtimeArePresent(t *testing.T) {
 	for name, atime := range map[string]time.Time{"fresh": base.Add(-time.Minute), "future": base.Add(time.Hour)} {
 		t.Run(name, func(t *testing.T) {
 			enricher := presenceEnricher(fakeTTYResolver{resolutions: map[int32]TTYResolution{1: {Path: "/dev/ttys001"}}}, fakeTmuxSnapshot{}, fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys001": atime}})
-			if detection := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)}}, enricher); detection.None {
+			if detection := selector.SelectWithEnricher([]Process{{Owned: true, Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour)}}, enricher); detection.None {
 				t.Fatalf("%s atime should remain present", name)
 			}
 		})
@@ -757,7 +850,7 @@ func TestSelectorDetachedTmuxExcludedImmediately(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	selector := NewSelector(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base})
 	enricher := presenceEnricher(fakeTTYResolver{resolutions: map[int32]TTYResolution{1: {Path: "/dev/ttys001"}}}, fakeTmuxSnapshot{detached: map[string]bool{"/dev/ttys001": true}, known: map[string]bool{"/dev/ttys001": true}}, fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys001": base}})
-	if detection := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base}}, enricher); !detection.None {
+	if detection := selector.SelectWithEnricher([]Process{{Owned: true, Pid: 1, Name: "claude", CreateTime: base}}, enricher); !detection.None {
 		t.Fatalf("detached tmux detection = %#v, want none", detection)
 	}
 }
@@ -771,7 +864,7 @@ func TestSelectorTmuxUnknownFallsThroughToAtime(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			selector := NewSelector(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base})
 			enricher := presenceEnricher(fakeTTYResolver{resolutions: map[int32]TTYResolution{1: {Path: "/dev/ttys001"}}}, fakeTmuxSnapshot{}, fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys001": base}})
-			if detection := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base}}, enricher); detection.None {
+			if detection := selector.SelectWithEnricher([]Process{{Owned: true, Pid: 1, Name: "claude", CreateTime: base}}, enricher); detection.None {
 				t.Fatal("unknown tmux state must fall through to fresh atime")
 			}
 		})
@@ -786,11 +879,11 @@ func TestSelectorTTYResolutionFailureKeepsAndDefinitiveNoTTYExcludes(t *testing.
 		errors:      map[int32]error{1: errors.New("sysctl denied")},
 	}
 	enricher := presenceEnricher(resolver, fakeTmuxSnapshot{}, fakeAtimeSource{})
-	kept := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base}}, enricher)
+	kept := selector.SelectWithEnricher([]Process{{Owned: true, Pid: 1, Name: "claude", CreateTime: base}}, enricher)
 	if kept.None {
 		t.Fatal("tty resolution failure must fail open")
 	}
-	excluded := selector.SelectWithEnricher([]Process{{Pid: 2, Name: "claude", CreateTime: base}}, enricher)
+	excluded := selector.SelectWithEnricher([]Process{{Owned: true, Pid: 2, Name: "claude", CreateTime: base}}, enricher)
 	if !excluded.None {
 		t.Fatalf("definitive no-tty detection = %#v, want none", excluded)
 	}
@@ -807,7 +900,7 @@ func TestSelectorAtimeStatFailureKeeps(t *testing.T) {
 		fakeTmuxSnapshot{},
 		fakeAtimeSource{errors: map[string]error{"/dev/ttys001": errors.New("stat denied")}},
 	)
-	if detection := selector.SelectWithEnricher([]Process{{Pid: 1, Name: "claude", CreateTime: base}}, enricher); detection.None {
+	if detection := selector.SelectWithEnricher([]Process{{Owned: true, Pid: 1, Name: "claude", CreateTime: base}}, enricher); detection.None {
 		t.Fatal("atime stat failure must fail open")
 	}
 }
@@ -838,7 +931,7 @@ func TestSelectorPresenceEpisodeAnchorsAndPIDReuse(t *testing.T) {
 	resolver := fakeTTYResolver{resolutions: map[int32]TTYResolution{7: {Path: "/dev/ttys007"}}}
 	atimes := fakeAtimeSource{atimes: map[string]time.Time{"/dev/ttys007": base}}
 	enricher := presenceEnricher(resolver, fakeTmuxSnapshot{}, atimes)
-	process := Process{Pid: 7, Name: "claude", CreateTime: base.Add(-time.Hour)}
+	process := Process{Owned: true, Pid: 7, Name: "claude", CreateTime: base.Add(-time.Hour)}
 
 	first := selector.SelectWithEnricher([]Process{process}, enricher)
 	if !first.StartedAt.Equal(base) {
@@ -896,7 +989,7 @@ func TestEpisodePersistenceRoundTripAndCorruptFile(t *testing.T) {
 		t.Fatalf("corrupt state anchor = %s, want a safe new episode", got)
 	}
 	selector := newSelectorWithEpisodes(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base.Add(2 * time.Minute)}, corrupt, nil)
-	if detection := selector.Select([]Process{{Pid: 7, Name: "claude", CreateTime: base.Add(-time.Hour)}}); detection.None {
+	if detection := selector.Select([]Process{{Owned: true, Pid: 7, Name: "claude", CreateTime: base.Add(-time.Hour)}}); detection.None {
 		t.Fatal("corrupt state must not exclude an otherwise uncertain process")
 	}
 }
@@ -1055,10 +1148,10 @@ func TestSelectorOrdersOthersByActivityThenPriority(t *testing.T) {
 	}, clock)
 
 	detection := selector.Select([]Process{
-		{Name: "claude", CreateTime: base, CPUTime: 1, CPUTimeKnown: true},
-		{Name: "nvim", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
-		{Name: "lazygit", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
-		{Name: "htop", CreateTime: base, CPUTime: 5, CPUTimeKnown: true},
+		{Owned: true, Name: "claude", CreateTime: base, CPUTime: 1, CPUTimeKnown: true},
+		{Owned: true, Name: "nvim", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
+		{Owned: true, Name: "lazygit", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
+		{Owned: true, Name: "htop", CreateTime: base, CPUTime: 5, CPUTimeKnown: true},
 	})
 
 	got := []string{}
@@ -1079,8 +1172,8 @@ func TestSelectorOrdersOthersByActivityThenPriority(t *testing.T) {
 func TestActiveDetectionUsesPriorityOnCreateTimeTie(t *testing.T) {
 	started := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	detection := ActiveDetection(testRegistry(t), []Process{
-		{Name: "tie-low", CreateTime: started},
-		{Name: "tie-high", CreateTime: started},
+		{Owned: true, Name: "tie-low", CreateTime: started},
+		{Owned: true, Name: "tie-high", CreateTime: started},
 	})
 
 	if detection.Tool.ID != "tie-high" {
@@ -1091,9 +1184,9 @@ func TestActiveDetectionUsesPriorityOnCreateTimeTie(t *testing.T) {
 func TestActiveDetectionDedupesToolInstances(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	detection := ActiveDetection(testRegistry(t), []Process{
-		{Pid: 1, Name: "claude", CreateTime: base, Cwd: "/old"},
-		{Pid: 2, Name: "claude", CreateTime: base.Add(time.Minute), Cwd: "/new"},
-		{Name: "htop", CreateTime: base.Add(-time.Minute)},
+		{Owned: true, Pid: 1, Name: "claude", CreateTime: base, Cwd: "/old"},
+		{Owned: true, Pid: 2, Name: "claude", CreateTime: base.Add(time.Minute), Cwd: "/new"},
+		{Owned: true, Name: "htop", CreateTime: base.Add(-time.Minute)},
 	})
 
 	if detection.Tool.ID != "claude-code" {
@@ -1108,8 +1201,8 @@ func TestSelectorSameToolInstanceActivitySwitchesWithoutAlternatingFlaps(t *test
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
-	older := Process{Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour), Cwd: "/older", CPUTime: 1, CPUTimeKnown: true}
-	newer := Process{Pid: 2, Name: "claude", CreateTime: base.Add(-time.Minute), Cwd: "/newer", CPUTime: 1, CPUTimeKnown: true}
+	older := Process{Owned: true, Pid: 1, Name: "claude", CreateTime: base.Add(-time.Hour), Cwd: "/older", CPUTime: 1, CPUTimeKnown: true}
+	newer := Process{Owned: true, Pid: 2, Name: "claude", CreateTime: base.Add(-time.Minute), Cwd: "/newer", CPUTime: 1, CPUTimeKnown: true}
 
 	if detection := selector.Select([]Process{older, newer}); detection.Cwd != newer.Cwd {
 		t.Fatalf("initial cwd = %q, want creation-time fallback %q", detection.Cwd, newer.Cwd)
@@ -1144,14 +1237,14 @@ func TestSelectorSameToolInstanceUsesRecentTTYActivity(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
 	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, clock)
-	older := Process{
+	older := Process{Owned: true,
 		Pid:        1,
 		Name:       "claude",
 		CreateTime: base.Add(-time.Hour),
 		Cwd:        "/older",
 		TTY:        TTYInfo{State: TTYResolved, Atime: base, AtimeKnown: true},
 	}
-	newer := Process{
+	newer := Process{Owned: true,
 		Pid:        2,
 		Name:       "claude",
 		CreateTime: base.Add(-time.Minute),
@@ -1176,7 +1269,7 @@ func TestSelectorSameToolInstanceUsesRecentTTYActivity(t *testing.T) {
 func TestActiveDetectionMatchesClaudeVersionBinaryAndDedupes(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	detection := ActiveDetection(testRegistry(t), []Process{
-		{
+		{Owned: true,
 			Pid:        1,
 			Name:       "2.1.201",
 			Exe:        "/home/u/.local/share/claude/versions/2.1.201",
@@ -1184,7 +1277,7 @@ func TestActiveDetectionMatchesClaudeVersionBinaryAndDedupes(t *testing.T) {
 			CreateTime: base,
 			Cwd:        "/old",
 		},
-		{
+		{Owned: true,
 			Pid:        2,
 			Name:       "2.1.201",
 			Exe:        "/home/u/.local/share/claude/versions/2.1.201",
@@ -1208,7 +1301,7 @@ func TestActiveDetectionMatchesClaudeVersionBinaryAndDedupes(t *testing.T) {
 func TestSelectorClaudeHelpersDoNotChurnFeaturedInstance(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	selector := NewSelector(testRegistry(t), Config{ActivitySwitching: true}, &fakeClock{now: base})
-	real := Process{
+	real := Process{Owned: true,
 		Pid:        94948,
 		Name:       "2.1.211",
 		Exe:        "/Users/test/.local/share/claude/versions/2.1.211",
@@ -1219,14 +1312,14 @@ func TestSelectorClaudeHelpersDoNotChurnFeaturedInstance(t *testing.T) {
 
 	first := selector.Select([]Process{
 		real,
-		{Pid: 94887, Name: "2.1.211", Cmdline: "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/pty", CreateTime: base.Add(time.Minute), Cwd: "/helper"},
-		{Pid: 94892, Name: "2.1.211", Cmdline: "claude bg-spare --bg-spare /tmp/cc-daemon-501/spare", CreateTime: base.Add(time.Minute), Cwd: "/helper"},
-		{Pid: 95000, Name: "2.1.211", Cmdline: "claude daemon run --json-path /tmp/daemon.json", CreateTime: base.Add(2 * time.Minute), Cwd: "/helper"},
+		{Owned: true, Pid: 94887, Name: "2.1.211", Cmdline: "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/pty", CreateTime: base.Add(time.Minute), Cwd: "/helper"},
+		{Owned: true, Pid: 94892, Name: "2.1.211", Cmdline: "claude bg-spare --bg-spare /tmp/cc-daemon-501/spare", CreateTime: base.Add(time.Minute), Cwd: "/helper"},
+		{Owned: true, Pid: 95000, Name: "2.1.211", Cmdline: "claude daemon run --json-path /tmp/daemon.json", CreateTime: base.Add(2 * time.Minute), Cwd: "/helper"},
 	})
 	second := selector.Select([]Process{
 		real,
-		{Pid: 95009, Name: "2.1.211", Cmdline: "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/pty", CreateTime: base.Add(3 * time.Minute), Cwd: "/respawned-helper"},
-		{Pid: 95014, Name: "2.1.211", Cmdline: "claude bg-spare --bg-spare /tmp/cc-daemon-501/spare", CreateTime: base.Add(3 * time.Minute), Cwd: "/respawned-helper"},
+		{Owned: true, Pid: 95009, Name: "2.1.211", Cmdline: "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/pty", CreateTime: base.Add(3 * time.Minute), Cwd: "/respawned-helper"},
+		{Owned: true, Pid: 95014, Name: "2.1.211", Cmdline: "claude bg-spare --bg-spare /tmp/cc-daemon-501/spare", CreateTime: base.Add(3 * time.Minute), Cwd: "/respawned-helper"},
 	})
 
 	for _, detection := range []Detection{first, second} {
@@ -1242,16 +1335,16 @@ func TestSelectorClaudeHelpersDoNotChurnFeaturedInstance(t *testing.T) {
 func TestSelectWithEnricherMatchesFullSnapshotResults(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	full := []Process{
-		{Pid: 1, Name: "bash", Cwd: "/ignored", CreateTime: base.Add(10 * time.Minute), CPUTime: 50, CPUTimeKnown: true},
-		{Pid: 2, Name: "claude", Cwd: "/claude-old", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
-		{Pid: 3, Name: "codex", Cwd: "/codex", CreateTime: base.Add(time.Minute), CPUTime: 3, CPUTimeKnown: true},
-		{Pid: 4, Name: "nvim", Cwd: "/nvim", CreateTime: base.Add(-time.Minute), CPUTime: 4, CPUTimeKnown: true},
-		{Pid: 5, Name: "claude", Cwd: "/claude-new", CreateTime: base.Add(2 * time.Minute), CPUTime: 5, CPUTimeKnown: true},
-		{Pid: 6, Name: "zsh", Cwd: "/ignored-too", CreateTime: base.Add(20 * time.Minute), CPUTime: 60, CPUTimeKnown: true},
+		{Owned: true, Pid: 1, Name: "bash", Cwd: "/ignored", CreateTime: base.Add(10 * time.Minute), CPUTime: 50, CPUTimeKnown: true},
+		{Owned: true, Pid: 2, Name: "claude", Cwd: "/claude-old", CreateTime: base, CPUTime: 2, CPUTimeKnown: true},
+		{Owned: true, Pid: 3, Name: "codex", Cwd: "/codex", CreateTime: base.Add(time.Minute), CPUTime: 3, CPUTimeKnown: true},
+		{Owned: true, Pid: 4, Name: "nvim", Cwd: "/nvim", CreateTime: base.Add(-time.Minute), CPUTime: 4, CPUTimeKnown: true},
+		{Owned: true, Pid: 5, Name: "claude", Cwd: "/claude-new", CreateTime: base.Add(2 * time.Minute), CPUTime: 5, CPUTimeKnown: true},
+		{Owned: true, Pid: 6, Name: "zsh", Cwd: "/ignored-too", CreateTime: base.Add(20 * time.Minute), CPUTime: 60, CPUTimeKnown: true},
 	}
 	identities := make([]Process, 0, len(full))
 	for _, process := range full {
-		identities = append(identities, Process{
+		identities = append(identities, Process{Owned: true,
 			Pid:     process.Pid,
 			Name:    process.Name,
 			Exe:     process.Exe,
@@ -1283,7 +1376,7 @@ func TestSelectWithEnricherMatchesFullSnapshotResults(t *testing.T) {
 
 func TestActiveDetectionReturnsNoneWhenNothingMatches(t *testing.T) {
 	detection := ActiveDetection(testRegistry(t), []Process{
-		{Name: "bash", CreateTime: time.Now()},
+		{Owned: true, Name: "bash", CreateTime: time.Now()},
 	})
 
 	if !detection.None {
@@ -1294,8 +1387,8 @@ func TestActiveDetectionReturnsNoneWhenNothingMatches(t *testing.T) {
 func TestRunDebouncesBeforeEmitting(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	lister := &fakeLister{snapshots: [][]Process{
-		{{Name: "claude", CreateTime: base}},
-		{{Name: "claude", CreateTime: base}},
+		{{Owned: true, Name: "claude", CreateTime: base}},
+		{{Owned: true, Name: "claude", CreateTime: base}},
 	}}
 	det, err := New(testRegistry(t), lister, Config{
 		ScanInterval:   time.Millisecond,
@@ -1343,7 +1436,7 @@ func TestRunReadOnlyLoadsEpisodeStoreWithoutSaving(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lister := &fakeLister{snapshots: [][]Process{{{
+	lister := &fakeLister{snapshots: [][]Process{{{Owned: true,
 		Pid:        7,
 		Name:       "claude",
 		CreateTime: created,
@@ -1492,7 +1585,7 @@ func TestRunDebugfReportsEpisodeStoreSaveFailure(t *testing.T) {
 	if err := os.WriteFile(stateDir, []byte("block"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	lister.results <- processListResult{processes: []Process{{
+	lister.results <- processListResult{processes: []Process{{Owned: true,
 		Pid:        7,
 		Name:       "claude",
 		CreateTime: time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC),
@@ -1519,8 +1612,8 @@ func TestRunDebugfReportsEpisodeStoreSaveFailure(t *testing.T) {
 
 func TestRunEmitsNoneAfterDebounce(t *testing.T) {
 	lister := &fakeLister{snapshots: [][]Process{
-		{{Name: "bash"}},
-		{{Name: "bash"}},
+		{{Owned: true, Name: "bash"}},
+		{{Owned: true, Name: "bash"}},
 	}}
 	det, err := New(testRegistry(t), lister, Config{
 		ScanInterval:   time.Millisecond,
@@ -1550,7 +1643,7 @@ func TestRunEmitsNoneAfterDebounce(t *testing.T) {
 
 func TestRunScanErrorsClearPresenceAtThresholdAndRecoverWithDebounce(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	process := Process{Pid: 7, Name: "claude", CreateTime: base, Cwd: "/project"}
+	process := Process{Owned: true, Pid: 7, Name: "claude", CreateTime: base, Cwd: "/project"}
 	lister := newControlledLister()
 	det, err := New(testRegistry(t), lister, Config{
 		ScanInterval:   time.Nanosecond,
@@ -1679,14 +1772,14 @@ func TestRunScanErrorsClearPresenceAtThresholdAndRecoverWithDebounce(t *testing.
 func TestRunEmitsDebouncedSequenceAndClosesOnCancel(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	lister := newChannelLister(
-		[]Process{{Name: "claude", CreateTime: base, Cwd: "/claude"}},
-		[]Process{{Name: "bash"}},
-		[]Process{{Name: "claude", CreateTime: base, Cwd: "/claude"}},
-		[]Process{{Name: "claude", CreateTime: base, Cwd: "/claude"}},
-		[]Process{{Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex"}},
-		[]Process{{Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex"}},
-		[]Process{{Name: "bash"}},
-		[]Process{{Name: "bash"}},
+		[]Process{{Owned: true, Name: "claude", CreateTime: base, Cwd: "/claude"}},
+		[]Process{{Owned: true, Name: "bash"}},
+		[]Process{{Owned: true, Name: "claude", CreateTime: base, Cwd: "/claude"}},
+		[]Process{{Owned: true, Name: "claude", CreateTime: base, Cwd: "/claude"}},
+		[]Process{{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex"}},
+		[]Process{{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/codex"}},
+		[]Process{{Owned: true, Name: "bash"}},
+		[]Process{{Owned: true, Name: "bash"}},
 	)
 	det, err := New(testRegistry(t), lister, Config{
 		ScanInterval:   time.Nanosecond,
@@ -1805,7 +1898,7 @@ func TestReconfigureCompletesWhileDetectionEmitIsBlocked(t *testing.T) {
 	}
 
 	waitForScan()
-	completeScan([]Process{{
+	completeScan([]Process{{Owned: true,
 		Pid:        1,
 		Name:       "claude",
 		CreateTime: base,
@@ -1815,7 +1908,7 @@ func TestReconfigureCompletesWhileDetectionEmitIsBlocked(t *testing.T) {
 	// Leave the first detection buffered, then change the candidate so the next
 	// scan blocks trying to emit into the full one-slot channel.
 	waitForScan()
-	completeScan([]Process{{
+	completeScan([]Process{{Owned: true,
 		Pid:        2,
 		Name:       "codex",
 		CreateTime: base.Add(time.Minute),
@@ -1849,8 +1942,8 @@ func TestReconfigureCompletesWhileDetectionEmitIsBlocked(t *testing.T) {
 	// an immediate scan. The next emission must be derived from the new config.
 	waitForScan()
 	completeScan([]Process{
-		{Pid: 1, Name: "claude", CreateTime: base, Cwd: "/reconfigured"},
-		{Pid: 2, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/stale"},
+		{Owned: true, Pid: 1, Name: "claude", CreateTime: base, Cwd: "/reconfigured"},
+		{Owned: true, Pid: 2, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/stale"},
 	})
 	select {
 	case initial := <-detections:
@@ -1883,8 +1976,8 @@ func TestReconfigureCompletesWhileDetectionEmitIsBlocked(t *testing.T) {
 func TestReconfigureAppliesPinOnImmediateScan(t *testing.T) {
 	base := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	lister := &fakeLister{snapshots: [][]Process{{
-		{Pid: 1, Name: "claude", CreateTime: base},
-		{Pid: 2, Name: "codex", CreateTime: base.Add(time.Minute)},
+		{Owned: true, Pid: 1, Name: "claude", CreateTime: base},
+		{Owned: true, Pid: 2, Name: "codex", CreateTime: base.Add(time.Minute)},
 	}}}
 	reg := testRegistry(t)
 	det, err := New(reg, lister, Config{
@@ -1938,7 +2031,7 @@ func TestSelectorReconfigurePreservesEpisodeAnchor(t *testing.T) {
 		IdleClearTimeout:  20 * time.Minute,
 		ActivitySwitching: true,
 	}, clock)
-	process := Process{Pid: 42, Name: "claude", CreateTime: base.Add(-time.Hour)}
+	process := Process{Owned: true, Pid: 42, Name: "claude", CreateTime: base.Add(-time.Hour)}
 	first := selector.Select([]Process{process})
 	if first.None {
 		t.Fatal("initial selection was none")

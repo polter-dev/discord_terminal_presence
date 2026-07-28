@@ -77,6 +77,7 @@ func (l *GopsutilLister) NewScanProcessEnricher() ProcessEnricher {
 		resolver: newSystemTTYResolver(),
 		tmux:     queryTmuxPanes(),
 		atime:    l.ttyAtimeSource(),
+		owner:    newSystemOwnerResolver(),
 	}
 	l.episodesMu.RLock()
 	enricher.episodes = l.episodes
