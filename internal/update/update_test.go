@@ -116,6 +116,9 @@ func TestGenericCommandPinsInstallerAndVersionToReleaseTag(t *testing.T) {
 	if want := "raw.githubusercontent.com/polter-dev/discord_terminal_presence/" + tag + "/install.sh"; !strings.Contains(command, want) {
 		t.Fatalf("generic command = %q, want tagged installer URL containing %q", command, want)
 	}
+	if !strings.Contains(command, "curl --connect-timeout 10 --max-time 300 -fsSL") {
+		t.Fatalf("generic command = %q, want bounded curl transfer", command)
+	}
 	if !strings.Contains(command, "VERSION="+tag+" sh") {
 		t.Fatalf("generic command = %q, want installer version pinned to %q", command, tag)
 	}
@@ -171,7 +174,8 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	}
 	download, install := runner.commands[0], runner.commands[1]
 	wantURL := "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/v2.3.4/install.sh"
-	if download.Name != "curl" || len(download.Args) != 4 || download.Args[1] != wantURL || download.Args[2] != "-o" {
+	wantDownloadArgs := []string{"--connect-timeout", "10", "--max-time", "300", "-fsSL", wantURL, "-o", download.Args[len(download.Args)-1]}
+	if download.Name != "curl" || !reflect.DeepEqual(download.Args, wantDownloadArgs) {
 		t.Fatalf("download command = %#v", download)
 	}
 	wantEnv := []string{
@@ -182,10 +186,10 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	if install.Name != "sh" || len(install.Args) != 1 || !reflect.DeepEqual(install.Env, wantEnv) {
 		t.Fatalf("install command = %#v", install)
 	}
-	if install.Args[0] != download.Args[3] {
-		t.Fatalf("installer path = %q, downloaded path = %q", install.Args[0], download.Args[3])
+	if install.Args[0] != download.Args[7] {
+		t.Fatalf("installer path = %q, downloaded path = %q", install.Args[0], download.Args[7])
 	}
-	if _, err := os.Stat(download.Args[3]); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(download.Args[7]); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary installer was not cleaned up: %v", err)
 	}
 }

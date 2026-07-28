@@ -223,6 +223,17 @@ func requireSymlink(t *testing.T) {
 	}
 }
 
+func TestIsTerminalRejectsCharacterDeviceThatIsNotTTY(t *testing.T) {
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	if isTerminal(null) {
+		t.Fatalf("isTerminal(%s) = true, want false", os.DevNull)
+	}
+}
+
 func withTermpConfigHome(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
