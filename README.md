@@ -98,7 +98,7 @@ status 2; use `termp watch --once` for a non-interactive snapshot.
 | `termp config init` | Writes a commented sample config. Add `--force` to replace an existing config. |
 | `termp completion <bash\|zsh\|fish>` | Prints a tab-completion script for your shell. |
 | `termp version` | Prints the version, commit, build date, Go version, OS, and architecture. |
-| `termp update` | Checks for a newer release and updates Homebrew, Go, shell/binary, and deb/rpm installs as appropriate. Scoop installs get the command to run instead. |
+| `termp update` | Checks for a newer release and updates Homebrew, Go, deb/rpm, and macOS/Linux shell/binary installs as appropriate. Windows archive installs are not self-updated; termp prints the command to run. |
 
 `termp watch`, `termp settings`, and the interactive setup wizard need a real
 terminal window. Applying setup reconciles start-at-login in both directions: enabling it
@@ -188,11 +188,13 @@ Either setting is enough.
 
 Run `termp update` to check for a newer release and update using the detected
 install method. Homebrew installs use `brew upgrade`, source installs use
-`go install` for the new release, and shell/binary installs reuse the install
-script. For detected deb/rpm installs, termp downloads the matching package and
+`go install` for the new release, and macOS/Linux shell/binary installs reuse the
+install script. For detected deb/rpm installs, termp downloads the matching package and
 `checksums.txt`, verifies the package's SHA-256 integrity, then runs
 `sudo apt install -y` or `sudo dnf install -y`. Scoop installs are not
 self-updated; termp prints `scoop update termp` for you to run after it exits.
+Windows archive installs cannot self-update; download the new release archive
+or use `go install`.
 Automatic updates are opt-in with `auto_update = true`; they run silently when
 `termp start` launches, never delay daemon startup, and take effect next start.
 
