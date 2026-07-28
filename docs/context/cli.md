@@ -54,9 +54,10 @@ hand-written Formula draft was removed under #303.
 Homebrew Cask installs and deb/rpm postinstall scripts print the same prominent,
 fixed-width 80-column ASCII setup box. Homebrew prints Cask caveats unindented at
 column 0, so the box renders intact. GoReleaser's caveats templating trims the
-padding blank lines, so blank-line separation applies only to the deb/rpm
-postinstall; the package script always exits successfully so guidance cannot break
-an install.
+authored padding blank lines, so deb/rpm is the only channel whose padding comes
+from this repo; Homebrew renders the box directly under its own `==> Caveats`
+header, followed by a single trailing blank line that Homebrew itself emits. The
+package script always exits successfully so guidance cannot break an install.
 
 The installer resolves one tag for archive/checksum, prefers
 `https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}`, and falls back to the tag-pinned
