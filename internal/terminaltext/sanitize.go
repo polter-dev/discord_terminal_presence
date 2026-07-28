@@ -25,11 +25,15 @@ func Sanitize(value string) string {
 	return cleaned.String()
 }
 
-// separatorSentinel is a stand-in control character used internally while
-// collapsing and trimming line-break substitutions. It is never a valid
-// separator source itself, so it cannot collide with the characters being
-// normalized. If it somehow survives to the final Sanitize call, it is a
-// C0 control character and gets stripped like any other.
+// separatorSentinel is a stand-in control character (RS, 0x1E) used
+// internally while collapsing and trimming line-break substitutions. RS is
+// itself one of the characters lineBreakReplacer folds (deliberately: it is
+// the record-separator control code, and gluing the tokens on either side of
+// it back together is the exact `.debsudo`-style bug class this package
+// exists to prevent), so mapping it to itself is intentional, not an
+// accident of the sentinel mechanism. If it somehow survives to the final
+// Sanitize call, it is a C0 control character and gets stripped like any
+// other.
 const separatorSentinel = "\x1e"
 
 // visibleSeparator is what every recognized line-break character collapses
@@ -40,9 +44,13 @@ const visibleSeparator = " ; "
 // pipeline, or renderer could treat as a line/record break to the sentinel.
 // CRLF must precede CR and LF so the two-byte sequence collapses to a single
 // separator instead of two. Covered: CRLF, CR, LF, vertical tab (0x0B), form
-// feed (0x0C), NUL (0x00), NEL (U+0085), LINE SEPARATOR (U+2028), and
-// PARAGRAPH SEPARATOR (U+2029). See docs/context/terminaltext.md for the
-// authoritative coverage table.
+// feed (0x0C), NUL (0x00), RS (0x1E, the sentinel itself, mapped to itself
+// so the fold is explicit rather than an accident of sentinelRun also
+// matching raw RS), NEL (U+0085), LINE SEPARATOR (U+2028), and PARAGRAPH
+// SEPARATOR (U+2029). US (0x1F), RS's sibling separator code, is deliberately
+// NOT folded here; it is simply stripped by Sanitize like any other control
+// character. See docs/context/terminaltext.md for the authoritative coverage
+// table.
 var lineBreakReplacer = strings.NewReplacer(
 	"\r\n", separatorSentinel,
 	"\r", separatorSentinel,
@@ -50,6 +58,7 @@ var lineBreakReplacer = strings.NewReplacer(
 	"\v", separatorSentinel,
 	"\f", separatorSentinel,
 	"\x00", separatorSentinel,
+	"\x1e", separatorSentinel,
 	"\u0085", separatorSentinel,
 	"\u2028", separatorSentinel,
 	"\u2029", separatorSentinel,

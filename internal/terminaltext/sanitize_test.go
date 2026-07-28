@@ -85,6 +85,23 @@ func TestSanitizeSingleLine(t *testing.T) {
 			want:  "a ; b",
 		},
 		{
+			// RS (0x1E) is also the internal sentinel byte. It is folded
+			// deliberately (not by accident of the sentinel mechanism): see
+			// lineBreakReplacer and docs/context/terminaltext.md.
+			name:  "RS (record separator) separates tokens instead of gluing them",
+			input: "a\x1eb",
+			want:  "a ; b",
+		},
+		{
+			// US (0x1F), RS's sibling separator code, is deliberately NOT
+			// folded into a visible separator -- it is just stripped like any
+			// other control character by the trailing Sanitize call. This
+			// asymmetry with RS is intentional and documented.
+			name:  "US (unit separator) is stripped, not folded, unlike RS",
+			input: "a\x1fb",
+			want:  "ab",
+		},
+		{
 			name:  "line separator U+2028 is folded into the separator",
 			input: "a" + ls + "b",
 			want:  "a ; b",

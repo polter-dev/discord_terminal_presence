@@ -10,12 +10,17 @@ a single visible ` ; ` separator, collapsing runs and trimming leading/trailing
 separators, before sanitizing.
 
 **Separator coverage (exact):** `SanitizeSingleLine` normalizes CRLF, CR (`\r`), LF
-(`\n`), vertical tab (`\v`, 0x0B), form feed (`\f`, 0x0C), NUL (0x00), NEL (U+0085), LINE
-SEPARATOR (U+2028), and PARAGRAPH SEPARATOR (U+2029) — every character a mainstream
-terminal or log pipeline could treat as ending a line/record. CRLF is matched before the
-lone CR/LF entries so it collapses to one separator, not two. No other character is
-folded; anything not in this list either isn't a line-break candidate or is already
-removed by the trailing `Sanitize` call (e.g. other C0/C1 controls). Consecutive
+(`\n`), vertical tab (`\v`, 0x0B), form feed (`\f`, 0x0C), NUL (0x00), RS (0x1E, RECORD
+SEPARATOR — this is also the internal sentinel byte; it is folded deliberately, since
+gluing the tokens on either side of it back together is the exact `.debsudo`-style bug
+class this package exists to prevent), NEL (U+0085), LINE SEPARATOR (U+2028), and
+PARAGRAPH SEPARATOR (U+2029) — every character a mainstream terminal or log pipeline
+could treat as ending a line/record. CRLF is matched before the lone CR/LF entries so it
+collapses to one separator, not two. US (0x1F, UNIT SEPARATOR, RS's sibling control code)
+is deliberately **not** folded — it is simply stripped by the trailing `Sanitize` call
+like any other C0/C1 control character, so `"a\x1fb"` becomes `"ab"` while `"a\x1eb"`
+becomes `"a ; b"`. Other than that one documented asymmetry, anything not in the folded
+list either isn't a line-break candidate or is already removed by `Sanitize`. Consecutive
 separators (e.g. from a blank line) collapse to one, and leading/trailing separators are
 trimmed, so substitution never leaves dangling or doubled punctuation at the edges.
 
