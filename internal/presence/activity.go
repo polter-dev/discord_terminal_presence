@@ -2,7 +2,6 @@ package presence
 
 import (
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -257,8 +256,10 @@ func validateActivity(activity Activity) error {
 		if utf8.RuneCountInString(value) > maxImageValueLength {
 			return &activityValidationError{message: fmt.Sprintf("%s must be at most %d characters", field.name, maxImageValueLength)}
 		}
-		if field.image.URL != "" && !validHTTPURL(field.image.URL) {
-			return &activityValidationError{message: fmt.Sprintf("%s URL must be a valid absolute http/https URL", field.name)}
+		if field.image.URL != "" {
+			if err := registry.ValidateHTTPURL(field.image.URL); err != nil {
+				return &activityValidationError{message: fmt.Sprintf("%s URL must be a valid absolute http/https URL", field.name)}
+			}
 		}
 	}
 	buttons := make([]registry.Button, 0, len(activity.Buttons))
@@ -269,11 +270,6 @@ func validateActivity(activity Activity) error {
 		return &activityValidationError{message: err.Error()}
 	}
 	return nil
-}
-
-func validHTTPURL(value string) bool {
-	parsed, err := url.ParseRequestURI(value)
-	return err == nil && parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https")
 }
 
 // ActivityFromDetection maps an active detector result into a Discord activity payload.
@@ -289,16 +285,26 @@ func ActivityFromDetectionWithOmissions(detection detector.Detection, options Di
 		return Activity{}, false, nil
 	}
 	var omissions []ActivityTextOmission
+	// boundText no longer bounds anything: it used to apply the generic
+	// min/max to the raw, pre-sanitize value, which truncates content the
+	// choke point (normalizeActivity, called later by SetActivity) would
+	// have kept whole, and can add a false ellipsis to a value that fits
+	// once sanitized (#445). Bounding now happens exactly once, at the
+	// choke point, on the sanitized text. This helper's only remaining job
+	// is the omission diagnostic, and it evaluates the same post-sanitize
+	// view the choke point uses so the two can never disagree: a field the
+	// choke point drops (because it sanitizes below the minimum) is always
+	// reported here, and a field the choke point keeps is never reported.
 	boundText := func(field, value string) string {
-		bounded, omitted := boundActivityText(value, minActivityTextLength, maxActivityTextLength)
-		if omitted {
+		sanitizedLength := utf8.RuneCountInString(terminaltext.SanitizeSingleLine(value))
+		if sanitizedLength > 0 && sanitizedLength < minActivityTextLength {
 			omissions = append(omissions, ActivityTextOmission{
 				Field:   field,
-				Length:  utf8.RuneCountInString(value),
+				Length:  sanitizedLength,
 				Minimum: minActivityTextLength,
 			})
 		}
-		return bounded
+		return value
 	}
 
 	tool := detection.Featured.Tool
@@ -365,11 +371,15 @@ func ActivityFromDetectionWithOmissions(detection detector.Detection, options Di
 
 // boundActivityText forces value inside [min, max] runes: a non-empty value
 // shorter than min is dropped (reported as omitted), and a value longer than
-// max is truncated with an ellipsis. It is called twice on the path to Discord:
-// once pre-sanitization in ActivityFromDetectionWithOmissions, purely so a
-// too-short rendered value can be reported to the caller's debug logger, and
-// once post-sanitization in normalizeActivity, which is the call that actually
-// guarantees the bound (see #436).
+// max is truncated with an ellipsis. normalizeActivity is its only caller
+// (post-sanitization), and it is the sole thing that guarantees the bound
+// (see #436). ActivityFromDetectionWithOmissions used to call this too,
+// pre-sanitization, purely to report omission diagnostics — but bounding the
+// raw value truncated content the choke point would have kept once
+// sanitized and could add a false ellipsis, and a field the choke point
+// dropped for sanitizing below the minimum was not reported at all (#445).
+// It now only checks the sanitized length against the minimum itself,
+// without calling this function.
 func boundActivityText(value string, min, max int) (string, bool) {
 	length := utf8.RuneCountInString(value)
 	if length > 0 && length < min {

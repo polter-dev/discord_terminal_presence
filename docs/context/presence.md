@@ -71,22 +71,53 @@ checks hold by construction (#436): sanitization is not monotonically shortening
 direction — `SanitizeSingleLine` expands each line break into the 3-rune `" ; "` separator
 (a value bounded to exactly 128 runes measured 212 after sanitizing), and since #427
 `Sanitize` can also return more text than it used to. A bound applied before sanitization
-is therefore unreliable, and its only remaining purpose is the pre-sanitize call in
-`ActivityFromDetectionWithOmissions`, which exists to report omission diagnostics, not to
-guarantee the bound. Consequences of bounding last: an over-long field is truncated with
-an ellipsis and a field that sanitizes below the 2-rune minimum (or a button label that
-sanitizes to nothing, which is dropped along with its button) is omitted — instead of
-`validateActivity` rejecting the payload and publishing *nothing at all* for that update,
-which was the user-visible defect. Structural errors the caller must fix, such as more
-than two buttons or a non-HTTP(S) URL, are still hard validation failures.
+is therefore unreliable, so `normalizeActivity` (called from `SetActivity`) is the *only*
+place bounding happens (#445). Consequences of bounding last: an over-long field is
+truncated with an ellipsis and a field that sanitizes below the 2-rune minimum (or a
+button label that sanitizes to nothing, which is dropped along with its button) is omitted
+— instead of `validateActivity` rejecting the payload and publishing *nothing at all* for
+that update, which was the user-visible defect. Structural errors the caller must fix, such
+as more than two buttons or a non-HTTP(S) URL, are still hard validation failures.
+
+`ActivityFromDetectionWithOmissions` (the detection→activity mapping in `activity.go`,
+not the choke point) used to apply its own pre-sanitize bound with the same helper,
+purely to produce `ActivityTextOmission` diagnostics before #443 existed. That bound ran
+on the *raw* value, so it could truncate content the choke point would have kept whole
+once sanitized, or add a false trailing ellipsis to a value that fit after sanitizing —
+measured with a 200-rune directory basename of `x`+BEL pairs, the pre-bound produced a
+66-rune result with a stray ellipsis where the choke point alone produces the correct
+102-rune result with none. Worse, because the pre-bound checked the *raw* length, a value
+long enough to clear the raw minimum but short enough to sanitize below it (e.g. an
+`"x"` padded with two BEL characters) triggered no omission at all, silently disagreeing
+with the choke point actually dropping the field. Fixed in #445: the mapping helper now
+only computes the **sanitized** length to decide whether to report an omission — it no
+longer truncates, so bounding happens exactly once, at the choke point, and the two
+layers can no longer disagree about what "omitted" means. `ActivityFromDetection` (and
+`ActivityFromDetectionWithOmissions`) can therefore return a field longer than Discord's
+bound; only after `normalizeActivity` runs (as `SetActivity` always does) is the result
+guaranteed bounded — callers that inspect a mapped `Activity` directly without normalizing
+it first (as several tests now do) see the raw, unbounded value.
 
 Residual, stated plainly: the two URL fields (`Image.URL`, `Button.URL`) are the one part
 of the outbound payload `normalizeActivity` does not sanitize or bound. That is deliberate
-— sanitizing a URL would corrupt it — and it is safe only because URLs are never mutated on
-the way out, so their length cannot change after `registry.ValidateCustomTool` /
-`ValidateButtons` bound them at config load (256 and 512 runes). If a URL ever becomes
-runtime-derived, or anything starts rewriting it, that guarantee is gone and it needs a
-bound of its own.
+— sanitizing a URL would corrupt it — so config-load validation is the *only* defence for
+these two fields, and it must do two independent jobs: bound their length (`registry.
+ValidateCustomTool` / `ValidateButtons`, 256 and 512 runes; safe because URLs are never
+mutated outbound, so length cannot change after that check runs) and reject the same
+control/C1/bidi rune classes the text fields reject. Until #444, `registry.ValidateHTTPURL`
+only did the former: it was `url.ParseRequestURI` plus a host/scheme check, which rejects
+raw ASCII control bytes as a side effect of URI parsing but accepts a C1 control (e.g.
+U+0085 NEL) or a Unicode bidi override (e.g. U+202E RIGHT-TO-LEFT OVERRIDE) outright, and
+those reached the wire unchanged in both an image URL and a button URL — link-target
+spoofing on the user's Discord profile. `ValidateHTTPURL` now also calls the same
+`firstDisallowedRune` (`terminaltext.IsControlOrBidi`) check `display_name`, `image_key`,
+and button labels already used, and rejects rather than strips: silently rewriting a URL is
+worse than refusing it. `validateActivity`'s own image-URL check (`internal/presence/
+activity.go`) used to keep a second, independent `url.ParseRequestURI` copy that had the
+identical hole; it now calls `registry.ValidateHTTPURL` directly instead of maintaining a
+second copy that can drift. If a URL ever becomes runtime-derived, or anything starts
+rewriting it, the length-safety half of this guarantee is gone and needs a bound of its
+own — the rune-rejection half does not depend on that assumption.
 
 `newSetActivityPayload` itself does no sanitizing or bounding — it is a plain copy of an
 already-normalized `Activity`. Two generic walks of the marshaled JSON are the regression

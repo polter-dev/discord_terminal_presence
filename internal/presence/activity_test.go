@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
 	"github.com/polter-dev/discord_terminal_presence/internal/registry"
@@ -220,10 +221,14 @@ func TestActivityFromDetectionBoundsRenderedText(t *testing.T) {
 		},
 	}
 
+	// #445: the mapping layer no longer bounds anything itself — that
+	// guarantee now lives solely in normalizeActivity, the choke point. Only
+	// after normalizing is the result guaranteed bounded and valid.
 	activity, ok := ActivityFromDetection(detailsDetection, DefaultDisplayOptions())
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
+	activity = normalizeActivity(activity)
 	if got := len([]rune(activity.Details)); got != maxActivityTextLength {
 		t.Fatalf("details rune count = %d, want %d", got, maxActivityTextLength)
 	}
@@ -247,6 +252,7 @@ func TestActivityFromDetectionBoundsRenderedText(t *testing.T) {
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
+	activity = normalizeActivity(activity)
 	if got := len([]rune(activity.State)); got != maxActivityTextLength {
 		t.Fatalf("state rune count = %d, want %d", got, maxActivityTextLength)
 	}
@@ -274,8 +280,12 @@ func TestActivityFromDetectionOmitsTooShortRenderedTextWithoutGlobalLogging(t *t
 	if !ok {
 		t.Fatal("expected active detection to produce activity")
 	}
-	if activity.Details != "" {
-		t.Fatalf("details = %q, want one-character text omitted", activity.Details)
+	// #445: the mapping layer no longer truncates/drops before
+	// sanitization — it only reports the omission diagnostic below. The raw
+	// pre-sanitize value survives until normalizeActivity (the choke point)
+	// sanitizes and bounds it for real.
+	if activity.Details != "x" {
+		t.Fatalf("details = %q, want raw pre-sanitize text (dropping happens at the choke point)", activity.Details)
 	}
 	if logs.Len() != 0 {
 		t.Fatalf("global log output = %q, want none", logs.String())
@@ -289,6 +299,13 @@ func TestActivityFromDetectionOmitsTooShortRenderedTextWithoutGlobalLogging(t *t
 	}
 	if len(omissions) != 1 || omissions[0] != (ActivityTextOmission{Field: "details", Length: 1, Minimum: 2}) {
 		t.Fatalf("omissions = %#v, want details omission", omissions)
+	}
+
+	// The choke point still enforces the bound end-to-end: once normalized
+	// (as SetActivity would do), the too-short field is dropped for real.
+	normalized := normalizeActivity(activity)
+	if normalized.Details != "" {
+		t.Fatalf("normalized details = %q, want dropped at the choke point", normalized.Details)
 	}
 }
 
@@ -306,11 +323,103 @@ func TestActivityFromDetectionOmitsTooShortImageTooltips(t *testing.T) {
 	if activity.Name != "x" {
 		t.Fatalf("name = %q, want one-character name preserved", activity.Name)
 	}
-	if activity.LargeImage.Text != "" {
-		t.Fatalf("large image text = %q, want one-character tooltip omitted", activity.LargeImage.Text)
+	// #445: the mapping layer no longer drops before sanitization; the
+	// choke point (normalizeActivity) is what actually enforces the bound.
+	if activity.LargeImage.Text != "x" {
+		t.Fatalf("large image text = %q, want raw pre-sanitize tooltip preserved", activity.LargeImage.Text)
 	}
-	if activity.SmallImage.Text != "" {
-		t.Fatalf("small image text = %q, want one-character tooltip omitted", activity.SmallImage.Text)
+	if activity.SmallImage.Text != "界" {
+		t.Fatalf("small image text = %q, want raw pre-sanitize tooltip preserved", activity.SmallImage.Text)
+	}
+
+	normalized := normalizeActivity(activity)
+	if normalized.LargeImage.Text != "" {
+		t.Fatalf("normalized large image text = %q, want dropped at the choke point", normalized.LargeImage.Text)
+	}
+	if normalized.SmallImage.Text != "" {
+		t.Fatalf("normalized small image text = %q, want dropped at the choke point", normalized.SmallImage.Text)
+	}
+}
+
+// TestActivityFromDetectionDoesNotPreTruncateBeforeSanitization is the
+// regression test for #445. A 200-rune directory basename made of "x"+BEL
+// pairs exceeds the 128-rune Discord bound before sanitization, but
+// Sanitize strips every BEL, leaving only 100 "x" runes plus the "📁 "
+// prefix (102 runes) — comfortably under the bound. The mapping layer must
+// not truncate the raw value before normalizeActivity (the choke point) has
+// a chance to sanitize it, or it destroys content the choke point would
+// have kept and can add a false trailing ellipsis.
+func TestActivityFromDetectionDoesNotPreTruncateBeforeSanitization(t *testing.T) {
+	basename := strings.Repeat("x\x07", 100)
+	options := DefaultDisplayOptions()
+	options.ShowDirectory = true
+	options.DirectoryBasenameOnly = true
+
+	activity, ok, omissions := ActivityFromDetectionWithOmissions(detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+		Cwd:  "/parent/" + basename,
+	}, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if len(omissions) != 0 {
+		t.Fatalf("omissions = %#v, want none: the sanitized details comfortably clear the minimum", omissions)
+	}
+
+	normalized := normalizeActivity(activity)
+	wantDetails := "📁 " + strings.Repeat("x", 100)
+	if normalized.Details != wantDetails {
+		t.Fatalf("normalized details = %q (%d runes), want %q (%d runes) with the full sanitized content and no ellipsis",
+			normalized.Details, utf8.RuneCountInString(normalized.Details),
+			wantDetails, utf8.RuneCountInString(wantDetails))
+	}
+	if strings.Contains(normalized.Details, "…") {
+		t.Fatalf("normalized details = %q, want no trailing ellipsis", normalized.Details)
+	}
+}
+
+// TestActivityFromDetectionOmissionDiagnosticsAgreeWithChokePoint is the
+// diagnostic-truthfulness half of #445: a field the choke point actually
+// drops (because it sanitizes below the 2-rune minimum) must be reported as
+// an omission, and a field the choke point keeps must not be — the two
+// layers must never disagree about what "omitted" means.
+func TestActivityFromDetectionOmissionDiagnosticsAgreeWithChokePoint(t *testing.T) {
+	options := DefaultDisplayOptions()
+	// Raw length is 3 (>= the minimum), so a pre-sanitize length check would
+	// not flag this as too short; sanitizing strips both BEL characters,
+	// leaving just "x" (length 1), which the choke point drops. This is
+	// exactly the latent case #445 called out: the pre-#445 mapping layer
+	// checked the raw length and reported no omission here at all, silently
+	// disagreeing with the choke point actually dropping the field.
+	options.DetailsFormat = "x\x07\x07"
+	activity, ok, omissions := ActivityFromDetectionWithOmissions(detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+	}, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if len(omissions) != 1 || omissions[0].Field != "details" {
+		t.Fatalf("omissions = %#v, want a details omission (choke point drops it)", omissions)
+	}
+	normalized := normalizeActivity(activity)
+	if normalized.Details != "" {
+		t.Fatalf("normalized details = %q, want dropped at the choke point to agree with the reported omission", normalized.Details)
+	}
+
+	// A field the choke point keeps must not be reported.
+	options.DetailsFormat = "ok"
+	activity, ok, omissions = ActivityFromDetectionWithOmissions(detector.Detection{
+		Tool: registry.Tool{DisplayName: "Claude Code"},
+	}, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if len(omissions) != 0 {
+		t.Fatalf("omissions = %#v, want none: the choke point keeps this field", omissions)
+	}
+	normalized = normalizeActivity(activity)
+	if normalized.Details == "" {
+		t.Fatal("normalized details = \"\", want the choke point to keep this field, agreeing with the absence of an omission")
 	}
 }
 
