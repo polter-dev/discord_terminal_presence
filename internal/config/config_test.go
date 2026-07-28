@@ -562,104 +562,54 @@ func TestLoadPathBlankAndNonBlankLatencyPolicy(t *testing.T) {
 func TestLoadPathNeverSettlingWriterIsBounded(t *testing.T) {
 	tests := []struct {
 		name string
-		load func(string) (Config, error)
+		load func(string, func(string) fileSnapshot, func() time.Time, func(time.Duration)) (Config, error)
 	}{
 		{
 			name: "read-only returns latest snapshot",
-			load: LoadPathReadOnly,
+			load: loadPathReadOnlyWith,
 		},
 		{
 			name: "whole-document returns busy error",
-			load: LoadPath,
+			load: loadPathWith,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.toml")
-			writeConfig(t, path, `pin = "initial"`)
-			stopWriter := startNeverSettlingConfigWriter(t, path)
-			defer stopWriter()
-
-			type result struct {
-				cfg Config
-				err error
+			now := time.Unix(0, 0)
+			sleep := func(delay time.Duration) {
+				now = now.Add(delay)
 			}
-			resultC := make(chan result, 1)
-			start := time.Now()
-			go func() {
-				cfg, err := tt.load(path)
-				resultC <- result{cfg: cfg, err: err}
-			}()
-
-			select {
-			case got := <-resultC:
-				elapsed := time.Since(start)
-				if elapsed > standaloneLoadSettleTimeout+250*time.Millisecond {
-					t.Fatalf("%s returned after %v, want no more than %v plus scheduling allowance",
-						tt.name, elapsed, standaloneLoadSettleTimeout)
+			revision := 0
+			snapshot := func(string) fileSnapshot {
+				revision++
+				if revision > 100 {
+					t.Fatalf("snapshot reader called %d times; settle loop exceeded its bound", revision)
 				}
-				if tt.name == "read-only returns latest snapshot" {
-					if got.err != nil {
-						t.Fatalf("LoadPathReadOnly() error = %v, want latest readable snapshot", got.err)
-					}
-					if got.cfg.Pin == "" || got.cfg.Pin == "initial" {
-						t.Fatalf("LoadPathReadOnly() pin = %q, want a recent writer snapshot", got.cfg.Pin)
-					}
-					return
+				return fileSnapshot{
+					exists: true,
+					data:   []byte(fmt.Sprintf("pin = %q\n", fmt.Sprintf("revision-%d", revision))),
 				}
-				if !errors.Is(got.err, ErrConfigBeingWritten) {
-					t.Fatalf("LoadPath() error = %v, want ErrConfigBeingWritten", got.err)
-				}
-			case <-time.After(standaloneLoadSettleTimeout + time.Second):
-				t.Fatalf("%s did not return within its bounded settle timeout", tt.name)
 			}
-		})
-	}
-}
 
-func startNeverSettlingConfigWriter(t *testing.T, path string) func() {
-	t.Helper()
-	stop := make(chan struct{})
-	done := make(chan error, 1)
-	started := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(2 * time.Millisecond)
-		defer ticker.Stop()
-		for revision := 1; ; revision++ {
-			select {
-			case <-stop:
-				done <- nil
+			start := now
+			cfg, err := tt.load("config.toml", snapshot, func() time.Time { return now }, sleep)
+			elapsed := now.Sub(start)
+			if elapsed > standaloneLoadSettleTimeout {
+				t.Fatalf("%s returned after %v virtual time, want no more than %v",
+					tt.name, elapsed, standaloneLoadSettleTimeout)
+			}
+			if tt.name == "read-only returns latest snapshot" {
+				if err != nil {
+					t.Fatalf("LoadPathReadOnly() error = %v, want latest readable snapshot", err)
+				}
+				if cfg.Pin == "" {
+					t.Fatalf("LoadPathReadOnly() pin = %q, want latest readable snapshot", cfg.Pin)
+				}
 				return
-			case <-ticker.C:
-				tmp := path + ".writer"
-				data := []byte(fmt.Sprintf("pin = %q\n", fmt.Sprintf("revision-%d", revision)))
-				if err := os.WriteFile(tmp, data, 0o600); err != nil {
-					done <- err
-					return
-				}
-				if err := os.Rename(tmp, path); err != nil {
-					done <- err
-					return
-				}
-				if revision == 1 {
-					close(started)
-				}
 			}
-		}
-	}()
-	select {
-	case <-started:
-	case err := <-done:
-		t.Fatalf("never-settling writer failed before startup: %v", err)
-	}
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			close(stop)
-			if err := <-done; err != nil {
-				t.Fatalf("never-settling writer failed: %v", err)
+			if !errors.Is(err, ErrConfigBeingWritten) {
+				t.Fatalf("LoadPath() error = %v, want ErrConfigBeingWritten", err)
 			}
 		})
 	}

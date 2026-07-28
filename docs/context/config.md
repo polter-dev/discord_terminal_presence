@@ -137,10 +137,12 @@ normal settle budget, then asserts the saved TOML still contains `enabled = fals
 the user's `pin`. A fixed-seed randomized writer-schedule property test asserts that a
 save whose final content sets `enabled = false` never exposes `enabled = true` before
 completion. Schedules stalled beyond the loosening horizon are intentionally excluded
-as the documented residual. A separate 2ms continuously rewriting fixture asserts
-read-only and destructive standalone loads return under an explicit test timeout, with
-the destructive path producing `ErrConfigBeingWritten`; command-level coverage asserts
-setup and settings leave the file byte-identical when they receive that error.
+as the documented residual. A deterministic snapshot-reader and virtual-clock seam
+structurally supplies different valid bytes on every settle read; it asserts read-only
+and destructive standalone loads return within the bound, with the read-only path
+decoding the newest snapshot and the destructive path producing
+`ErrConfigBeingWritten`. Command-level coverage asserts setup and settings leave the
+file byte-identical when they receive that error.
 
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically
