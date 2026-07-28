@@ -89,12 +89,24 @@ header, followed by a single trailing blank line that Homebrew itself emits. The
 package script always exits successfully so guidance cannot break an install.
 
 CI snapshot-builds and installs the real deb and rpm artifacts in digest-pinned
-`debian:stable` and `fedora:latest` containers. A probe executed from the package-owned
-`/usr/bin/termp` path verifies live `dpkg-query`/`rpm` detection, then the packaged CLI
-uses a local TLS release stub with outbound networking disabled. The job asserts a
-redirected update refuses before `curl` and leaves `/usr/local/bin` unchanged. Because
-the containers run as root, this does not cover an interactive sudo password prompt;
-that behavior requires a pty and a human.
+`debian:stable` and `fedora:latest` containers. Before the detection probe runs, the job
+plants a disabled stub for the *other* package tool (`rpm` on the debian job,
+`dpkg-query` on the fedora job) into `/usr/sbin`, never `/usr/local/bin`. Without that
+stub, `classifySystemPackage`'s tool-presence fallback alone reproduces the expected
+`debian`/`rpm` answer in these images (each image ships exactly one of the two tools),
+so the assertion could pass even if live ownership detection were completely broken.
+With both tools appearing present, the fallback always resolves to `system-package`, so
+a `debian`/`rpm` result from the package-owned `/usr/bin/termp` probe can only come from
+a real, successful `dpkg-query`/`rpm` ownership query. The job then purges the package
+and re-runs the probe as a negative control, asserting detection now reports
+`system-package` once ownership is gone. The packaged CLI then uses a local TLS release
+stub with outbound networking disabled; the job asserts a redirected update refuses
+before `curl` and leaves `/usr/local/bin` unchanged. Because the containers run as root,
+this does not cover an interactive sudo password prompt (#382), which needs a pty and a
+human. It also cannot cover #364 shadowing on a *successful* update: the update here is
+always refused, so the `/usr/local/bin` before/after snapshot only proves a refused
+update writes nothing — it compares empty to empty, not a real shadowing binary against
+the package-managed one.
 
 The installer labels `termp uninstall` as a login-only action rather than implying that
 it removes the binary. It resolves one tag for archive/checksum, prefers

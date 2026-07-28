@@ -173,7 +173,7 @@ jobs:
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.17.0
           args: release --snapshot --clean --skip=publish
 
       - name: Build detection and release probes
@@ -203,6 +203,11 @@ jobs:
 
           # Containers run as root, so sudo does not prompt. This matrix cannot test
           # the interactive password prompt (#382), which needs a pty and a human.
+          # It also cannot test #364 shadowing on a *successful* update: the update
+          # here is refused (no interactive terminal for sudo), so it only proves the
+          # package code path is selected and that a refused update writes nothing to
+          # /usr/local/bin -- the before/after snapshot compares empty to empty, not a
+          # real shadowing binary against the package-managed one.
           docker run --rm -i --network none \
             --add-host api.github.com:127.0.0.1 \
             -e EXPECTED_METHOD \
@@ -218,10 +223,38 @@ jobs:
                 *) echo "unsupported method: $EXPECTED_METHOD" >&2; exit 1 ;;
               esac
 
+              # classifySystemPackage falls back to a tool-presence check (dpkg-query
+              # present and rpm absent, or vice versa) when ownership lookup finds no
+              # owner. debian:stable ships dpkg-query with no rpm, and fedora:latest
+              # ships rpm with no dpkg-query, so that fallback alone reproduces the
+              # expected answer even if the real ownership query is completely broken.
+              # Plant a disabled stub for the *other* tool so both tools appear
+              # present; the fallback then always resolves to system-package, so a
+              # debian/rpm result below can only come from a real, successful
+              # ownership query. /usr/sbin is on PATH in this image. Do not plant into
+              # /usr/local/bin -- it is covered by the before/after snapshot below.
+              case "$EXPECTED_METHOD" in
+                debian) printf "#!/bin/sh\nexit 1\n" > /usr/sbin/rpm && chmod +x /usr/sbin/rpm ;;
+                rpm) printf "#!/bin/sh\nexit 1\n" > /usr/sbin/dpkg-query && chmod +x /usr/sbin/dpkg-query ;;
+              esac
+
               cp /usr/bin/termp /tmp/packaged-termp
               cp /tmp/detect-install /usr/bin/termp
               detected=$(/usr/bin/termp)
               test "$detected" = "$EXPECTED_METHOD"
+
+              # Negative control: remove the package (and with it, ownership of
+              # /usr/bin/termp), then confirm detection now reports system-package.
+              # This proves the assertion above is sensitive to ownership in both
+              # directions, not just parroting a fixed fallback value.
+              case "$EXPECTED_METHOD" in
+                debian) dpkg --purge termp ;;
+                rpm) rpm -e termp ;;
+              esac
+              cp /tmp/detect-install /usr/bin/termp
+              detected_after_removal=$(/usr/bin/termp)
+              test "$detected_after_removal" = "system-package"
+
               cp /tmp/packaged-termp /usr/bin/termp
 
               snapshot_local_bin() {
