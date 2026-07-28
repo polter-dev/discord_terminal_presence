@@ -6,7 +6,7 @@ replacing the running process in place.
 
 **Public surface:** `ReleaseSource`, `GitHubReleaseSource`, `Checker`, and `Result` own
 release lookup and caching. `DefaultCachePath` resolves update state. `InstallMethod`,
-`DetectInstallMethod`, `IsSystemPackageInstall`, `CommandForMethod`,
+`DetectInstallMethod`, `IsSystemPackageInstall`, `GuidanceForMethod`,
 `UpdateCommandForMethod`, `GenericInstallDir`, and `PerformUpdate` select/run an
 install-aware exact-tag updater. `AutomaticUpdateAttempt`,
 `ReadAutomaticUpdateAttempt`, and `RecordAutomaticUpdateAttempt` persist automation
@@ -26,7 +26,7 @@ Install detection resolves executable symlinks, then recognizes Homebrew, Linux 
 packages, Go, or generic ownership. A resolved `/usr/bin/termp` on Linux is
 package-managed. Bounded `dpkg-query --search` and `rpm --query --file` checks identify
 Debian versus RPM ownership; tool presence is the fallback, and ambiguous hosts retain a
-distinct system-package method whose guidance names both commands. Homebrew detection
+distinct system-package method whose guidance names both release-asset installation paths. Homebrew detection
 uses standard roots plus a once-cached, 500ms-bounded `brew --prefix`, and requires the
 resolved executable to match the `termp` Cellar or Caskroom layout. Go locations include
 a once-cached, 500ms-bounded `go env GOBIN GOPATH`, the `GOPATH` environment variable,
@@ -42,9 +42,10 @@ running executable's directory so a vanished custom environment does not create 
 second binary. The stored generic installer pipeline remains exact-tagged and
 injection-free, but user-facing notices deliberately print `termp update` instead of
 that pipeline so the resolved install directory is preserved. Windows generic self-update
-is unsupported. System-package methods expose
-apt/dnf guidance but are rejected by `PerformUpdate`, preserving package-manager
-ownership. Failed interactive Homebrew and Go updates display the retry command produced
+is unsupported. System-package methods expose exact-tag commands that download the
+matching GitHub release `.deb` or `.rpm` and install the local file with apt or dnf; they
+are rejected by `PerformUpdate`, preserving package-manager ownership. Failed interactive
+Homebrew and Go updates display the retry command produced
 by `UpdateCommandForMethod`; generic failures tell users to resolve the reported error and
 retry `termp update`, avoiding a fallback installer invocation that could drift `BINDIR`.
 

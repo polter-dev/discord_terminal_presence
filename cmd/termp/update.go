@@ -85,7 +85,7 @@ func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.
 		return
 	}
 
-	if err := automaticUpdatePlatformPreflight(goos, result.Method); err != nil {
+	if err := automaticUpdatePlatformPreflight(goos, result.Method, result.Latest); err != nil {
 		if recordErr := updatepkg.RecordAutomaticUpdateAttempt(statePath, result.Latest, time.Now(), err); recordErr != nil {
 			debugf("automatic update skip could not be recorded: %v", recordErr)
 		}
@@ -131,23 +131,29 @@ func (automaticUpdatePlatformError) AutomaticUpdateSkipped() bool {
 }
 
 type automaticManagedPackageError struct {
-	command string
+	guidance string
 }
 
 func (e automaticManagedPackageError) Error() string {
-	return fmt.Sprintf("system package installation must be updated with %q", e.command)
+	return fmt.Sprintf("system package installation must be updated manually:\n%s", e.guidance)
 }
 
 func (automaticManagedPackageError) AutomaticUpdateSkipped() bool {
 	return true
 }
 
-func automaticUpdatePlatformPreflight(goos string, method updatepkg.InstallMethod) error {
+func automaticUpdatePlatformPreflight(goos string, method updatepkg.InstallMethod, tag ...string) error {
 	if goos == "windows" && method == updatepkg.InstallGeneric {
 		return automaticUpdatePlatformError{}
 	}
 	if updatepkg.IsSystemPackageInstall(method) {
-		return automaticManagedPackageError{command: updatepkg.CommandForMethod(method, "")}
+		guidance := "run `termp update` to see release-package installation instructions"
+		if len(tag) > 0 {
+			if text := updatepkg.GuidanceForMethod(method, tag[0]).Text; text != "" {
+				guidance = text
+			}
+		}
+		return automaticManagedPackageError{guidance: guidance}
 	}
 	return nil
 }
@@ -200,7 +206,8 @@ func runUpdate(checkCtx, updateCtx context.Context, current string, checker late
 	}
 	if updatepkg.IsSystemPackageInstall(result.Method) {
 		fmt.Fprintln(stdout, "termp is managed by your system package manager.")
-		fmt.Fprintf(stdout, "Update it with: %s\n", updatepkg.CommandForMethod(result.Method, result.Latest))
+		fmt.Fprintln(stdout, "To update:")
+		fmt.Fprintln(stdout, updatepkg.GuidanceForMethod(result.Method, result.Latest).Text)
 		return nil
 	}
 	retryCommand, err := updatepkg.UpdateCommandForMethod(result.Method, result.Latest)
@@ -251,16 +258,39 @@ func formatUpdateNotice(result updatepkg.Result, renderer *lipgloss.Renderer, wi
 	for i := range lines {
 		lines[i] = style(lines[i], headerStyle)
 	}
-	lines = append(lines, "", "Run:")
-	command := result.Command
+	guidance := result.Guidance
 	if result.Method == updatepkg.InstallGeneric {
-		command = "termp update"
+		guidance = updatepkg.Guidance{Text: "termp update", Runnable: true}
 	}
-	commandLines := wrapShellCommand(command, width-2)
+	label := "To update:"
+	if guidance.Runnable {
+		label = "Run:"
+	}
+	lines = append(lines, "", label)
+	commandLines := wrapShellCommand(guidance.Text, width-2)
+	if !guidance.Runnable {
+		commandLines = wrapUpdateGuidance(guidance.Text, width-2)
+	}
 	for _, line := range commandLines {
-		lines = append(lines, "  "+style(line, commandStyle))
+		if line == "" {
+			lines = append(lines, "")
+		} else {
+			lines = append(lines, "  "+style(line, commandStyle))
+		}
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func wrapUpdateGuidance(guidance string, width int) []string {
+	var lines []string
+	for _, line := range strings.Split(guidance, "\n") {
+		if line == "" {
+			lines = append(lines, "")
+			continue
+		}
+		lines = append(lines, wrapShellCommand(line, width)...)
+	}
+	return lines
 }
 
 func wrapOutputText(value string, width int) []string {

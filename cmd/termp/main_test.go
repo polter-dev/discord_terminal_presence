@@ -1303,7 +1303,12 @@ func TestRunStatusProbesDoesNotWaitForHungProbe(t *testing.T) {
 }
 
 func TestUpdateNoticeHasNoANSIWithoutColorSupport(t *testing.T) {
-	result := updatepkg.Result{Current: "1.0.0", Latest: "1.1.0", Method: updatepkg.InstallHomebrew, Command: updatepkg.BrewCommand}
+	result := updatepkg.Result{
+		Current:  "1.0.0",
+		Latest:   "1.1.0",
+		Method:   updatepkg.InstallHomebrew,
+		Guidance: updatepkg.Guidance{Text: updatepkg.BrewCommand, Runnable: true},
+	}
 	for _, renderer := range []*lipgloss.Renderer{nil, newInstallRenderer(os.Stdout, true, true)} {
 		got := formatUpdateNotice(result, renderer, 80)
 		if strings.Contains(got, "\x1b") {
@@ -1320,7 +1325,12 @@ func TestUpdateNoticeUsesColorWhenSupported(t *testing.T) {
 	defer output.Close()
 	renderer := lipgloss.NewRenderer(output)
 	renderer.SetColorProfile(termenv.ANSI256)
-	result := updatepkg.Result{Current: "1.0.0", Latest: "1.1.0", Method: updatepkg.InstallHomebrew, Command: updatepkg.BrewCommand}
+	result := updatepkg.Result{
+		Current:  "1.0.0",
+		Latest:   "1.1.0",
+		Method:   updatepkg.InstallHomebrew,
+		Guidance: updatepkg.Guidance{Text: updatepkg.BrewCommand, Runnable: true},
+	}
 	if got := formatUpdateNotice(result, renderer, 80); !strings.Contains(got, "\x1b") {
 		t.Fatalf("color update notice contains no ANSI: %q", got)
 	}
@@ -1337,7 +1347,12 @@ func TestUpdateNoticeLinesStayWithinOutputWidth(t *testing.T) {
 	}
 	for _, width := range []int{20, 40, 80, 120} {
 		for _, tt := range methods {
-			result := updatepkg.Result{Current: "1.0.0+abc123", Latest: "v12.34.56+def456", Method: tt.method, Command: tt.command}
+			result := updatepkg.Result{
+				Current:  "1.0.0+abc123",
+				Latest:   "v12.34.56+def456",
+				Method:   tt.method,
+				Guidance: updatepkg.Guidance{Text: tt.command, Runnable: true},
+			}
 			got := formatUpdateNotice(result, nil, width)
 			maxWidth := min(max(width, 20), maxInstallCTAWidth)
 			for lineNumber, line := range strings.Split(got, "\n") {
@@ -1358,30 +1373,30 @@ func TestUpdateNoticeUsesMethodSpecificGuidance(t *testing.T) {
 		{
 			name: "generic",
 			result: updatepkg.Result{
-				Current: "v0.1.0",
-				Latest:  "v0.1.1",
-				Method:  updatepkg.InstallGeneric,
-				Command: updatepkg.GenericCommand("v0.1.1"),
+				Current:  "v0.1.0",
+				Latest:   "v0.1.1",
+				Method:   updatepkg.InstallGeneric,
+				Guidance: updatepkg.Guidance{Text: updatepkg.GenericCommand("v0.1.1"), Runnable: true},
 			},
 			want: "Update available: v0.1.0 -> v0.1.1\n\nRun:\n  termp update\n",
 		},
 		{
 			name: "homebrew",
 			result: updatepkg.Result{
-				Current: "v0.1.0",
-				Latest:  "v0.1.1",
-				Method:  updatepkg.InstallHomebrew,
-				Command: updatepkg.BrewCommand,
+				Current:  "v0.1.0",
+				Latest:   "v0.1.1",
+				Method:   updatepkg.InstallHomebrew,
+				Guidance: updatepkg.Guidance{Text: updatepkg.BrewCommand, Runnable: true},
 			},
 			want: "Update available: v0.1.0 -> v0.1.1\n\nRun:\n  " + updatepkg.BrewCommand + "\n",
 		},
 		{
 			name: "go",
 			result: updatepkg.Result{
-				Current: "v0.1.0",
-				Latest:  "v0.1.1",
-				Method:  updatepkg.InstallGo,
-				Command: updatepkg.GoCommand("v0.1.1"),
+				Current:  "v0.1.0",
+				Latest:   "v0.1.1",
+				Method:   updatepkg.InstallGo,
+				Guidance: updatepkg.Guidance{Text: updatepkg.GoCommand("v0.1.1"), Runnable: true},
 			},
 			want: "Update available: v0.1.0 -> v0.1.1\n\nRun:\n  " + updatepkg.GoCommand("v0.1.1") + "\n",
 		},
@@ -1390,6 +1405,38 @@ func TestUpdateNoticeUsesMethodSpecificGuidance(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := formatUpdateNotice(tt.result, nil, maxInstallCTAWidth); got != tt.want {
 				t.Fatalf("notice = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpdateNoticeLabelsSystemPackageGuidanceAsNonRunnable(t *testing.T) {
+	for _, method := range []updatepkg.InstallMethod{
+		updatepkg.InstallDebian,
+		updatepkg.InstallRPM,
+		updatepkg.InstallSystemPackage,
+	} {
+		t.Run(string(method), func(t *testing.T) {
+			guidance := updatepkg.GuidanceForMethod(method, "v0.1.1")
+			result := updatepkg.Result{
+				Current:  "v0.1.0",
+				Latest:   "v0.1.1",
+				Method:   method,
+				Guidance: guidance,
+			}
+			got := formatUpdateNotice(result, nil, maxInstallCTAWidth)
+			if !strings.Contains(got, "\nTo update:\n") || strings.Contains(got, "\nRun:\n") {
+				t.Fatalf("package notice has incorrect label:\n%s", got)
+			}
+			unwrapped := strings.ReplaceAll(got, " \\\n  ", " ")
+			unwrapped = strings.ReplaceAll(unwrapped, "\\\n  ", "")
+			for _, command := range strings.Split(guidance.Text, "\n") {
+				if command == "" || strings.HasSuffix(command, ":") {
+					continue
+				}
+				if !strings.Contains(unwrapped, command) {
+					t.Fatalf("package notice missing copy-pasteable command %q:\n%s", command, got)
+				}
 			}
 		})
 	}
@@ -1764,9 +1811,9 @@ func TestRunUpdatePrintsSystemPackageGuidanceWithoutInstalling(t *testing.T) {
 		method updatepkg.InstallMethod
 		want   string
 	}{
-		{method: updatepkg.InstallDebian, want: updatepkg.DebianCommand},
-		{method: updatepkg.InstallRPM, want: updatepkg.RPMCommand},
-		{method: updatepkg.InstallSystemPackage, want: updatepkg.SystemPackageCommand},
+		{method: updatepkg.InstallDebian, want: updatepkg.GuidanceForMethod(updatepkg.InstallDebian, "v1.1.0").Text},
+		{method: updatepkg.InstallRPM, want: updatepkg.GuidanceForMethod(updatepkg.InstallRPM, "v1.1.0").Text},
+		{method: updatepkg.InstallSystemPackage, want: updatepkg.GuidanceForMethod(updatepkg.InstallSystemPackage, "v1.1.0").Text},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.method), func(t *testing.T) {
@@ -1783,10 +1830,13 @@ func TestRunUpdatePrintsSystemPackageGuidanceWithoutInstalling(t *testing.T) {
 			if runner.calls != 0 {
 				t.Fatalf("package-managed update ran %d commands, want none", runner.calls)
 			}
-			for _, want := range []string{"managed by your system package manager", tt.want} {
+			for _, want := range []string{"managed by your system package manager", "To update:", tt.want} {
 				if !strings.Contains(stdout.String(), want) {
 					t.Fatalf("update guidance %q missing %q", stdout.String(), want)
 				}
+			}
+			if strings.Contains(stdout.String(), "\nRun:") {
+				t.Fatalf("package guidance printed beneath Run label:\n%s", stdout.String())
 			}
 		})
 	}
@@ -1813,8 +1863,12 @@ func TestAutomaticSystemPackageUpdateIsSkippedWithoutInstalling(t *testing.T) {
 				t.Fatalf("package-managed automatic update ran %d commands, want none", runner.calls)
 			}
 			attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
-			if !ok || !attempt.Skipped || !strings.Contains(attempt.Error, updatepkg.CommandForMethod(method, "v1.1.0")) {
+			if !ok || !attempt.Skipped || !strings.Contains(attempt.Error, updatepkg.GuidanceForMethod(method, "v1.1.0").Text) {
 				t.Fatalf("automatic attempt = (%+v, %t), want managed-package skip", attempt, ok)
+			}
+			status := automaticUpdateStatus(statePath, true, "linux", method)
+			if !strings.Contains(status, "skipped for v1.1.0") || !strings.Contains(status, updatepkg.GuidanceForMethod(method, "v1.1.0").Text) {
+				t.Fatalf("automatic package status = %q, want recorded release-package guidance", status)
 			}
 		})
 	}

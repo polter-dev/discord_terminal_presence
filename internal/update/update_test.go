@@ -267,19 +267,32 @@ func TestHomebrewUpdateUsesQualifiedCommand(t *testing.T) {
 	}
 }
 
-func TestSystemPackageCommands(t *testing.T) {
+func TestSystemPackageGuidance(t *testing.T) {
+	debianAsset := fmt.Sprintf("termp_2.3.4_linux_%s.deb", runtime.GOARCH)
+	rpmAsset := fmt.Sprintf("termp_2.3.4_linux_%s.rpm", runtime.GOARCH)
+	debian := fmt.Sprintf(
+		"curl -fLO https://github.com/polter-dev/discord_terminal_presence/releases/download/v2.3.4/%s\nsudo apt install ./%s",
+		debianAsset,
+		debianAsset,
+	)
+	rpm := fmt.Sprintf(
+		"curl -fLO https://github.com/polter-dev/discord_terminal_presence/releases/download/v2.3.4/%s\nsudo dnf install ./%s",
+		rpmAsset,
+		rpmAsset,
+	)
 	tests := []struct {
 		method InstallMethod
 		want   string
 	}{
-		{method: InstallDebian, want: DebianCommand},
-		{method: InstallRPM, want: RPMCommand},
-		{method: InstallSystemPackage, want: SystemPackageCommand},
+		{method: InstallDebian, want: debian},
+		{method: InstallRPM, want: rpm},
+		{method: InstallSystemPackage, want: "Debian/Ubuntu:\n" + debian + "\n\nRPM-based Linux:\n" + rpm},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.method), func(t *testing.T) {
-			if got := CommandForMethod(tt.method, "v2.3.4"); got != tt.want {
-				t.Fatalf("CommandForMethod(%q) = %q, want %q", tt.method, got, tt.want)
+			guidance := GuidanceForMethod(tt.method, "v2.3.4")
+			if guidance.Text != tt.want || guidance.Runnable {
+				t.Fatalf("GuidanceForMethod(%q) = %#v, want non-runnable %q", tt.method, guidance, tt.want)
 			}
 			if _, err := UpdateCommandForMethod(tt.method, "v2.3.4"); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("UpdateCommandForMethod(%q) error = %v, want package guidance", tt.method, err)
@@ -565,7 +578,7 @@ func TestCheckerUsesFreshCache(t *testing.T) {
 	checker.DetectInstall = func() InstallMethod { return InstallGo }
 
 	result, ok := checker.Check(context.Background(), "1.0.0+sha", true)
-	if !ok || result.Latest != "v1.2.0" || result.Command != GoCommand("v1.2.0") {
+	if !ok || result.Latest != "v1.2.0" || result.Guidance != (Guidance{Text: GoCommand("v1.2.0"), Runnable: true}) {
 		t.Fatalf("cached result = (%#v, %t)", result, ok)
 	}
 	if source.callCount() != 0 {
@@ -721,7 +734,7 @@ func TestCheckerRefreshesExpiredCache(t *testing.T) {
 	checker.DetectInstall = func() InstallMethod { return InstallHomebrew }
 
 	result, ok := checker.Check(context.Background(), "1.2.0", true)
-	if !ok || result.Latest != "v1.3.0" || result.Command != BrewCommand {
+	if !ok || result.Latest != "v1.3.0" || result.Guidance != (Guidance{Text: BrewCommand, Runnable: true}) {
 		t.Fatalf("refreshed result = (%#v, %t)", result, ok)
 	}
 	if source.callCount() != 1 {
@@ -742,8 +755,8 @@ func TestCheckerChecksAtMostOncePerProcess(t *testing.T) {
 		if !ok {
 			t.Fatal("expected update")
 		}
-		if result.Command != GenericCommand("v2.0.0") {
-			t.Fatalf("generic update command = %q, want %q", result.Command, GenericCommand("v2.0.0"))
+		if result.Guidance != (Guidance{Text: GenericCommand("v2.0.0"), Runnable: true}) {
+			t.Fatalf("generic update guidance = %#v, want runnable %q", result.Guidance, GenericCommand("v2.0.0"))
 		}
 	}
 	if source.callCount() != 1 {

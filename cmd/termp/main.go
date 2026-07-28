@@ -1712,8 +1712,12 @@ func automaticUpdateFailure(path string) string {
 
 func automaticUpdateStatus(path string, enabled bool, goos string, method updatepkg.InstallMethod) string {
 	if enabled {
-		if err := automaticUpdatePlatformPreflight(goos, method); err != nil {
-			attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
+		attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
+		var target []string
+		if ok {
+			target = []string{attempt.Target}
+		}
+		if err := automaticUpdatePlatformPreflight(goos, method, target...); err != nil {
 			if ok && attempt.Skipped && attempt.Error == err.Error() {
 				return automaticUpdateFailure(path)
 			}

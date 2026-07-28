@@ -32,12 +32,10 @@ const (
 	// for a legitimate holder while recovering promptly after a process crash.
 	cacheLockStaleAfter = 30 * time.Second
 
-	BrewCommand          = "brew upgrade polter-dev/tap/termp"
-	DebianCommand        = "sudo apt upgrade termp"
-	RPMCommand           = "sudo dnf upgrade termp"
-	SystemPackageCommand = "sudo apt upgrade termp (Debian/Ubuntu) or sudo dnf upgrade termp (RPM-based Linux)"
-	genericInstallerURL  = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
-	workerDownloadURL    = "https://termp.polter.sh/dl/update/%s/%s/%s"
+	BrewCommand         = "brew upgrade polter-dev/tap/termp"
+	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
+	packageDownloadURL  = "https://github.com/polter-dev/discord_terminal_presence/releases/download/%s/%s"
+	workerDownloadURL   = "https://termp.polter.sh/dl/update/%s/%s/%s"
 )
 
 var removeTemporaryInstaller = os.Remove
@@ -160,13 +158,20 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
-// Result describes an available update and the command appropriate for this
+// Result describes an available update and the guidance appropriate for this
 // installation.
 type Result struct {
-	Current string
-	Latest  string
-	Method  InstallMethod
-	Command string
+	Current  string
+	Latest   string
+	Method   InstallMethod
+	Guidance Guidance
+}
+
+// Guidance distinguishes a directly runnable command from explanatory update
+// instructions that may contain multiple commands.
+type Guidance struct {
+	Text     string
+	Runnable bool
 }
 
 // Command describes an update process without requiring callers to parse a
@@ -318,10 +323,10 @@ func (c *Checker) Latest(ctx context.Context, current string) (Result, error) {
 		method = c.DetectInstall()
 	}
 	return Result{
-		Current: current,
-		Latest:  latest,
-		Method:  method,
-		Command: CommandForMethod(method, latest),
+		Current:  current,
+		Latest:   latest,
+		Method:   method,
+		Guidance: GuidanceForMethod(method, latest),
 	}, nil
 }
 
@@ -404,10 +409,10 @@ func (c *Checker) resultFor(current, latest string) (Result, bool) {
 		method = c.DetectInstall()
 	}
 	return Result{
-		Current: current,
-		Latest:  latest,
-		Method:  method,
-		Command: CommandForMethod(method, latest),
+		Current:  current,
+		Latest:   latest,
+		Method:   method,
+		Guidance: GuidanceForMethod(method, latest),
 	}, true
 }
 
@@ -601,21 +606,56 @@ func updateArchiveURL(goos, goarch, tag string) (string, error) {
 	return fmt.Sprintf(workerDownloadURL, goos, goarch, tag), nil
 }
 
-// CommandForMethod returns the supported update command for an install method.
-func CommandForMethod(method InstallMethod, tag string) string {
+// GuidanceForMethod returns update guidance for an install method. Runnable is
+// false when the text contains multiple commands or explanatory labels.
+func GuidanceForMethod(method InstallMethod, tag string) Guidance {
 	switch method {
 	case InstallHomebrew:
-		return BrewCommand
+		return Guidance{Text: BrewCommand, Runnable: true}
 	case InstallGo:
-		return GoCommand(tag)
+		return Guidance{Text: GoCommand(tag), Runnable: true}
 	case InstallDebian:
-		return DebianCommand
+		return systemPackageGuidance(method, tag, runtime.GOARCH)
 	case InstallRPM:
-		return RPMCommand
+		return systemPackageGuidance(method, tag, runtime.GOARCH)
 	case InstallSystemPackage:
-		return SystemPackageCommand
+		return systemPackageGuidance(method, tag, runtime.GOARCH)
 	default:
-		return GenericCommand(tag)
+		return Guidance{Text: GenericCommand(tag), Runnable: true}
+	}
+}
+
+func systemPackageGuidance(method InstallMethod, tag, goarch string) Guidance {
+	if !validReleaseTag(tag) {
+		return Guidance{}
+	}
+	switch goarch {
+	case "amd64", "arm64":
+	default:
+		return Guidance{}
+	}
+
+	version := strings.TrimPrefix(strings.TrimPrefix(tag, "v"), "V")
+	debianAsset := fmt.Sprintf("termp_%s_linux_%s.deb", version, goarch)
+	rpmAsset := fmt.Sprintf("termp_%s_linux_%s.rpm", version, goarch)
+	debian := fmt.Sprintf(
+		"curl -fLO %s\nsudo apt install ./%s",
+		fmt.Sprintf(packageDownloadURL, tag, debianAsset),
+		debianAsset,
+	)
+	rpm := fmt.Sprintf(
+		"curl -fLO %s\nsudo dnf install ./%s",
+		fmt.Sprintf(packageDownloadURL, tag, rpmAsset),
+		rpmAsset,
+	)
+
+	switch method {
+	case InstallDebian:
+		return Guidance{Text: debian}
+	case InstallRPM:
+		return Guidance{Text: rpm}
+	default:
+		return Guidance{Text: "Debian/Ubuntu:\n" + debian + "\n\nRPM-based Linux:\n" + rpm}
 	}
 }
 
@@ -630,7 +670,7 @@ func UpdateCommandForMethod(method InstallMethod, tag string) (Command, error) {
 		}
 		return Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@" + tag}}, nil
 	case InstallDebian, InstallRPM, InstallSystemPackage:
-		return Command{}, fmt.Errorf("system package installation must be updated with %q", CommandForMethod(method, tag))
+		return Command{}, fmt.Errorf("system package installation must be updated manually:\n%s", GuidanceForMethod(method, tag).Text)
 	default:
 		command := GenericCommand(tag)
 		if command == "" {
@@ -655,7 +695,7 @@ func PerformUpdate(ctx context.Context, method InstallMethod, tag string, runner
 		return err
 	}
 	if err := runner.Run(ctx, command, stdin, stdout, stderr); err != nil {
-		return fmt.Errorf("run %s: %w", CommandForMethod(method, tag), err)
+		return fmt.Errorf("run %s: %w", GuidanceForMethod(method, tag).Text, err)
 	}
 	return nil
 }
