@@ -3052,3 +3052,32 @@ func TestSaveDoesNotRewriteAllowlistMeaning(t *testing.T) {
 		t.Fatal("Save() widened the allowlist to allow an unlisted path")
 	}
 }
+
+func TestBlankToolOverrideIDIsRejected(t *testing.T) {
+	// "" is the sentinel permissivenessLoosened uses for the tool-agnostic
+	// global posture, and it is also a legal TOML map key. Rejecting the key
+	// removes that collision by construction. Custom tools already reject a
+	// blank id; this makes [tools] consistent with them.
+	for _, id := range []string{`""`, `" "`, `"\t"`} {
+		t.Run(id, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			writeConfig(t, path, "enabled = true\n[tools."+id+"]\nenabled = false\n")
+			cfg, err := LoadPath(path)
+			if err == nil {
+				t.Fatalf("LoadPath() = nil error for [tools.%s]; want rejection (tools=%#v)", id, cfg.Tools)
+			}
+		})
+	}
+}
+
+func TestNonBlankToolOverrideIDStillLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = true\n[tools.vim]\nenabled = false\n")
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() = %v, want nil", err)
+	}
+	if _, ok := cfg.Tools["vim"]; !ok {
+		t.Fatal("a normal per-tool override was lost")
+	}
+}

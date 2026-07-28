@@ -1152,6 +1152,17 @@ func validate(cfg *Config, privacyAllowlistDefined bool) error {
 	}
 	cfg.Privacy.DirectoryAllowlist = expandPaths(cfg.Privacy.DirectoryAllowlist)
 	for id, override := range cfg.Tools {
+		// A blank override ID is rejected for the same reason custom tools
+		// reject one: it matches no tool. It also matters structurally here,
+		// because "" is the sentinel permissivenessLoosened uses for the
+		// tool-agnostic global posture, and "" is a legal TOML map key — so
+		// a [tools.""] section would collide with that sentinel. Rejecting
+		// the key removes the collision by construction rather than relying
+		// on the guard to tolerate it. No generated config has ever emitted
+		// this section, so there is no upgrade exposure.
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("tools: override id must not be blank")
+		}
 		if err := registry.ValidateButtons(override.Buttons); err != nil {
 			return fmt.Errorf("tools.%s: %w", id, err)
 		}
