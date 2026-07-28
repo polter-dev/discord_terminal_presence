@@ -883,8 +883,10 @@ func start(args []string) error {
 		_, _ = removePIDIfOwned(pidPath, os.Getpid(), pidInfo)
 	}()
 
-	manager := config.NewManager()
-	cfg, loadErr := manager.Current()
+	configPath := config.DefaultPath()
+	manager, cfg, loadErr := newWatchedConfigManager(configPath, func(manager *config.Manager) {
+		startConfigWatchWithRetry(ctx, manager, configPath)
+	})
 	if loadErr != nil {
 		log.Print(startupConfigError(cfg.Path, loadErr))
 	}
@@ -894,9 +896,28 @@ func start(args []string) error {
 	// loop, but can never delay or prevent daemon startup.
 	go runAutomaticUpdate(ctx, cfg, version, releaseChecker, updatepkg.ExecRunner{Interactive: false})
 
-	startConfigWatchWithRetry(ctx, manager, cfg.Path)
-
 	return run(ctx, manager, control)
+}
+
+// newWatchedConfigManager centralizes the safe startup ordering shared by the
+// daemon and interactive watch entry points: install the watch before the
+// settled load so a save completion during startup is either observed by the
+// load or queued as a watch event. Watch never loads an already-settled file
+// on its own, so the explicit Reload is required even after a successful
+// watch installation.
+func newWatchedConfigManager(path string, installWatch func(*config.Manager)) (*config.Manager, config.Config, error) {
+	manager := config.NewManagerPath(path)
+	installWatch(manager)
+	_ = manager.Reload()
+	// Reload publishes for already-running consumers. Startup has none yet,
+	// and it handles the Current result below through the existing startup
+	// warning/error path, so do not replay the same load as a hot reload.
+	select {
+	case <-manager.Reloads():
+	default:
+	}
+	cfg, err := manager.Current()
+	return manager, cfg, err
 }
 
 // configWatchRetryInterval bounds how long a user who fixes the config
@@ -2132,14 +2153,15 @@ func watch(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 
-	manager := config.NewManager()
-	cfg, loadErr := manager.Current()
+	configPath := config.DefaultPath()
+	manager, cfg, loadErr := newWatchedConfigManager(configPath, func(manager *config.Manager) {
+		if err := config.EnsureConfigDir(configPath); err != nil {
+			log.Printf("config watch disabled: %v", err)
+		} else if err := manager.Watch(ctx); err != nil {
+			log.Printf("config watch disabled: %v", err)
+		}
+	})
 	logConfigWarnings(cfg.Warnings)
-	if err := config.EnsureConfigDir(cfg.Path); err != nil {
-		log.Printf("config watch disabled: %v", err)
-	} else if err := manager.Watch(ctx); err != nil {
-		log.Printf("config watch disabled: %v", err)
-	}
 
 	applied, err := newDetectionRuntime(cfg)
 	if err != nil {

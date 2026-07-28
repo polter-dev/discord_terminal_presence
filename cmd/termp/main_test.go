@@ -2641,6 +2641,123 @@ func TestTryStartConfigWatchLogsExactlyLikeWatchCommand(t *testing.T) {
 	}
 }
 
+func TestNewWatchedConfigManagerReloadsWriteCompletedBeforeWatchInstall(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("enabled = false\nscan_interval = \"7s\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	truncated := make(chan struct{})
+	finishWrite := make(chan struct{})
+	writeDone := make(chan error, 1)
+	go func() {
+		f, err := os.OpenFile(configPath, os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			writeDone <- err
+			return
+		}
+		close(truncated)
+		<-finishWrite
+		if _, err := f.WriteString("enabled = false\nscan_interval = \"9s\"\n"); err != nil {
+			_ = f.Close()
+			writeDone <- err
+			return
+		}
+		writeDone <- f.Close()
+	}()
+	<-truncated
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager, cfg, err := newWatchedConfigManager(configPath, func(manager *config.Manager) {
+		// Reproduce the real broken ordering: the non-atomic save finishes
+		// after manager construction but before Watch exists. No later edit
+		// occurs, so the completion event is permanently missed.
+		close(finishWrite)
+		if writeErr := <-writeDone; writeErr != nil {
+			t.Fatalf("complete non-atomic write: %v", writeErr)
+		}
+		if watchErr := manager.Watch(ctx); watchErr != nil {
+			t.Fatalf("Watch() error = %v", watchErr)
+		}
+	})
+	if err != nil {
+		t.Fatalf("startup config error = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("startup retained enabled defaults after the disabled config completed before watch installation")
+	}
+	if cfg.ScanInterval != "9s" {
+		t.Fatalf("startup scan interval = %q, want completed value 9s", cfg.ScanInterval)
+	}
+	select {
+	case result := <-manager.Reloads():
+		t.Fatalf("startup settled load leaked as hot reload: %#v", result)
+	default:
+	}
+}
+
+func TestNewWatchedConfigManagerFirstRunStaysFastAndEnabled(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	start := time.Now()
+	_, cfg, err := newWatchedConfigManager(configPath, func(manager *config.Manager) {
+		if watchErr := manager.Watch(ctx); watchErr != nil {
+			t.Fatalf("Watch() error = %v", watchErr)
+		}
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("first-run config error = %v", err)
+	}
+	if !cfg.Enabled {
+		t.Fatal("missing first-run config disabled presence")
+	}
+	if elapsed >= 100*time.Millisecond {
+		t.Fatalf("missing first-run startup took %v, want under 100ms", elapsed)
+	}
+}
+
+func TestNewWatchedConfigManagerInvalidConfigStillFailsClosed(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("enabled = true\nscan_interval = \"invalid\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, baselineErr := config.LoadPath(configPath)
+	if baselineErr == nil {
+		t.Fatal("baseline invalid config error = nil")
+	}
+	wantMessage := startupConfigError(configPath, baselineErr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	manager, cfg, err := newWatchedConfigManager(configPath, func(manager *config.Manager) {
+		if watchErr := manager.Watch(ctx); watchErr != nil {
+			t.Fatalf("Watch() error = %v", watchErr)
+		}
+	})
+	if err == nil {
+		t.Fatal("invalid startup config error = nil")
+	}
+	if cfg.Enabled {
+		t.Fatal("invalid startup config left presence enabled")
+	}
+	got := startupConfigError(cfg.Path, err)
+	if got != wantMessage {
+		t.Fatalf("startup error = %q, want unchanged fail-closed message %q", got, wantMessage)
+	}
+	select {
+	case result := <-manager.Reloads():
+		t.Fatalf("invalid startup load leaked as hot reload: %#v", result)
+	default:
+	}
+}
+
 func TestConfigWatchSelfHealsOnceDirectoryBecomesAvailable(t *testing.T) {
 	dir := t.TempDir()
 	confDir := filepath.Join(dir, "termp")
