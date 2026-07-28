@@ -267,7 +267,91 @@ func TestHomebrewUpdateUsesQualifiedCommand(t *testing.T) {
 	}
 }
 
+// pinRPMManager forces the detected RPM front-end for the duration of a test so
+// guidance does not depend on what is installed on the machine running it.
+func pinRPMManager(t *testing.T, manager string) {
+	t.Helper()
+	previous := resolveRPMManager
+	resolveRPMManager = func() string { return manager }
+	t.Cleanup(func() { resolveRPMManager = previous })
+}
+
+func TestDetectRPMManagerPrefersDependencyResolvingFrontEnds(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		available map[string]bool
+		want      string
+	}{
+		{name: "fedora", available: map[string]bool{"dnf": true, "yum": true, "rpm": true}, want: "dnf"},
+		{name: "opensuse", available: map[string]bool{"zypper": true, "rpm": true}, want: "zypper"},
+		{name: "centos7", available: map[string]bool{"yum": true, "rpm": true}, want: "yum"},
+		{name: "rpm only", available: map[string]bool{"rpm": true}, want: "rpm"},
+		{name: "none", available: map[string]bool{}, want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lookPath := func(name string) (string, error) {
+				if tt.available[name] {
+					return "/usr/bin/" + name, nil
+				}
+				return "", errors.New("not found")
+			}
+			if got := detectRPMManager(lookPath); got != tt.want {
+				t.Fatalf("detectRPMManager() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRPMCommandsNameTheDetectedManager(t *testing.T) {
+	for _, tt := range []struct {
+		manager   string
+		install   string
+		remove    string
+		argsAfter []string
+	}{
+		{manager: "dnf", install: "sudo dnf install ./pkg.rpm", remove: "sudo dnf remove termp", argsAfter: []string{"dnf", "install", "-y", "/tmp/pkg.rpm"}},
+		{manager: "zypper", install: "sudo zypper install ./pkg.rpm", remove: "sudo zypper remove termp", argsAfter: []string{"zypper", "--non-interactive", "install", "/tmp/pkg.rpm"}},
+		{manager: "yum", install: "sudo yum install ./pkg.rpm", remove: "sudo yum remove termp", argsAfter: []string{"yum", "install", "-y", "/tmp/pkg.rpm"}},
+		{manager: "rpm", install: "sudo rpm -U ./pkg.rpm", remove: "sudo rpm -e termp", argsAfter: []string{"rpm", "-U", "/tmp/pkg.rpm"}},
+		{
+			manager: "",
+			install: "install ./pkg.rpm with your RPM package manager (sudo dnf, sudo zypper, sudo yum, or sudo rpm)",
+			remove:  "remove termp with your RPM package manager (sudo dnf, sudo zypper, sudo yum, or sudo rpm)",
+		},
+	} {
+		t.Run(tt.manager, func(t *testing.T) {
+			if got := RPMInstallCommand(tt.manager, "./pkg.rpm"); got != tt.install {
+				t.Fatalf("RPMInstallCommand(%q) = %q, want %q", tt.manager, got, tt.install)
+			}
+			if got := RPMRemoveCommand(tt.manager); got != tt.remove {
+				t.Fatalf("RPMRemoveCommand(%q) = %q, want %q", tt.manager, got, tt.remove)
+			}
+			if got := rpmInstallArgs(tt.manager, "/tmp/pkg.rpm"); !reflect.DeepEqual(got, tt.argsAfter) && !(len(got) == 0 && len(tt.argsAfter) == 0) {
+				t.Fatalf("rpmInstallArgs(%q) = %#v, want %#v", tt.manager, got, tt.argsAfter)
+			}
+		})
+	}
+}
+
+func TestSystemPackageGuidanceNamesDetectedManager(t *testing.T) {
+	rpmAsset := fmt.Sprintf("termp_2.3.4_linux_%s.rpm", runtime.GOARCH)
+	for _, manager := range []string{"dnf", "zypper", "yum", "rpm", ""} {
+		t.Run("manager="+manager, func(t *testing.T) {
+			pinRPMManager(t, manager)
+			text := GuidanceForMethod(InstallRPM, "v2.3.4").Text
+			want := RPMInstallCommand(manager, "./"+rpmAsset)
+			if !strings.Contains(text, want) {
+				t.Fatalf("GuidanceForMethod(InstallRPM) = %q, want it to contain %q", text, want)
+			}
+			if manager != "dnf" && strings.Contains(text, "dnf install") {
+				t.Fatalf("GuidanceForMethod(InstallRPM) named dnf while %q was detected: %q", manager, text)
+			}
+		})
+	}
+}
+
 func TestSystemPackageGuidance(t *testing.T) {
+	pinRPMManager(t, "dnf")
 	debianAsset := fmt.Sprintf("termp_2.3.4_linux_%s.deb", runtime.GOARCH)
 	rpmAsset := fmt.Sprintf("termp_2.3.4_linux_%s.rpm", runtime.GOARCH)
 	debian := fmt.Sprintf(

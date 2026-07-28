@@ -210,22 +210,39 @@ func TestTopLevelUninstallPointsToFullRemoval(t *testing.T) {
 func TestUninstallBinaryCommand(t *testing.T) {
 	binDir := filepath.Join(string(filepath.Separator), "custom install", "bin")
 	tests := []struct {
-		name   string
-		method updatepkg.InstallMethod
-		goos   string
-		want   string
+		name       string
+		method     updatepkg.InstallMethod
+		goos       string
+		rpmManager string
+		want       string
 	}{
 		{name: "generic", method: updatepkg.InstallGeneric, goos: "linux", want: "sudo rm " + shellQuote(filepath.Join(binDir, "termp"))},
 		{name: "go", method: updatepkg.InstallGo, goos: "darwin", want: "rm " + shellQuote(filepath.Join(binDir, "termp"))},
 		{name: "homebrew", method: updatepkg.InstallHomebrew, goos: "darwin", want: "brew uninstall --cask termp"},
 		{name: "scoop", method: updatepkg.InstallScoop, goos: "windows", want: "scoop uninstall termp"},
 		{name: "debian", method: updatepkg.InstallDebian, goos: "linux", want: "sudo apt remove termp"},
-		{name: "rpm", method: updatepkg.InstallRPM, goos: "linux", want: "sudo dnf remove termp"},
+		{name: "rpm dnf", method: updatepkg.InstallRPM, goos: "linux", rpmManager: "dnf", want: "sudo dnf remove termp"},
+		{name: "rpm zypper", method: updatepkg.InstallRPM, goos: "linux", rpmManager: "zypper", want: "sudo zypper remove termp"},
+		{name: "rpm yum", method: updatepkg.InstallRPM, goos: "linux", rpmManager: "yum", want: "sudo yum remove termp"},
+		{name: "rpm plain", method: updatepkg.InstallRPM, goos: "linux", rpmManager: "rpm", want: "sudo rpm -e termp"},
+		{
+			name:   "rpm none",
+			method: updatepkg.InstallRPM,
+			goos:   "linux",
+			want:   "remove termp with your RPM package manager (sudo dnf, sudo zypper, sudo yum, or sudo rpm)",
+		},
+		{
+			name:       "ambiguous system package",
+			method:     updatepkg.InstallSystemPackage,
+			goos:       "linux",
+			rpmManager: "zypper",
+			want:       "sudo apt remove termp (Debian/Ubuntu) or sudo zypper remove termp (RPM-based Linux)",
+		},
 		{name: "windows", method: updatepkg.InstallGeneric, goos: "windows", want: "del " + windowsCommandQuote(filepath.Join(binDir, "termp.exe"))},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := uninstallBinaryCommand(tt.method, tt.goos, func() (string, error) { return binDir, nil })
+			got, err := uninstallBinaryCommand(tt.method, tt.goos, tt.rpmManager, func() (string, error) { return binDir, nil })
 			if err != nil {
 				t.Fatal(err)
 			}

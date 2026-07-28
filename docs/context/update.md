@@ -53,7 +53,16 @@ is unsupported. Scoop exposes `scoop update termp` guidance but is rejected by
 updates download the matching exact-tag,
 architecture-specific GitHub release `.deb` or `.rpm` and `checksums.txt` into private
 temporary files, require exactly one valid matching SHA-256 entry, and only then invoke
-`sudo apt install -y <file>` or `sudo dnf install -y <file>` as discrete argv. Temporary
+`sudo apt install -y <file>` (deb) or the detected RPM front-end (rpm) as discrete argv.
+The RPM front-end is probed with `exec.LookPath` in preference order `dnf`, `zypper`,
+`yum`, `rpm` (cached once per process, injectable for tests) and produces
+`sudo dnf install -y <file>`, `sudo zypper --non-interactive install <file>`,
+`sudo yum install -y <file>`, or `sudo rpm -U <file>`; plain `rpm` is last because it does
+not resolve dependencies. This keeps openSUSE/SLES and RHEL/CentOS 7 working instead of
+assuming `dnf`. When no front-end is present the update fails before any download and the
+printed guidance names no specific tool. Guidance, `termp uninstall --all` binary-removal
+text (`sudo <manager> remove termp`, `sudo rpm -e termp`), and the executed argv all use
+the same detected manager, so printed instructions are always runnable. Temporary
 files are removed on every return path. A missing tool or TTY, ambiguous package type,
 download error, empty artifact, missing/invalid checksum, checksum mismatch, or install
 error fails closed and leaves the existing exact-tag manual package instructions as the
@@ -61,8 +70,8 @@ interactive fallback. Scoop and Linux package updates never use the generic inst
 write a shadow binary under `/usr/local/bin`.
 
 Automatic updates remain non-interactive: all system-package methods short-circuit before
-`PerformUpdate`, record a managed-package skip, and invoke no download, `sudo`, apt, or dnf
-command. On Unix, interactive update commands remain in the caller's foreground process
+`PerformUpdate`, record a managed-package skip, and invoke no download, `sudo`, apt, or
+RPM front-end command. On Unix, interactive update commands remain in the caller's foreground process
 group so `sudo` and the generic installer can read a password from the controlling
 terminal. Non-interactive automatic update commands run in a separate process group so
 context cancellation kills the complete command tree; their existing preflights prevent

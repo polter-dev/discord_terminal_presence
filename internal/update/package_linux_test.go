@@ -54,14 +54,20 @@ func TestPerformSystemPackageUpdateVerifiesAndInstalls(t *testing.T) {
 	assetName := fmt.Sprintf("termp_2.3.4_linux_%s", runtime.GOARCH)
 
 	for _, tt := range []struct {
-		method    InstallMethod
-		extension string
-		manager   string
+		name       string
+		method     InstallMethod
+		extension  string
+		rpmManager string
+		wantArgs   []string
 	}{
-		{method: InstallDebian, extension: ".deb", manager: "apt"},
-		{method: InstallRPM, extension: ".rpm", manager: "dnf"},
+		{name: "debian", method: InstallDebian, extension: ".deb", wantArgs: []string{"apt", "install", "-y"}},
+		{name: "rpm dnf", method: InstallRPM, extension: ".rpm", rpmManager: "dnf", wantArgs: []string{"dnf", "install", "-y"}},
+		{name: "rpm zypper", method: InstallRPM, extension: ".rpm", rpmManager: "zypper", wantArgs: []string{"zypper", "--non-interactive", "install"}},
+		{name: "rpm yum", method: InstallRPM, extension: ".rpm", rpmManager: "yum", wantArgs: []string{"yum", "install", "-y"}},
+		{name: "rpm plain", method: InstallRPM, extension: ".rpm", rpmManager: "rpm", wantArgs: []string{"rpm", "-U"}},
 	} {
-		t.Run(string(tt.method), func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
+			pinRPMManager(t, tt.rpmManager)
 			runner := &packageRunner{
 				artifact: artifact,
 				checksum: fmt.Sprintf("%x  %s%s\n", digest, assetName, tt.extension),
@@ -73,7 +79,7 @@ func TestPerformSystemPackageUpdateVerifiesAndInstalls(t *testing.T) {
 				t.Fatalf("commands = %#v, want two downloads and one install", runner.commands)
 			}
 			install := runner.commands[2]
-			want := Command{Name: "sudo", Args: []string{tt.manager, "install", "-y", runner.temporary[0]}}
+			want := Command{Name: "sudo", Args: append(append([]string{}, tt.wantArgs...), runner.temporary[0])}
 			if !reflect.DeepEqual(install, want) {
 				t.Fatalf("install command = %#v, want %#v", install, want)
 			}
@@ -199,5 +205,22 @@ func TestPerformSystemPackageUpdateCleansUpAfterPanic(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("temporary files survived panic: %v", entries)
+	}
+}
+
+func TestPerformSystemPackageUpdateWithoutRPMManagerInstallsNothing(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	pinRPMManager(t, "")
+	runner := &packageRunner{}
+	err := PerformUpdate(context.Background(), InstallRPM, "v2.3.4", runner, nil, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "no RPM package manager available") {
+		t.Fatalf("PerformUpdate(InstallRPM) error = %v, want missing-manager failure", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("PerformUpdate(InstallRPM) ran commands without a package manager: %#v", runner.commands)
+	}
+	guidance := GuidanceForMethod(InstallRPM, "v2.3.4").Text
+	if guidance == "" || strings.Contains(guidance, "sudo dnf install") {
+		t.Fatalf("guidance without a detected manager = %q, want a manager-agnostic fallback", guidance)
 	}
 }

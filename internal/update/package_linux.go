@@ -33,11 +33,25 @@ func performSystemPackageUpdate(
 	}
 
 	var extension, manager string
+	// installArgs builds the argv that follows sudo. The manager it closes over
+	// is resolved below, before any download, so a system with no usable
+	// package manager fails without touching the network or installing anything.
+	var installArgs func(assetPath string) []string
 	switch method {
 	case InstallDebian:
 		extension, manager = ".deb", "apt"
+		installArgs = func(assetPath string) []string {
+			return []string{manager, "install", "-y", assetPath}
+		}
 	case InstallRPM:
-		extension, manager = ".rpm", "dnf"
+		extension = ".rpm"
+		manager = DetectRPMManager()
+		if manager == "" {
+			return errors.New("no RPM package manager available (dnf, zypper, yum, or rpm)")
+		}
+		installArgs = func(assetPath string) []string {
+			return rpmInstallArgs(manager, assetPath)
+		}
 	default:
 		return fmt.Errorf("unsupported system package method %q", method)
 	}
@@ -98,7 +112,11 @@ func performSystemPackageUpdate(
 		return err
 	}
 
-	command := Command{Name: "sudo", Args: []string{manager, "install", "-y", assetPath}}
+	args := installArgs(assetPath)
+	if len(args) == 0 {
+		return fmt.Errorf("unsupported package manager %q", manager)
+	}
+	command := Command{Name: "sudo", Args: args}
 	if err := runner.Run(ctx, command, stdin, stdout, stderr); err != nil {
 		return fmt.Errorf("install %s with %s: %w", assetName, manager, err)
 	}

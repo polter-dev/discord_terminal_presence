@@ -49,7 +49,8 @@ Plain `termp uninstall` remains the start-at-login removal alias and points user
 validates the daemon through the same process-image-aware stop path before deleting
 anything, then removes autostart, completions, config, state/cache, and the platform log.
 It never deletes the running executable. It reuses install ownership detection and the
-resolved generic install directory to print exact Homebrew, Scoop, apt, dnf, Go, generic
+resolved generic install directory to print exact Homebrew, Scoop, apt, detected RPM
+front-end (`dnf`/`zypper`/`yum`, or `rpm -e`), Go, generic
 Unix, or Windows binary-removal guidance. Destructive tests inject paths beneath an
 asserted temporary home.
 
@@ -68,11 +69,12 @@ Attempts are visible in
 `Updating...` line, stderr output, or an installer command. For a known Debian/RPM-owned
 install it downloads the exact-tag, architecture-specific release package and
 `checksums.txt` into private temporary files, verifies SHA-256 fail-closed,
-and then runs `sudo apt install -y <file>` or `sudo dnf install -y <file>`. It never uses
+and then runs `sudo apt install -y <file>` or the detected RPM front-end command
+(`dnf`/`zypper`/`yum`/`rpm`, probed in that order). It never uses
 the generic installer or writes to `/usr/local/bin`. When sudo, the package manager, or a
 TTY is unavailable, package ownership is ambiguous, or download/checksum/install fails,
 the command reports the reason and prints the existing exact-tag GitHub release download
-and local apt/dnf instructions. Automatic/background updates never enter this path and
+and local apt or detected-RPM-front-end instructions. Automatic/background updates never enter this path and
 continue to record a managed-package skip with zero commands. A failed executable update
 prints the exact retry command for Homebrew and Go, while a generic failure says to
 resolve the reported error and retry `termp update`. Update notices label multi-step
