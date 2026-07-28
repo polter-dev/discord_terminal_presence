@@ -3,8 +3,14 @@
 **Purpose:** Sanitizes externally derived strings before they cross a terminal or log
 rendering boundary.
 
-**Public surface:** `Sanitize` removes ANSI/OSC escapes, C0/C1 controls, and Unicode
-bidirectional formatting controls while preserving ordinary Unicode text.
+**Public surface:** `Sanitize` is a conservative terminal-safety filter: it removes
+ANSI/OSC escapes, C0/C1 controls, and Unicode bidirectional formatting controls while
+preserving ordinary Unicode text. It may remove bytes adjacent to an escape introducer
+when Charm recognizes them as part of a complete sequence; for example, `ESC` plus a
+letter can be removed together. Its collateral damage is bounded, however: when a
+sequence reaches end-of-input without terminating, `Sanitize` removes its introducer and
+passes the remaining payload through the same ordinary escape/control/bidi filtering
+instead of consuming it to end-of-input.
 `SanitizeSingleLine` additionally folds every recognized line/record-break character into
 a single visible ` ; ` separator, collapsing runs and trimming leading/trailing
 separators, before sanitizing. `IsControlOrBidi(r rune) bool` exports the exact per-rune
@@ -37,12 +43,16 @@ Sanitization is a rendering-boundary defense and does not replace validation or 
 privacy resolution. Single-line status fields, log records, and the watch TUI's warning
 banner use `SanitizeSingleLine`; multi-step values remain readable without joining tokens,
 changing label-column alignment, or allowing a line break to inject another log record.
-`Sanitize` itself continues to strip all control characters, including newlines, and
-`SanitizeSingleLine` always calls it last — substitution can only ever break an escape
-sequence apart, never assemble or preserve one. (An escape sequence, or an OSC title, that
-already spanned what were two lines before substitution is still stripped as a unit by the
-underlying ANSI parser, exactly as a same-line escape or OSC title already is; this is
-unchanged pre-existing behavior, not something substitution introduces.)
+`Sanitize` itself continues to strip all control characters, including newlines. Complete,
+properly terminated string sequences are removed whole. An unterminated sequence can
+never swallow the remainder of the string: sequence decoding reports the non-normal
+end-of-input state, the generic introducer is discarded, and the payload is decoded again
+as ordinary input. This is enforced from decoder state rather than a maintained list of
+OSC/DCS/APC/PM/SOS introducer bytes. `SanitizeSingleLine` always calls `Sanitize` last —
+substitution can only ever break an escape sequence apart, never assemble or preserve one.
+(An escape sequence, or an OSC title, that already spanned what were two lines before
+substitution is still stripped as a unit when properly terminated, exactly as a same-line
+escape or OSC title is.)
 
 **Depends on / used by:** Depends on Charm's ANSI parser; used by `cmd/termp` and
 `internal/tui` at terminal/log rendering boundaries, `internal/presence` (`client.go`'s

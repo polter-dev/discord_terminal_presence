@@ -4,6 +4,7 @@ package terminaltext
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -21,9 +22,11 @@ func IsControlOrBidi(r rune) bool {
 }
 
 // Sanitize removes terminal escape sequences, control characters, and Unicode
-// bidirectional formatting controls from value.
+// bidirectional formatting controls from value. Complete escape sequences are
+// removed conservatively. If a sequence reaches end-of-input unterminated,
+// only its introducer is removed; its payload is sanitized as ordinary text.
 func Sanitize(value string) string {
-	value = ansi.Strip(value)
+	value = stripANSIWithBoundedSequences(value)
 	var cleaned strings.Builder
 	cleaned.Grow(len(value))
 	for _, r := range value {
@@ -33,6 +36,80 @@ func Sanitize(value string) string {
 		cleaned.WriteRune(r)
 	}
 	return cleaned.String()
+}
+
+// stripANSIWithBoundedSequences preserves ansi.Strip's conservative behavior
+// for every sequence the decoder reports as complete. When decoding reaches
+// end-of-input in a non-normal state, the sequence is incomplete. Removing its
+// generic introducer and decoding the remainder from NormalState makes the
+// payload ordinary input instead of allowing the unfinished sequence to
+// consume it.
+func stripANSIWithBoundedSequences(value string) string {
+	var bounded strings.Builder
+	bounded.Grow(len(value))
+
+	for len(value) > 0 {
+		sequence, n, state := decodeTerminalSequence(value)
+		if n == 0 {
+			// DecodeSequence can make no progress on an invalid UTF-8 byte.
+			// Retain it here so ansi.Strip preserves its existing handling.
+			bounded.WriteByte(value[0])
+			value = value[1:]
+			continue
+		}
+
+		if state != ansi.NormalState {
+			introducerLen := 1
+			if sequence[0] == ansi.ESC && len(sequence) > 1 {
+				introducerLen = 2
+			}
+			value = sequence[introducerLen:]
+			continue
+		}
+
+		bounded.WriteString(sequence)
+		value = value[n:]
+	}
+
+	return ansi.Strip(bounded.String())
+}
+
+// decodeTerminalSequence delegates sequence recognition to ansi.DecodeSequence.
+// The decoder operates byte-by-byte in string payloads, so an 0x9c UTF-8
+// continuation byte can look like an 8-bit ST. Continue the same decode when
+// that byte belongs to a multi-byte rune; Charm documents that callers must
+// validate returned string-sequence terminators.
+func decodeTerminalSequence(value string) (sequence string, n int, state byte) {
+	sequence, _, n, state = ansi.DecodeSequence(value, ansi.NormalState, nil)
+	isControlSequence := n > 0 &&
+		(sequence[0] == ansi.ESC || sequence[0] >= 0x80 && sequence[0] <= 0x9f)
+	for isControlSequence && state == ansi.NormalState && n > 0 && sequence[n-1] == ansi.ST {
+		if !endsWithUTF8Continuation(sequence) {
+			break
+		}
+
+		remainder, _, consumed, nextState := ansi.DecodeSequence(value[n:], ansi.StringState, nil)
+		sequence += remainder
+		n += consumed
+		state = nextState
+		if consumed == 0 {
+			break
+		}
+	}
+	return sequence, n, state
+}
+
+func endsWithUTF8Continuation(value string) bool {
+	_, size := utf8.DecodeLastRuneInString(value)
+	if size > 1 {
+		return true
+	}
+
+	start := len(value) - 1
+	for start > 0 && !utf8.RuneStart(value[start]) {
+		start--
+	}
+	return start < len(value)-1 && !utf8.FullRuneInString(value[start:])
 }
 
 // separatorSentinel is a stand-in control character (RS, 0x1E) used
