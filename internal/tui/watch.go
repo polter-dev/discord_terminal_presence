@@ -124,7 +124,7 @@ func (m WatchModel) View() string {
 	b.WriteString(m.styles.Title.Render("termp watch - live Discord preview"))
 	b.WriteString("\n\n")
 	if m.warningText != "" {
-		b.WriteString(m.warningStyle.Render(terminaltext.Sanitize(m.warningText)))
+		b.WriteString(m.warningStyle.Render(terminaltext.SanitizeSingleLine(m.warningText)))
 		b.WriteString("\n\n")
 	}
 	b.WriteString(RenderCard(CardState{

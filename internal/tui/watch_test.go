@@ -75,6 +75,16 @@ func TestWatchModelSanitizesWarning(t *testing.T) {
 	}
 }
 
+func TestWatchModelWarningNeverRendersRawNewline(t *testing.T) {
+	model := NewWatchModelWithClock(time.Now)
+	model.SetWarning("first line\nsecond line")
+
+	view := model.View()
+	if !strings.Contains(view, "first line ; second line") {
+		t.Fatalf("view = %q, want the warning joined with a visible separator", view)
+	}
+}
+
 func TestWatchModelRecentOnlyChangesOnFeaturedChange(t *testing.T) {
 	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
 	model := NewWatchModelWithClock(func() time.Time { return now })
