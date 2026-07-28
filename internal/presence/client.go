@@ -13,8 +13,6 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	"github.com/polter-dev/discord_terminal_presence/internal/terminaltext"
 )
 
 const (
@@ -116,43 +114,20 @@ func (c *RichClient) Login(appID string) error {
 	return nil
 }
 
-// sanitizeActivity strips control characters, terminal escape sequences, and
-// Unicode bidi formatting controls from every Discord-facing text field
-// before the activity is validated or turned into a wire payload. Sanitizing
-// once, up front, means validateActivity's length checks run against the
-// same bytes that reach Discord (sanitizing after validation let a
-// borderline value cross a length boundary in either direction — e.g. an
-// embedded newline expanding past the max on substitution, or stripped
-// control bytes dropping a value below the minimum) and newSetActivityPayload
-// never needs its own per-field sanitize calls, so a field added there later
-// is exercised by TestSetActivityWireHasNoRawControlOrBidiRunes's generic
-// JSON walk instead of silently reaching the wire raw (see #419; #422 review
-// caught that both image keys were exactly this kind of miss in the first
-// version of this fix).
-func sanitizeActivity(activity Activity) Activity {
-	activity.Name = terminaltext.SanitizeSingleLine(activity.Name)
-	activity.Details = terminaltext.SanitizeSingleLine(activity.Details)
-	activity.State = terminaltext.SanitizeSingleLine(activity.State)
-	activity.LargeImage.Key = terminaltext.SanitizeSingleLine(activity.LargeImage.Key)
-	activity.LargeImage.Text = terminaltext.SanitizeSingleLine(activity.LargeImage.Text)
-	activity.SmallImage.Key = terminaltext.SanitizeSingleLine(activity.SmallImage.Key)
-	activity.SmallImage.Text = terminaltext.SanitizeSingleLine(activity.SmallImage.Text)
-	if len(activity.Buttons) > 0 {
-		sanitizedButtons := make([]Button, len(activity.Buttons))
-		for i, button := range activity.Buttons {
-			sanitizedButtons[i] = Button{
-				Label: terminaltext.SanitizeSingleLine(button.Label),
-				URL:   button.URL,
-			}
-		}
-		activity.Buttons = sanitizedButtons
-	}
-	return activity
-}
-
 // SetActivity pushes one activity payload to Discord and waits for its response.
+//
+// normalizeActivity (activity.go) sanitizes and then bounds every Discord-facing
+// text field in one place, before the activity is validated or turned into a
+// wire payload. Sanitizing up front means validateActivity's length checks run
+// against the same bytes that reach Discord (#422); bounding after sanitizing
+// means those checks are satisfied by construction, so a value whose length
+// only crosses a Discord limit during substitution is trimmed to fit instead of
+// suppressing the whole update (#436). newSetActivityPayload therefore needs no
+// per-field sanitize or bound call of its own — the per-field call site is
+// exactly the enumeration that let both image keys reach the wire unsanitized in
+// an earlier version of the #419 fix (caught in #422 review).
 func (c *RichClient) SetActivity(activity Activity) error {
-	activity = sanitizeActivity(activity)
+	activity = normalizeActivity(activity)
 	if err := validateActivity(activity); err != nil {
 		return err
 	}
@@ -358,15 +333,16 @@ type buttonPayload struct {
 }
 
 // newSetActivityPayload builds the wire payload sent to Discord over IPC.
-// Callers are expected to pass an already-sanitized activity: SetActivity
-// calls sanitizeActivity before this function runs, precisely so this
+// Callers are expected to pass an already-normalized activity: SetActivity
+// calls normalizeActivity before this function runs, precisely so this
 // constructor is a plain field-by-field copy with nothing left to sanitize
 // here — a per-field sanitize call site in this function is exactly the
 // enumeration that let large_image/small_image reach the wire unsanitized in
 // an earlier version of this fix (#419, caught in #422 review). If a field is
-// ever added here without going through sanitizeActivity first,
-// TestSetActivityWireHasNoRawControlOrBidiRunes's generic walk of the
-// marshaled JSON is the backstop that catches it.
+// ever added here without going through normalizeActivity first,
+// TestSetActivityWireHasNoRawControlOrBidiRunes and
+// TestSetActivityWireStringsAreBounded walk the marshaled JSON and are the
+// backstops that catch it.
 func newSetActivityPayload(activity Activity, pid int, nonce string) setActivityPayload {
 	payload := setActivityPayload{
 		Command: "SET_ACTIVITY",

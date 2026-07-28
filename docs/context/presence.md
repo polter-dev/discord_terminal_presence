@@ -53,21 +53,52 @@ reapply included), only on that rejected/not-rejected transition, so a caller pe
 is not writing on every tick. `cmd/termp` persists this into the daemon state file and
 `termp status` renders it as a `Published` line distinct from `Discord` (connection).
 
-`SetActivity` calls `sanitizeActivity` (in `client.go`) before validating or building the
-wire payload: it runs `terminaltext.SanitizeSingleLine` on every Discord-facing text
-field — name, details, state, both image keys, both image tooltip texts, and button
-labels (seven fields total) — so raw control characters (e.g. ESC, BEL, NUL) and terminal
-escape sequences cannot reach the wire payload verbatim (#419). Sanitizing before
-validating also means `validateActivity`'s length checks run against the same bytes that
-reach Discord, not pre-sanitization bytes that can cross a length boundary in either
-direction once substituted. `newSetActivityPayload` itself does no sanitizing — it is a
-plain copy of an already-clean `Activity` — and a generic walk of the marshaled JSON
-(`TestSetActivityWireHasNoRawControlOrBidiRunes`) is the regression backstop if a future
-field bypasses `sanitizeActivity`. `registry.ValidateCustomTool` and `ValidateButtons`
+`SetActivity` calls `normalizeActivity` (in `activity.go`) before validating or building
+the wire payload. It is the single choke point for Discord-facing text: it iterates
+`activityTextFields`, the one enumeration of those fields (name, details, state, both
+image keys, both image tooltip texts, and one entry per button label), and for each one
+**sanitizes first and bounds second**. It copies the `Buttons` slice before touching
+anything: `Activity` is passed by value but that slice shares its backing array with the
+caller, and `Writer` holds a `desired` activity across ticks, so normalizing must not write
+back into caller state. `validateActivity` iterates the same slice, so the
+sanitize/bound rules and the validation rules cannot drift apart per field — that drift is
+exactly what let #402 fix details/state while missing both image tooltips, and #422 fix
+7 of 9 outbound fields while missing both image keys.
+
+Sanitizing before validating means `validateActivity`'s length checks run against the same
+bytes that reach Discord (#419, #422). Bounding *after* sanitizing is what makes those
+checks hold by construction (#436): sanitization is not monotonically shortening in either
+direction — `SanitizeSingleLine` expands each line break into the 3-rune `" ; "` separator
+(a value bounded to exactly 128 runes measured 212 after sanitizing), and since #427
+`Sanitize` can also return more text than it used to. A bound applied before sanitization
+is therefore unreliable, and its only remaining purpose is the pre-sanitize call in
+`ActivityFromDetectionWithOmissions`, which exists to report omission diagnostics, not to
+guarantee the bound. Consequences of bounding last: an over-long field is truncated with
+an ellipsis and a field that sanitizes below the 2-rune minimum (or a button label that
+sanitizes to nothing, which is dropped along with its button) is omitted — instead of
+`validateActivity` rejecting the payload and publishing *nothing at all* for that update,
+which was the user-visible defect. Structural errors the caller must fix, such as more
+than two buttons or a non-HTTP(S) URL, are still hard validation failures.
+
+Residual, stated plainly: the two URL fields (`Image.URL`, `Button.URL`) are the one part
+of the outbound payload `normalizeActivity` does not sanitize or bound. That is deliberate
+— sanitizing a URL would corrupt it — and it is safe only because URLs are never mutated on
+the way out, so their length cannot change after `registry.ValidateCustomTool` /
+`ValidateButtons` bound them at config load (256 and 512 runes). If a URL ever becomes
+runtime-derived, or anything starts rewriting it, that guarantee is gone and it needs a
+bound of its own.
+
+`newSetActivityPayload` itself does no sanitizing or bounding — it is a plain copy of an
+already-normalized `Activity`. Two generic walks of the marshaled JSON are the regression
+backstops if a future field bypasses `normalizeActivity`:
+`TestSetActivityWireHasNoRawControlOrBidiRunes` (no control/bidi runes on any string leaf)
+and `TestSetActivityWireStringsAreBounded` (every string leaf is within a registered
+bound, and an unregistered wire key is itself a failure, so a newly added field cannot pass
+silently). `registry.ValidateCustomTool` and `ValidateButtons`
 add a second, independent guard at config load for `display_name`, `image_key`, and
 button labels, rejecting control characters outright so the user sees an actionable
 error. `details` and `state` have **no** config-load guard — they are built at runtime
-from directory names via `DirectoryDisplay`, not from static config — so `sanitizeActivity`
+from directory names via `DirectoryDisplay`, not from static config — so `normalizeActivity`
 is their only sanitization on any path; it is not merely defense-in-depth for those two
 fields. Whether Discord itself rejects or mis-renders unsanitized bytes was never verified
 before this fix (no live-Discord testing in this harness); the defect was that unsanitized
