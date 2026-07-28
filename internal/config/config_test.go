@@ -1126,6 +1126,22 @@ func TestCustomToolDiscordFieldValidationRejectedAtLoad(t *testing.T) {
 	}
 }
 
+func TestCustomToolTooShortDisplayNameRejectedAtLoad(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `[[custom_tools]]
+id = "mine"
+display_name = "x"
+image_key = "mine"
+[custom_tools.match]
+name = "mine"
+`)
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "custom_tools[0]: display_name must be at least 2 characters") {
+		t.Fatalf("Load() error = %v, want display_name minimum-length error", err)
+	}
+}
+
 func TestSaveRoundTrip(t *testing.T) {
 	path := withConfigHome(t)
 	cfg := Default()

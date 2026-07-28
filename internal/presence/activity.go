@@ -2,6 +2,7 @@ package presence
 
 import (
 	"fmt"
+	"log"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -89,22 +90,21 @@ func validateActivity(activity Activity) error {
 	textFields := []struct {
 		name  string
 		value string
+		min   int
 	}{
-		{name: "name", value: activity.Name},
-		{name: "details", value: activity.Details},
-		{name: "state", value: activity.State},
-		{name: "large_image_text", value: activity.LargeImage.Text},
-		{name: "small_image_text", value: activity.SmallImage.Text},
+		{name: "name", value: activity.Name, min: 0},
+		{name: "details", value: activity.Details, min: minActivityTextLength},
+		{name: "state", value: activity.State, min: minActivityTextLength},
+		{name: "large_image_text", value: activity.LargeImage.Text, min: minActivityTextLength},
+		{name: "small_image_text", value: activity.SmallImage.Text, min: minActivityTextLength},
 	}
 	for _, field := range textFields {
-		if utf8.RuneCountInString(field.value) > maxActivityTextLength {
+		length := utf8.RuneCountInString(field.value)
+		if length > maxActivityTextLength {
 			return &activityValidationError{message: fmt.Sprintf("%s must be at most %d characters", field.name, maxActivityTextLength)}
 		}
-	}
-	for _, field := range textFields[1:3] {
-		length := utf8.RuneCountInString(field.value)
-		if length > 0 && length < minActivityTextLength {
-			return &activityValidationError{message: fmt.Sprintf("%s must be at least %d characters when present", field.name, minActivityTextLength)}
+		if length > 0 && length < field.min {
+			return &activityValidationError{message: fmt.Sprintf("%s must be at least %d characters when present", field.name, field.min)}
 		}
 	}
 	imageFields := []struct {
@@ -153,7 +153,7 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 		LargeImage: Image{
 			Key:  tool.ImageKey,
 			URL:  tool.ImageURL,
-			Text: tool.DisplayName,
+			Text: boundActivityText("large_image_text", tool.DisplayName),
 		},
 	}
 
@@ -185,14 +185,14 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 			activity.Details = options.FallbackMessage
 		}
 	}
-	activity.Details = boundActivityText(activity.Details)
-	activity.State = boundActivityText(activity.State)
+	activity.Details = boundActivityText("details", activity.Details)
+	activity.State = boundActivityText("state", activity.State)
 	if options.SmallImage && len(detection.Others) > 0 {
 		other := detection.Others[0]
 		activity.SmallImage = Image{
 			Key:  other.ImageKey,
 			URL:  other.ImageURL,
-			Text: other.DisplayName,
+			Text: boundActivityText("small_image_text", other.DisplayName),
 		}
 	}
 	if options.ElapsedTimer && !detection.StartedAt.IsZero() {
@@ -206,9 +206,10 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 	return activity, true
 }
 
-func boundActivityText(value string) string {
+func boundActivityText(field, value string) string {
 	length := utf8.RuneCountInString(value)
 	if length > 0 && length < minActivityTextLength {
+		log.Printf("presence: omitting %s: rendered value contains %d character; minimum is %d", field, length, minActivityTextLength)
 		return ""
 	}
 	if length <= maxActivityTextLength {

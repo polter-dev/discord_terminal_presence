@@ -279,6 +279,13 @@ func TestNewWithCustomValidatesDiscordFields(t *testing.T) {
 	}
 }
 
+func TestValidateCustomToolRejectsTooShortDisplayName(t *testing.T) {
+	err := ValidateCustomTool(CustomTool{DisplayName: "界"})
+	if err == nil || !strings.Contains(err.Error(), "display_name must be at least 2 characters") {
+		t.Fatalf("ValidateCustomTool() error = %v, want minimum-length error", err)
+	}
+}
+
 func TestRegistryPriorityExtremesDoNotOverflow(t *testing.T) {
 	high := Tool{
 		ID:          "priority-max",
