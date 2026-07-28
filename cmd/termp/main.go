@@ -24,6 +24,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	xterm "github.com/charmbracelet/x/term"
 	"github.com/polter-dev/discord_terminal_presence/internal/completioninstall"
 	"github.com/polter-dev/discord_terminal_presence/internal/config"
 	"github.com/polter-dev/discord_terminal_presence/internal/detector"
@@ -2603,11 +2604,7 @@ func waitForProcessExit(record daemonPIDRecord, timeout, pollInterval time.Durat
 }
 
 func isTerminal(file *os.File) bool {
-	info, err := file.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return file != nil && xterm.IsTerminal(file.Fd())
 }
 
 func maybePrintFirstRunCTA(w io.Writer, configPath string, terminal bool) {

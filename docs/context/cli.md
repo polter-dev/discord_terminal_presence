@@ -49,12 +49,14 @@ Plain `termp uninstall` remains the start-at-login removal alias and points user
 `termp uninstall --all`. Full uninstall confirms unless `--yes` is supplied, stops and
 validates the daemon through the same process-image-aware stop path before deleting
 anything, then removes autostart, completions, config, state/cache, and the platform log.
-It never deletes the running executable. It reuses install ownership detection and the
-resolved generic install directory to print exact Homebrew, Scoop, apt, detected RPM
-front-end (`dnf`/`zypper`/`yum`, or `rpm -e`), Go, generic
-Unix, or Windows binary-removal guidance. Destructive tests inject paths beneath an
-asserted temporary home. Full uninstall also removes the daemon log's rotation lock and
-three retained generations.
+The confirmation requires stdin and stdout to pass the operating system's fd-level TTY
+query, so character devices such as `/dev/null` cannot enter the Bubble Tea prompt and
+stall on EOF. It never deletes the running executable. It reuses install ownership
+detection and the resolved generic install directory to print exact Homebrew, Scoop, apt,
+detected RPM front-end (`dnf`/`zypper`/`yum`, or `rpm -e`), Go, generic Unix, or Windows
+binary-removal guidance. Destructive tests inject paths beneath an asserted temporary
+home. Full uninstall also removes the daemon log's rotation lock and three retained
+generations.
 
 Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
 installs preflight the resolved running executable's directory and record a skipped
@@ -73,11 +75,13 @@ install it downloads the exact-tag, architecture-specific release package and
 `checksums.txt` into private temporary files, verifies SHA-256 fail-closed,
 and then runs `sudo apt install -y <file>` or the detected RPM front-end command
 (`dnf`/`zypper`/`yum`/`rpm`, probed in that order). It never uses
-the generic installer or writes to `/usr/local/bin`. When sudo, the package manager, or a
-TTY is unavailable, package ownership is ambiguous, or download/checksum/install fails,
-the command reports the reason and prints the existing exact-tag GitHub release download
-and local apt or detected-RPM-front-end instructions. Automatic/background updates never enter this path and
-continue to record a managed-package skip with zero commands. A failed executable update
+the generic installer or writes to `/usr/local/bin`. The interactive package path requires
+stdin to pass a real fd-level TTY query rather than accepting any character device. When
+sudo, the package manager, or a TTY is unavailable, package ownership is ambiguous, or
+download/checksum/install fails, the command reports the reason and prints the existing
+exact-tag GitHub release download and local apt or detected-RPM-front-end instructions.
+Automatic/background updates never enter this path and continue to record a
+managed-package skip with zero commands. A failed executable update
 prints the exact retry command for Homebrew and Go, while a non-Windows generic failure
 says to resolve the reported error and retry `termp update`. A Windows generic (archive)
 install is a permanent platform limitation rather than a transient failure — Windows locks
@@ -90,16 +94,28 @@ They print `termp update` for generic installs, preserving the resolved executab
 directory; Homebrew and Go notices continue to print their direct package commands under
 `Run:`.
 
+Updater and installer curl downloads allow 10 seconds to connect and 300 seconds total;
+the installer's wget fallback uses a 10-second timeout and one attempt. These per-transfer
+bounds do not add a deadline to interactive `termp update`: its context remains
+deliberately unbounded so `sudo` can wait indefinitely for a human password prompt,
+preserving the issue #382 contract.
+
 Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned
 hand-written Formula draft was removed under #303.
-Homebrew Cask installs and deb/rpm postinstall scripts print the same prominent,
-fixed-width 80-column ASCII setup box. Homebrew prints Cask caveats unindented at
-column 0, so the box renders intact. GoReleaser's caveats templating trims the
-authored padding blank lines, so deb/rpm is the only channel whose padding comes
-from this repo; Homebrew renders the box directly under its own `==> Caveats`
-header, followed by a single trailing blank line that Homebrew itself emits. The
-package script always exits successfully so guidance cannot break an install.
+Homebrew Cask installs, Scoop's post-install hook, and deb/rpm postinstall scripts use
+the same prominent, fixed-width ASCII setup-box treatment; the generic installer uses
+an adaptive-width counterpart. Homebrew prints Cask caveats unindented at column 0, so
+the box renders intact, but `Cask::Installer#install` prints them before fetching,
+staging, installing artifacts, and running the quarantine hook. The Homebrew box
+therefore tells users to run setup after Homebrew finishes; the post-install surfaces
+retain their installed/run-now wording. For a single-cask install, Homebrew's final
+message collector does not reprint caveats, so the
+binary's config-missing first-run card remains the Homebrew user's only setup reminder
+at invocation time. GoReleaser's caveats templating trims authored padding blank lines;
+Homebrew instead emits one trailing blank line through the installer's caveats heredoc.
+The deb/rpm package script always exits successfully so guidance cannot break an
+install.
 
 CI snapshot-builds and installs the real deb and rpm artifacts in digest-pinned
 `debian:stable`, `fedora:latest`, and `opensuse/leap:latest` containers. Before the

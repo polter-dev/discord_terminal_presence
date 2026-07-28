@@ -28,6 +28,8 @@ const (
 	packageQueryTimeout = 500 * time.Millisecond
 	cacheLockRetry      = 10 * time.Millisecond
 	cacheLockTimeout    = 2 * time.Second
+	curlConnectTimeout  = "10"
+	curlMaxTime         = "300"
 	// Cache transactions only perform local JSON I/O; 30s leaves ample margin
 	// for a legitimate holder while recovering promptly after a process crash.
 	cacheLockStaleAfter = 30 * time.Second
@@ -578,7 +580,7 @@ func GenericCommand(tag string) string {
 		return ""
 	}
 	return fmt.Sprintf(
-		`tmp=$(mktemp) && trap 'rm -f "$tmp"' EXIT HUP INT TERM && curl -fsSL `+genericInstallerURL+` -o "$tmp" && test -s "$tmp" && TERMP_DOWNLOAD_CHANNEL=update VERSION=%s sh "$tmp"`,
+		`tmp=$(mktemp) && trap 'rm -f "$tmp"' EXIT HUP INT TERM && curl --connect-timeout `+curlConnectTimeout+` --max-time `+curlMaxTime+` -fsSL `+genericInstallerURL+` -o "$tmp" && test -s "$tmp" && TERMP_DOWNLOAD_CHANNEL=update VERSION=%s sh "$tmp"`,
 		tag,
 		tag,
 	)
@@ -834,7 +836,7 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 	}()
 
 	url := fmt.Sprintf(genericInstallerURL, tag)
-	download := Command{Name: "curl", Args: []string{"-fsSL", url, "-o", tmpPath}}
+	download := curlDownloadCommand(url, tmpPath)
 	if err := runner.Run(ctx, download, nil, stdout, stderr); err != nil {
 		return fmt.Errorf("download installer from %s: %w", url, err)
 	}
@@ -859,6 +861,18 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 		return fmt.Errorf("run %s: %w", GenericCommand(tag), err)
 	}
 	return nil
+}
+
+func curlDownloadCommand(url, destination string) Command {
+	return Command{
+		Name: "curl",
+		Args: []string{
+			"--connect-timeout", curlConnectTimeout,
+			"--max-time", curlMaxTime,
+			"-fsSL", url,
+			"-o", destination,
+		},
+	}
 }
 
 // GenericInstallDir returns the directory containing the resolved running
