@@ -203,7 +203,7 @@ jobs:
 
           # Containers run as root, so sudo does not prompt. This matrix cannot test
           # the interactive password prompt (#382), which needs a pty and a human.
-          docker run --rm --network none \
+          docker run --rm -i --network none \
             --add-host api.github.com:127.0.0.1 \
             -e EXPECTED_METHOD \
             -v "$PWD/$package:/tmp/termp-package:ro" \
@@ -252,7 +252,7 @@ jobs:
                 HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= \
                 NO_PROXY=api.github.com \
                 XDG_CACHE_HOME=/tmp/termp-cache \
-                /usr/bin/termp update </dev/null 2>&1
+                /usr/bin/termp update 2>&1
               )
               printf "%s\n" "$output"
               printf "%s\n" "$output" | grep -F "interactive terminal required for sudo"
@@ -261,4 +261,4 @@ jobs:
 
               after=$(snapshot_local_bin)
               test "$before" = "$after"
-            '
+            ' < /dev/null
