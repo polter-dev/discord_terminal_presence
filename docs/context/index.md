@@ -17,5 +17,6 @@ Start here, then read the module entry before opening source.
 | Usage | [`usage.md`](usage.md) | `internal/usage` | Stores bounded local tool-usage history for settings ranking. |
 
 Platform-specific test contracts live with their module entries: launchd/systemd and
-Linux mount semantics run only on their native OS, while the Windows tty-presence gap
-remains explicitly skipped under #183.
+Linux mount semantics run only on their native OS. Windows terminal presence is covered
+by dedicated Windows tests; five Unix-specific TTY-atime/tmux fixture tests remain
+skipped on Windows.

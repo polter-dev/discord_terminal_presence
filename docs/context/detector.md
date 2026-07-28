@@ -64,4 +64,9 @@ live CLI watch uses it so only the daemon persists `presence.json`.
 **Depends on / used by:** Depends on `internal/registry` and gopsutil; produces snapshots
 for the daemon, status, presence mapping, watch, and usage recording.
 
-**Open questions / TODO:** Windows tty-presence coverage remains tracked in #183.
+**Open questions / TODO:** Windows classic-console focus and idle detection is implemented
+and covered by dedicated Windows tests. Windows Terminal/ConPTY cannot be attributed to an
+active tab with generic Win32 APIs, so resolution deliberately fails open there. Five
+generic selector tests remain skipped on Windows because their TTY-atime/tmux fixtures
+model Unix semantics, not because Windows presence is unimplemented; neither #275 nor
+#304 tracks a residual detector gap.
