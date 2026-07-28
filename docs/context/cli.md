@@ -14,7 +14,8 @@ usage/config wiring. `cmd/termp/connect.go` and `control_*` own daemon control.
 tag-pinned archives. `.github/workflows/release.yml` and `.goreleaser.yaml` own releases,
 including gated Homebrew Cask and Scoop manifest publication;
 `.github/workflows/verify-release-secrets.yml` provides the manual publishing-token
-pre-flight check.
+pre-flight check. `.github/workflows/ci.yml` owns cross-platform tests and real
+package-layout integration probes.
 
 **Invariants / gotchas:** Start treats the validated PID file as final arbiter, also
 recognizes a fresh same-user/same-executable `discord.json` publisher, and waits for
@@ -86,6 +87,14 @@ authored padding blank lines, so deb/rpm is the only channel whose padding comes
 from this repo; Homebrew renders the box directly under its own `==> Caveats`
 header, followed by a single trailing blank line that Homebrew itself emits. The
 package script always exits successfully so guidance cannot break an install.
+
+CI snapshot-builds and installs the real deb and rpm artifacts in digest-pinned
+`debian:stable` and `fedora:latest` containers. A probe executed from the package-owned
+`/usr/bin/termp` path verifies live `dpkg-query`/`rpm` detection, then the packaged CLI
+uses a local TLS release stub with outbound networking disabled. The job asserts a
+redirected update refuses before `curl` and leaves `/usr/local/bin` unchanged. Because
+the containers run as root, this does not cover an interactive sudo password prompt;
+that behavior requires a pty and a human.
 
 The installer labels `termp uninstall` as a login-only action rather than implying that
 it removes the binary. It resolves one tag for archive/checksum, prefers
