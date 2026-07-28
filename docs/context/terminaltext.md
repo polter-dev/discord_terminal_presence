@@ -53,6 +53,13 @@ payload is decoded again as ordinary input. Non-string terminal sequences contin
 recognized by Charm's decoder; an incomplete non-string sequence at end-of-input receives
 the same bounded treatment. `SanitizeSingleLine` always calls `Sanitize` last —
 substitution can only ever break an escape sequence apart, never assemble or preserve one.
+Consequently, sanitization is no longer monotonically shortening: for the same input,
+`Sanitize` can return materially more text than before because an aborted sequence's
+payload is now preserved (for example, `"proj\x1b]"` followed by `"a"` and 200 combining
+acute accents grows from 4 runes to 205). This is not a new character exposure—every such
+character is equally reachable in a name without an escape prefix—but callers that reason
+about output length must account for it, particularly `internal/presence`, which bounds
+text before sanitizing.
 (An escape sequence, or an OSC title, that already spanned what were two lines before
 substitution is still stripped as a unit when properly terminated, exactly as a same-line
 escape or OSC title is.)

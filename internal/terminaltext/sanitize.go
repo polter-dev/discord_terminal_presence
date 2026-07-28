@@ -72,9 +72,10 @@ func stripANSIWithBoundedSequences(value string) string {
 		if state != ansi.NormalState {
 			introducerLen := 1
 			if sequence[0] == ansi.ESC && len(sequence) > 1 {
+				// The introducer is ESC plus the following introducer byte.
 				introducerLen = 2
 			}
-			value = sequence[introducerLen:]
+			value = value[introducerLen:]
 			continue
 		}
 
@@ -107,6 +108,8 @@ func stringSequenceIntroducerLen(value string) int {
 // legitimate BEL or ST terminator. ESC not followed by '\', CAN, SUB, and
 // end-of-input abort the sequence.
 func stringSequenceTerminator(payload string) (n int, terminated bool) {
+	// Advancing by utf8.DecodeRuneInString's size keeps the ansi.ST byte
+	// comparison safe from UTF-8 continuation bytes that equal 0x9C.
 	for offset := 0; offset < len(payload); {
 		switch payload[offset] {
 		case ansi.BEL, ansi.ST:
