@@ -5,13 +5,18 @@ rendering boundary.
 
 **Public surface:** `Sanitize` removes ANSI/OSC escapes, C0/C1 controls, and Unicode
 bidirectional formatting controls while preserving ordinary Unicode text.
+`SanitizeSingleLine` additionally replaces CR/LF line breaks with a visible ` ; `
+separator before sanitizing.
 
 **Key files:** `internal/terminaltext/sanitize.go` contains the shared sanitizer.
 
 **Invariants / gotchas:** CLI status output, verbose logging, daemon and interactive-watch
 config warnings, and TUI rendering must pass externally derived text through this package.
 Sanitization is a rendering-boundary defense and does not replace validation or directory
-privacy resolution.
+privacy resolution. Single-line status fields and log records use `SanitizeSingleLine`;
+multi-step values remain readable without joining tokens, changing label-column
+alignment, or allowing a line break to inject another log record. `Sanitize` itself
+continues to strip all control characters, including newlines.
 
 **Depends on / used by:** Depends on Charm's ANSI parser; used by `cmd/termp` and
 `internal/tui`.

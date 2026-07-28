@@ -1442,6 +1442,22 @@ func TestUpdateNoticeLabelsSystemPackageGuidanceAsNonRunnable(t *testing.T) {
 	}
 }
 
+func TestDisplayValueSeparatesDebianUpdateGuidance(t *testing.T) {
+	guidance := updatepkg.GuidanceForMethod(updatepkg.InstallDebian, "v0.1.1").Text
+	got := displayValue(guidance)
+	want := strings.ReplaceAll(guidance, "\n", " ; ")
+
+	if strings.Contains(got, ".debsudo") {
+		t.Fatalf("displayValue() glued Debian commands: %q", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Fatalf("displayValue() contains a raw newline: %q", got)
+	}
+	if got != want {
+		t.Fatalf("displayValue() = %q, want copy-pasteable commands %q", got, want)
+	}
+}
+
 func TestWrappedUpdateCommandsRemainCopyPasteable(t *testing.T) {
 	for _, command := range []string{updatepkg.BrewCommand, updatepkg.GoCommand("v1.1.0"), updatepkg.GenericCommand("v1.1.0")} {
 		for _, width := range []int{20, 40, 80} {
@@ -2203,10 +2219,10 @@ func TestDebugfSanitizesTerminalText(t *testing.T) {
 	log.SetFlags(0)
 	log.SetPrefix("")
 	verbose = true
-	debugf("scan %s", "safe\x1b]52;c;clipboard\x07\u061cevil")
+	debugf("scan %s", "safe\x1b]52;c;clipboard\x07\u061cevil\nnext")
 
-	if got := buf.String(); got != "scan safeevil\n" {
-		t.Fatalf("debugf output = %q, want sanitized log line", got)
+	if got := buf.String(); got != "scan safeevil ; next\n" {
+		t.Fatalf("debugf output = %q, want one sanitized log record", got)
 	}
 }
 

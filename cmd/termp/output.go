@@ -45,7 +45,7 @@ func formatSections(title string, sections ...outputSection) string {
 }
 
 func displayValue(value string) string {
-	value = strings.TrimSpace(terminaltext.Sanitize(value))
+	value = strings.TrimSpace(terminaltext.SanitizeSingleLine(value))
 	if value == "" || strings.EqualFold(value, "n/a") {
 		return "—"
 	}

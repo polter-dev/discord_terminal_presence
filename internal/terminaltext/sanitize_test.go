@@ -26,3 +26,11 @@ func TestSanitize(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeSingleLine(t *testing.T) {
+	input := "first\x1b[31m\r\nsecond\nthird\rfourth"
+	want := "first ; second ; third ; fourth"
+	if got := SanitizeSingleLine(input); got != want {
+		t.Fatalf("SanitizeSingleLine(%q) = %q, want %q", input, got, want)
+	}
+}

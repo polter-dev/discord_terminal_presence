@@ -115,7 +115,10 @@ Structured CLI output, verbose log messages, and daemon/watch config warnings sa
 externally derived terminal text. Detection logs resolve the working directory through
 the same effective privacy policy and path-reduction helper as presence output, cap
 expanded paths at their final two components, and report `hidden` when directory display
-is not allowed.
+is not allowed. Labelled status values and single-line log records replace embedded line
+breaks with a visible ` ; ` separator before sanitizing, preserving multi-step update
+commands without breaking status-column alignment, gluing tokens, or permitting log-line
+injection.
 Per-tool enablement is passed into detector selection, and hot reloads that change it
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
 Live watch loads the daemon's episode anchors for matching elapsed-time display but runs

@@ -333,7 +333,7 @@ func addVerboseFlag(fs *flag.FlagSet) {
 
 func debugf(format string, args ...any) {
 	if verbose {
-		log.Print(terminaltext.Sanitize(fmt.Sprintf(format, args...)))
+		log.Print(terminaltext.SanitizeSingleLine(fmt.Sprintf(format, args...)))
 	}
 }
 
@@ -885,7 +885,7 @@ func start(args []string) error {
 }
 
 func logDaemonConfigWarning(warning string) {
-	log.Print(terminaltext.Sanitize(warning))
+	log.Print(terminaltext.SanitizeSingleLine(warning))
 }
 
 type startOptions struct {
@@ -1826,7 +1826,7 @@ func watch(args []string) error {
 			return err
 		}
 		for _, warning := range warnings {
-			log.Print(terminaltext.Sanitize(warning))
+			log.Print(terminaltext.SanitizeSingleLine(warning))
 		}
 		fmt.Println(card)
 		return nil
@@ -1876,7 +1876,7 @@ func watch(args []string) error {
 }
 
 func logWatchConfigWarning(warning string) {
-	log.Print(terminaltext.Sanitize(warning))
+	log.Print(terminaltext.SanitizeSingleLine(warning))
 }
 
 func watchSnapshot(now time.Time) (string, []string, error) {

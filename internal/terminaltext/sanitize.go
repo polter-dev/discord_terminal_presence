@@ -23,3 +23,14 @@ func Sanitize(value string) string {
 	}
 	return cleaned.String()
 }
+
+// SanitizeSingleLine sanitizes value while replacing line breaks with a visible
+// separator so adjacent lines cannot be joined into a different token.
+func SanitizeSingleLine(value string) string {
+	value = strings.NewReplacer(
+		"\r\n", " ; ",
+		"\r", " ; ",
+		"\n", " ; ",
+	).Replace(value)
+	return Sanitize(value)
+}
