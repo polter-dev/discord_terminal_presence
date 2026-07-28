@@ -25,6 +25,26 @@ last-good config; daemon/watch rendering labels them as watcher errors instead o
 failures. Windows migrates legacy state to the native config directory on a best-effort
 basis.
 
+`Manager.Reload` defends against non-atomic (truncate-then-write) saves, which is what a
+transient empty or partial file — often still syntactically valid TOML on its own — comes
+from: before accepting a read as a reload result, it waits (via `settledConfigSnapshot`)
+for two consecutive reads of the file to agree, reading every ~15ms, up to 20 attempts
+(~300ms budget). This fixes #410: without it, an ordinary non-atomic editor save produced
+a momentary 0-byte file that fsnotify observed and the manager accepted as last-good,
+silently discarding the user's real settings (`enabled = false` included) in favor of
+defaults. A file that never stops changing within the budget leaves last-good and
+`LastError` untouched for that reload attempt (relying on the write's completion to fire
+another fsnotify event); a deliberately blanked config that stays blank still settles and
+loads defaults, so that legitimate reset path is unaffected. This is a mitigation, not a
+guarantee: a writer that pauses longer than the poll interval mid-save can still settle
+on a partial state — either a pause right after truncate (observed flipping
+`enabled = false` back to the default `true`) or a pause mid-content that leaves a stable
+but incomplete prefix (observed settling on one written field while a later field in the
+same save was still pending). In both cases the write's later completion fires a further
+fsnotify event that corrects last-good, but persistent loss remains theoretically
+reachable on Linux if that final content happens to be invalid TOML. Tracked as a
+follow-up to #410.
+
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,
 so config does not expose a second directory formatter that could diverge from it.
@@ -37,10 +57,9 @@ custom-tool display names must contain 2–128 characters.
 The feedback target is likewise bounded and restricted to an absolute HTTP(S) URL.
 Config reads are capped at 1 MiB before TOML decoding.
 
-Watch tests write config changes atomically so they exercise malformed content rather
-than a truncation window. A transient empty file remains valid TOML and currently becomes
-the manager's last-good defaults; whether that behavior should change is an open question
-tracked in #410.
+Most watch tests write config changes atomically so they exercise malformed content
+rather than a truncation window; a dedicated set of tests (see `nonAtomicWriter` in
+`config_test.go`) writes non-atomically on purpose to cover the settle behavior above.
 
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically

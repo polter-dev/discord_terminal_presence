@@ -68,6 +68,61 @@ func writeConfig(t *testing.T, path, content string) {
 	}
 }
 
+// nonAtomicWriter simulates an editor doing a non-atomic save: it truncates
+// the destination in place, signals truncated once that has happened, then
+// (after an optional delay) writes the final content into the same file
+// descriptor and closes it. This reproduces the transient-empty-file window
+// that a truncate-then-write save produces, which os.Rename-based atomic
+// writes (writeConfig above) never do.
+//
+// write runs the save on its own goroutine (so the test goroutine can
+// synchronize on truncated while the save is still in flight) and reports
+// any I/O error over done rather than calling t.Fatal itself: a t.Fatal from
+// a non-test goroutine only Goexits that goroutine, it does not reliably
+// fail the test, which would let a real write failure hide behind an
+// otherwise-passing assertion. Callers must call wait(t) to join and surface
+// that error on the test goroutine.
+type nonAtomicWriter struct {
+	truncated chan struct{}
+	done      chan error
+}
+
+func newNonAtomicWriter(t *testing.T) *nonAtomicWriter {
+	t.Helper()
+	return &nonAtomicWriter{truncated: make(chan struct{}), done: make(chan error, 1)}
+}
+
+func (w *nonAtomicWriter) write(path, content string, delayBeforeContent time.Duration) {
+	go func() {
+		w.done <- w.doWrite(path, content, delayBeforeContent)
+	}()
+}
+
+func (w *nonAtomicWriter) doWrite(path, content string, delayBeforeContent time.Duration) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	close(w.truncated)
+	if delayBeforeContent > 0 {
+		time.Sleep(delayBeforeContent)
+	}
+	if _, err := f.Write([]byte(content)); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// wait joins the write goroutine and fails the test (on the test goroutine)
+// if the simulated save itself errored.
+func (w *nonAtomicWriter) wait(t *testing.T) {
+	t.Helper()
+	if err := <-w.done; err != nil {
+		t.Fatalf("non-atomic writer failed: %v", err)
+	}
+}
+
 func boolPtr(v bool) *bool {
 	return &v
 }
@@ -1440,5 +1495,136 @@ image_url = "https://example.test/mine.png"
 	}
 	if tool, ok := reg.MatchProcess(registry.ProcessInfo{Name: "mine", Cmdline: "mine --interactive"}); !ok || tool.ID != "mine" {
 		t.Fatalf("interactive process match = (%#v, %t), want custom tool", tool, ok)
+	}
+}
+
+// TestManagerReloadWaitsOutNonAtomicTruncationWindow is the #410 regression: a
+// non-atomic save (truncate, then write the final content after a delay)
+// produces a transient empty file that parses as valid TOML. A reload that
+// fires during that window must not adopt the transient defaults as
+// last-good; it must wait for the write to finish and observe the final
+// content instead.
+func TestManagerReloadWaitsOutNonAtomicTruncationWindow(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `scan_interval = "7s"`)
+	manager := NewManagerPath(path)
+
+	writer := newNonAtomicWriter(t)
+	defer writer.wait(t)
+	writer.write(path, `scan_interval = "9s"`, 3*time.Millisecond)
+
+	<-writer.truncated
+	// Fire the reload right as fsnotify would for the truncation event, while
+	// the file is still 0 bytes on disk.
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload during truncation window returned error: %v", err)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if cfg.ScanInterval != "9s" {
+		t.Fatalf("last-good scan interval = %q, want settled value 9s (reload must not adopt the transient empty file as last-good)", cfg.ScanInterval)
+	}
+}
+
+// TestManagerReloadDeliberatelyEmptiedConfigLoadsDefaults confirms the fix for
+// #410 does not regress the legitimate case: a config that is blanked and
+// stays blank (an atomic write, so it never observes a transient state) must
+// still load defaults, not be rejected as if it were invalid.
+func TestManagerReloadDeliberatelyEmptiedConfigLoadsDefaults(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `scan_interval = "7s"`)
+	manager := NewManagerPath(path)
+
+	writeConfig(t, path, ``)
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload of a deliberately emptied config returned error: %v", err)
+	}
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v, want defaults after deliberate blank", err)
+	}
+	if cfg.ScanInterval != Default().ScanInterval {
+		t.Fatalf("scan interval after deliberate blank = %q, want default %q", cfg.ScanInterval, Default().ScanInterval)
+	}
+}
+
+// TestManagerReloadPreservesEnabledFalseAcrossNonAtomicRewrite is the privacy
+// variant of #410: enabled=false travels the same reload path as
+// scan_interval, so a non-atomic rewrite of an unrelated field must not let
+// the transient empty file flip enabled back to its true default.
+func TestManagerReloadPreservesEnabledFalseAcrossNonAtomicRewrite(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, "enabled = false\nscan_interval = \"7s\"\n")
+	manager := NewManagerPath(path)
+	if cfg, err := manager.Current(); err != nil || cfg.Enabled {
+		t.Fatalf("initial Current() = (%#v, %v), want enabled=false", cfg, err)
+	}
+
+	writer := newNonAtomicWriter(t)
+	defer writer.wait(t)
+	writer.write(path, "enabled = false\nscan_interval = \"9s\"\n", 3*time.Millisecond)
+
+	<-writer.truncated
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload during truncation window returned error: %v", err)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("enabled flipped to true after a non-atomic rewrite of an unrelated field; reload must not adopt the transient empty-file default")
+	}
+	if cfg.ScanInterval != "9s" {
+		t.Fatalf("scan interval = %q, want settled value 9s", cfg.ScanInterval)
+	}
+}
+
+// TestManagerWatchIgnoresTransientEmptyDuringNonAtomicWrite drives the #410
+// scenario through the real fsnotify-backed Watch() pipeline (the same path
+// production and CI hit), rather than calling Reload() directly. It confirms
+// last-good never regresses to defaults for any reload observed while a
+// non-atomic save is in flight, and settles on the final content once the
+// filesystem quiets down.
+func TestManagerWatchIgnoresTransientEmptyDuringNonAtomicWrite(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `scan_interval = "7s"`)
+	manager := NewManagerPath(path)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := manager.Watch(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	writer := newNonAtomicWriter(t)
+	defer writer.wait(t)
+	writer.write(path, `scan_interval = "9s"`, 3*time.Millisecond)
+
+	deadline := time.After(2 * time.Second)
+	sawFinal := false
+	for !sawFinal {
+		select {
+		case reload := <-manager.Reloads():
+			if reload.Err == nil && reload.Config.ScanInterval == Default().ScanInterval && Default().ScanInterval != "7s" {
+				t.Fatalf("watch-driven reload adopted defaults as last-good: %#v", reload)
+			}
+			if reload.Err == nil && reload.Config.ScanInterval == "9s" {
+				sawFinal = true
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the fsnotify-driven reload to settle on the final content")
+		}
+	}
+
+	current, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if current.ScanInterval != "9s" {
+		t.Fatalf("last-good scan interval = %q, want settled value 9s", current.ScanInterval)
 	}
 }
