@@ -3053,7 +3053,7 @@ func TestDirectoryAllowlistToolOverrideBlankEntryRejected(t *testing.T) {
 func TestSaveDoesNotRewriteAllowlistMeaning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	entry := filepath.Join(string(filepath.Separator), "allowed", "only")
-	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = [\""+filepath.ToSlash(entry)+"\"]\n")
+	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = [\""+filepath.ToSlash(entry)+"\"]\n[tools.vim]\ndirectory_allowlist = []\n")
 
 	cfg, err := LoadPath(path)
 	if err != nil {
@@ -3079,6 +3079,14 @@ func TestSaveDoesNotRewriteAllowlistMeaning(t *testing.T) {
 	}
 	if reloaded.Resolve(tool).DirectoryAllowed(filepath.Join(string(filepath.Separator), "somewhere", "else")) {
 		t.Fatal("Save() widened the allowlist to allow an unlisted path")
+	}
+
+	outside := filepath.Join(string(filepath.Separator), "outside", "global", "allowlist")
+	if !reloaded.Resolve(registry.Tool{ID: "vim"}).DirectoryAllowed(outside) {
+		t.Fatal("Save() dropped vim's explicit empty allowlist override")
+	}
+	if reloaded.Resolve(registry.Tool{ID: "other-tool"}).DirectoryAllowed(outside) {
+		t.Fatal("Save() stopped a tool without an override from inheriting the global allowlist")
 	}
 }
 
