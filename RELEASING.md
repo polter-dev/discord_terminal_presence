@@ -10,6 +10,9 @@
 3. In `polter-dev/discord_terminal_presence`, open **Settings > Secrets and variables >
    Actions**, create a repository secret named `HOMEBREW_TAP_GITHUB_TOKEN`, and paste the
    token value.
+4. Run the **Verify release secrets** workflow from the repository's **Actions** page
+   before pushing a tag. Token scope failures otherwise surface only at publish time,
+   which caused v0.1.0 to be published broken.
 
 The workflow's built-in `GITHUB_TOKEN` creates the release in this repository. The
 separate personal access token is required because the built-in token cannot push the
