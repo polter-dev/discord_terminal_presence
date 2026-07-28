@@ -29,11 +29,9 @@ type dialPipeFunc func(context.Context, string, time.Duration) (net.Conn, error)
 
 func dialDiscordIPCWith(ctx context.Context, override string, dial dialPipeFunc, verify func(net.Conn) error) (net.Conn, error) {
 	var failures strings.Builder
-	if override != "" && !filepath.IsAbs(override) {
-		fmt.Fprintf(&failures, "  DISCORD_IPC_PATH %q is not absolute; override ignored\n", override)
-	}
 	endpointFound := false
-	for _, path := range discordIPCPipeCandidates(override) {
+
+	attempt := func(path string) (net.Conn, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -46,7 +44,7 @@ func dialDiscordIPCWith(ctx context.Context, override string, dial dialPipeFunc,
 				return nil, ctxErr
 			}
 			fmt.Fprintf(&failures, "  %s: %v\n", path, err)
-			continue
+			return nil, nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			_ = conn.Close()
@@ -56,9 +54,36 @@ func dialDiscordIPCWith(ctx context.Context, override string, dial dialPipeFunc,
 		if err := verify(conn); err != nil {
 			_ = conn.Close()
 			fmt.Fprintf(&failures, "  %s: %v\n", path, err)
-			continue
+			return nil, nil
 		}
 		return conn, nil
+	}
+
+	if override != "" {
+		if !filepath.IsAbs(override) {
+			return nil, fmt.Errorf("%w: DISCORD_IPC_PATH %q is not an absolute path", ErrDiscordIPCOverrideInvalid, override)
+		}
+		conn, err := attempt(override)
+		if err != nil {
+			return nil, err
+		}
+		if conn != nil {
+			return conn, nil
+		}
+		if !endpointFound {
+			return nil, fmt.Errorf("%w: DISCORD_IPC_PATH=%q override not connectable:\n%s", ErrDiscordIPCNotFound, override, failures.String())
+		}
+		return nil, fmt.Errorf("%w: DISCORD_IPC_PATH=%q override not connectable:\n%s", ErrDiscordIPCUnreachable, override, failures.String())
+	}
+
+	for _, path := range discordIPCPipeCandidates("") {
+		conn, err := attempt(path)
+		if err != nil {
+			return nil, err
+		}
+		if conn != nil {
+			return conn, nil
+		}
 	}
 
 	if !endpointFound {

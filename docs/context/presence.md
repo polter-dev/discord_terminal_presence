@@ -53,6 +53,21 @@ known Snap/Flatpak locations, then a deduplicated one-level glob. Candidates mus
 directory, ownership, socket-type, replacement, and peer-credential checks. Windows
 validates the named-pipe peer.
 
+`DISCORD_IPC_PATH` is authoritative, on both Unix and Windows: when set, only its own
+candidates are tried. A relative override is a hard error (`ErrDiscordIPCOverrideInvalid`),
+and a set-but-unconnectable override returns `ErrDiscordIPCNotFound`/`ErrDiscordIPCUnreachable`
+naming the override in the error text; the default candidate directories and glob search are
+never consulted in either failure case, so a broken override cannot silently fall through to a
+real running Discord instance.
+
+The Unix socket-candidate validator resolves the candidate's parent directory through
+`filepath.EvalSymlinks` before inspecting it (macOS ships `/tmp` as a symlink to
+`/private/tmp`, so a literal `lstat` of the parent would see a symlink, not a directory, and
+reject every `/tmp` candidate as an error instead of treating it as merely absent — including
+the sticky-global-`/tmp` carve-out, which is compared against the resolved path). The socket
+path itself is still `lstat`-ed, never `stat`-ed, inside the resolved directory, so a symlinked
+socket planted by another user is still refused.
+
 **Depends on / used by:** Consumes `internal/detector` and `internal/registry`; used by
 the daemon, status command, and TUI activity rendering.
 
