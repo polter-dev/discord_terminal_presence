@@ -49,11 +49,13 @@ Plain `termp uninstall` remains the start-at-login removal alias and points user
 `termp uninstall --all`. Full uninstall confirms unless `--yes` is supplied, stops and
 validates the daemon through the same process-image-aware stop path before deleting
 anything, then removes autostart, completions, config, state/cache, and the platform log.
-It never deletes the running executable. It reuses install ownership detection and the
-resolved generic install directory to print exact Homebrew, Scoop, apt, detected RPM
-front-end (`dnf`/`zypper`/`yum`, or `rpm -e`), Go, generic
-Unix, or Windows binary-removal guidance. Destructive tests inject paths beneath an
-asserted temporary home.
+The confirmation requires stdin and stdout to pass the operating system's fd-level TTY
+query, so character devices such as `/dev/null` cannot enter the Bubble Tea prompt and
+stall on EOF. It never deletes the running executable. It reuses install ownership
+detection and the resolved generic install directory to print exact Homebrew, Scoop, apt,
+detected RPM front-end (`dnf`/`zypper`/`yum`, or `rpm -e`), Go, generic Unix, or Windows
+binary-removal guidance. Destructive tests inject paths beneath an asserted temporary
+home.
 
 Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
 installs preflight the resolved running executable's directory and record a skipped
@@ -72,11 +74,13 @@ install it downloads the exact-tag, architecture-specific release package and
 `checksums.txt` into private temporary files, verifies SHA-256 fail-closed,
 and then runs `sudo apt install -y <file>` or the detected RPM front-end command
 (`dnf`/`zypper`/`yum`/`rpm`, probed in that order). It never uses
-the generic installer or writes to `/usr/local/bin`. When sudo, the package manager, or a
-TTY is unavailable, package ownership is ambiguous, or download/checksum/install fails,
-the command reports the reason and prints the existing exact-tag GitHub release download
-and local apt or detected-RPM-front-end instructions. Automatic/background updates never enter this path and
-continue to record a managed-package skip with zero commands. A failed executable update
+the generic installer or writes to `/usr/local/bin`. The interactive package path requires
+stdin to pass a real fd-level TTY query rather than accepting any character device. When
+sudo, the package manager, or a TTY is unavailable, package ownership is ambiguous, or
+download/checksum/install fails, the command reports the reason and prints the existing
+exact-tag GitHub release download and local apt or detected-RPM-front-end instructions.
+Automatic/background updates never enter this path and continue to record a
+managed-package skip with zero commands. A failed executable update
 prints the exact retry command for Homebrew and Go, while a non-Windows generic failure
 says to resolve the reported error and retry `termp update`. A Windows generic (archive)
 install is a permanent platform limitation rather than a transient failure — Windows locks
@@ -88,6 +92,12 @@ notices label multi-step system-package instructions `To update:` rather than `R
 They print `termp update` for generic installs, preserving the resolved executable
 directory; Homebrew and Go notices continue to print their direct package commands under
 `Run:`.
+
+Updater and installer curl downloads allow 10 seconds to connect and 300 seconds total;
+the installer's wget fallback uses a 10-second timeout and one attempt. These per-transfer
+bounds do not add a deadline to interactive `termp update`: its context remains
+deliberately unbounded so `sudo` can wait indefinitely for a human password prompt,
+preserving the issue #382 contract.
 
 Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned

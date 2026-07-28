@@ -73,11 +73,21 @@ assuming `dnf`. When no front-end is present the update fails before any downloa
 the printed guidance names no specific tool. Guidance, `termp uninstall --all`
 binary-removal text (`sudo <manager> remove termp`, `sudo rpm -e termp`), and the
 executed argv all use the same detected manager, so printed instructions are always
-runnable. Temporary files are removed on every return path. A missing tool or TTY, ambiguous package type,
-download error, empty artifact, missing/invalid checksum, checksum mismatch, or install
-error fails closed and leaves the existing exact-tag manual package instructions as the
-interactive fallback. Scoop and Linux package updates never use the generic installer or
-write a shadow binary under `/usr/local/bin`.
+runnable. Temporary files are removed on every return path. Before an executed Linux
+package update touches the network, stdin must be an actual terminal according to the
+operating system's fd-level TTY query; merely being a character device (for example
+`/dev/null`) is not enough. A missing tool or TTY, ambiguous package type, download error,
+empty artifact, missing/invalid checksum, checksum mismatch, or install error fails closed
+and leaves the existing exact-tag manual package instructions as the interactive fallback.
+Scoop and Linux package updates never use the generic installer or write a shadow binary
+under `/usr/local/bin`.
+
+Every updater-owned curl transfer, including the generic installer and both Linux package
+downloads, allows 10 seconds to connect and 300 seconds total. For release metadata,
+archives, and checksums, `install.sh` gives curl the same connection and transfer bounds
+and gives wget a 10-second timeout with one attempt. Interactive update still uses an
+intentionally unbounded context so a human can remain at a `sudo` password prompt without
+reintroducing issue #382; the downloader flags bound network work independently.
 
 Automatic updates remain non-interactive: all system-package methods short-circuit before
 `PerformUpdate`, record a managed-package skip, and invoke no download, `sudo`, apt, or

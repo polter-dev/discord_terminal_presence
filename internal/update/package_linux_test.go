@@ -41,10 +41,21 @@ func (r *packageRunner) Run(_ context.Context, command Command, _ io.Reader, _, 
 		return err
 	}
 	r.privateCreate = r.privateCreate || info.Mode().Perm() == 0o600
-	if strings.HasSuffix(command.Args[1], "/checksums.txt") {
+	if strings.HasSuffix(command.Args[5], "/checksums.txt") {
 		return os.WriteFile(output, []byte(r.checksum), 0o600)
 	}
 	return os.WriteFile(output, r.artifact, 0o600)
+}
+
+func TestReaderIsTerminalRejectsCharacterDeviceThatIsNotTTY(t *testing.T) {
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	if readerIsTerminal(null) {
+		t.Fatalf("readerIsTerminal(%s) = true, want false", os.DevNull)
+	}
 }
 
 func TestPerformSystemPackageUpdateVerifiesAndInstalls(t *testing.T) {
@@ -77,6 +88,13 @@ func TestPerformSystemPackageUpdateVerifiesAndInstalls(t *testing.T) {
 			}
 			if len(runner.commands) != 3 {
 				t.Fatalf("commands = %#v, want two downloads and one install", runner.commands)
+			}
+			for _, download := range runner.commands[:2] {
+				if len(download.Args) != 8 ||
+					!reflect.DeepEqual(download.Args[:5], []string{"--connect-timeout", "10", "--max-time", "300", "-fsSL"}) ||
+					download.Args[6] != "-o" {
+					t.Fatalf("download command = %#v, want bounded curl transfer", download)
+				}
 			}
 			install := runner.commands[2]
 			want := Command{Name: "sudo", Args: append(append([]string{}, tt.wantArgs...), runner.temporary[0])}

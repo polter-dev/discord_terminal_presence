@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	xterm "github.com/charmbracelet/x/term"
 )
 
 func performSystemPackageUpdate(
@@ -96,16 +98,10 @@ func performSystemPackageUpdate(
 
 	baseURL := fmt.Sprintf("https://github.com/polter-dev/discord_terminal_presence/releases/download/%s", tag)
 	assetURL := baseURL + "/" + assetName
-	if err := runner.Run(ctx, Command{
-		Name: "curl",
-		Args: []string{"-fsSL", assetURL, "-o", assetPath},
-	}, nil, stdout, stderr); err != nil {
+	if err := runner.Run(ctx, curlDownloadCommand(assetURL, assetPath), nil, stdout, stderr); err != nil {
 		return fmt.Errorf("download %s: %w", assetName, err)
 	}
-	if err := runner.Run(ctx, Command{
-		Name: "curl",
-		Args: []string{"-fsSL", baseURL + "/checksums.txt", "-o", checksumsPath},
-	}, nil, stdout, stderr); err != nil {
+	if err := runner.Run(ctx, curlDownloadCommand(baseURL+"/checksums.txt", checksumsPath), nil, stdout, stderr); err != nil {
 		return fmt.Errorf("download checksums for %s: %w", tag, err)
 	}
 	if err := verifyPackageChecksum(checksumsPath, assetPath, assetName); err != nil {
@@ -137,8 +133,7 @@ func readerIsTerminal(reader io.Reader) bool {
 	if !ok {
 		return false
 	}
-	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return xterm.IsTerminal(file.Fd())
 }
 
 func removePackageTemporaryFile(path string) {

@@ -41,9 +41,9 @@ download() {
 	dest=$2
 
 	if have curl; then
-		curl -fsSL "$url" -o "$dest"
+		curl --connect-timeout 10 --max-time 300 -fsSL "$url" -o "$dest"
 	elif have wget; then
-		wget -q "$url" -O "$dest"
+		wget --timeout=10 --tries=1 -q "$url" -O "$dest"
 	else
 		err "curl or wget is required"
 	fi
