@@ -100,10 +100,44 @@ the recorded target — covering a later automatic success, a manual `termp upda
 package-manager upgrade, or any other way the user reached that version — and it renders
 nothing at all while `auto_update` is disabled, since the section describes automatic-
 update behavior that is not currently running. `runAutomaticUpdateWithStatePathForPlatform`
-(cmd/termp/update.go) additionally calls `internal/update`'s
-`ClearAutomaticUpdateAttempt` to erase a stale record outright the first time a check
-finds no newer release, rather than leaving the stale JSON sitting in the cache
-indefinitely. Interactive
+(cmd/termp/update.go) additionally erases the stale record outright rather than leaving
+the stale JSON sitting in the cache indefinitely.
+
+**Stale automatic-attempt clearing (#418, #458).** `retireStaleAutomaticUpdateAttempt`
+(cmd/termp/update.go) owns the rule and runs on every daemon startup where
+`update_check` is on, *before* the `auto_update` branch — a record recorded while
+automatic updates were enabled and then stranded by turning them off (often *because*
+they failed) is exactly the case that has to clear (#458 cause 1, gate moved in #459).
+A recorded **failure** is stale when either:
+
+- the running version already satisfies the target (`!IsNewer(current, target)`), the
+  original #418 rule; or
+- the release source is not offering the target
+  (`!SameVersion(target, latest) && latest != ""`), added for #458 cause 2.
+
+The second rule exists because the first alone cannot retire a target that is bogus:
+the reporter's cache held `target_version: "1.1.0"`, which is not a real release and
+sorts newer than every shipped version, so `!IsNewer` was never satisfied and the record
+was immortal.
+
+`latest` is the version this run's check reported, falling back to
+`updatepkg.LastKnownLatest(statePath)` when the check produced no result. **That fallback
+is load-bearing, not a nicety:** `Checker.Check` returns `ok == false` whenever the
+running version is already current, so a rule written only against the check's own
+result never executes in the exact state the reporter's machine was in (latest release
+== running version). A `latest` of `""` means no successful check is on file — an
+unreachable release source is not evidence a target is gone — and no clearing conclusion
+is drawn from it.
+
+Deliberate asymmetry: this errs toward **preserving**. A failure for the version still
+being offered is kept, because that is a real failure `termp status` is the place to
+learn about; only a target the source is demonstrably not offering is deleted. Nothing
+is inferred from silence. Successful attempt records (`Error == ""`) are never touched —
+`clearStaleAutomaticUpdateAttempt` returns before consulting the staleness predicate.
+Clearing stays best-effort throughout: read and write failures are logged via `debugf`
+and never propagate, so nothing here can delay or fail daemon startup.
+
+Interactive
 `termp update` on a Scoop install prints the available-version header and
 `To update: scoop update termp` guidance without a system-package preamble, an
 `Updating...` line, stderr output, or an installer command. For a known Debian/RPM-owned

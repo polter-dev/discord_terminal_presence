@@ -475,6 +475,20 @@ func ClearAutomaticUpdateAttempt(path string) error {
 	})
 }
 
+// LastKnownLatest returns the release version most recently reported by a
+// successful check, or "" when the cache holds none. A failed check stores an
+// empty version, so "" means "we have no idea what the source is offering" and
+// callers must not draw conclusions from it. The value may be older than
+// cacheLifetime; it is still the last thing the release source actually said.
+// This reads only what a previous check already wrote — it never calls out.
+func LastKnownLatest(path string) string {
+	entry, ok := readCache(path)
+	if !ok {
+		return ""
+	}
+	return entry.Latest
+}
+
 // RecordAutomaticUpdateAttempt replaces the last automatic install attempt
 // while retaining the release-check metadata stored in the same cache.
 func RecordAutomaticUpdateAttempt(path, target string, attemptedAt time.Time, updateErr error) error {
@@ -1233,6 +1247,21 @@ func IsNewer(current, latest string) bool {
 		return false
 	}
 	return compareVersion(latestVersion, currentVersion) > 0
+}
+
+// SameVersion reports whether two version strings denote the same release by
+// semantic-version precedence, so a "v" prefix or build metadata on one side
+// only does not make them differ. A version that does not parse is never the
+// same as anything — every version this package records or reports has
+// already been validated by parseVersion, so an unparseable one can only have
+// come from outside that path.
+func SameVersion(left, right string) bool {
+	leftVersion, leftOK := parseVersion(left)
+	rightVersion, rightOK := parseVersion(right)
+	if !leftOK || !rightOK {
+		return false
+	}
+	return compareVersion(leftVersion, rightVersion) == 0
 }
 
 type semanticVersion struct {

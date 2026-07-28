@@ -95,21 +95,15 @@ func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.
 	checkCtx, cancelCheck := context.WithTimeout(ctx, updateCheckTimeout)
 	result, ok := checker.Check(checkCtx, current, cfg.UpdateCheck)
 	cancelCheck()
+	// Retiring a stale record runs on both check outcomes and ahead of the
+	// auto_update branch below. A record stranded by turning auto_update off
+	// after a failure is precisely the one that has to clear (issue #458), so
+	// this must not sit behind that gate. result.Latest is "" unless the check
+	// found something newer; retire falls back to the cache in that case.
+	retireStaleAutomaticUpdateAttempt(statePath, current, result.Latest)
+
 	if !ok {
 		debugf("automatic update check skipped or found no newer release")
-		// A previously recorded failure/skip can outlive its own relevance:
-		// the user may have updated manually, or a later check may simply
-		// no longer see a newer release. Once the recorded target is no
-		// longer newer than the running version, it is stale — clear it
-		// here too, rather than waiting for some future automatic attempt
-		// to happen to succeed (issue #418).
-		if attempt, attemptOK := updatepkg.ReadAutomaticUpdateAttempt(statePath); attemptOK && attempt.Error != "" && !updatepkg.IsNewer(current, attempt.Target) {
-			if err := updatepkg.ClearAutomaticUpdateAttempt(statePath); err != nil {
-				debugf("stale automatic update attempt could not be cleared: %v", err)
-			} else {
-				debugf("cleared stale automatic update attempt for %s", attempt.Target)
-			}
-		}
 		return
 	}
 
@@ -153,6 +147,63 @@ func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.
 		debugf("automatic update success could not be recorded: %v", err)
 	}
 	debugf("automatic update installed %s; it will take effect on next start", result.Latest)
+}
+
+// retireStaleAutomaticUpdateAttempt clears a recorded automatic-update failure
+// that can no longer be acted on. checkedLatest is the version this run's check
+// reported, or "" when the check found nothing newer or did not complete.
+//
+// Two independent things make a record stale:
+//
+//   - The running version already satisfies the target, so there is nothing
+//     left to install (issue #418).
+//   - The release source is not offering the target. A recorded target that is
+//     not the latest release describes an attempt at something withdrawn,
+//     superseded, or — as on the reporter's machine in issue #458 — never
+//     published at all. The old !IsNewer rule could not reach those: a bogus
+//     target such as "1.1.0" sorts newer than every shipped version, so the
+//     record was immortal.
+//
+// The latest version comes from the check when it produced one and otherwise
+// from what a previous check already wrote to the cache, because Check reports
+// no result at all once the running version is current — which is exactly the
+// state the reporter's machine is in. An empty latest means no check has ever
+// succeeded, and no conclusion is drawn from it.
+//
+// Comparison is by version precedence rather than string equality: a "v"
+// prefix can differ between the recorded target and a later check.
+//
+// A failure for the version still being offered is deliberately preserved.
+// That one is real and actionable, and `termp status` is where users are told
+// to look for it.
+func retireStaleAutomaticUpdateAttempt(statePath, current, checkedLatest string) {
+	latest := checkedLatest
+	if latest == "" {
+		latest = updatepkg.LastKnownLatest(statePath)
+	}
+	clearStaleAutomaticUpdateAttempt(statePath, func(attempt updatepkg.AutomaticUpdateAttempt) bool {
+		if !updatepkg.IsNewer(current, attempt.Target) {
+			return true
+		}
+		return latest != "" && !updatepkg.SameVersion(attempt.Target, latest)
+	})
+}
+
+// clearStaleAutomaticUpdateAttempt drops a recorded automatic-update failure
+// when stale reports it can no longer be acted on. It is best-effort by
+// design: every caller is on a daemon-startup path, so a state file that
+// cannot be read or written is logged and otherwise ignored rather than
+// turned into an error. Successful attempts (Error == "") are never touched.
+func clearStaleAutomaticUpdateAttempt(statePath string, stale func(updatepkg.AutomaticUpdateAttempt) bool) {
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
+	if !ok || attempt.Error == "" || !stale(attempt) {
+		return
+	}
+	if err := updatepkg.ClearAutomaticUpdateAttempt(statePath); err != nil {
+		debugf("stale automatic update attempt could not be cleared: %v", err)
+		return
+	}
+	debugf("cleared stale automatic update attempt for %s", attempt.Target)
 }
 
 type automaticUpdatePlatformError struct{}

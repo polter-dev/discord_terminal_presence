@@ -107,6 +107,40 @@ func TestIsNewerSemver(t *testing.T) {
 	}
 }
 
+func TestSameVersion(t *testing.T) {
+	tests := []struct {
+		name  string
+		left  string
+		right string
+		want  bool
+	}{
+		{name: "identical", left: "1.2.3", right: "1.2.3", want: true},
+		{name: "v prefix on one side", left: "v1.1.0", right: "1.1.0", want: true},
+		{name: "surrounding space", left: " 1.1.0 ", right: "v1.1.0", want: true},
+		{name: "build metadata ignored", left: "1.2.3+abc123", right: "1.2.3+def456", want: true},
+		{name: "different patch", left: "1.2.3", right: "1.2.4", want: false},
+		{name: "prerelease is not the release", left: "1.2.3-rc.1", right: "1.2.3", want: false},
+		{name: "bogus target vs real latest", left: "1.1.0", right: "0.1.3", want: false},
+		// An unparseable version is the same as nothing, including itself:
+		// it cannot be a release the source is offering.
+		{name: "invalid left", left: "main", right: "1.0.0", want: false},
+		{name: "invalid right", left: "1.0.0", right: "release", want: false},
+		{name: "both invalid and equal", left: "main", right: "main", want: false},
+		{name: "dev", left: "dev", right: "dev", want: false},
+		{name: "empty", left: "", right: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SameVersion(tt.left, tt.right); got != tt.want {
+				t.Fatalf("SameVersion(%q, %q) = %t, want %t", tt.left, tt.right, got, tt.want)
+			}
+			if got := SameVersion(tt.right, tt.left); got != tt.want {
+				t.Fatalf("SameVersion(%q, %q) = %t, want %t (not symmetric)", tt.right, tt.left, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGenericCommandPinsInstallerAndVersionToReleaseTag(t *testing.T) {
 	const tag = "v1.2.3"
 	command := GenericCommand(tag)
