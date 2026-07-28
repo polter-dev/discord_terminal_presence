@@ -42,6 +42,13 @@ Automatic attempt state shares the update cache and records time, target, error,
 distinct skipped flag. All cache read-modify-write transactions share a cross-process lock,
 so check-cache writes preserve concurrent automatic-attempt records. Status reports
 failed/skipped attempts; recording a later success leaves no reportable error and clears that warning.
+`LastKnownLatest` exposes the release version the last *successful* check wrote to that
+cache (a failed check stores an empty version, so `""` means "no successful check on
+file", never "no release exists"); it only reads what is already cached and never calls
+out. `SameVersion` compares two versions by semver precedence, so a `v` prefix or build
+metadata on one side only does not make them differ; an unparseable version is never the
+same as anything, including itself. `cmd/termp` uses both to decide which recorded
+attempts are stale — see [`cli.md`](cli.md).
 All updater commands validate and pin the exact semver tag. Generic updates download the
 tagged installer, pass a tagged archive URL, and explicitly set `BINDIR` to the resolved
 running executable's directory so a vanished custom environment does not create a
