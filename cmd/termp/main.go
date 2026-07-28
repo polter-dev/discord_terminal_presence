@@ -888,9 +888,7 @@ func start(args []string) error {
 	if loadErr != nil {
 		log.Print(startupConfigError(cfg.Path, loadErr))
 	}
-	for _, warning := range cfg.Warnings {
-		logDaemonConfigWarning(warning)
-	}
+	logConfigWarnings(cfg.Warnings)
 
 	// Updating is best-effort and asynchronous: it is triggered before the run
 	// loop, but can never delay or prevent daemon startup.
@@ -918,8 +916,10 @@ func printStartupConfigError(w io.Writer, path string, err error) {
 	fmt.Fprintf(w, "termp: %s\n", startupConfigError(path, err))
 }
 
-func logDaemonConfigWarning(warning string) {
-	log.Print(terminaltext.SanitizeSingleLine(warning))
+func logConfigWarnings(warnings []string) {
+	for _, warning := range warnings {
+		log.Print(terminaltext.SanitizeSingleLine(warning))
+	}
 }
 
 func configReloadFailure(err error) string {
@@ -1964,9 +1964,7 @@ func watch(args []string) error {
 		if err != nil {
 			return err
 		}
-		for _, warning := range warnings {
-			log.Print(terminaltext.SanitizeSingleLine(warning))
-		}
+		logConfigWarnings(warnings)
 		fmt.Println(card)
 		return nil
 	}
@@ -1981,9 +1979,7 @@ func watch(args []string) error {
 
 	manager := config.NewManager()
 	cfg, loadErr := manager.Current()
-	for _, warning := range cfg.Warnings {
-		logWatchConfigWarning(warning)
-	}
+	logConfigWarnings(cfg.Warnings)
 	if err := config.EnsureConfigDir(cfg.Path); err != nil {
 		log.Printf("config watch disabled: %v", err)
 	} else if err := manager.Watch(ctx); err != nil {
@@ -2012,10 +2008,6 @@ func watch(args []string) error {
 	_, err = program.Run()
 	cancel()
 	return err
-}
-
-func logWatchConfigWarning(warning string) {
-	log.Print(terminaltext.SanitizeSingleLine(warning))
 }
 
 func watchSnapshot(now time.Time) (string, []string, error) {

@@ -766,7 +766,7 @@ func UpdateCommandForMethod(method InstallMethod, tag string) (Command, error) {
 		}
 		return Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@" + tag}}, nil
 	case InstallScoop:
-		return Command{}, fmt.Errorf("Scoop installation must be updated with %q", ScoopCommand)
+		return Command{}, fmt.Errorf("update the Scoop installation with %q", ScoopCommand)
 	case InstallDebian, InstallRPM, InstallSystemPackage:
 		return Command{}, fmt.Errorf("system package installation must be updated manually:\n%s", GuidanceForMethod(method, tag).Text)
 	default:

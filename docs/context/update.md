@@ -53,8 +53,10 @@ executable), not a transient failure, so `runUpdate` detects a Windows generic i
 before calling `PerformUpdate` and prints non-runnable `go install`/release-archive
 guidance (`WindowsArchiveGuidance`) instead of attempting and then telling the user to
 retry. Scoop exposes `scoop update termp` guidance but is rejected by
-`PerformUpdate`, preserving package-manager ownership. Interactive Linux system-package
-updates download the matching exact-tag,
+`PerformUpdate`, preserving package-manager ownership. Command-construction errors use
+composable Go error phrasing while retaining proper-noun capitalization before callers
+add user-facing context. Interactive Linux system-package updates download the matching
+exact-tag,
 architecture-specific GitHub release `.deb` or `.rpm` and `checksums.txt` into private
 temporary files, require exactly one valid matching SHA-256 entry, and only then invoke
 `sudo apt install -y <file>` (deb) or the detected RPM front-end (rpm) as discrete argv.

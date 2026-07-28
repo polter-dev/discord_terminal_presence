@@ -23,9 +23,10 @@ for callers to route through their verbose-gated debug logger, so mapped output 
 empty or 2–128 runes without writing to the global logger. The activity name has no
 minimum. Opted-in directory or collection placement does not depend on tool-name display.
 
-The IPC boundary validates a per-field minimum for non-empty details, state, and image
-tooltip text, along with the other bounded activity text, image values, button
-labels/count, and absolute HTTP(S) URLs before encoding. The 2–128-character constraints
+The IPC boundary converts validated activity buttons directly to the wire payload's
+field-compatible named type. It validates a per-field minimum for non-empty details,
+state, and image tooltip text, along with the other bounded activity text, image values,
+button labels/count, and absolute HTTP(S) URLs before encoding. The 2–128-character constraints
 come from Discord's Social SDK references for
 [`discordpp::Activity`](https://discord.com/developers/docs/social-sdk/classdiscordpp_1_1Activity.html)
 and

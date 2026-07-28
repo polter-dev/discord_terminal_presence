@@ -898,13 +898,6 @@ func isNewerInstance(left, right toolCandidate) bool {
 	return left.Tool.Priority > right.Tool.Priority
 }
 
-func isBetterActiveTool(left, right FeaturedTool) bool {
-	if !left.StartedAt.Equal(right.StartedAt) {
-		return left.StartedAt.After(right.StartedAt)
-	}
-	return left.Tool.Priority > right.Tool.Priority
-}
-
 func sameDetection(left, right Detection) bool {
 	if left.None || right.None {
 		return left.None == right.None

@@ -168,7 +168,7 @@ func TestConnectCommandTimeoutDoesNotReportSuccess(t *testing.T) {
 
 	var output bytes.Buffer
 	err := connectCommandWith(nil, &output, &output, deps)
-	if err == nil || !strings.Contains(err.Error(), "could not be confirmed") {
+	if err == nil || !strings.Contains(err.Error(), "could not confirm the Discord connection") {
 		t.Fatalf("connect error = %v, want readiness timeout", err)
 	}
 	if strings.Contains(output.String(), "connected") {

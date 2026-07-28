@@ -359,10 +359,7 @@ func newSetActivityPayload(activity Activity, pid int, nonce string) setActivity
 	if len(activity.Buttons) > 0 {
 		payload.Args.Activity.Buttons = make([]buttonPayload, 0, len(activity.Buttons))
 		for _, button := range activity.Buttons {
-			payload.Args.Activity.Buttons = append(payload.Args.Activity.Buttons, buttonPayload{
-				Label: button.Label,
-				URL:   button.URL,
-			})
+			payload.Args.Activity.Buttons = append(payload.Args.Activity.Buttons, buttonPayload(button))
 		}
 	}
 

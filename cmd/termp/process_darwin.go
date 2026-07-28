@@ -135,6 +135,7 @@ func darwinKernelProcessImage(pid int) (string, error) {
 	)
 	buffer := make([]byte, procPIDPathMaxSize)
 	length, _, errno := syscall.Syscall6(
+		//lint:ignore SA1019 x/sys has no libSystem wrapper for proc_pidpath.
 		unix.SYS_PROC_INFO,
 		procInfoCallPIDInfo,
 		uintptr(pid),

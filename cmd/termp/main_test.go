@@ -2407,23 +2407,16 @@ func TestConfigWarningLogBoundariesSanitizeTerminalText(t *testing.T) {
 	log.SetFlags(0)
 	log.SetPrefix("")
 
-	for _, tt := range []struct {
-		name string
-		log  func(string)
-	}{
-		{name: "daemon run", log: logDaemonConfigWarning},
-		{name: "interactive watch", log: logWatchConfigWarning},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			var output bytes.Buffer
-			log.SetOutput(&output)
+	var output bytes.Buffer
+	log.SetOutput(&output)
 
-			tt.log("bad\x1b[31m warning")
+	logConfigWarnings([]string{
+		"bad\x1b[31m warning",
+		"another\nwarning",
+	})
 
-			if got := output.String(); got != "bad warning\n" {
-				t.Fatalf("warning output = %q, want sanitized log line", got)
-			}
-		})
+	if got := output.String(); got != "bad warning\nanother ; warning\n" {
+		t.Fatalf("warning output = %q, want sanitized log lines", got)
 	}
 }
 

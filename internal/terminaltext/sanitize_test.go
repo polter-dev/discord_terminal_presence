@@ -31,9 +31,9 @@ func TestSanitize(t *testing.T) {
 }
 
 func TestSanitizeSingleLine(t *testing.T) {
-	nel := ""
-	ls := " "
-	ps := " "
+	nel := "\u0085"
+	ls := "\u2028"
+	ps := "\u2029"
 	tests := []struct {
 		name  string
 		input string
