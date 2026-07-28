@@ -11,7 +11,9 @@ exposes `connect`. `install.sh` is the canonical generic release installer.
 usage/config wiring. `cmd/termp/connect.go` and `control_*` own daemon control.
 `cmd/termp/update.go` owns manual notices and opt-in automatic updates. `spawn_*`,
 `pidfile_*`, and `shutdown_*` contain platform lifecycle behavior. `install.sh` installs
-tag-pinned archives. `.github/workflows/release.yml` and `.goreleaser.yaml` own releases.
+tag-pinned archives. `.github/workflows/release.yml` and `.goreleaser.yaml` own releases;
+`.github/workflows/verify-release-secrets.yml` provides the manual publishing-token
+pre-flight check.
 
 **Invariants / gotchas:** Start treats the validated PID file as final arbiter, also
 recognizes a fresh same-user/same-executable `discord.json` publisher, and waits for
@@ -68,6 +70,10 @@ a partial destination binary.
 Tag runs create a draft release (`release.draft: true`) and attach the generated Cask
 without writing the tap. Only `release.published` triggers a second job that verifies
 the release is public, downloads that exact Cask, and updates the tap.
+Before a tag is pushed, the manually dispatched **Verify release secrets** workflow
+checks that each cross-repository publishing token is present, can see its configured
+target, and has `permissions.push` access without writing to that repository. Its token
+probes run in separate steps and report every invalid token in one run.
 
 Config initialization safety is documented in [`config.md`](config.md), terminal
 rendering in [`tui.md`](tui.md), update cache/detection in [`update.md`](update.md), and
