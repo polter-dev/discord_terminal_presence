@@ -191,7 +191,8 @@ install method. Homebrew installs use `brew upgrade`, source installs use
 `go install` for the new release, and macOS/Linux shell/binary installs reuse the
 install script. For detected deb/rpm installs, termp downloads the matching package and
 `checksums.txt`, verifies the package's SHA-256 integrity, then runs
-`sudo apt install -y` or `sudo dnf install -y`. Scoop installs are not
+`sudo apt install -y` for deb, or the first RPM front-end found on the system
+(`dnf`, `zypper`, `yum`, then `rpm -U`) for rpm. Scoop installs are not
 self-updated; termp prints `scoop update termp` for you to run after it exits.
 Windows archive installs cannot self-update; download the new release archive
 or use `go install`.

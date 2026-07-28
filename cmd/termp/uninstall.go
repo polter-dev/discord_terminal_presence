@@ -33,6 +33,7 @@ type uninstallAllDeps struct {
 	targets          func() ([]uninstallRemovalTarget, error)
 	confirm          func(string) (bool, error)
 	detectInstall    func() updatepkg.InstallMethod
+	rpmManager       func() string
 	genericBinDir    func() (string, error)
 	goos             string
 	stdout           io.Writer
@@ -49,6 +50,7 @@ func uninstallAll(force, yes bool) error {
 		targets:          defaultUninstallTargets,
 		confirm:          confirmCompleteUninstall,
 		detectInstall:    updatepkg.DetectInstallMethod,
+		rpmManager:       updatepkg.DetectRPMManager,
 		genericBinDir:    updatepkg.GenericInstallDir,
 		goos:             runtime.GOOS,
 		stdout:           os.Stdout,
@@ -68,7 +70,11 @@ func uninstallAllWithDeps(force, yes bool, deps uninstallAllDeps) error {
 		return err
 	}
 	method := deps.detectInstall()
-	binaryCommand, err := uninstallBinaryCommand(method, deps.goos, deps.genericBinDir)
+	rpmManager := ""
+	if deps.rpmManager != nil {
+		rpmManager = deps.rpmManager()
+	}
+	binaryCommand, err := uninstallBinaryCommand(method, deps.goos, rpmManager, deps.genericBinDir)
 	if err != nil {
 		return err
 	}
@@ -222,7 +228,10 @@ func validateUninstallTarget(target uninstallRemovalTarget) error {
 	return nil
 }
 
-func uninstallBinaryCommand(method updatepkg.InstallMethod, goos string, genericBinDir func() (string, error)) (string, error) {
+// uninstallBinaryCommand renders the command that removes the binary itself.
+// rpmManager is the RPM front-end detected on this system ("" when none is
+// installed), so RPM guidance never names a tool the user does not have.
+func uninstallBinaryCommand(method updatepkg.InstallMethod, goos, rpmManager string, genericBinDir func() (string, error)) (string, error) {
 	switch method {
 	case updatepkg.InstallHomebrew:
 		return "brew uninstall --cask termp", nil
@@ -231,9 +240,9 @@ func uninstallBinaryCommand(method updatepkg.InstallMethod, goos string, generic
 	case updatepkg.InstallDebian:
 		return "sudo apt remove termp", nil
 	case updatepkg.InstallRPM:
-		return "sudo dnf remove termp", nil
+		return updatepkg.RPMRemoveCommand(rpmManager), nil
 	case updatepkg.InstallSystemPackage:
-		return "sudo apt remove termp (Debian/Ubuntu) or sudo dnf remove termp (RPM-based Linux)", nil
+		return "sudo apt remove termp (Debian/Ubuntu) or " + updatepkg.RPMRemoveCommand(rpmManager) + " (RPM-based Linux)", nil
 	}
 
 	binDir, err := genericBinDir()

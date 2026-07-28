@@ -623,18 +623,86 @@ func GuidanceForMethod(method InstallMethod, tag string) Guidance {
 		return Guidance{Text: ScoopCommand}
 	case InstallGo:
 		return Guidance{Text: GoCommand(tag), Runnable: true}
-	case InstallDebian:
-		return systemPackageGuidance(method, tag, runtime.GOARCH)
-	case InstallRPM:
-		return systemPackageGuidance(method, tag, runtime.GOARCH)
-	case InstallSystemPackage:
-		return systemPackageGuidance(method, tag, runtime.GOARCH)
+	case InstallDebian, InstallRPM, InstallSystemPackage:
+		return systemPackageGuidance(method, tag, runtime.GOARCH, DetectRPMManager())
 	default:
 		return Guidance{Text: GenericCommand(tag), Runnable: true}
 	}
 }
 
-func systemPackageGuidance(method InstallMethod, tag, goarch string) Guidance {
+// rpmManagerCandidates lists RPM front-ends in preference order. dnf (Fedora,
+// RHEL 8+), zypper (openSUSE/SLES, which upgrades in place from a local file),
+// and yum (RHEL/CentOS 7) all resolve dependencies. Plain rpm is last because
+// it installs without resolving them.
+var rpmManagerCandidates = []string{"dnf", "zypper", "yum", "rpm"}
+
+// rpmManagerFallback describes every supported front-end. It is only used when
+// none of them is installed, where naming a single tool would be a guess.
+const rpmManagerFallback = "sudo dnf, sudo zypper, sudo yum, or sudo rpm"
+
+var cachedRPMManager = sync.OnceValue(func() string {
+	return detectRPMManager(exec.LookPath)
+})
+
+// resolveRPMManager is a variable so tests can pin the detected front-end.
+var resolveRPMManager = func() string { return cachedRPMManager() }
+
+// DetectRPMManager returns the first available RPM front-end, or "" when none
+// is installed. Callers must fall back to printed guidance on "" rather than
+// assuming a manager that is not present.
+func DetectRPMManager() string { return resolveRPMManager() }
+
+func detectRPMManager(lookPath func(string) (string, error)) string {
+	for _, name := range rpmManagerCandidates {
+		if _, err := lookPath(name); err == nil {
+			return name
+		}
+	}
+	return ""
+}
+
+// rpmInstallArgs returns the argv following sudo that installs or upgrades the
+// package at path with manager, or nil when manager is unknown or empty.
+func rpmInstallArgs(manager, path string) []string {
+	switch manager {
+	case "dnf", "yum":
+		return []string{manager, "install", "-y", path}
+	case "zypper":
+		// --non-interactive is a global option accepted by every zypper
+		// release; `install <file.rpm>` upgrades in place.
+		return []string{manager, "--non-interactive", "install", path}
+	case "rpm":
+		return []string{manager, "-U", path}
+	default:
+		return nil
+	}
+}
+
+// RPMInstallCommand renders the human-runnable install command for manager.
+func RPMInstallCommand(manager, file string) string {
+	switch manager {
+	case "dnf", "yum", "zypper":
+		return fmt.Sprintf("sudo %s install %s", manager, file)
+	case "rpm":
+		return fmt.Sprintf("sudo rpm -U %s", file)
+	default:
+		return fmt.Sprintf("install %s with your RPM package manager (%s)", file, rpmManagerFallback)
+	}
+}
+
+// RPMRemoveCommand renders the human-runnable removal command for manager.
+func RPMRemoveCommand(manager string) string {
+	switch manager {
+	case "dnf", "yum", "zypper":
+		return fmt.Sprintf("sudo %s remove termp", manager)
+	case "rpm":
+		return "sudo rpm -e termp"
+	default:
+		return fmt.Sprintf("remove termp with your RPM package manager (%s)", rpmManagerFallback)
+	}
+}
+
+func systemPackageGuidance(method InstallMethod, tag, goarch, rpmManager string) Guidance {
 	if !validReleaseTag(tag) {
 		return Guidance{}
 	}
@@ -653,9 +721,9 @@ func systemPackageGuidance(method InstallMethod, tag, goarch string) Guidance {
 		debianAsset,
 	)
 	rpm := fmt.Sprintf(
-		"curl -fLO %s\nsudo dnf install ./%s",
+		"curl -fLO %s\n%s",
 		fmt.Sprintf(packageDownloadURL, tag, rpmAsset),
-		rpmAsset,
+		RPMInstallCommand(rpmManager, "./"+rpmAsset),
 	)
 
 	switch method {
