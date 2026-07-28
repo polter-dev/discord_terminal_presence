@@ -51,8 +51,8 @@ func printAvailableUpdateContext(parent context.Context, cfg config.Config, load
 	))
 }
 
-func printCommandUpdateAlert(command string, args []string, interactive bool, cfg config.Config, loadErr error, stderr io.Writer) {
-	if loadErr != nil || cfg.AutoUpdate || !eligibleForUpdateAlert(command, args, interactive) {
+func printCommandUpdateAlert(command string, args []string, stderrTerminal bool, cfg config.Config, loadErr error, stderr io.Writer) {
+	if loadErr != nil || cfg.AutoUpdate || !eligibleForUpdateAlert(command, args, stderrTerminal) {
 		return
 	}
 	result, ok := releaseChecker.CachedCheck(version, cfg.UpdateCheck)
@@ -62,9 +62,19 @@ func printCommandUpdateAlert(command string, args []string, interactive bool, cf
 	fmt.Fprintf(stderr, "A new version (%s) is available — run `termp update`\n", result.Latest)
 }
 
-// runAutomaticUpdate is fail-open: startup callers never receive an update
-// error. They run it asynchronously so even a slow package manager cannot
-// delay the daemon. The installed release is used on the next daemon start.
+// runAutomaticUpdate refreshes the update-check cache and, only when
+// auto_update is enabled, installs the newer release.
+//
+// The cache refresh is deliberately not gated on auto_update: the one-line
+// command alert reads that cache and never touches the network, so without a
+// daemon-side refresh the users the alert exists for (auto_update off) would
+// only ever see it after manually running `termp version`/`status` (issue
+// #457). Installing stays opt-in — a user who turned auto_update off still
+// never gets an unattended install.
+//
+// It is fail-open: startup callers never receive an update error. They run it
+// asynchronously so even a slow package manager cannot delay the daemon. The
+// installed release is used on the next daemon start.
 func runAutomaticUpdate(ctx context.Context, cfg config.Config, current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner) {
 	runAutomaticUpdateWithStatePath(ctx, cfg, current, checker, runner, updatepkg.DefaultCachePath())
 }
@@ -74,9 +84,14 @@ func runAutomaticUpdateWithStatePath(ctx context.Context, cfg config.Config, cur
 }
 
 func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.Config, current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner, statePath, goos string) {
-	if !cfg.AutoUpdate || !cfg.UpdateCheck || checker == nil {
+	// update_check == false (or NO_UPDATE_CHECK) means no network call at all,
+	// for either purpose. Privacy wins.
+	if !cfg.UpdateCheck || checker == nil {
 		return
 	}
+	// Check writes the result to the shared cache even when the running
+	// version is already current, which is what keeps the command alert
+	// current for auto_update-off users.
 	checkCtx, cancelCheck := context.WithTimeout(ctx, updateCheckTimeout)
 	result, ok := checker.Check(checkCtx, current, cfg.UpdateCheck)
 	cancelCheck()
@@ -95,6 +110,13 @@ func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.
 				debugf("cleared stale automatic update attempt for %s", attempt.Target)
 			}
 		}
+		return
+	}
+
+	if !cfg.AutoUpdate {
+		// The cache is refreshed; installing without being asked is not on
+		// the table. The command alert takes it from here.
+		debugf("update check cached %s; automatic install is disabled", result.Latest)
 		return
 	}
 
@@ -180,26 +202,35 @@ var commandsLoadConfigForOwnAlert = map[string]bool{
 	"settings": true,
 }
 
-func eligibleForUpdateAlert(command string, args []string, interactive bool) bool {
-	switch command {
-	case "install", "uninstall", "disable", "enable", "start", "stop":
-		return true
-	case "settings", "setup":
-		return interactive
-	case "watch":
-		if !interactive {
-			return false
-		}
-		for _, arg := range args {
-			if arg == "--once" {
-				return false
-			}
-		}
-		return true
-	default:
-		// update, version, and status report update state themselves. config and
-		// completion are intended for non-interactive/script consumption.
+// eligibleForUpdateAlert reports whether a command may print the one-line
+// cached-update alert. The alert should reach a human running *any* command,
+// so this is a deny-list, not an allow-list (issue #457).
+//
+// stderrTerminal must be whether os.Stderr is a TTY, not whether the command
+// itself is interactive: the alert is written to stderr, so a TTY there means
+// a human is watching, while a redirected or piped stderr means a script is
+// capturing output that an extra line could corrupt.
+func eligibleForUpdateAlert(command string, args []string, stderrTerminal bool) bool {
+	if !stderrTerminal {
 		return false
+	}
+	if command != "help" && !knownCommand(command) {
+		// A typo dispatches to the unknown-command error; do not load config
+		// or nag on top of it.
+		return false
+	}
+	switch command {
+	case "update", "version", "status":
+		// These run their own live check and print the richer notice; alerting
+		// here would double-print. This is de-duplication, not suppression.
+		return false
+	case "completion":
+		// Its stdout is eval'd/sourced at shell startup, and shells commonly
+		// capture both streams while doing so; nagging on every new shell
+		// would be actively harmful.
+		return false
+	default:
+		return true
 	}
 }
 

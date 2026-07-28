@@ -9,7 +9,8 @@ Windows also exposes `connect`. `install.sh` is the canonical generic release in
 
 **Key files:** `cmd/termp/main.go` owns dispatch, daemon operation, status, setup, and
 usage/config wiring. `cmd/termp/connect.go` and `control_*` own daemon control.
-`cmd/termp/update.go` owns manual notices and opt-in automatic updates.
+`cmd/termp/update.go` owns manual notices, the cached command alert, the daemon's
+update-check cache refresh, and opt-in automatic updates.
 `cmd/termp/configload.go` owns the slow-load stderr notice and the pre-dispatch
 update-alert eligibility/dedup gate (#442). `spawn_*`,
 `pidfile_*`, and `shutdown_*` contain platform lifecycle behavior. `install.sh` installs
@@ -299,6 +300,48 @@ alert from their own already-loaded config instead of main() loading a second ti
 `status`'s own load goes through the package var `readOnlyConfigLoader` (defaults to
 `config.LoadReadOnly`) so tests can substitute a counting stub and assert "loads config
 exactly once" on an observable rather than on timing.
+
+**Update alert reachability (#457).** The one-line stderr alert ("A new version (X) is
+available — run termp update", `printCommandUpdateAlert` in `cmd/termp/update.go`)
+now follows a deny-list, not an allow-list: `eligibleForUpdateAlert` returns true for
+every known command except `update`, `version`, and `status` (which run their own live
+check and print the richer `Update available: X -> Y` block, so alerting would
+double-print) and `completion` (whose stdout is eval'd at shell startup). Unknown
+commands are also excluded so a typo does not pay a config load and a nag on top of the
+error. Three things changed together, because any one alone would have been nearly
+invisible:
+
+1. Bare `termp` runs the watch TUI from `main()`'s `flag.ErrHelp` branch and returned
+   before ever reaching the pre-dispatch alert, so the most human invocation of all was
+   the only one that never mentioned a new release. It now calls
+   `maybePrintCommandUpdateAlert("watch", …)` immediately before entering the TUI (same
+   single `readOnlyConfigLoader` load explicit `termp watch` already paid).
+2. The gate is now "is `os.Stderr` a TTY", not "is the command interactive". The alert is
+   written to stderr, so a TTY there means a human is watching, while a redirected or
+   piped stderr means something is capturing `2>&1` that an extra line could corrupt.
+   This shows the alert in more human situations (`config`, `watch --once` with a
+   terminal stderr) and is deliberately *stricter* than before for `install`/`uninstall`/
+   `start`/`stop`, which used to print it even with stderr redirected.
+3. The load-bearing part: `printCommandUpdateAlert` reads `CachedCheck`, which never
+   touches the network, and the daemon used to refresh that cache only when
+   `auto_update` was on — i.e. never for the exact population the alert exists for.
+   `runAutomaticUpdateWithStatePathForPlatform` is now gated on `update_check` alone;
+   after the check it returns before any preflight/install when `auto_update` is off.
+   Automatic *installing* is unchanged and still requires `auto_update`.
+
+Scope of the refresh, stated honestly: it happens once per daemon process, at daemon
+start, because `internal/update`'s `Checker` performs at most one lookup per process and
+caches for `cacheLifetime` (24h). A machine whose daemon keeps running past 24h without a
+restart still has no periodic refresh; `termp version`, `termp status`, and `termp
+update` remain the other refresh points. `update_check = false` and `NO_UPDATE_CHECK`
+still suppress every network call and the alert itself, and a config load error still
+suppresses the alert.
+
+Cost note: broadening eligibility means commands that load config for their own work now
+also pay `main()`'s pre-dispatch `LoadReadOnly` — one extra settled read, the same one
+`start`/`install`/`stop` already paid. `setup`/`settings` remain on the
+`commandsLoadConfigForOwnAlert` skip-list, so the expensive 3s-horizon load (#442) is
+still paid only once.
 
 If the daemon cannot start its config watcher at all — `config.EnsureConfigDir` or
 `Manager.Watch` failing, for example because the config directory path is occupied by a

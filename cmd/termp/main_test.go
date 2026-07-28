@@ -1762,13 +1762,14 @@ func TestCommandUpdateAlertSuppressed(t *testing.T) {
 		current string
 		loadErr error
 		envSet  bool
+		noTTY   bool
 	}{
+		{name: "stderr redirected", command: "start", enabled: true, current: "1.0.0", noTTY: true},
+		{name: "watch with stderr redirected", command: "watch", enabled: true, current: "1.0.0", noTTY: true},
 		{name: "update", command: "update", enabled: true, current: "1.0.0"},
 		{name: "version", command: "version", enabled: true, current: "1.0.0"},
 		{name: "status", command: "status", enabled: true, current: "1.0.0"},
 		{name: "completion", command: "completion", enabled: true, current: "1.0.0"},
-		{name: "config", command: "config", enabled: true, current: "1.0.0"},
-		{name: "watch once", command: "watch", args: []string{"--once"}, enabled: true, current: "1.0.0"},
 		{name: "disabled config", command: "start", enabled: false, current: "1.0.0"},
 		{name: "automatic updates", command: "start", enabled: true, current: "1.0.0"},
 		{name: "environment", command: "start", enabled: true, current: "1.0.0", envSet: true},
@@ -1787,7 +1788,7 @@ func TestCommandUpdateAlertSuppressed(t *testing.T) {
 			cfg.UpdateCheck = tt.enabled
 			cfg.AutoUpdate = tt.name == "automatic updates"
 			var stderr bytes.Buffer
-			printCommandUpdateAlert(tt.command, tt.args, true, cfg, tt.loadErr, &stderr)
+			printCommandUpdateAlert(tt.command, tt.args, !tt.noTTY, cfg, tt.loadErr, &stderr)
 			if got := stderr.String(); got != "" {
 				t.Fatalf("suppressed alert = %q", got)
 			}
@@ -1795,13 +1796,120 @@ func TestCommandUpdateAlertSuppressed(t *testing.T) {
 	}
 }
 
-func TestAutomaticUpdateDisabledDoesNothing(t *testing.T) {
+// TestCommandUpdateAlertShownForEveryOtherCommand pins the deny-list: the
+// alert reaches a human running any command that does not print the richer
+// live notice itself (issue #457).
+func TestCommandUpdateAlertShownForEveryOtherCommand(t *testing.T) {
+	oldChecker, oldVersion := releaseChecker, version
+	t.Cleanup(func() {
+		releaseChecker, version = oldChecker, oldVersion
+		_ = os.Unsetenv("NO_UPDATE_CHECK")
+	})
+	_ = os.Unsetenv("NO_UPDATE_CHECK")
+	cachePath := filepath.Join(t.TempDir(), "update-check.json")
+	data, err := json.Marshal(map[string]any{
+		"checked_at":     time.Now(),
+		"latest_version": "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releaseChecker = updatepkg.NewChecker(&failingReleaseSource{}, cachePath)
+	version = "1.0.0"
+	cfg := config.Default()
+	cfg.UpdateCheck = true
+	cfg.AutoUpdate = false
+
+	silent := map[string]bool{"update": true, "version": true, "status": true, "completion": true}
+	want := "A new version (v2.0.0) is available — run `termp update`\n"
+	checked := 0
+	for _, command := range append(commandNames(), "help") {
+		if silent[command] {
+			continue
+		}
+		checked++
+		t.Run(command, func(t *testing.T) {
+			var stderr bytes.Buffer
+			printCommandUpdateAlert(command, nil, true, cfg, nil, &stderr)
+			if got := stderr.String(); got != want {
+				t.Fatalf("%s alert = %q, want %q", command, got, want)
+			}
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no commands were checked; the command list is empty")
+	}
+	// watch --once is a scripting snapshot, but its output goes to stdout;
+	// a TTY stderr still means a human is watching.
+	var stderr bytes.Buffer
+	printCommandUpdateAlert("watch", []string{"--once"}, true, cfg, nil, &stderr)
+	if got := stderr.String(); got != want {
+		t.Fatalf("watch --once alert = %q, want %q", got, want)
+	}
+}
+
+func TestUpdateCheckDisabledMakesNoNetworkCall(t *testing.T) {
 	source := &failingReleaseSource{}
 	checker := updatepkg.NewChecker(source, filepath.Join(t.TempDir(), "update-check.json"))
 	runner := &recordingUpdateRunner{}
-	runAutomaticUpdate(context.Background(), config.Default(), "1.0.0", checker, runner)
+	cfg := config.Default()
+	cfg.UpdateCheck = false
+	cfg.AutoUpdate = true
+	runAutomaticUpdate(context.Background(), cfg, "1.0.0", checker, runner)
 	if source.calls != 0 || runner.calls != 0 {
-		t.Fatalf("disabled automatic update used source %d times and runner %d times", source.calls, runner.calls)
+		t.Fatalf("opted-out check used source %d times and runner %d times", source.calls, runner.calls)
+	}
+}
+
+// TestDaemonRefreshesCacheWithoutAutoUpdate is the load-bearing half of issue
+// #457: the command alert reads a cache nothing else refreshes for users who
+// left auto_update off, so the daemon must refresh it — without ever
+// installing anything they did not ask for.
+func TestDaemonRefreshesCacheWithoutAutoUpdate(t *testing.T) {
+	_ = os.Unsetenv("NO_UPDATE_CHECK")
+	t.Cleanup(func() { _ = os.Unsetenv("NO_UPDATE_CHECK") })
+	oldVersion := version
+	t.Cleanup(func() { version = oldVersion })
+
+	statePath := filepath.Join(t.TempDir(), "update-check.json")
+	source := &staticReleaseSource{latest: "v1.1.0"}
+	checker := updatepkg.NewChecker(source, statePath)
+	checker.DetectInstall = func() updatepkg.InstallMethod { return updatepkg.InstallGo }
+	runner := &recordingUpdateRunner{}
+	cfg := config.Default()
+	cfg.UpdateCheck = true
+	cfg.AutoUpdate = false
+
+	runAutomaticUpdateWithStatePath(context.Background(), cfg, "1.0.0", checker, runner, statePath)
+
+	if source.calls != 1 {
+		t.Fatalf("daemon check used source %d times, want 1", source.calls)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("auto_update off still invoked the update runner %d times", runner.calls)
+	}
+	if _, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath); ok {
+		t.Fatal("cache-only refresh recorded an automatic update attempt")
+	}
+
+	// The refreshed cache is what a later command reads: prove the alert now
+	// fires from it with no further network access.
+	oldChecker := releaseChecker
+	t.Cleanup(func() { releaseChecker = oldChecker })
+	alertSource := &failingReleaseSource{}
+	releaseChecker = updatepkg.NewChecker(alertSource, statePath)
+	version = "1.0.0"
+	var stderr bytes.Buffer
+	printCommandUpdateAlert("start", nil, true, cfg, nil, &stderr)
+	want := "A new version (v1.1.0) is available — run `termp update`\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("alert after daemon refresh = %q, want %q", got, want)
+	}
+	if alertSource.calls != 0 {
+		t.Fatalf("alert made %d network calls", alertSource.calls)
 	}
 }
 
@@ -2075,11 +2183,29 @@ func TestAutomaticUpdateCheckClearsStaleAttemptWhenNoLongerNewer(t *testing.T) {
 	}
 }
 
-func TestInteractiveOnlyAlertsAreSuppressedForScriptStyleInvocation(t *testing.T) {
-	for _, command := range []string{"settings", "setup", "watch"} {
+// TestUpdateAlertEligibility pins both halves of the rule: every command
+// reaches the alert when stderr is a terminal, except the four that must not
+// print it, and no command reaches it when stderr is redirected (a script or
+// pipe could be capturing 2>&1).
+func TestUpdateAlertEligibility(t *testing.T) {
+	silent := map[string]bool{"update": true, "version": true, "status": true, "completion": true}
+	commands := append(commandNames(), "help")
+	for _, command := range commands {
 		if eligibleForUpdateAlert(command, nil, false) {
-			t.Fatalf("%s eligible without an interactive terminal", command)
+			t.Fatalf("%s eligible with stderr redirected", command)
 		}
+		got := eligibleForUpdateAlert(command, nil, true)
+		if want := !silent[command]; got != want {
+			t.Fatalf("eligibleForUpdateAlert(%q, tty) = %t, want %t", command, got, want)
+		}
+	}
+	for _, command := range []string{"settings", "setup", "watch", "config", "autostart"} {
+		if !eligibleForUpdateAlert(command, nil, true) {
+			t.Fatalf("%s not eligible on a terminal", command)
+		}
+	}
+	if eligibleForUpdateAlert("nope", nil, true) {
+		t.Fatal("unknown command is eligible for the update alert")
 	}
 }
 
