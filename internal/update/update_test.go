@@ -914,6 +914,41 @@ func TestRecordAutomaticUpdateAttemptPreservesSkippedOutcome(t *testing.T) {
 	}
 }
 
+func TestClearAutomaticUpdateAttemptRemovesRecordButKeepsCacheMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "update.json")
+	attemptedAt := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	if err := writeCache(path, cacheEntry{CheckedAt: attemptedAt, Latest: "v1.2.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordAutomaticUpdateAttempt(path, "v1.2.0", attemptedAt, errors.New("boom")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ReadAutomaticUpdateAttempt(path); !ok {
+		t.Fatal("expected attempt to be recorded before clearing")
+	}
+
+	if err := ClearAutomaticUpdateAttempt(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ReadAutomaticUpdateAttempt(path); ok {
+		t.Fatal("ClearAutomaticUpdateAttempt() left an attempt behind")
+	}
+	entry, ok := readCache(path)
+	if !ok || entry.Latest != "v1.2.0" || entry.CheckedAt.IsZero() {
+		t.Fatalf("ClearAutomaticUpdateAttempt() lost release-check metadata: %+v (ok=%t)", entry, ok)
+	}
+
+	// Clearing an already-clear cache (or a missing one) must be a no-op, not
+	// an error, so callers can call it unconditionally once they've decided
+	// a recorded attempt is stale.
+	if err := ClearAutomaticUpdateAttempt(path); err != nil {
+		t.Fatalf("ClearAutomaticUpdateAttempt() on already-clear cache = %v", err)
+	}
+	if err := ClearAutomaticUpdateAttempt(filepath.Join(t.TempDir(), "missing.json")); err != nil {
+		t.Fatalf("ClearAutomaticUpdateAttempt() on missing cache = %v", err)
+	}
+}
+
 func TestCachedCheckNeverUsesReleaseSource(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	tests := []struct {

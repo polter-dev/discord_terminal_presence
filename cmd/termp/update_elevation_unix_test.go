@@ -68,7 +68,7 @@ func TestAutomaticGenericUpdateSkipsNonWritableDestination(t *testing.T) {
 			t.Fatalf("recorded skip %q missing %q", attempt.Error, want)
 		}
 	}
-	status := automaticUpdateFailure(statePath)
+	status := automaticUpdateFailure(statePath, "1.0.0")
 	for _, want := range []string{"skipped for v1.1.0", "elevated permissions", "run `termp update` manually"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status update reason %q missing %q", status, want)
@@ -93,7 +93,7 @@ func TestAutomaticGenericUpdateSkipsInstallDirResolutionFailure(t *testing.T) {
 	if !strings.Contains(attempt.Error, "locate running executable: unavailable") {
 		t.Fatalf("recorded skip %q missing install-dir error", attempt.Error)
 	}
-	status := automaticUpdateFailure(statePath)
+	status := automaticUpdateFailure(statePath, "1.0.0")
 	if !strings.Contains(status, "skipped for v1.1.0") {
 		t.Fatalf("status update reason %q does not report a skip", status)
 	}

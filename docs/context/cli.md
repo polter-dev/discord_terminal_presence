@@ -32,6 +32,28 @@ command is not yet supported on the platform.
 Status trusts a fresh connected publisher instead of probing Discord and exposes
 concurrent PID/publisher faults. Internal command errors are phrased to compose after the
 CLI adds its user-facing prefix while retaining proper-noun capitalization.
+`formatDiscordStatus`'s unmatched-error fallback reports `unknown (<err>)` rather than
+asserting the specific "Discord is running but unreachable" diagnosis it has not
+established; only the sentinel errors that actually mean that (`ErrDiscordIPCUnreachable`)
+render that text. (`internal/presence` PR #423, if/when merged, adds
+`ErrDiscordIPCOverrideInvalid` for a malformed `DISCORD_IPC_PATH`; it needs its own
+`errors.Is` branch here once that lands, or it will fall through to the honest-but-generic
+`unknown` case instead of a more specific one.)
+
+`termp status` reports Discord *connection* health (`Discord: connected`) and the last
+activity *publication* result (`Published:` — present only when the most recent publish
+attempt was rejected) as two separate facts: classic Discord IPC can permanently reject a
+payload (code 4000) while the connection stays healthy, so a rejection was previously
+invisible — `status` said "connected" while nothing reached the user's profile (issue
+#404). `presence.Writer` reports this through a new `WithPublicationState(func(error))`
+option (`internal/presence/writer.go`), fired with the rejection error on a permanent
+per-payload rejection and with `nil` once either a later publish succeeds or presence is
+cleared entirely (nothing left to reject) — either is what clears a reported rejection,
+never merely the passage of time. The daemon persists it in `daemon.json`'s
+`publication_ok`/`publication_error`/`publication_at` fields (mirroring `config_ok`) via
+`runDaemonDiscordStatePublisher`'s `publication` publisher, and `statusPublicationHealth`
+(cmd/termp/main.go) only trusts a fresh record from the currently-running daemon's PID,
+matching the existing `statusConfigHealth` pattern.
 
 Plain legacy PID records remain readable for stale-file cleanup, but a true legacy
 record without a process start time never authorizes signaling. New records explicitly
@@ -68,7 +90,18 @@ a separate process group so timeout cancellation terminates their full process t
 Interactive `termp update` commands stay in the foreground process group, allowing
 `sudo` in both generic and deb/rpm updates to read from the controlling terminal.
 Attempts are visible in
-`termp status`, and a later success clears the reported failure/skip. Interactive
+`termp status` under `Updates > Automatic`, gated by `automaticUpdateStatus`/
+`automaticUpdateFailure` (cmd/termp/main.go). The recorded failure/skip is retired the
+moment it is no longer true, not only when some future automatic attempt happens to
+succeed (issue #418): it is suppressed once the running version is no longer older than
+the recorded target — covering a later automatic success, a manual `termp update`, a
+package-manager upgrade, or any other way the user reached that version — and it renders
+nothing at all while `auto_update` is disabled, since the section describes automatic-
+update behavior that is not currently running. `runAutomaticUpdateWithStatePathForPlatform`
+(cmd/termp/update.go) additionally calls `internal/update`'s
+`ClearAutomaticUpdateAttempt` to erase a stale record outright the first time a check
+finds no newer release, rather than leaving the stale JSON sitting in the cache
+indefinitely. Interactive
 `termp update` on a Scoop install prints the available-version header and
 `To update: scoop update termp` guidance without a system-package preamble, an
 `Updating...` line, stderr output, or an installer command. For a known Debian/RPM-owned
@@ -220,7 +253,20 @@ writes a sanitized daemon log line, and updates the live watch warning banner wi
 writing through the global logger from the watch goroutine. The existing daemon state
 record carries config health, so `termp status` distinguishes startup failure (`off`)
 from reload failure (`using last-good config`) while showing the error. A successful
-reload clears that health error and the watch banner.
+reload clears that health error and the watch banner. A reload-introduced config warning
+(for example an unknown key added by an edit) is logged to the daemon log through the
+same `logConfigWarnings` helper startup warnings use (issue #416 comment), not just
+surfaced the next time something re-loads the file for `termp status`.
+
+If the daemon cannot start its config watcher at all — `config.EnsureConfigDir` or
+`Manager.Watch` failing, for example because the config directory path is occupied by a
+stray file — `startConfigWatchWithRetry` (cmd/termp/main.go) logs `config watch
+disabled: ...` exactly like `termp watch` already did, then keeps retrying in the
+background (`retryConfigWatch`, every `configWatchRetryInterval`, quietly after the first
+failure) until the watch starts or the daemon exits. Previously this failure was silent
+and permanent: the startup message promises presence recovers once the config is valid,
+but with no watcher ever established, a user who fixed the problem stayed stuck at 0
+reloads until they restarted the daemon (issue #416).
 
 Detached daemons and the macOS launchd foreground daemon own their log file through the
 same dependency-free rotating writer with a 1 MiB threshold and three retained

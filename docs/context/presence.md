@@ -7,7 +7,9 @@ updates through one client-owning writer goroutine.
 validated Discord IPC. `Probe(appID)` performs a login/logout reachability check.
 `StatusProbe(ctx, appID)` adds status-specific cancellation and I/O bounds. `Activity`,
 `Image`, `Button`, `DisplayOptions`, `ActivityFromDetection`, and `CollectionState` form
-the mapping boundary. `Writer` owns reconnect, throttling, coalescing, clear, and replay.
+the mapping boundary. `Writer` owns reconnect, throttling, coalescing, clear, and replay,
+and reports connection (`WithConnectionState`) and publication (`WithPublicationState`)
+health through separate hooks.
 
 **Key files:** `internal/presence/activity.go` defines payload mapping and privacy-aware
 display options. `internal/presence/client.go` owns framing, handshake, deadlines, and
@@ -38,6 +40,18 @@ returns code 4000, the writer currently classifies it as a permanent rejection f
 payload: it keeps the connection, does not schedule transport backoff or reapply the
 payload, and attempts normally again when the desired activity changes. Transport,
 timeout, and connection failures retain the existing reconnect backoff.
+
+`Writer` reports the outcome of that permanent-rejection handling through
+`WithPublicationState(func(error))`, separate from `WithConnectionState`: connection
+health and "did the last publish actually land" are different facts, and a healthy
+connection can coexist with a permanently rejected payload (issue #404 — Discord IPC can
+accept the connection while rejecting every SET_ACTIVITY for it). The hook fires with the
+rejection error on a permanent rejection, and with `nil` the moment either a later publish
+succeeds or presence is cleared (nothing left to reject) — those are the only two things
+that clear a reported rejection; it does not fire on every successful write (each periodic
+reapply included), only on that rejected/not-rejected transition, so a caller persisting it
+is not writing on every tick. `cmd/termp` persists this into the daemon state file and
+`termp status` renders it as a `Published` line distinct from `Discord` (connection).
 
 `SetActivity` calls `sanitizeActivity` (in `client.go`) before validating or building the
 wire payload: it runs `terminaltext.SanitizeSingleLine` on every Discord-facing text

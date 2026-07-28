@@ -36,6 +36,7 @@ type Writer struct {
 	clock            writeClock
 	debugf           func(string, ...any)
 	connectionState  func(bool)
+	publicationState func(error)
 }
 
 type reconnectRequest struct {
@@ -91,6 +92,21 @@ func WithConnectionState(connectionState func(bool)) WriterOption {
 	}
 }
 
+// WithPublicationState registers a hook for the outcome of the most recent
+// activity publication attempt, reported separately from connection health
+// (WithConnectionState). It fires with a nil error whenever the current
+// activity is applied successfully or presence is cleared (nothing left to
+// reject), and with the rejection error whenever Discord permanently rejects
+// a payload (for example classic IPC code 4000). A later successful publish
+// or a cleared presence is the only thing that clears a reported rejection.
+func WithPublicationState(publicationState func(error)) WriterOption {
+	return func(writer *Writer) {
+		if publicationState != nil {
+			writer.publicationState = publicationState
+		}
+	}
+}
+
 func withWriteClock(clock writeClock) WriterOption {
 	return func(writer *Writer) {
 		if clock != nil {
@@ -125,6 +141,7 @@ func NewWriter(client Client, appID string, options ...WriterOption) (*Writer, e
 		clock:            realWriteClock{},
 		debugf:           func(string, ...any) {},
 		connectionState:  func(bool) {},
+		publicationState: func(error) {},
 	}
 	for _, option := range options {
 		option(writer)
@@ -270,6 +287,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 
 	clear := func() {
 		w.debugf("presence clear")
+		hadRejection := rejected != nil
 		desired = nil
 		rejected = nil
 		pending = false
@@ -280,6 +298,9 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		if connected {
 			_ = w.client.Logout()
 			setConnected(false)
+		}
+		if hadRejection {
+			w.publicationState(nil)
 		}
 	}
 
@@ -309,6 +330,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 				stopWrite()
 				stopRetry()
 				stopReapply()
+				w.publicationState(err)
 				return err
 			}
 			if connected {
@@ -327,6 +349,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 		stopRetry()
 		w.retryDelay.Reset()
 		scheduleReapply()
+		w.publicationState(nil)
 		return nil
 	}
 
@@ -425,6 +448,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 						rejectedPayload := activityPayloadFor(*desired)
 						rejected = &rejectedPayload
 						pending = false
+						w.publicationState(err)
 						request.result <- reconnectResult{err: err}
 						continue
 					}
@@ -440,6 +464,7 @@ func (w *Writer) RunActivities(ctx context.Context, activities <-chan *Activity)
 				wrote = true
 				pending = false
 				scheduleReapply()
+				w.publicationState(nil)
 			}
 			request.result <- reconnectResult{}
 		case <-ctx.Done():
