@@ -318,18 +318,25 @@ jobs:
                     dnf --disablerepo='*' install -y /tmp/termp-package.rpm
                     ;;
                   yum)
+                    # No matrix entry sets rpm_frontend: yum yet (a
+                    # centos:7 leg was judged lower priority per #405);
+                    # this arm is forward scaffolding for when one is
+                    # added, not exercised coverage today.
                     yum --disablerepo='*' install -y /tmp/termp-package.rpm
                     ;;
                   zypper)
                     # Plain --non-interactive aborts at the signature
-                    # decision, so match the compatibility-safe updater
-                    # global option (supported before --allow-unsigned-rpm
-                    # existed). The integration container has networking
-                    # disabled; disable repositories so unrelated refresh
-                    # errors do not mask the local RPM signature and
-                    # installation result.
+                    # decision, so one of the two unsigned-RPM flags is
+                    # always required. The integration container has
+                    # networking disabled; disable repositories so
+                    # unrelated refresh errors do not mask the local RPM
+                    # signature and installation result.
                     zypper modifyrepo --all --disable
-                    zypper --non-interactive --no-gpg-checks install /tmp/termp-package.rpm
+                    # opensuse/leap:latest ships zypper >= 1.14, so this is
+                    # the exact argv rpmInstallArgs actually selects for
+                    # this platform (#407) -- run it first so the modern
+                    # path is observed, not just reasoned about.
+                    zypper --non-interactive install --allow-unsigned-rpm /tmp/termp-package.rpm
                     ;;
                   *)
                     echo "unsupported RPM_FRONTEND: $RPM_FRONTEND" >&2
@@ -348,6 +355,20 @@ jobs:
                 # is meant to cover and nothing would notice (#406).
                 detected_manager=$(/usr/bin/termp rpm-manager)
                 test "$detected_manager" = "$RPM_FRONTEND"
+                if test "$RPM_FRONTEND" = "zypper"; then
+                  # rpmInstallArgs falls back to --no-gpg-checks on zypper
+                  # 1.13, which this leg's zypper (>= 1.14) never reaches at
+                  # runtime, so that fallback still has no leg observing it
+                  # on its target platform. Reinstalling here at least
+                  # proves the older global flag remains accepted by a
+                  # current zypper too -- it is not a substitute for real
+                  # 1.13 coverage, which does not exist (see update.md).
+                  rpm -e termp
+                  zypper --non-interactive --no-gpg-checks install /tmp/termp-package.rpm
+                  cp /tmp/detect-install /usr/bin/termp
+                  detected_frontend_fallback=$(/usr/bin/termp)
+                  test "$detected_frontend_fallback" = "$EXPECTED_METHOD"
+                fi
               fi
               cp /tmp/packaged-termp /usr/bin/termp
 

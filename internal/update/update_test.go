@@ -419,6 +419,11 @@ func TestDetectZypperVersionParsesVersionOutput(t *testing.T) {
 		{name: "typical output", output: "zypper 1.14.63\n", want: "1.14.63"},
 		{name: "command error", output: "", err: errors.New("not found"), want: ""},
 		{name: "unparseable output", output: "zypper unknown\n", want: ""},
+		{
+			name:   "libzypp line precedes the zypper line",
+			output: "libzypp 17.31.7\nzypper 1.14.68\n",
+			want:   "1.14.68",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := detectZypperVersion(func() (string, error) { return tt.output, tt.err })

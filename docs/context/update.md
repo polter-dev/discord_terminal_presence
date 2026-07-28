@@ -71,7 +71,10 @@ newer, semantically scoped install-command option `--allow-unsigned-rpm` on zypp
 global `--no-gpg-checks` option chosen in #394. Both flags exist because plain
 `--non-interactive` alone aborts at the safe default when the unsigned release RPM
 reaches signature verification; `--allow-unsigned-rpm` is not proposed as a replacement
-for 1.13 because it is an unknown option there. Printed zypper guidance remains
+for 1.13 because it is an unknown option there. CI's openSUSE leg runs zypper >= 1.14, so
+the `--allow-unsigned-rpm` branch is now observed against the real unsigned package, but
+the `--no-gpg-checks` fallback branch has no zypper-1.13 CI leg and remains reasoned,
+not observed. Printed zypper guidance remains
 interactive and omits both flags so the user can decide at the prompt. This keeps
 openSUSE/SLES and RHEL/CentOS 7 working instead of assuming `dnf`. When no front-end is
 present the update fails before any download and

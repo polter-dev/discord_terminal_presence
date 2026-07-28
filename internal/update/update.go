@@ -706,16 +706,30 @@ func runZypperVersionCommand() (string, error) {
 	return string(output), err
 }
 
-// detectZypperVersion extracts a dotted version token (e.g. "1.14.63") from
-// `zypper --version` output such as "zypper 1.14.63". It returns "" when the
-// command fails or no parseable version token is found, so callers fail
+// detectZypperVersion extracts zypper's own version (e.g. "1.14.63") from
+// `zypper --version` output such as "zypper 1.14.63". It anchors on the
+// token immediately following a literal "zypper" field so a multi-line or
+// multi-tool report (some builds also print a "libzypp N.N.N" line, whose
+// own version numbering is unrelated to zypper's) cannot be mistaken for
+// zypper's version. If that anchor is not found, it falls back to the first
+// parseable dotted-version token in case the output format ever changes.
+// It returns "" when the command fails or nothing parses, so callers fail
 // closed to the older, universally supported flag.
 func detectZypperVersion(runVersion func() (string, error)) string {
 	output, err := runVersion()
 	if err != nil {
 		return ""
 	}
-	for _, field := range strings.Fields(output) {
+	fields := strings.Fields(output)
+	for i, field := range fields {
+		if field != "zypper" || i+1 >= len(fields) {
+			continue
+		}
+		if _, _, ok := parseZypperVersion(fields[i+1]); ok {
+			return fields[i+1]
+		}
+	}
+	for _, field := range fields {
 		if _, _, ok := parseZypperVersion(field); ok {
 			return field
 		}
