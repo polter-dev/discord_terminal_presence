@@ -13,7 +13,7 @@ Start here, then read the module entry before opening source.
 | Service | [`service.md`](service.md) | `internal/service` | Manages per-OS login services and context-bounded status queries. |
 | Terminal text | [`terminaltext.md`](terminaltext.md) | `internal/terminaltext` | Sanitizes externally derived text, including config warnings, at terminal and log rendering boundaries. |
 | TUI | [`tui.md`](tui.md) | `internal/tui` | Owns setup, settings, confirmation, watch, and card UI with shared safe rendering. |
-| Update | [`update.md`](update.md) | `internal/update` | Checks releases, persists check/install outcomes, detects install ownership, and runs the matching updater. |
+| Update | [`update.md`](update.md) | `internal/update` | Checks releases, persists outcomes, detects generic/Homebrew/Go/system-package ownership, and selects safe update guidance or execution. |
 | Usage | [`usage.md`](usage.md) | `internal/usage` | Stores bounded local tool-usage history for settings ranking. |
 
 Platform-specific test contracts live with their module entries: launchd/systemd and

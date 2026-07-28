@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,17 @@ func stubGenericInstallDirAccess(t *testing.T, err error) {
 	})
 }
 
+func stubGenericUpdateInstallDir(t *testing.T, destination string, err error) {
+	t.Helper()
+	original := genericUpdateInstallDir
+	genericUpdateInstallDir = func() (string, error) {
+		return destination, err
+	}
+	t.Cleanup(func() {
+		genericUpdateInstallDir = original
+	})
+}
+
 func automaticGenericUpdateTestInputs(t *testing.T) (config.Config, *updatepkg.Checker, string) {
 	t.Helper()
 	cfg := config.Default()
@@ -37,7 +49,7 @@ func automaticGenericUpdateTestInputs(t *testing.T) (config.Config, *updatepkg.C
 
 func TestAutomaticGenericUpdateSkipsNonWritableDestination(t *testing.T) {
 	const destination = "/system/bin"
-	t.Setenv("BINDIR", destination)
+	stubGenericUpdateInstallDir(t, destination, nil)
 	stubGenericInstallDirAccess(t, unix.EACCES)
 	cfg, checker, statePath := automaticGenericUpdateTestInputs(t)
 	runner := &recordingUpdateRunner{}
@@ -64,8 +76,31 @@ func TestAutomaticGenericUpdateSkipsNonWritableDestination(t *testing.T) {
 	}
 }
 
+func TestAutomaticGenericUpdateSkipsInstallDirResolutionFailure(t *testing.T) {
+	stubGenericUpdateInstallDir(t, "", errors.New("locate running executable: unavailable"))
+	cfg, checker, statePath := automaticGenericUpdateTestInputs(t)
+	runner := &recordingUpdateRunner{}
+
+	runAutomaticUpdateWithStatePath(context.Background(), cfg, "1.0.0", checker, runner, statePath)
+
+	if runner.calls != 0 {
+		t.Fatalf("install-dir resolution failure ran updater %d times", runner.calls)
+	}
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
+	if !ok || !attempt.Skipped || attempt.Target != "v1.1.0" {
+		t.Fatalf("recorded attempt = (%+v, %t), want skipped v1.1.0 attempt", attempt, ok)
+	}
+	if !strings.Contains(attempt.Error, "locate running executable: unavailable") {
+		t.Fatalf("recorded skip %q missing install-dir error", attempt.Error)
+	}
+	status := automaticUpdateFailure(statePath)
+	if !strings.Contains(status, "skipped for v1.1.0") {
+		t.Fatalf("status update reason %q does not report a skip", status)
+	}
+}
+
 func TestAutomaticGenericUpdateAttemptsWritableDestination(t *testing.T) {
-	t.Setenv("BINDIR", t.TempDir())
+	stubGenericUpdateInstallDir(t, t.TempDir(), nil)
 	stubGenericInstallDirAccess(t, nil)
 	cfg, checker, statePath := automaticGenericUpdateTestInputs(t)
 	runner := &recordingUpdateRunner{}
@@ -78,7 +113,7 @@ func TestAutomaticGenericUpdateAttemptsWritableDestination(t *testing.T) {
 }
 
 func TestAutomaticGenericUpdatePreflightFailsOpen(t *testing.T) {
-	t.Setenv("BINDIR", filepath.Join(t.TempDir(), "missing"))
+	stubGenericUpdateInstallDir(t, filepath.Join(t.TempDir(), "missing"), nil)
 	stubGenericInstallDirAccess(t, unix.ENOENT)
 	cfg, checker, statePath := automaticGenericUpdateTestInputs(t)
 	runner := &recordingUpdateRunner{}

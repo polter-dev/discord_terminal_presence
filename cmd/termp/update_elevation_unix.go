@@ -5,14 +5,13 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 
+	updatepkg "github.com/polter-dev/discord_terminal_presence/internal/update"
 	"golang.org/x/sys/unix"
 )
 
-const defaultGenericInstallDir = "/usr/local/bin"
-
 var genericInstallDirAccess = unix.Access
+var genericUpdateInstallDir = updatepkg.GenericInstallDir
 
 type automaticUpdateElevationError struct {
 	destination string
@@ -26,10 +25,26 @@ func (automaticUpdateElevationError) AutomaticUpdateSkipped() bool {
 	return true
 }
 
+type automaticUpdateInstallDirError struct {
+	err error
+}
+
+func (e automaticUpdateInstallDirError) Error() string {
+	return e.err.Error()
+}
+
+func (e automaticUpdateInstallDirError) Unwrap() error {
+	return e.err
+}
+
+func (automaticUpdateInstallDirError) AutomaticUpdateSkipped() bool {
+	return true
+}
+
 func genericAutomaticUpdatePreflight() error {
-	destination := os.Getenv("BINDIR")
-	if destination == "" {
-		destination = defaultGenericInstallDir
+	destination, err := genericUpdateInstallDir()
+	if err != nil {
+		return automaticUpdateInstallDirError{err: err}
 	}
 	if err := genericInstallDirAccess(destination, unix.W_OK); err == nil {
 		return nil

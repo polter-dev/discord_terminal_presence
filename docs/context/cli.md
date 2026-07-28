@@ -44,11 +44,24 @@ reports that partial outcome. Completion removal attempts every shell; details l
 [`completioninstall.md`](completioninstall.md).
 
 Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
-installs preflight `BINDIR` (default `/usr/local/bin`) and record a skipped reason when it
-is not writable. Generic Windows installs record an unsupported-platform skip; Go and
-Homebrew installs remain eligible. Attempts are visible in `termp status`, and a later
-success clears the reported failure/skip. A failed interactive `termp update` prints the
-exact retry command built for its detected Homebrew, Go, or generic install method.
+installs preflight the resolved running executable's directory and record a skipped
+reason when it is not writable. Generic Windows installs record an unsupported-platform
+skip; Go and Homebrew installs remain eligible. Debian/RPM-owned installs record a
+managed-package skip without invoking an updater. Attempts are visible in `termp status`,
+and a later success clears the reported failure/skip. Interactive `termp update` for a
+known Debian/RPM-owned install downloads the exact-tag, architecture-specific release
+package and `checksums.txt` into private temporary files, verifies SHA-256 fail-closed,
+and then runs `sudo apt install -y <file>` or `sudo dnf install -y <file>`. It never uses
+the generic installer or writes to `/usr/local/bin`. When sudo, the package manager, or a
+TTY is unavailable, package ownership is ambiguous, or download/checksum/install fails,
+the command reports the reason and prints the existing exact-tag GitHub release download
+and local apt/dnf instructions. Automatic/background updates never enter this path and
+continue to record a managed-package skip with zero commands. A failed executable update
+prints the exact retry command for Homebrew and Go, while a generic failure says to
+resolve the reported error and retry `termp update`. Update notices label multi-step
+system-package instructions `To update:` rather than `Run:`. They print `termp update`
+for generic installs, preserving the resolved executable directory; Homebrew and Go
+notices continue to print their direct package commands under `Run:`.
 
 Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned

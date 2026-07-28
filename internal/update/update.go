@@ -20,16 +20,21 @@ import (
 )
 
 const (
-	latestReleaseURL  = "https://api.github.com/repos/polter-dev/discord_terminal_presence/releases/latest"
-	cacheLifetime     = 24 * time.Hour
-	maxReleaseBody    = 1 << 20
-	goEnvTimeout      = 500 * time.Millisecond
-	brewPrefixTimeout = 500 * time.Millisecond
-	cacheLockRetry    = 10 * time.Millisecond
-	cacheLockTimeout  = 2 * time.Second
+	latestReleaseURL    = "https://api.github.com/repos/polter-dev/discord_terminal_presence/releases/latest"
+	cacheLifetime       = 24 * time.Hour
+	maxReleaseBody      = 1 << 20
+	goEnvTimeout        = 500 * time.Millisecond
+	brewPrefixTimeout   = 500 * time.Millisecond
+	packageQueryTimeout = 500 * time.Millisecond
+	cacheLockRetry      = 10 * time.Millisecond
+	cacheLockTimeout    = 2 * time.Second
+	// Cache transactions only perform local JSON I/O; 30s leaves ample margin
+	// for a legitimate holder while recovering promptly after a process crash.
+	cacheLockStaleAfter = 30 * time.Second
 
 	BrewCommand         = "brew upgrade polter-dev/tap/termp"
 	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
+	packageDownloadURL  = "https://github.com/polter-dev/discord_terminal_presence/releases/download/%s/%s"
 	workerDownloadURL   = "https://termp.polter.sh/dl/update/%s/%s/%s"
 )
 
@@ -67,10 +72,24 @@ var cachedHomebrewPrefixes = sync.OnceValue(func() []string {
 type InstallMethod string
 
 const (
-	InstallGeneric  InstallMethod = "generic"
-	InstallHomebrew InstallMethod = "homebrew"
-	InstallGo       InstallMethod = "go"
+	InstallGeneric       InstallMethod = "generic"
+	InstallHomebrew      InstallMethod = "homebrew"
+	InstallGo            InstallMethod = "go"
+	InstallDebian        InstallMethod = "debian"
+	InstallRPM           InstallMethod = "rpm"
+	InstallSystemPackage InstallMethod = "system-package"
 )
+
+// IsSystemPackageInstall reports whether method is owned by a Linux package
+// manager.
+func IsSystemPackageInstall(method InstallMethod) bool {
+	switch method {
+	case InstallDebian, InstallRPM, InstallSystemPackage:
+		return true
+	default:
+		return false
+	}
+}
 
 // ReleaseSource looks up the latest published release. Implementations must not
 // attach user, machine, installation, usage, or configuration identifiers.
@@ -139,13 +158,20 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
-// Result describes an available update and the command appropriate for this
+// Result describes an available update and the guidance appropriate for this
 // installation.
 type Result struct {
-	Current string
-	Latest  string
-	Method  InstallMethod
-	Command string
+	Current  string
+	Latest   string
+	Method   InstallMethod
+	Guidance Guidance
+}
+
+// Guidance distinguishes a directly runnable command from explanatory update
+// instructions that may contain multiple commands.
+type Guidance struct {
+	Text     string
+	Runnable bool
 }
 
 // Command describes an update process without requiring callers to parse a
@@ -297,10 +323,10 @@ func (c *Checker) Latest(ctx context.Context, current string) (Result, error) {
 		method = c.DetectInstall()
 	}
 	return Result{
-		Current: current,
-		Latest:  latest,
-		Method:  method,
-		Command: CommandForMethod(method, latest),
+		Current:  current,
+		Latest:   latest,
+		Method:   method,
+		Guidance: GuidanceForMethod(method, latest),
 	}, nil
 }
 
@@ -364,7 +390,7 @@ func acquireCacheLock(cachePath string, now time.Time) (func(), bool) {
 			return nil, false
 		}
 		info, statErr := os.Stat(lockPath)
-		if statErr != nil || now.Before(info.ModTime().Add(cacheLifetime)) {
+		if statErr != nil || now.Before(info.ModTime().Add(cacheLockStaleAfter)) {
 			return nil, false
 		}
 		if err := os.Remove(lockPath); err != nil {
@@ -383,10 +409,10 @@ func (c *Checker) resultFor(current, latest string) (Result, bool) {
 		method = c.DetectInstall()
 	}
 	return Result{
-		Current: current,
-		Latest:  latest,
-		Method:  method,
-		Command: CommandForMethod(method, latest),
+		Current:  current,
+		Latest:   latest,
+		Method:   method,
+		Guidance: GuidanceForMethod(method, latest),
 	}, true
 }
 
@@ -580,15 +606,56 @@ func updateArchiveURL(goos, goarch, tag string) (string, error) {
 	return fmt.Sprintf(workerDownloadURL, goos, goarch, tag), nil
 }
 
-// CommandForMethod returns the supported update command for an install method.
-func CommandForMethod(method InstallMethod, tag string) string {
+// GuidanceForMethod returns update guidance for an install method. Runnable is
+// false when the text contains multiple commands or explanatory labels.
+func GuidanceForMethod(method InstallMethod, tag string) Guidance {
 	switch method {
 	case InstallHomebrew:
-		return BrewCommand
+		return Guidance{Text: BrewCommand, Runnable: true}
 	case InstallGo:
-		return GoCommand(tag)
+		return Guidance{Text: GoCommand(tag), Runnable: true}
+	case InstallDebian:
+		return systemPackageGuidance(method, tag, runtime.GOARCH)
+	case InstallRPM:
+		return systemPackageGuidance(method, tag, runtime.GOARCH)
+	case InstallSystemPackage:
+		return systemPackageGuidance(method, tag, runtime.GOARCH)
 	default:
-		return GenericCommand(tag)
+		return Guidance{Text: GenericCommand(tag), Runnable: true}
+	}
+}
+
+func systemPackageGuidance(method InstallMethod, tag, goarch string) Guidance {
+	if !validReleaseTag(tag) {
+		return Guidance{}
+	}
+	switch goarch {
+	case "amd64", "arm64":
+	default:
+		return Guidance{}
+	}
+
+	version := strings.TrimPrefix(strings.TrimPrefix(tag, "v"), "V")
+	debianAsset := fmt.Sprintf("termp_%s_linux_%s.deb", version, goarch)
+	rpmAsset := fmt.Sprintf("termp_%s_linux_%s.rpm", version, goarch)
+	debian := fmt.Sprintf(
+		"curl -fLO %s\nsudo apt install ./%s",
+		fmt.Sprintf(packageDownloadURL, tag, debianAsset),
+		debianAsset,
+	)
+	rpm := fmt.Sprintf(
+		"curl -fLO %s\nsudo dnf install ./%s",
+		fmt.Sprintf(packageDownloadURL, tag, rpmAsset),
+		rpmAsset,
+	)
+
+	switch method {
+	case InstallDebian:
+		return Guidance{Text: debian}
+	case InstallRPM:
+		return Guidance{Text: rpm}
+	default:
+		return Guidance{Text: "Debian/Ubuntu:\n" + debian + "\n\nRPM-based Linux:\n" + rpm}
 	}
 }
 
@@ -602,6 +669,8 @@ func UpdateCommandForMethod(method InstallMethod, tag string) (Command, error) {
 			return Command{}, fmt.Errorf("invalid release tag %q", tag)
 		}
 		return Command{Name: "go", Args: []string{"install", "github.com/polter-dev/discord_terminal_presence/cmd/termp@" + tag}}, nil
+	case InstallDebian, InstallRPM, InstallSystemPackage:
+		return Command{}, fmt.Errorf("system package installation must be updated manually:\n%s", GuidanceForMethod(method, tag).Text)
 	default:
 		command := GenericCommand(tag)
 		if command == "" {
@@ -621,12 +690,15 @@ func PerformUpdate(ctx context.Context, method InstallMethod, tag string, runner
 	if method == InstallGeneric {
 		return performGenericUpdate(ctx, tag, runner, stdin, stdout, stderr)
 	}
+	if IsSystemPackageInstall(method) {
+		return performSystemPackageUpdate(ctx, method, tag, runner, stdin, stdout, stderr)
+	}
 	command, err := UpdateCommandForMethod(method, tag)
 	if err != nil {
 		return err
 	}
 	if err := runner.Run(ctx, command, stdin, stdout, stderr); err != nil {
-		return fmt.Errorf("run %s: %w", CommandForMethod(method, tag), err)
+		return fmt.Errorf("run %s: %w", GuidanceForMethod(method, tag).Text, err)
 	}
 	return nil
 }
@@ -636,6 +708,10 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 		return fmt.Errorf("invalid release tag %q", tag)
 	}
 	if err := genericUpdatePlatformError(runtime.GOOS, tag); err != nil {
+		return err
+	}
+	binDir, err := GenericInstallDir()
+	if err != nil {
 		return err
 	}
 	archiveURL, err := updateArchiveURL(runtime.GOOS, runtime.GOARCH, tag)
@@ -675,6 +751,7 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 		Args: []string{tmpPath},
 		Env: []string{
 			"VERSION=" + tag,
+			"BINDIR=" + binDir,
 			"TERMP_DOWNLOAD_URL=" + archiveURL,
 		},
 	}
@@ -682,6 +759,29 @@ func performGenericUpdate(ctx context.Context, tag string, runner CommandRunner,
 		return fmt.Errorf("run %s: %w", GenericCommand(tag), err)
 	}
 	return nil
+}
+
+// GenericInstallDir returns the directory containing the resolved running
+// executable. Generic updates replace that binary instead of falling back to a
+// potentially different default install directory.
+func GenericInstallDir() (string, error) {
+	return genericInstallDir(os.Executable, filepath.EvalSymlinks)
+}
+
+func genericInstallDir(executable func() (string, error), evalSymlinks func(string) (string, error)) (string, error) {
+	path, err := executable()
+	if err != nil {
+		return "", fmt.Errorf("locate running executable: %w", err)
+	}
+	resolved, err := evalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve running executable %q: %w", path, err)
+	}
+	dir := filepath.Dir(resolved)
+	if dir == "" || dir == "." {
+		return "", fmt.Errorf("resolve install directory for %q", resolved)
+	}
+	return dir, nil
 }
 
 func genericUpdatePlatformError(goos, tag string) error {
@@ -701,7 +801,7 @@ func DetectInstallMethod() InstallMethod {
 	home, _ := os.UserHomeDir()
 	goPaths := cachedGoInstallPaths()
 	goPath := strings.Join(nonEmptyStrings(goPaths.goPath, os.Getenv("GOPATH")), string(os.PathListSeparator))
-	return detectInstall(executable, filepath.EvalSymlinks, goPaths.goBin, goPath, home, cachedHomebrewPrefixes()...)
+	return detectInstall(executable, filepath.EvalSymlinks, runtime.GOOS, detectSystemPackage, goPaths.goBin, goPath, home, cachedHomebrewPrefixes()...)
 }
 
 func parseGoEnvPaths(output []byte, err error) goInstallPaths {
@@ -728,17 +828,37 @@ func nonEmptyStrings(values ...string) []string {
 	return result
 }
 
-func detectInstall(executable string, evalSymlinks func(string) (string, error), goBin, goPath, home string, homebrewPrefixes ...string) InstallMethod {
+func detectInstall(
+	executable string,
+	evalSymlinks func(string) (string, error),
+	goos string,
+	systemPackage func(string) InstallMethod,
+	goBin, goPath, home string,
+	homebrewPrefixes ...string,
+) InstallMethod {
 	resolved, err := evalSymlinks(executable)
 	if err != nil {
 		return InstallGeneric
 	}
-	return detectResolvedInstall(resolved, goBin, goPath, home, homebrewPrefixes...)
+	return detectResolvedInstall(resolved, goos, systemPackage, goBin, goPath, home, homebrewPrefixes...)
 }
 
-func detectResolvedInstall(executable, goBin, goPath, home string, homebrewPrefixes ...string) InstallMethod {
+func detectResolvedInstall(
+	executable, goos string,
+	systemPackage func(string) InstallMethod,
+	goBin, goPath, home string,
+	homebrewPrefixes ...string,
+) InstallMethod {
 	if isHomebrewInstall(executable, homebrewPrefixes) {
 		return InstallHomebrew
+	}
+	if goos == "linux" && filepath.Clean(executable) == filepath.Join(string(filepath.Separator), "usr", "bin", "termp") {
+		if systemPackage != nil {
+			if method := systemPackage(executable); IsSystemPackageInstall(method) {
+				return method
+			}
+		}
+		return InstallSystemPackage
 	}
 
 	goBins := make(map[string]struct{})
@@ -759,6 +879,55 @@ func detectResolvedInstall(executable, goBin, goPath, home string, homebrewPrefi
 		}
 	}
 	return InstallGeneric
+}
+
+func detectSystemPackage(executable string) InstallMethod {
+	ownsFile := func(name string, args ...string) bool {
+		ctx, cancel := context.WithTimeout(context.Background(), packageQueryTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.WaitDelay = packageQueryTimeout
+		return cmd.Run() == nil
+	}
+	hasTool := func(name string) bool {
+		_, err := exec.LookPath(name)
+		return err == nil
+	}
+	return classifySystemPackage(
+		executable,
+		func(path string) bool { return ownsFile("dpkg-query", "--search", path) },
+		func(path string) bool { return ownsFile("rpm", "--query", "--file", path) },
+		func() bool { return hasTool("dpkg-query") },
+		func() bool { return hasTool("rpm") },
+	)
+}
+
+func classifySystemPackage(
+	executable string,
+	dpkgOwns, rpmOwns func(string) bool,
+	hasDPKG, hasRPM func() bool,
+) InstallMethod {
+	debianOwned := dpkgOwns(executable)
+	rpmOwned := rpmOwns(executable)
+	switch {
+	case debianOwned && !rpmOwned:
+		return InstallDebian
+	case rpmOwned && !debianOwned:
+		return InstallRPM
+	case debianOwned || rpmOwned:
+		return InstallSystemPackage
+	}
+
+	dpkgAvailable := hasDPKG()
+	rpmAvailable := hasRPM()
+	switch {
+	case dpkgAvailable && !rpmAvailable:
+		return InstallDebian
+	case rpmAvailable && !dpkgAvailable:
+		return InstallRPM
+	default:
+		return InstallSystemPackage
+	}
 }
 
 func isHomebrewInstall(executable string, prefixes []string) bool {

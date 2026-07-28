@@ -150,6 +150,7 @@ func TestGenericUpdateRejectsUnsafeReleaseTagsWithoutRunning(t *testing.T) {
 }
 
 func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
+	t.Setenv("BINDIR", "/wrong/install/directory")
 	runner := &recordingRunner{}
 	err := PerformUpdate(context.Background(), InstallGeneric, "v2.3.4", runner, nil, io.Discard, io.Discard)
 	if runtime.GOOS == "windows" {
@@ -175,6 +176,7 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	}
 	wantEnv := []string{
 		"VERSION=v2.3.4",
+		"BINDIR=" + filepath.Dir(mustResolvedExecutable(t)),
 		"TERMP_DOWNLOAD_URL=https://termp.polter.sh/dl/update/" + runtime.GOOS + "/" + runtime.GOARCH + "/v2.3.4",
 	}
 	if install.Name != "sh" || len(install.Args) != 1 || !reflect.DeepEqual(install.Env, wantEnv) {
@@ -185,6 +187,37 @@ func TestPerformGenericUpdateUsesResolvedReleaseTag(t *testing.T) {
 	}
 	if _, err := os.Stat(download.Args[3]); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary installer was not cleaned up: %v", err)
+	}
+}
+
+func mustResolvedExecutable(t *testing.T) string {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+func TestGenericInstallDirUsesResolvedExecutableDirectory(t *testing.T) {
+	got, err := genericInstallDir(
+		func() (string, error) { return "/custom/bin/termp-link", nil },
+		func(path string) (string, error) {
+			if path != "/custom/bin/termp-link" {
+				t.Fatalf("evalSymlinks(%q), want symlink path", path)
+			}
+			return "/srv/termp/bin/termp", nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Clean("/srv/termp/bin"); got != want {
+		t.Fatalf("genericInstallDir() = %q, want %q", got, want)
 	}
 }
 
@@ -231,6 +264,40 @@ func TestHomebrewUpdateUsesQualifiedCommand(t *testing.T) {
 	}
 	if BrewCommand != "brew upgrade polter-dev/tap/termp" {
 		t.Fatalf("BrewCommand = %q, want fully qualified upgrade command", BrewCommand)
+	}
+}
+
+func TestSystemPackageGuidance(t *testing.T) {
+	debianAsset := fmt.Sprintf("termp_2.3.4_linux_%s.deb", runtime.GOARCH)
+	rpmAsset := fmt.Sprintf("termp_2.3.4_linux_%s.rpm", runtime.GOARCH)
+	debian := fmt.Sprintf(
+		"curl -fLO https://github.com/polter-dev/discord_terminal_presence/releases/download/v2.3.4/%s\nsudo apt install ./%s",
+		debianAsset,
+		debianAsset,
+	)
+	rpm := fmt.Sprintf(
+		"curl -fLO https://github.com/polter-dev/discord_terminal_presence/releases/download/v2.3.4/%s\nsudo dnf install ./%s",
+		rpmAsset,
+		rpmAsset,
+	)
+	tests := []struct {
+		method InstallMethod
+		want   string
+	}{
+		{method: InstallDebian, want: debian},
+		{method: InstallRPM, want: rpm},
+		{method: InstallSystemPackage, want: "Debian/Ubuntu:\n" + debian + "\n\nRPM-based Linux:\n" + rpm},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.method), func(t *testing.T) {
+			guidance := GuidanceForMethod(tt.method, "v2.3.4")
+			if guidance.Text != tt.want || guidance.Runnable {
+				t.Fatalf("GuidanceForMethod(%q) = %#v, want non-runnable %q", tt.method, guidance, tt.want)
+			}
+			if _, err := UpdateCommandForMethod(tt.method, "v2.3.4"); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("UpdateCommandForMethod(%q) error = %v, want package guidance", tt.method, err)
+			}
+		})
 	}
 }
 
@@ -336,23 +403,30 @@ func TestInstallMethodDetection(t *testing.T) {
 	goPath := filepath.Join(string(filepath.Separator), "opt", "gopath")
 	homebrewPrefixes := []string{"/opt/homebrew", "/usr/local"}
 	tests := []struct {
-		name string
-		path string
-		want InstallMethod
+		name          string
+		path          string
+		goos          string
+		systemPackage InstallMethod
+		want          InstallMethod
 	}{
-		{name: "Homebrew Cellar", path: filepath.Join("/opt/homebrew/Cellar/termp/1.2.3/bin/termp"), want: InstallHomebrew},
-		{name: "Homebrew Caskroom", path: filepath.Join("/usr/local/Caskroom/termp/1.2.3/termp"), want: InstallHomebrew},
-		{name: "unrelated Cellar", path: filepath.Join("/home/alice/Cellar/archive/termp"), want: InstallGeneric},
-		{name: "wrong Cellar package", path: filepath.Join("/opt/homebrew/Cellar/archive/1.2.3/bin/termp"), want: InstallGeneric},
-		{name: "wrong Caskroom layout", path: filepath.Join("/usr/local/Caskroom/termp/1.2.3/bin/termp"), want: InstallGeneric},
-		{name: "GOBIN", path: filepath.Join(goBin, "termp"), want: InstallGo},
-		{name: "GOPATH bin", path: filepath.Join(goPath, "bin", "termp"), want: InstallGo},
-		{name: "default home Go bin", path: filepath.Join(home, "go", "bin", "termp"), want: InstallGo},
-		{name: "generic installer", path: filepath.Join("/usr/local/bin/termp"), want: InstallGeneric},
+		{name: "Homebrew Cellar", path: filepath.Join("/opt/homebrew/Cellar/termp/1.2.3/bin/termp"), goos: "darwin", want: InstallHomebrew},
+		{name: "Homebrew Caskroom", path: filepath.Join("/usr/local/Caskroom/termp/1.2.3/termp"), goos: "darwin", want: InstallHomebrew},
+		{name: "unrelated Cellar", path: filepath.Join("/home/alice/Cellar/archive/termp"), goos: "linux", want: InstallGeneric},
+		{name: "wrong Cellar package", path: filepath.Join("/opt/homebrew/Cellar/archive/1.2.3/bin/termp"), goos: "darwin", want: InstallGeneric},
+		{name: "wrong Caskroom layout", path: filepath.Join("/usr/local/Caskroom/termp/1.2.3/bin/termp"), goos: "darwin", want: InstallGeneric},
+		{name: "GOBIN", path: filepath.Join(goBin, "termp"), goos: "linux", want: InstallGo},
+		{name: "GOPATH bin", path: filepath.Join(goPath, "bin", "termp"), goos: "linux", want: InstallGo},
+		{name: "default home Go bin", path: filepath.Join(home, "go", "bin", "termp"), goos: "linux", want: InstallGo},
+		{name: "Debian package", path: filepath.Join("/usr/bin/termp"), goos: "linux", systemPackage: InstallDebian, want: InstallDebian},
+		{name: "RPM package", path: filepath.Join("/usr/bin/termp"), goos: "linux", systemPackage: InstallRPM, want: InstallRPM},
+		{name: "ambiguous system package", path: filepath.Join("/usr/bin/termp"), goos: "linux", systemPackage: InstallSystemPackage, want: InstallSystemPackage},
+		{name: "non-Linux usr bin", path: filepath.Join("/usr/bin/termp"), goos: "darwin", systemPackage: InstallDebian, want: InstallGeneric},
+		{name: "generic installer", path: filepath.Join("/usr/local/bin/termp"), goos: "linux", want: InstallGeneric},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := detectInstall(tt.path, func(path string) (string, error) { return path, nil }, goBin, goPath, home, homebrewPrefixes...)
+			systemPackage := func(string) InstallMethod { return tt.systemPackage }
+			got := detectInstall(tt.path, func(path string) (string, error) { return path, nil }, tt.goos, systemPackage, goBin, goPath, home, homebrewPrefixes...)
 			if got != tt.want {
 				t.Fatalf("detectInstall(%q) = %q, want %q", tt.path, got, tt.want)
 			}
@@ -368,10 +442,10 @@ func TestParseGoEnvPaths(t *testing.T) {
 		if got != (goInstallPaths{goBin: goBin, goPath: goPath}) {
 			t.Fatalf("parseGoEnvPaths() = %#v", got)
 		}
-		if method := detectResolvedInstall(filepath.Join(goBin, "termp"), got.goBin, got.goPath, ""); method != InstallGo {
+		if method := detectResolvedInstall(filepath.Join(goBin, "termp"), "linux", nil, got.goBin, got.goPath, ""); method != InstallGo {
 			t.Fatalf("go env GOBIN install = %q, want %q", method, InstallGo)
 		}
-		if method := detectResolvedInstall(filepath.Join(goPath, "bin", "termp"), got.goBin, got.goPath, ""); method != InstallGo {
+		if method := detectResolvedInstall(filepath.Join(goPath, "bin", "termp"), "linux", nil, got.goBin, got.goPath, ""); method != InstallGo {
 			t.Fatalf("custom go env GOPATH install = %q, want %q", method, InstallGo)
 		}
 	})
@@ -382,10 +456,10 @@ func TestParseGoEnvPaths(t *testing.T) {
 			t.Fatalf("parseGoEnvPaths() = %#v, want empty paths", got)
 		}
 		rawGoPath := filepath.Join(string(filepath.Separator), "fallback", "gopath")
-		if method := detectResolvedInstall(filepath.Join(rawGoPath, "bin", "termp"), got.goBin, rawGoPath, ""); method != InstallGo {
+		if method := detectResolvedInstall(filepath.Join(rawGoPath, "bin", "termp"), "linux", nil, got.goBin, rawGoPath, ""); method != InstallGo {
 			t.Fatalf("raw GOPATH fallback install = %q, want %q", method, InstallGo)
 		}
-		if method := detectResolvedInstall(filepath.Join(string(filepath.Separator), "usr", "local", "bin", "termp"), got.goBin, "", ""); method != InstallGeneric {
+		if method := detectResolvedInstall(filepath.Join(string(filepath.Separator), "usr", "local", "bin", "termp"), "linux", nil, got.goBin, "", ""); method != InstallGeneric {
 			t.Fatalf("unknown install without toolchain = %q, want %q", method, InstallGeneric)
 		}
 	})
@@ -419,17 +493,69 @@ func TestInstallDetectionResolvesSymlinkBeforeMatching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := detectInstall(link, filepath.EvalSymlinks, "", "", root, resolvedRoot); got != InstallHomebrew {
+	if got := detectInstall(link, filepath.EvalSymlinks, runtime.GOOS, nil, "", "", root, resolvedRoot); got != InstallHomebrew {
 		t.Fatalf("symlinked Homebrew install = %q, want %q", got, InstallHomebrew)
+	}
+}
+
+func TestInstallDetectionResolvesSymlinkBeforeSystemPackageMatching(t *testing.T) {
+	const link = "/usr/local/bin/termp"
+	systemPackage := func(path string) InstallMethod {
+		if path != "/usr/bin/termp" {
+			t.Fatalf("system package lookup path = %q, want resolved path", path)
+		}
+		return InstallDebian
+	}
+	got := detectInstall(link, func(path string) (string, error) {
+		if path != link {
+			t.Fatalf("evalSymlinks(%q), want %q", path, link)
+		}
+		return "/usr/bin/termp", nil
+	}, "linux", systemPackage, "", "", "")
+	if got != InstallDebian {
+		t.Fatalf("symlinked system package install = %q, want %q", got, InstallDebian)
 	}
 }
 
 func TestInstallDetectionFallsBackWhenResolutionFails(t *testing.T) {
 	got := detectInstall("/opt/homebrew/Cellar/termp/1.2.3/termp", func(string) (string, error) {
 		return "", errors.New("cannot resolve")
-	}, "", "", "")
+	}, "darwin", nil, "", "", "")
 	if got != InstallGeneric {
 		t.Fatalf("ambiguous install = %q, want generic", got)
+	}
+}
+
+func TestClassifySystemPackage(t *testing.T) {
+	tests := []struct {
+		name          string
+		dpkgOwns      bool
+		rpmOwns       bool
+		dpkgAvailable bool
+		rpmAvailable  bool
+		want          InstallMethod
+	}{
+		{name: "dpkg owns file", dpkgOwns: true, rpmAvailable: true, want: InstallDebian},
+		{name: "rpm owns file", rpmOwns: true, dpkgAvailable: true, want: InstallRPM},
+		{name: "both databases own file", dpkgOwns: true, rpmOwns: true, want: InstallSystemPackage},
+		{name: "only dpkg present", dpkgAvailable: true, want: InstallDebian},
+		{name: "only rpm present", rpmAvailable: true, want: InstallRPM},
+		{name: "both tools present", dpkgAvailable: true, rpmAvailable: true, want: InstallSystemPackage},
+		{name: "no tools present", want: InstallSystemPackage},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifySystemPackage(
+				"/usr/bin/termp",
+				func(string) bool { return tt.dpkgOwns },
+				func(string) bool { return tt.rpmOwns },
+				func() bool { return tt.dpkgAvailable },
+				func() bool { return tt.rpmAvailable },
+			)
+			if got != tt.want {
+				t.Fatalf("classifySystemPackage() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -445,7 +571,7 @@ func TestCheckerUsesFreshCache(t *testing.T) {
 	checker.DetectInstall = func() InstallMethod { return InstallGo }
 
 	result, ok := checker.Check(context.Background(), "1.0.0+sha", true)
-	if !ok || result.Latest != "v1.2.0" || result.Command != GoCommand("v1.2.0") {
+	if !ok || result.Latest != "v1.2.0" || result.Guidance != (Guidance{Text: GoCommand("v1.2.0"), Runnable: true}) {
 		t.Fatalf("cached result = (%#v, %t)", result, ok)
 	}
 	if source.callCount() != 0 {
@@ -493,6 +619,54 @@ func TestConcurrentCacheWritersPreserveAutomaticUpdateAttempt(t *testing.T) {
 	attempt, ok := ReadAutomaticUpdateAttempt(path)
 	if !ok || attempt.AttemptedAt != attemptedAt || attempt.Target != "v1.2.0" || attempt.Error != "permission denied" {
 		t.Fatalf("automatic update attempt after concurrent cache writes = (%+v, %t)", attempt, ok)
+	}
+}
+
+func TestAcquireCacheLockReclaimsStaleLock(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "update.json")
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleAt := now.Add(-cacheLockStaleAfter - time.Second)
+	if err := os.Chtimes(lockPath, staleAt, staleAt); err != nil {
+		t.Fatal(err)
+	}
+
+	release, ok := acquireCacheLock(path, now)
+	if !ok {
+		t.Fatal("acquireCacheLock() did not reclaim stale lock")
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("reclaimed lock stat error = %v", err)
+	}
+	release()
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("released lock stat error = %v, want not exist", err)
+	}
+}
+
+func TestAcquireCacheLockRespectsFreshLock(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "update.json")
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	freshAt := now.Add(-cacheLockStaleAfter + time.Second)
+	if err := os.Chtimes(lockPath, freshAt, freshAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if release, ok := acquireCacheLock(path, now); ok || release != nil {
+		if release != nil {
+			release()
+		}
+		t.Fatal("acquireCacheLock() stole fresh lock")
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("fresh lock stat error = %v", err)
 	}
 }
 
@@ -553,7 +727,7 @@ func TestCheckerRefreshesExpiredCache(t *testing.T) {
 	checker.DetectInstall = func() InstallMethod { return InstallHomebrew }
 
 	result, ok := checker.Check(context.Background(), "1.2.0", true)
-	if !ok || result.Latest != "v1.3.0" || result.Command != BrewCommand {
+	if !ok || result.Latest != "v1.3.0" || result.Guidance != (Guidance{Text: BrewCommand, Runnable: true}) {
 		t.Fatalf("refreshed result = (%#v, %t)", result, ok)
 	}
 	if source.callCount() != 1 {
@@ -574,8 +748,8 @@ func TestCheckerChecksAtMostOncePerProcess(t *testing.T) {
 		if !ok {
 			t.Fatal("expected update")
 		}
-		if result.Command != GenericCommand("v2.0.0") {
-			t.Fatalf("generic update command = %q, want %q", result.Command, GenericCommand("v2.0.0"))
+		if result.Guidance != (Guidance{Text: GenericCommand("v2.0.0"), Runnable: true}) {
+			t.Fatalf("generic update guidance = %#v, want runnable %q", result.Guidance, GenericCommand("v2.0.0"))
 		}
 	}
 	if source.callCount() != 1 {
