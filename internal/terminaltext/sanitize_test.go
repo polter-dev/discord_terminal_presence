@@ -46,6 +46,7 @@ func TestSanitizeEscapeSequenceBounds(t *testing.T) {
 		{name: "screen ESC k remains conservatively bounded", input: "large\x1bkeyimg", want: "largeeyimg"},
 		{name: "unterminated CSI loses its introducer but preserves parameters", input: "a\x1b[31", want: "a31"},
 		{name: "unterminated OSC preserves payload", input: "a\x1b]title", want: "atitle"},
+		{name: "unterminated OSC preserves UTF-8 containing an ST continuation byte", input: "a\x1b]\u00dc", want: "a\u00dc"},
 		{name: "BEL terminated OSC is removed whole", input: "a\x1b]0;title\x07b", want: "ab"},
 		{name: "ST terminated OSC is removed whole", input: "a\x1b]0;title\x1b\\b", want: "ab"},
 		{name: "unterminated DCS preserves payload", input: "a\x1bPqdata", want: "aqdata"},
@@ -60,6 +61,73 @@ func TestSanitizeEscapeSequenceBounds(t *testing.T) {
 			if got := Sanitize(tt.input); got != tt.want {
 				t.Fatalf("Sanitize(%q) = %q, want %q", tt.input, got, tt.want)
 			}
+		})
+	}
+}
+
+func TestSanitizeStringSequenceTermination(t *testing.T) {
+	const name = "important-folder-name"
+
+	tests := []struct {
+		name       string
+		introducer string
+	}{
+		{name: "OSC", introducer: "\x1b]"},
+		{name: "DCS", introducer: "\x1bP"},
+		{name: "APC", introducer: "\x1b_"},
+		{name: "PM", introducer: "\x1b^"},
+		{name: "SOS", introducer: "\x1bX"},
+		{name: "8-bit OSC", introducer: "\x9d"},
+		{name: "8-bit DCS", introducer: "\x90"},
+		{name: "8-bit APC", introducer: "\x9f"},
+		{name: "8-bit PM", introducer: "\x9e"},
+		{name: "8-bit SOS", introducer: "\x98"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("ESC abort preserves payload", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x1b]x"
+				if got := Sanitize(input); got != "start"+name+"x" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "start"+name+"x")
+				}
+			})
+			t.Run("CAN abort preserves payload", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x18after"
+				if got := Sanitize(input); got != "start"+name+"after" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "start"+name+"after")
+				}
+			})
+			t.Run("SUB abort preserves payload", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x1aafter"
+				if got := Sanitize(input); got != "start"+name+"after" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "start"+name+"after")
+				}
+			})
+			t.Run("end-of-input preserves payload", func(t *testing.T) {
+				input := "start" + tt.introducer + name
+				if got := Sanitize(input); got != "start"+name {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "start"+name)
+				}
+			})
+			t.Run("BEL terminator removes whole sequence", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x07after"
+				if got := Sanitize(input); got != "startafter" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "startafter")
+				}
+			})
+			t.Run("ST terminator removes whole sequence", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x1b\\after"
+				if got := Sanitize(input); got != "startafter" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "startafter")
+				}
+			})
+			t.Run("8-bit ST terminator removes whole sequence", func(t *testing.T) {
+				input := "start" + tt.introducer + name + "\x9cafter"
+				if got := Sanitize(input); got != "startafter" {
+					t.Fatalf("Sanitize(%q) = %q, want %q", input, got, "startafter")
+				}
+			})
 		})
 	}
 }

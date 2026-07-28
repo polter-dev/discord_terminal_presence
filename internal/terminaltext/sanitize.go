@@ -23,8 +23,9 @@ func IsControlOrBidi(r rune) bool {
 
 // Sanitize removes terminal escape sequences, control characters, and Unicode
 // bidirectional formatting controls from value. Complete escape sequences are
-// removed conservatively. If a sequence reaches end-of-input unterminated,
-// only its introducer is removed; its payload is sanitized as ordinary text.
+// removed conservatively. If a string sequence is aborted by ESC, CAN, SUB, or
+// end-of-input, only its introducer is removed; its payload is sanitized as
+// ordinary text.
 func Sanitize(value string) string {
 	value = stripANSIWithBoundedSequences(value)
 	var cleaned strings.Builder
@@ -38,18 +39,28 @@ func Sanitize(value string) string {
 	return cleaned.String()
 }
 
-// stripANSIWithBoundedSequences preserves ansi.Strip's conservative behavior
-// for every sequence the decoder reports as complete. When decoding reaches
-// end-of-input in a non-normal state, the sequence is incomplete. Removing its
-// generic introducer and decoding the remainder from NormalState makes the
-// payload ordinary input instead of allowing the unfinished sequence to
-// consume it.
+// stripANSIWithBoundedSequences removes properly terminated string sequences
+// whole. An ESC, CAN, SUB, or end-of-input aborts one instead: only the
+// introducer is removed, then its payload is processed again as ordinary
+// input. Other terminal sequences retain ansi.Strip's behavior, except that an
+// incomplete sequence is bounded in the same way at end-of-input.
 func stripANSIWithBoundedSequences(value string) string {
 	var bounded strings.Builder
 	bounded.Grow(len(value))
 
 	for len(value) > 0 {
-		sequence, n, state := decodeTerminalSequence(value)
+		if introducerLen := stringSequenceIntroducerLen(value); introducerLen > 0 {
+			payload := value[introducerLen:]
+			terminator, terminated := stringSequenceTerminator(payload)
+			if terminated {
+				value = payload[terminator:]
+			} else {
+				value = payload
+			}
+			continue
+		}
+
+		sequence, _, n, state := ansi.DecodeSequence(value, ansi.NormalState, nil)
 		if n == 0 {
 			// DecodeSequence can make no progress on an invalid UTF-8 byte.
 			// Retain it here so ansi.Strip preserves its existing handling.
@@ -74,42 +85,46 @@ func stripANSIWithBoundedSequences(value string) string {
 	return ansi.Strip(bounded.String())
 }
 
-// decodeTerminalSequence delegates sequence recognition to ansi.DecodeSequence.
-// The decoder operates byte-by-byte in string payloads, so an 0x9c UTF-8
-// continuation byte can look like an 8-bit ST. Continue the same decode when
-// that byte belongs to a multi-byte rune; Charm documents that callers must
-// validate returned string-sequence terminators.
-func decodeTerminalSequence(value string) (sequence string, n int, state byte) {
-	sequence, _, n, state = ansi.DecodeSequence(value, ansi.NormalState, nil)
-	isControlSequence := n > 0 &&
-		(sequence[0] == ansi.ESC || sequence[0] >= 0x80 && sequence[0] <= 0x9f)
-	for isControlSequence && state == ansi.NormalState && n > 0 && sequence[n-1] == ansi.ST {
-		if !endsWithUTF8Continuation(sequence) {
-			break
-		}
-
-		remainder, _, consumed, nextState := ansi.DecodeSequence(value[n:], ansi.StringState, nil)
-		sequence += remainder
-		n += consumed
-		state = nextState
-		if consumed == 0 {
-			break
+func stringSequenceIntroducerLen(value string) int {
+	if len(value) >= 2 && value[0] == ansi.ESC {
+		switch value[1] {
+		case ']', 'P', '_', '^', 'X':
+			return 2
 		}
 	}
-	return sequence, n, state
+
+	if len(value) > 0 {
+		switch value[0] {
+		case 0x9d, 0x90, 0x9f, 0x9e, 0x98:
+			return 1
+		}
+	}
+
+	return 0
 }
 
-func endsWithUTF8Continuation(value string) bool {
-	_, size := utf8.DecodeLastRuneInString(value)
-	if size > 1 {
-		return true
+// stringSequenceTerminator returns the number of payload bytes through a
+// legitimate BEL or ST terminator. ESC not followed by '\', CAN, SUB, and
+// end-of-input abort the sequence.
+func stringSequenceTerminator(payload string) (n int, terminated bool) {
+	for offset := 0; offset < len(payload); {
+		switch payload[offset] {
+		case ansi.BEL, ansi.ST:
+			return offset + 1, true
+		case ansi.ESC:
+			if offset+1 < len(payload) && payload[offset+1] == '\\' {
+				return offset + 2, true
+			}
+			return 0, false
+		case ansi.CAN, ansi.SUB:
+			return 0, false
+		}
+
+		_, size := utf8.DecodeRuneInString(payload[offset:])
+		offset += size
 	}
 
-	start := len(value) - 1
-	for start > 0 && !utf8.RuneStart(value[start]) {
-		start--
-	}
-	return start < len(value)-1 && !utf8.FullRuneInString(value[start:])
+	return 0, false
 }
 
 // separatorSentinel is a stand-in control character (RS, 0x1E) used
