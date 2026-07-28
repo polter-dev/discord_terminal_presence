@@ -357,7 +357,7 @@ jobs:
                 test "$detected_manager" = "$RPM_FRONTEND"
                 if test "$RPM_FRONTEND" = "zypper"; then
                   # rpmInstallArgs falls back to --no-gpg-checks on zypper
-                  # 1.13, which this leg's zypper (>= 1.14) never reaches at
+                  # 1.13, which the zypper on this leg (>= 1.14) never reaches at
                   # runtime, so that fallback still has no leg observing it
                   # on its target platform. Reinstalling here at least
                   # proves the older global flag remains accepted by a
