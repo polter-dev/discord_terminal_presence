@@ -46,10 +46,14 @@ partial write whose bytes are **not** a prefix of the last accepted content (a w
 changes an early byte before stalling) is not classified as provisional, settles on two
 agreeing reads, and can still revert `enabled = false` to the default (#434) — the
 provisional rule is bound to a content relationship, so any writer that diverges early
-escapes it. CLI startup consumers close the formerly eventless startup gap (#435) by
-installing the watcher before an explicit settled `Manager.Reload`, then using only the
-post-reload `Current` config; a completion event during that sequence is therefore queued
-instead of missed. A candidate that becomes provisional-stable partway through the budget
+escapes it. The **daemon and interactive-watch** entry points close the formerly eventless
+startup gap (#435) by installing the watcher before an explicit settled `Manager.Reload`,
+then using only the post-reload `Current` config; a completion event during that sequence
+is therefore queued instead of missed. `NewManagerPath` itself still performs a single
+**unsettled** read and stores it as the `accepted` baseline — the compensation lives in
+those two callers, not in the constructor, so a new caller that loads config directly does
+not inherit it. `config.Load`/`LoadPath` are likewise single unsettled reads, which is why
+the load-then-save commands are tracked separately (#438). A candidate that becomes provisional-stable partway through the budget
 also cannot reach acceptance in that call, which is safe: the reload is a no-op and the
 next fsnotify event starts a fresh budget with the settled content as its first read.
 
