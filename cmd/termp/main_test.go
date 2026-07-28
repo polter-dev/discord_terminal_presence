@@ -1618,6 +1618,7 @@ func TestAutomaticUpdatePlatformPreflightOnlyRejectsGenericWindows(t *testing.T)
 		{name: "generic Windows", goos: "windows", method: updatepkg.InstallGeneric, want: true},
 		{name: "Go Windows", goos: "windows", method: updatepkg.InstallGo},
 		{name: "Homebrew Windows", goos: "windows", method: updatepkg.InstallHomebrew},
+		{name: "Scoop Windows", goos: "windows", method: updatepkg.InstallScoop, want: true},
 		{name: "generic Linux", goos: "linux", method: updatepkg.InstallGeneric},
 		{name: "generic macOS", goos: "darwin", method: updatepkg.InstallGeneric},
 		{name: "Debian package", goos: "linux", method: updatepkg.InstallDebian, want: true},
@@ -1811,6 +1812,7 @@ func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 		method updatepkg.InstallMethod
 		want   string
 	}{
+		{method: updatepkg.InstallScoop, want: updatepkg.ScoopCommand},
 		{method: updatepkg.InstallDebian, want: updatepkg.GuidanceForMethod(updatepkg.InstallDebian, "v1.1.0").Text},
 		{method: updatepkg.InstallRPM, want: updatepkg.GuidanceForMethod(updatepkg.InstallRPM, "v1.1.0").Text},
 		{method: updatepkg.InstallSystemPackage, want: updatepkg.GuidanceForMethod(updatepkg.InstallSystemPackage, "v1.1.0").Text},
@@ -1829,7 +1831,7 @@ func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantCalls := 1
-			if tt.method == updatepkg.InstallSystemPackage || runtime.GOOS != "linux" {
+			if tt.method == updatepkg.InstallScoop || tt.method == updatepkg.InstallSystemPackage || runtime.GOOS != "linux" {
 				wantCalls = 0
 			}
 			if runner.calls != wantCalls {
@@ -1852,6 +1854,7 @@ func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 
 func TestAutomaticSystemPackageUpdateIsSkippedWithoutInstalling(t *testing.T) {
 	for _, method := range []updatepkg.InstallMethod{
+		updatepkg.InstallScoop,
 		updatepkg.InstallDebian,
 		updatepkg.InstallRPM,
 		updatepkg.InstallSystemPackage,

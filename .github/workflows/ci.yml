@@ -107,3 +107,37 @@ jobs:
 
       - name: Test schtasks lifecycle
         run: go test -tags integration ./internal/service/... -run Integration -count=1
+
+  windows-scoop-detection:
+    name: Windows Scoop junction detection
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test detection through a Scoop current junction
+        shell: pwsh
+        run: |
+          $scoopRoot = Join-Path $env:RUNNER_TEMP 'scoop-detection'
+          $versionDir = Join-Path $scoopRoot 'apps\termp\0.1.0'
+          $currentDir = Join-Path $scoopRoot 'apps\termp\current'
+          New-Item -ItemType Directory -Force -Path $versionDir | Out-Null
+          go build -o (Join-Path $versionDir 'termp.exe') ./internal/update/testdata/detect-install
+          cmd /c mklink /j "$currentDir" "$versionDir"
+          if ($LASTEXITCODE -ne 0) {
+            throw "mklink failed with exit code $LASTEXITCODE"
+          }
+          $env:SCOOP = $scoopRoot
+          $method = & (Join-Path $currentDir 'termp.exe')
+          if ($LASTEXITCODE -ne 0) {
+            throw "detector probe failed with exit code $LASTEXITCODE"
+          }
+          if ($method.Trim() -ne 'scoop') {
+            throw "DetectInstallMethod returned '$method', want 'scoop'"
+          }

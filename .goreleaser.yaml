@@ -104,8 +104,37 @@ homebrew_casks:
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/termp"]
           end
 
+scoops:
+  - name: termp
+    # The release.published workflow uploads this generated manifest after approval.
+    skip_upload: true
+    ids:
+      - termp-windows
+    repository:
+      owner: polter-dev
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    homepage: https://github.com/polter-dev/discord_terminal_presence
+    description: Discord Rich Presence daemon for terminal tools.
+    license: MIT
+    post_install:
+      - "Write-Host ''"
+      - "Write-Host '+--------------------------------------------------------------------------+'"
+      - "Write-Host '|                                                                          |'"
+      - "Write-Host '|   TERMP INSTALLED                                                        |'"
+      - "Write-Host '|                                                                          |'"
+      - "Write-Host '|   NEXT STEP - RUN THIS NOW:                                              |'"
+      - "Write-Host '|                                                                          |'"
+      - "Write-Host '|                        >>>  termp setup  <<<                             |'"
+      - "Write-Host '|                                                                          |'"
+      - "Write-Host '|   Discord stays blank until you do.                                      |'"
+      - "Write-Host '|                                                                          |'"
+      - "Write-Host '+--------------------------------------------------------------------------+'"
+      - "Write-Host ''"
+
 release:
-  # The polter-dev/homebrew-tap repository must exist before running goreleaser release.
+  # The Homebrew tap and Scoop bucket repositories must exist before running goreleaser release.
   draft: true
   extra_files:
     - glob: ./dist/homebrew/Casks/termp.rb
+    - glob: ./dist/scoop/termp.json
