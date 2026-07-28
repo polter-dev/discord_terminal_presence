@@ -103,9 +103,8 @@ func main() {
 		return
 	}
 
-	cfg, loadErr := config.LoadReadOnly()
 	interactive := isTerminal(os.Stdin) && isTerminal(os.Stdout)
-	printCommandUpdateAlert(command, args, interactive, cfg, loadErr, os.Stderr)
+	maybePrintCommandUpdateAlert(command, args, interactive, os.Stderr)
 
 	err = dispatchCommand(command, args)
 	if printDispatchUsageError(err, os.Stderr) {
@@ -492,15 +491,17 @@ func setupWithConfigLoader(args []string, load func() (config.Config, error)) er
 	if err := rejectUnexpectedArgs(fs, "termp setup [--verbose]"); err != nil {
 		return err
 	}
-	cfg, err := load()
+	interactive := isTerminal(os.Stdin) && isTerminal(os.Stdout)
+	cfg, err := loadConfigWithNotice(load, os.Stderr)
 	if err != nil {
 		return err
 	}
+	printCommandUpdateAlert("setup", args, interactive, cfg, nil, os.Stderr)
 	save := func(cfg config.Config) (string, error) {
 		path := config.DefaultPath()
 		return path, config.Save(cfg, path)
 	}
-	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+	if !interactive {
 		path, err := save(cfg)
 		if err != nil {
 			return err
@@ -1482,7 +1483,7 @@ func status(args []string) error {
 
 	statusCtx, cancelStatus := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancelStatus()
-	cfg, loadErr := config.LoadReadOnly()
+	cfg, loadErr := loadConfigWithNotice(readOnlyConfigLoader, os.Stderr)
 	defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
 	daemonPID := statusDaemonPID(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermp)
 	running := daemonPID > 0
@@ -2113,10 +2114,11 @@ func settingsWithConfigLoader(args []string, terminal bool, load func() (config.
 		fmt.Fprintln(os.Stderr, "termp settings requires an interactive terminal (TTY)")
 		return errors.New("settings requires a TTY")
 	}
-	cfg, err := load()
+	cfg, err := loadConfigWithNotice(load, os.Stderr)
 	if err != nil {
 		return err
 	}
+	printCommandUpdateAlert("settings", args, terminal, cfg, nil, os.Stderr)
 	reg, err := registry.NewWithCustom(cfg.CustomTools...)
 	if err != nil {
 		return err
