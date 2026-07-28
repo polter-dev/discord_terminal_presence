@@ -277,10 +277,11 @@ func ValidateCustomTool(tool CustomTool) error {
 	if utf8.RuneCountInString(resolved.ImageKey) > MaxImageValueLength {
 		return fmt.Errorf("%s must be at most %d characters", imageKeyField, MaxImageValueLength)
 	}
-	// image_url is validated as an absolute HTTP(S) URL below, and
-	// url.ParseRequestURI already rejects raw control characters in a URL, so
-	// only image_key needs an explicit check here: it is free text with no
-	// such built-in guard (#422 review — this was the one field
+	// image_url is validated as an absolute HTTP(S) URL below, which since
+	// #444 also rejects control, C1, and bidi runes explicitly — url.ParseRequestURI
+	// alone rejects only raw ASCII controls, and that gap let U+202E through to
+	// the wire. image_key still needs its own check here: it is free text with no
+	// URL parse step at all (#422 review — this was the one field
 	// ValidateCustomTool did not gate, and it reached the wire unsanitized).
 	if position, r, found := firstDisallowedRune(resolved.ImageKey); found {
 		return controlCharacterError(imageKeyField, r, position)

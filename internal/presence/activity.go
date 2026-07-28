@@ -195,8 +195,9 @@ func activityTextFields(activity *Activity) []activityTextField {
 // separator (so a value bounded to exactly 128 runes could land at 212 and be
 // rejected outright — #436), and since #427 Sanitize can also return more text
 // than it used to for an aborted escape sequence. Any bound applied before
-// sanitization is therefore unreliable by construction, and the pre-sanitize
-// bound in ActivityFromDetection is only there to produce omission diagnostics.
+// sanitization is therefore unreliable by construction. ActivityFromDetection
+// no longer bounds at all (#445); it reports omission diagnostics from the
+// sanitized length and leaves every bound to this choke point.
 // Because the bound runs last, validateActivity's length checks are guaranteed
 // to hold, so an over-long or sanitized-to-nothing field is trimmed or omitted
 // instead of silently suppressing the entire presence update.
