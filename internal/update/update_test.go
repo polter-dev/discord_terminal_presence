@@ -616,6 +616,54 @@ func TestConcurrentCacheWritersPreserveAutomaticUpdateAttempt(t *testing.T) {
 	}
 }
 
+func TestAcquireCacheLockReclaimsStaleLock(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "update.json")
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleAt := now.Add(-cacheLockStaleAfter - time.Second)
+	if err := os.Chtimes(lockPath, staleAt, staleAt); err != nil {
+		t.Fatal(err)
+	}
+
+	release, ok := acquireCacheLock(path, now)
+	if !ok {
+		t.Fatal("acquireCacheLock() did not reclaim stale lock")
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("reclaimed lock stat error = %v", err)
+	}
+	release()
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("released lock stat error = %v, want not exist", err)
+	}
+}
+
+func TestAcquireCacheLockRespectsFreshLock(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "update.json")
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	freshAt := now.Add(-cacheLockStaleAfter + time.Second)
+	if err := os.Chtimes(lockPath, freshAt, freshAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if release, ok := acquireCacheLock(path, now); ok || release != nil {
+		if release != nil {
+			release()
+		}
+		t.Fatal("acquireCacheLock() stole fresh lock")
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("fresh lock stat error = %v", err)
+	}
+}
+
 func TestRecordAutomaticUpdateAttemptPreservesSkippedOutcome(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "update.json")
 	attemptedAt := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)

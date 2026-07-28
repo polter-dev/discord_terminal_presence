@@ -18,8 +18,9 @@ installer download. `internal/update/exec_*.go` run platform commands.
 
 **Invariants / gotchas:** `NO_UPDATE_CHECK` is presence-based; invalid/`dev` versions,
 opt-out, unusable cache paths, and passive lookup errors fail closed to no result. Failed
-checks are cached for 24 hours and a short-lived lock prevents concurrent checks. Release
-requests send only `termp/<version>` as User-Agent.
+checks are cached for 24 hours and a short-lived lock prevents concurrent checks. Lock
+files older than 30 seconds are reclaimed so a crashed process cannot suppress checks for
+the cache lifetime. Release requests send only `termp/<version>` as User-Agent.
 
 Install detection resolves executable symlinks, then recognizes Homebrew, Linux system
 packages, Go, or generic ownership. A resolved `/usr/bin/termp` on Linux is

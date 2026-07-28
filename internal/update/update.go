@@ -28,6 +28,9 @@ const (
 	packageQueryTimeout = 500 * time.Millisecond
 	cacheLockRetry      = 10 * time.Millisecond
 	cacheLockTimeout    = 2 * time.Second
+	// Cache transactions only perform local JSON I/O; 30s leaves ample margin
+	// for a legitimate holder while recovering promptly after a process crash.
+	cacheLockStaleAfter = 30 * time.Second
 
 	BrewCommand          = "brew upgrade polter-dev/tap/termp"
 	DebianCommand        = "sudo apt upgrade termp"
@@ -382,7 +385,7 @@ func acquireCacheLock(cachePath string, now time.Time) (func(), bool) {
 			return nil, false
 		}
 		info, statErr := os.Stat(lockPath)
-		if statErr != nil || now.Before(info.ModTime().Add(cacheLifetime)) {
+		if statErr != nil || now.Before(info.ModTime().Add(cacheLockStaleAfter)) {
 			return nil, false
 		}
 		if err := os.Remove(lockPath); err != nil {
