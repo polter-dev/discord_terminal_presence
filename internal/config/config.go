@@ -409,9 +409,16 @@ func InitFile(path string, force bool) error {
 	return nil
 }
 
-// Load reads the default config path. A missing file returns defaults.
+// Load reads a settled snapshot of the default config path. A missing file
+// returns defaults immediately.
 func Load() (Config, error) {
 	return LoadPath(DefaultPath())
+}
+
+// LoadUnsettled reads the default config path once without settle protection.
+// Callers should use Load unless they deliberately need a point-in-time read.
+func LoadUnsettled() (Config, error) {
+	return LoadPathUnsettled(DefaultPath())
 }
 
 // Save writes cfg to path as TOML. The write is atomic within the destination directory.
@@ -444,13 +451,21 @@ func Save(cfg Config, path string) error {
 	return os.Rename(tmpPath, path)
 }
 
-// LoadPath reads a TOML config from path. A missing file returns defaults.
+// LoadPath reads a settled TOML config from path. A missing file returns
+// defaults immediately.
 func LoadPath(path string) (Config, error) {
+	return loadSnapshot(path, settledConfigSnapshotForLoad(path))
+}
+
+// LoadPathUnsettled reads a TOML config from path once without settle
+// protection. Callers should use LoadPath unless they deliberately need a
+// point-in-time read.
+func LoadPathUnsettled(path string) (Config, error) {
 	return loadSnapshot(path, snapshotConfigFile(path))
 }
 
-// fileSnapshot is a point-in-time read of a config file, used both by LoadPath
-// and by the reload settle-check so both paths decode identically.
+// fileSnapshot is a point-in-time read of a config file, used by protected and
+// explicitly unsettled loads so both paths decode identically.
 type fileSnapshot struct {
 	exists bool
 	data   []byte
@@ -541,6 +556,12 @@ func provisionalConfigSnapshot(candidate, accepted fileSnapshot) bool {
 // either a success or a failure.
 func settledConfigSnapshot(path string, accepted fileSnapshot) (fileSnapshot, bool) {
 	candidate := snapshotConfigFile(path)
+	// A caller with no previously accepted file cannot distinguish a genuine
+	// first run from an unlink/recreate window. Missing-first-run defaults are
+	// intentionally immediate, so do not pay even one poll interval here.
+	if !candidate.exists && !accepted.exists {
+		return candidate, true
+	}
 	stableReads := 0
 	for i := 0; i < reloadSettleAttempts; i++ {
 		time.Sleep(reloadSettleInterval)
@@ -559,6 +580,18 @@ func settledConfigSnapshot(path string, accepted fileSnapshot) (fileSnapshot, bo
 		stableReads = 0
 	}
 	return fileSnapshot{}, false
+}
+
+// settledConfigSnapshotForLoad retries changing snapshots until it has a
+// settled result. Unlike Manager.Reload, a standalone load has no last-good
+// state it can retain when a write changes during the settle budget.
+func settledConfigSnapshotForLoad(path string) fileSnapshot {
+	for {
+		snap, ok := settledConfigSnapshot(path, fileSnapshot{})
+		if ok {
+			return snap
+		}
+	}
 }
 
 // loadSnapshot decodes an already-read snapshot into a Config, applying the

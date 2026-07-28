@@ -4,9 +4,10 @@
 serialization, and hot-reload manager.
 
 **Public surface:** `Config` and its nested UI/display/privacy/CTA/tool types are the
-runtime schema. `Default`, `DefaultPath`, `Load`, `LoadPath`, and `Save` resolve and
-persist it. `AnnotatedSample` and `InitFile(path, force)` support `termp config init`.
-`Manager` watches a path and publishes validated changes.
+runtime schema. `Default`, `DefaultPath`, settled-by-default `Load`/`LoadPath`, explicitly
+unprotected `LoadUnsettled`/`LoadPathUnsettled`, and `Save` resolve and persist it.
+`AnnotatedSample` and `InitFile(path, force)` support `termp config init`. `Manager`
+watches a path and publishes validated changes.
 
 **Key files:** `internal/config/config.go` contains the schema, validation, platform-aware
 paths, annotated sample, initialization, load, and atomic save. `internal/config/manager.go`
@@ -25,21 +26,30 @@ last-good config; daemon/watch rendering labels them as watcher errors instead o
 failures. Windows migrates legacy state to the native config directory on a best-effort
 basis.
 
-`Manager.Reload` defends against non-atomic saves, including truncate-then-write and
-unlink-then-recreate. Those saves can expose a transient missing, empty, or partial file;
-an empty or partial file is often still syntactically valid TOML on its own. Before
-accepting a read as a reload result, `settledConfigSnapshot` normally waits for two
+All default config entry points defend against non-atomic saves, including
+truncate-then-write and unlink-then-recreate. Those saves can expose a transient missing,
+empty, or partial file; an empty or partial file is often still syntactically valid TOML
+on its own. Before accepting a read, `settledConfigSnapshot` normally waits for two
 consecutive reads of the file to agree, reading every ~15ms, up to 20 attempts (~300ms
 budget). A candidate is instead provisional when a previously accepted file is now
 missing, when it is an existing empty file, or when its bytes are a strict prefix of the
 manager's last successfully accepted, error-free file snapshot. Provisional candidates
-must remain unchanged across the full settle budget before acceptance. If one changes
-during that budget, the reload leaves last-good and `LastError` untouched and relies on
-the save's completion to fire another fsnotify event. A deliberate deletion, blanking, or
-trailing-line deletion still loads after remaining stable for the full budget, preserving
-the reset and shortening paths. A missing file is not provisional when the manager has
-never accepted an existing file, so first-run reloads do not incur the settle budget.
-`LoadPath` remains a single-read operation and does not use settle semantics.
+must remain unchanged across the full settle budget before acceptance.
+
+If a provisional candidate changes during that budget, `Manager.Reload` leaves last-good
+and `LastError` untouched and relies on the save's completion to fire another fsnotify
+event. Standalone `Load`/`LoadPath` and manager construction have no last-good value to
+retain, so they retry until a settled snapshot is available. A deliberate deletion,
+blanking, or trailing-line deletion still loads after remaining stable for the full
+budget, preserving reset and shortening paths. A missing file is not provisional when
+there is no previously accepted file and returns immediately, keeping first run fast.
+That intentional first-run exception means a standalone load cannot distinguish a
+genuinely absent file from an unlink/recreate window without prior state.
+
+`LoadUnsettled` and `LoadPathUnsettled` are the only exported single-read exceptions. The
+name makes the protection opt-out visible in review; no production caller currently uses
+either. The unexported `snapshotConfigFile` is the raw primitive used by the settle
+algorithm and those explicit exceptions.
 
 Every successfully decoded reload reaches one state-commit choke point. At that boundary,
 the guard applies specifically to the global top-level `enabled` key; it does not cover
@@ -73,16 +83,21 @@ eventually restore defaults.
 The **daemon and interactive-watch** entry points close the formerly eventless startup
 gap (#435) by installing the watcher before an explicit settled `Manager.Reload`, then
 using only the post-reload `Current` config; a completion event during that sequence is
-therefore queued instead of missed. `NewManagerPath` itself still performs a single
-**unsettled** read and stores it as the `accepted` baseline — the compensation lives in
-those two callers, not in the constructor, so a new caller that loads config directly
-does not inherit it. The constructor's unsettled read can also seed `enabled = true`,
-which disarms this guard for that manager's lifetime because the guard protects only a
-`false`-to-`true` transition (#440). `config.Load`/`LoadPath` are likewise single
-unsettled reads, which is why the load-then-save commands are tracked separately (#438).
-A candidate that becomes provisional-stable partway through the budget also cannot
-reach acceptance in that call, which is safe: the reload is a no-op and the next
-fsnotify event starts a fresh budget with the settled content as its first read.
+therefore queued instead of missed. `NewManagerPath` now also starts from a settled
+snapshot. If that snapshot is an existing empty file, construction cannot distinguish an
+in-flight truncation from a deliberate blank, so it seeds fail-closed with presence off,
+retains the blank accepted baseline, and routes the defaulted candidate through the same
+`enabled`-loosening choke point. A completed explicit opt-out then applies immediately;
+a genuinely blank file restores defaults after the existing horizon. Normal non-empty
+configs whose `enabled` key is absent seed enabled defaults after one settle interval,
+and missing first-run files seed them immediately.
+
+Because `Load`/`LoadPath` are settled by default, setup/settings whole-document saves and
+read-only CLI commands inherit the protection without per-command patches (#438). A
+candidate that becomes provisional-stable partway through the budget also cannot reach
+acceptance in that call: reload is a no-op, while standalone loads retry with the new
+content as their first snapshot. With no accepted baseline, a stable non-empty partial
+cannot be recognized as a strict prefix; it receives the normal two-read settle check.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,

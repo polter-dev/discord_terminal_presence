@@ -50,13 +50,24 @@ func NewManager() *Manager {
 
 // NewManagerPath loads the config at path.
 func NewManagerPath(path string) *Manager {
-	snap := snapshotConfigFile(path)
+	snap := settledConfigSnapshotForLoad(path)
 	cfg, err := loadSnapshot(path, snap)
 	accepted := fileSnapshot{}
 	if err == nil {
 		accepted = snap
 	}
-	return &Manager{
+	ambiguousBlank := err == nil && snap.exists && len(snap.data) == 0
+	pendingCfg := cfg
+	// An existing empty file is ambiguous at construction: it may be a
+	// deliberate reset or a non-atomic writer stalled after truncation. There
+	// is no previously accepted snapshot to disambiguate it, so seed presence
+	// off while retaining the snapshot as the baseline. The first Reload then
+	// resolves a completed write immediately or applies the enabled loosening
+	// horizon to a still-defaulted config.
+	if ambiguousBlank {
+		cfg = invalidFallbackWithPath(path)
+	}
+	manager := &Manager{
 		path:      path,
 		current:   cfg,
 		accepted:  accepted,
@@ -64,6 +75,13 @@ func NewManagerPath(path string) *Manager {
 		reloads:   make(chan ReloadResult, 1),
 		watchErrs: make(chan error, 1),
 	}
+	if ambiguousBlank {
+		// Route the deliberate-default candidate through the same state-commit
+		// choke point as every reload. This arms the existing horizon without
+		// publishing a misleading successful reload while presence is held off.
+		manager.acceptReloadLocked(pendingCfg, snap, false)
+	}
+	return manager
 }
 
 // Current returns a copy of the current last-good config and latest load error.

@@ -258,11 +258,19 @@ reload clears that health error and the watch banner. A reload-introduced config
 same `logConfigWarnings` helper startup warnings use (issue #416 comment), not just
 surfaced the next time something re-loads the file for `termp status`.
 Daemon and interactive-watch startup share `newWatchedConfigManager`, which constructs
-the manager, installs or attempts the watcher, performs one settled `Manager.Reload`, and
-only then returns the config used by warnings, automatic updates, detection, and startup
-error rendering. Thus a non-atomic save that completes during startup is either read by
-the settled reload or leaves a queued watcher event instead of stranding transient
-defaults for the process lifetime (#435).
+the manager from a settled snapshot, installs or attempts the watcher, performs one
+settled `Manager.Reload`, and only then returns the config used by warnings, automatic
+updates, detection, and startup error rendering. An existing empty snapshot at
+construction is held fail-closed and keeps config's `enabled` loosening guard armed. Thus
+a non-atomic save that completes during startup is either read by a settled load/reload
+or leaves a queued watcher event instead of stranding transient defaults for the process
+lifetime (#435, #440).
+
+Every direct CLI config read uses config's settled-by-default `Load`: update notices,
+version, setup, pre-spawn error rendering, status, settings, and `watch --once` therefore
+inherit non-atomic-save protection. In particular, setup/settings no longer seed a
+whole-document save from a single transient read (#438). Stable existing files add one
+~15ms poll interval per load; a missing first-run config remains immediate.
 
 If the daemon cannot start its config watcher at all — `config.EnsureConfigDir` or
 `Manager.Watch` failing, for example because the config directory path is occupied by a

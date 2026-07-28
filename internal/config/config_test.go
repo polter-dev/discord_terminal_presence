@@ -434,6 +434,51 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadThenSaveRejectsChangingNonAtomicTruncationWindow is the #438
+// regression. Setup and settings both load the user's whole config and later
+// save that whole document. A transient empty read must not seed that write
+// with defaults and durably erase the user's opt-out and unrelated settings.
+func TestLoadThenSaveRejectsChangingNonAtomicTruncationWindow(t *testing.T) {
+	path := withConfigHome(t)
+	const contents = `enabled = false
+pin = "codex-cli"
+
+[[custom_tools]]
+id = "mine"
+display_name = "Mine"
+match = { name = "mine" }
+image_key = "mine"
+`
+	writeConfig(t, path, contents)
+
+	writer := newNonAtomicWriter(t)
+	writer.write(path, contents, 100*time.Millisecond)
+	<-writer.truncated
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() during non-atomic save = %v", err)
+	}
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() after protected load = %v", err)
+	}
+	writer.wait(t)
+
+	persisted, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() after whole-document save = %v", err)
+	}
+	if persisted.Enabled {
+		t.Fatal("whole-document save durably changed enabled=false to true")
+	}
+	if persisted.Pin != "codex-cli" {
+		t.Fatalf("whole-document save changed pin to %q, want codex-cli", persisted.Pin)
+	}
+	if len(persisted.CustomTools) != 1 || persisted.CustomTools[0].ID != "mine" {
+		t.Fatalf("whole-document save changed custom tools to %#v, want mine", persisted.CustomTools)
+	}
+}
+
 func TestManagerStartupConfigPolicy(t *testing.T) {
 	t.Run("absent file uses enabled defaults", func(t *testing.T) {
 		path := withConfigHome(t)
@@ -445,6 +490,22 @@ func TestManagerStartupConfigPolicy(t *testing.T) {
 		}
 		if !cfg.Enabled {
 			t.Fatal("missing config disabled presence, want enabled first-run default")
+		}
+	})
+
+	t.Run("deliberately blank file resolves to enabled defaults", func(t *testing.T) {
+		path := withConfigHome(t)
+		writeConfig(t, path, "")
+		manager := NewManagerPath(path)
+
+		assertManagerEnabledFalse(t, manager, "while constructor blank is pending")
+		select {
+		case reload := <-manager.Reloads():
+			if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != Default().ScanInterval {
+				t.Fatalf("deliberate constructor blank reload = %#v, want enabled defaults", reload)
+			}
+		case <-time.After(enabledLooseningHorizon + time.Second):
+			t.Fatal("timed out waiting for deliberate constructor blank to load defaults")
 		}
 	})
 
@@ -490,6 +551,46 @@ func TestManagerStartupConfigPolicy(t *testing.T) {
 				t.Fatal("valid reload did not restore enabled presence")
 			}
 		})
+	}
+}
+
+// TestManagerStartupTruncatedPastSettleBudgetFailClosesAndKeepsGuardArmed is
+// the #440 regression. A stable-for-the-budget empty file is ambiguous at
+// construction time, so it must not seed enabled=true and bypass the later
+// false-to-true guard.
+func TestManagerStartupTruncatedPastSettleBudgetFailClosesAndKeepsGuardArmed(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+
+	writer := newNonAtomicWriter(t)
+	writer.write(path, "scan_interval = \"5s\"\n", reloadSettleInterval*time.Duration(reloadSettleAttempts+5))
+	<-writer.truncated
+
+	manager := NewManagerPath(path)
+	assertManagerEnabledFalse(t, manager, "after construction from ambiguous blank")
+	writer.wait(t)
+
+	start := time.Now()
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() of defaulted final content = %v", err)
+	}
+	assertManagerEnabledFalse(t, manager, "while constructor-seeded guard is pending")
+	select {
+	case reload := <-manager.Reloads():
+		t.Fatalf("guarded defaulted read published before the horizon: %#v", reload)
+	default:
+	}
+
+	select {
+	case reload := <-manager.Reloads():
+		if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != "5s" {
+			t.Fatalf("post-horizon reload = %#v, want enabled defaults with scan interval 5s", reload)
+		}
+		if elapsed := time.Since(start); elapsed < enabledLooseningHorizon {
+			t.Fatalf("defaulted read applied after %v, want at least the %v loosening horizon", elapsed, enabledLooseningHorizon)
+		}
+	case <-time.After(enabledLooseningHorizon + time.Second):
+		t.Fatal("timed out waiting for guarded defaulted read to apply")
 	}
 }
 
