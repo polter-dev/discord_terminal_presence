@@ -313,6 +313,78 @@ func TestPeriodicUpdateRefreshNeverInstallsWithAutoUpdateOff(t *testing.T) {
 	}
 }
 
+// TestPeriodicUpdateInstallsATargetOnlyOnce covers the other half of "only the
+// refresh repeats": with auto_update on, the running process keeps reporting
+// its own old version, so every tick would otherwise re-run the installer for a
+// release it has already installed (or already failed to install).
+func TestPeriodicUpdateInstallsATargetOnlyOnce(t *testing.T) {
+	_ = os.Unsetenv("NO_UPDATE_CHECK")
+	t.Cleanup(func() { _ = os.Unsetenv("NO_UPDATE_CHECK") })
+
+	checker := &flagIgnoringChecker{latest: "1.1.0"}
+	runner := &recordingUpdateRunner{}
+	cfg := config.Default()
+	cfg.UpdateCheck = true
+	cfg.AutoUpdate = true
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPeriodicInBackground(ctx, staticConfig(cfg), checker, runner, time.Millisecond)
+
+	deadline := time.After(10 * time.Second)
+	for checker.callsSafe() < 6 {
+		select {
+		case <-deadline:
+			t.Fatalf("harness broken: only %d refreshes happened", checker.callsSafe())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	waitForStop(t, done)
+
+	// The refresh repeated (asserted above); the install must not have.
+	if runner.calls != 1 {
+		t.Fatalf("installer ran %d times across %d refreshes of the same target, want 1",
+			runner.calls, checker.callsSafe())
+	}
+}
+
+// TestPeriodicUpdateInstallsEachNewTarget is the counterweight: deduping must
+// not make the daemon ignore a release published while it runs.
+func TestPeriodicUpdateInstallsEachNewTarget(t *testing.T) {
+	_ = os.Unsetenv("NO_UPDATE_CHECK")
+	t.Cleanup(func() { _ = os.Unsetenv("NO_UPDATE_CHECK") })
+
+	inner := &flagIgnoringChecker{latest: "1.1.0"}
+	gate := &installOncePerTarget{inner: inner, mayInstall: true, attempted: map[string]bool{}}
+
+	if _, ok := gate.Refresh(context.Background(), "1.0.0", true); !ok {
+		t.Fatal("first sighting of 1.1.0 was suppressed")
+	}
+	if _, ok := gate.Refresh(context.Background(), "1.0.0", true); ok {
+		t.Fatal("second sighting of the same target was not suppressed")
+	}
+	inner.latest = "1.2.0"
+	if _, ok := gate.Refresh(context.Background(), "1.0.0", true); !ok {
+		t.Fatal("a newly published release was suppressed by the dedupe")
+	}
+}
+
+// TestPeriodicUpdateGateIsInertWithoutAutoUpdate: with installing disabled
+// there is nothing to dedupe, and the gate must not start swallowing results
+// the caller uses for cache refresh and stale-record retirement.
+func TestPeriodicUpdateGateIsInertWithoutAutoUpdate(t *testing.T) {
+	inner := &flagIgnoringChecker{latest: "1.1.0"}
+	gate := &installOncePerTarget{inner: inner, mayInstall: false, attempted: map[string]bool{}}
+
+	for i := 0; i < 3; i++ {
+		result, ok := gate.Refresh(context.Background(), "1.0.0", true)
+		if !ok || result.Latest != "1.1.0" {
+			t.Fatalf("refresh %d = (%+v, %t), want the unmodified result", i, result, ok)
+		}
+	}
+}
+
 // TestDaemonUpdateRefreshIntervalIsShorterThanTheCacheLifetime states why the
 // interval is what it is: at exactly the lifetime, a tick landing just before
 // expiry finds the entry fresh and the cache then stays stale for nearly

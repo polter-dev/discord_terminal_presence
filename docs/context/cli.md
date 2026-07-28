@@ -396,6 +396,17 @@ call and the alert itself. A config that cannot be read suppresses the refresh e
 *installing* is unchanged and still requires `auto_update`: repetition must not turn into
 a repeated unattended install for someone who declined it.
 
+Only the refresh repeats — the install does not. `installOncePerTarget` wraps the
+daemon's checker and reports "no update" for a target this process already acted on, so
+a daemon with `auto_update` on does not re-run `brew upgrade` (or re-download and re-run
+the generic installer) every 6h. It would, otherwise: the running process keeps reporting
+its own old version until it restarts, so the same target looks new on every tick. The
+dedupe is per process and per target, so a release published mid-session is still
+installed and a failed install is still retried at the next daemon start, exactly as
+before the ticker existed. It suppresses only the install: the cache write already
+happened inside `Refresh`, and stale-record retirement still sees the version through
+`Result.Latest`.
+
 Cost note: broadening eligibility means commands that load config for their own work now
 also pay `main()`'s pre-dispatch `LoadReadOnly` — one extra settled read, the same one
 `start`/`install`/`stop` already paid. `setup`/`settings` remain on the

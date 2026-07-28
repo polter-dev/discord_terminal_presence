@@ -97,17 +97,21 @@ func printCommandUpdateAlert(command string, args []string, stderrTerminal bool,
 // contain an opt-out we cannot see, and privacy wins over checking. It is
 // caller-supplied so it can be the daemon's live config manager.
 //
+// Only the refresh repeats. The install does not: see installOncePerTarget.
+//
 // The whole loop is best-effort: callers run it in a goroutine, so neither the
 // startup refresh nor any tick can delay, block, or fail daemon startup or the
 // run loop, and every failure is swallowed by runAutomaticUpdate.
 func runPeriodicAutomaticUpdate(ctx context.Context, currentConfig func() (config.Config, error), current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner, interval time.Duration) {
+	gate := &installOncePerTarget{inner: checker, attempted: map[string]bool{}}
 	refresh := func() {
 		cfg, err := currentConfig()
 		if err != nil {
 			debugf("update refresh skipped: config unreadable: %v", err)
 			return
 		}
-		runAutomaticUpdate(ctx, cfg, current, checker, runner)
+		gate.mayInstall = cfg.AutoUpdate
+		runAutomaticUpdate(ctx, cfg, current, gate, runner)
 	}
 
 	refresh()
@@ -129,6 +133,43 @@ func runPeriodicAutomaticUpdate(ctx context.Context, currentConfig func() (confi
 			refresh()
 		}
 	}
+}
+
+// installOncePerTarget wraps the daemon's checker so a repeating refresh does
+// not re-run the installer for a release it has already acted on in this
+// process. The refresh half has to repeat — that is what the ticker is for —
+// but the install half must not: the running process keeps reporting its own
+// old version until it restarts, so without this a daemon with auto_update on
+// would re-run `brew upgrade` (or re-download and re-run the generic installer)
+// on every tick, whether the previous attempt succeeded or failed.
+//
+// Reporting "no update" for an already-attempted target suppresses only the
+// install: the cache write already happened inside Refresh, and the caller's
+// stale-attempt retirement still sees the version through Result.Latest.
+//
+// The dedupe is per process and per target, so a newly published release is
+// still installed, and a failed install is retried on the next daemon start
+// exactly as it was before the ticker existed.
+//
+// It is only ever used by runPeriodicAutomaticUpdate's single goroutine, which
+// is why the fields need no locking.
+type installOncePerTarget struct {
+	inner      automaticUpdateChecker
+	mayInstall bool
+	attempted  map[string]bool
+}
+
+func (c *installOncePerTarget) Refresh(ctx context.Context, current string, configEnabled bool) (updatepkg.Result, bool) {
+	result, ok := c.inner.Refresh(ctx, current, configEnabled)
+	if !ok || !c.mayInstall {
+		return result, ok
+	}
+	if c.attempted[result.Latest] {
+		debugf("automatic update for %s was already attempted by this daemon; not repeating", result.Latest)
+		return result, false
+	}
+	c.attempted[result.Latest] = true
+	return result, ok
 }
 
 // runAutomaticUpdate refreshes the update-check cache and, only when
