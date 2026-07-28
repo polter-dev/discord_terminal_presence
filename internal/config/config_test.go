@@ -1832,6 +1832,34 @@ func TestManagerReloadAcceptsStableTrailingLineDeletion(t *testing.T) {
 	}
 }
 
+func TestManagerReloadRetryRearmsForChangedLoosening(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+	manager := NewManagerPath(path)
+
+	writeConfig(t, path, "")
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() for initial blank = %v", err)
+	}
+	assertManagerEnabledFalse(t, manager, "while initial blank is pending")
+
+	// Change to a different loosening before the first retry fires. There is
+	// deliberately no further Reload call: the retry that observes this new
+	// snapshot must start a fresh horizon and arrange its own successor.
+	time.Sleep(500 * time.Millisecond)
+	writeConfig(t, path, "scan_interval = \"5s\"\n")
+
+	select {
+	case reload := <-manager.Reloads():
+		if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != "5s" {
+			t.Fatalf("changed loosening reload = %#v, want enabled=true and scan interval 5s", reload)
+		}
+	case <-time.After(2*enabledLooseningHorizon + 2*time.Second):
+		t.Fatal("timed out waiting for retry to apply changed loosening without another Reload call")
+	}
+}
+
 func TestManagerReloadEnabledGuardKnownWriterEscapes(t *testing.T) {
 	const (
 		initial = "scan_interval = \"9s\"\nenabled = false\n"

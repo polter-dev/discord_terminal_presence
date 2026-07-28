@@ -102,10 +102,10 @@ func (m *Manager) WatchErrors() <-chan error {
 // LastError untouched and returns nil, relying on a later fsnotify event
 // (fired when the write finishes) to trigger another attempt.
 func (m *Manager) Reload() error {
-	return m.reload(true)
+	return m.reload()
 }
 
-func (m *Manager) reload(scheduleRetry bool) error {
+func (m *Manager) reload() error {
 	m.reloadMu.Lock()
 	defer m.reloadMu.Unlock()
 
@@ -125,14 +125,14 @@ func (m *Manager) reload(scheduleRetry bool) error {
 		m.publishReloadLocked(ReloadResult{Err: err})
 		return err
 	}
-	m.acceptReloadLocked(cfg, snap, enabledDefined, scheduleRetry)
+	m.acceptReloadLocked(cfg, snap, enabledDefined)
 	return nil
 }
 
 // acceptReloadLocked is the only place a successfully decoded reload can
 // replace current. Keeping the enabled guard at this state-commit choke point
 // makes it impossible for a new reload path to bypass the rule accidentally.
-func (m *Manager) acceptReloadLocked(cfg Config, snap fileSnapshot, enabledDefined, scheduleRetry bool) {
+func (m *Manager) acceptReloadLocked(cfg Config, snap fileSnapshot, enabledDefined bool) {
 	if !m.current.Enabled && cfg.Enabled && !enabledDefined {
 		now := time.Now()
 		if !snapshotsEqual(m.pendingLoosening.snapshot, snap) || m.pendingLoosening.firstSeen.IsZero() {
@@ -142,10 +142,10 @@ func (m *Manager) acceptReloadLocked(cfg Config, snap fileSnapshot, enabledDefin
 		}
 		elapsed := now.Sub(m.pendingLoosening.firstSeen)
 		if elapsed < enabledLooseningHorizon {
-			if scheduleRetry && m.pendingLoosening.retry == nil {
+			if m.pendingLoosening.retry == nil {
 				delay := enabledLooseningHorizon - elapsed
 				m.pendingLoosening.retry = time.AfterFunc(delay, func() {
-					_ = m.reload(false)
+					_ = m.reload()
 				})
 			}
 			return

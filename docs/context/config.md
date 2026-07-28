@@ -42,18 +42,26 @@ never accepted an existing file, so first-run reloads do not incur the settle bu
 `LoadPath` remains a single-read operation and does not use settle semantics.
 
 Every successfully decoded reload reaches one state-commit choke point. At that boundary,
-an `enabled` transition from `false` to `true` applies immediately when TOML metadata says
-the file explicitly defined the top-level key. When the value came from the default
-because the key is absent, the candidate snapshot must remain byte-identical for a
-separate three-second loosening horizon spanning reload attempts (#434). While a
-loosening is pending, the manager retains its current and accepted snapshots, leaves
-`LastError` unchanged, and publishes no reload result; daemon behavior and status
-therefore continue to reflect the active last-good config. A one-shot retry makes a
-deliberate blank, deletion, or trailing-line deletion take effect after the horizon even
-if no further filesystem event arrives. Transitions to `false`, non-`enabled` changes
-that retain `enabled = false`, and explicit `enabled = true` keep the normal settle
-latency. Reload attempts are serialized so concurrent fsnotify events cannot commit
-stale candidates around the guard.
+the guard applies specifically to the global top-level `enabled` key; it does not cover
+other default-true settings such as update checks or display/CTA options. An `enabled`
+transition from `false` to `true` applies immediately when TOML metadata says the file
+explicitly defined the top-level key. When the value came from the default because the
+key is absent, the candidate snapshot must remain byte-identical for a separate
+three-second loosening horizon spanning reload attempts (#434). While a loosening is
+pending, the manager retains its current and accepted snapshots, leaves `LastError`
+unchanged, and publishes no reload result; daemon behavior and status therefore continue
+to reflect the active last-good config. A retry makes a deliberate blank, deletion, or
+trailing-line deletion take effect after the horizon even if no further filesystem event
+arrives. If a retry observes a different loosening snapshot, it starts a fresh horizon
+and arms another retry without relying on an fsnotify event. Transitions to `false`,
+non-`enabled` changes that retain `enabled = false`, and explicit `enabled = true` keep
+the normal settle latency. Reload attempts are serialized so concurrent fsnotify events
+cannot commit stale candidates around the guard.
+
+`Manager` currently has no lifecycle/`Close` method. Its `time.AfterFunc` retry retains
+the manager until it fires and may read the config path after the daemon has otherwise
+shut down or an isolated path has been removed. Reload tolerates a missing file, so this
+is harmless today; any future manager lifecycle must stop the pending retry.
 
 The guard is deliberately time-bounded, not an absolute guarantee. A writer that stalls
 longer than the three-second horizon while the file is a valid partial omitting
