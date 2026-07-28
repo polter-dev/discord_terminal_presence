@@ -27,23 +27,17 @@ basis.
 
 `Manager.Reload` defends against non-atomic (truncate-then-write) saves, which is what a
 transient empty or partial file — often still syntactically valid TOML on its own — comes
-from: before accepting a read as a reload result, it waits (via `settledConfigSnapshot`)
+from. Before accepting a read as a reload result, `settledConfigSnapshot` normally waits
 for two consecutive reads of the file to agree, reading every ~15ms, up to 20 attempts
-(~300ms budget). This fixes #410: without it, an ordinary non-atomic editor save produced
-a momentary 0-byte file that fsnotify observed and the manager accepted as last-good,
-silently discarding the user's real settings (`enabled = false` included) in favor of
-defaults. A file that never stops changing within the budget leaves last-good and
-`LastError` untouched for that reload attempt (relying on the write's completion to fire
-another fsnotify event); a deliberately blanked config that stays blank still settles and
-loads defaults, so that legitimate reset path is unaffected. This is a mitigation, not a
-guarantee: a writer that pauses longer than the poll interval mid-save can still settle
-on a partial state — either a pause right after truncate (observed flipping
-`enabled = false` back to the default `true`) or a pause mid-content that leaves a stable
-but incomplete prefix (observed settling on one written field while a later field in the
-same save was still pending). In both cases the write's later completion fires a further
-fsnotify event that corrects last-good, but persistent loss remains theoretically
-reachable on Linux if that final content happens to be invalid TOML. Tracked as a
-follow-up to #410.
+(~300ms budget). A candidate is instead provisional when it is an existing empty file,
+or when its bytes are a strict prefix of the manager's last successfully accepted,
+error-free file snapshot. Provisional candidates must remain byte-identical across the
+full settle budget before acceptance. If one changes during that budget, the reload
+leaves last-good and `LastError` untouched and relies on the write's completion to fire
+another fsnotify event. A deliberately blanked config and a deliberate trailing-line
+deletion still load after remaining stable for the full budget, preserving the reset and
+shortening paths with extra latency only for those provisional states. `LoadPath` remains
+a single-read operation and does not use settle semantics.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,

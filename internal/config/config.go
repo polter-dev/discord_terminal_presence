@@ -511,22 +511,48 @@ const (
 	reloadSettleAttempts = 20
 )
 
+// provisionalConfigSnapshot reports whether candidate could be an incomplete
+// non-atomic rewrite: an existing empty file, or a strict prefix of the last
+// successfully accepted file content.
+func provisionalConfigSnapshot(candidate, accepted fileSnapshot) bool {
+	if !candidate.exists || candidate.err != nil {
+		return false
+	}
+	if len(candidate.data) == 0 {
+		return true
+	}
+	return accepted.exists &&
+		accepted.err == nil &&
+		len(candidate.data) < len(accepted.data) &&
+		bytes.HasPrefix(accepted.data, candidate.data)
+}
+
 // settledConfigSnapshot waits for two consecutive reads of path to agree
-// before returning, defending against non-atomic (truncate-then-write) saves
-// that would otherwise let a transient empty or partial file — which is
-// often still syntactically valid TOML — become the reload result. It
-// reports ok=false if the file never stops changing within the budget; the
-// caller should treat that as "no new information yet" rather than as either
-// a success or a failure.
-func settledConfigSnapshot(path string) (fileSnapshot, bool) {
-	prev := snapshotConfigFile(path)
+// before returning. A provisional snapshot must instead remain byte-identical
+// across the full settle budget before it can be returned. This defends
+// against non-atomic saves that pause after truncation or after writing a
+// valid prefix. It reports ok=false when a provisional snapshot changes, or
+// when no candidate satisfies its stability requirement within the budget;
+// the caller should treat that as "no new information yet" rather than as
+// either a success or a failure.
+func settledConfigSnapshot(path string, accepted fileSnapshot) (fileSnapshot, bool) {
+	candidate := snapshotConfigFile(path)
+	stableReads := 0
 	for i := 0; i < reloadSettleAttempts; i++ {
 		time.Sleep(reloadSettleInterval)
 		next := snapshotConfigFile(path)
-		if snapshotsEqual(prev, next) {
-			return next, true
+		if snapshotsEqual(candidate, next) {
+			stableReads++
+			if !provisionalConfigSnapshot(candidate, accepted) || stableReads == reloadSettleAttempts {
+				return candidate, true
+			}
+			continue
 		}
-		prev = next
+		if provisionalConfigSnapshot(candidate, accepted) {
+			return fileSnapshot{}, false
+		}
+		candidate = next
+		stableReads = 0
 	}
 	return fileSnapshot{}, false
 }

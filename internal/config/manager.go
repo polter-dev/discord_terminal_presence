@@ -14,6 +14,7 @@ type Manager struct {
 	path      string
 	mu        sync.RWMutex
 	current   Config
+	accepted  fileSnapshot
 	lastErr   error
 	reloads   chan ReloadResult
 	watchErrs chan error
@@ -33,10 +34,16 @@ func NewManager() *Manager {
 
 // NewManagerPath loads the config at path.
 func NewManagerPath(path string) *Manager {
-	cfg, err := LoadPath(path)
+	snap := snapshotConfigFile(path)
+	cfg, err := loadSnapshot(path, snap)
+	accepted := fileSnapshot{}
+	if err == nil {
+		accepted = snap
+	}
 	return &Manager{
 		path:      path,
 		current:   cfg,
+		accepted:  accepted,
 		lastErr:   err,
 		reloads:   make(chan ReloadResult, 1),
 		watchErrs: make(chan error, 1),
@@ -78,7 +85,10 @@ func (m *Manager) WatchErrors() <-chan error {
 // LastError untouched and returns nil, relying on a later fsnotify event
 // (fired when the write finishes) to trigger another attempt.
 func (m *Manager) Reload() error {
-	snap, ok := settledConfigSnapshot(m.path)
+	m.mu.RLock()
+	accepted := m.accepted
+	m.mu.RUnlock()
+	snap, ok := settledConfigSnapshot(m.path, accepted)
 	if !ok {
 		return nil
 	}
@@ -91,6 +101,7 @@ func (m *Manager) Reload() error {
 		return err
 	}
 	m.current = cfg
+	m.accepted = snap
 	m.lastErr = nil
 	next := ReloadResult{Config: cloneConfig(cfg)}
 	m.publishReloadLocked(next)
