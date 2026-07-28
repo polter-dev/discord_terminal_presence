@@ -57,7 +57,10 @@ is not writing on every tick. `cmd/termp` persists this into the daemon state fi
 the wire payload. It is the single choke point for Discord-facing text: it iterates
 `activityTextFields`, the one enumeration of those fields (name, details, state, both
 image keys, both image tooltip texts, and one entry per button label), and for each one
-**sanitizes first and bounds second**. `validateActivity` iterates the same slice, so the
+**sanitizes first and bounds second**. It copies the `Buttons` slice before touching
+anything: `Activity` is passed by value but that slice shares its backing array with the
+caller, and `Writer` holds a `desired` activity across ticks, so normalizing must not write
+back into caller state. `validateActivity` iterates the same slice, so the
 sanitize/bound rules and the validation rules cannot drift apart per field — that drift is
 exactly what let #402 fix details/state while missing both image tooltips, and #422 fix
 7 of 9 outbound fields while missing both image keys.

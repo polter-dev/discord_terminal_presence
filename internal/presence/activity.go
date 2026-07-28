@@ -202,6 +202,17 @@ func activityTextFields(activity *Activity) []activityTextField {
 // to hold, so an over-long or sanitized-to-nothing field is trimmed or omitted
 // instead of silently suppressing the entire presence update.
 func normalizeActivity(activity Activity) Activity {
+	// Activity is passed by value, but its Buttons slice still shares a backing
+	// array with the caller's, and the field setters below write through
+	// a.Buttons[i].Label. Copy first: writer.go holds a `desired` Activity across
+	// ticks and derives `rejected` from it, so normalizing must never reach back
+	// into a caller's state. (The sanitizeActivity this replaced allocated a
+	// fresh button slice for the same reason.)
+	if len(activity.Buttons) > 0 {
+		buttons := make([]Button, len(activity.Buttons))
+		copy(buttons, activity.Buttons)
+		activity.Buttons = buttons
+	}
 	for _, field := range activityTextFields(&activity) {
 		value := terminaltext.SanitizeSingleLine(field.get(&activity))
 		bounded, _ := boundActivityText(value, field.min, field.max)

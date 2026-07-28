@@ -363,10 +363,17 @@ func TestSetActivityOmitsFieldThatSanitizesBelowMinimum(t *testing.T) {
 }
 
 // TestSetActivityFromDetectionWithLineBreaksPublishes drives the same defect
-// from the user-facing entry point rather than a hand-built Activity: a custom
-// tool display name containing line breaks flows through ActivityFromDetection
+// from the user-facing entry point rather than a hand-built Activity: a tool
+// display name containing line breaks flows through ActivityFromDetection
 // (which bounds pre-sanitization) into SetActivity. Before the fix the whole
 // presence update was rejected; the tool name must now appear, trimmed.
+//
+// Note on the input: this test constructs registry.Tool directly, which is not
+// a path a *config-sourced* custom tool can take — ValidateCustomTool rejects a
+// display_name containing U+000A at config load. The production carrier for
+// this defect is a directory name, which is read at runtime from the detected
+// process's cwd and so takes no config-load path at all. The display name is
+// used here only because it reaches both name and details in one activity.
 func TestSetActivityFromDetectionWithLineBreaksPublishes(t *testing.T) {
 	displayName := strings.Repeat("n", 40) + "\n" + strings.Repeat("m", 40) + "\n" + strings.Repeat("o", 46)
 	if got := utf8.RuneCountInString(displayName); got != 128 {
@@ -389,6 +396,37 @@ func TestSetActivityFromDetectionWithLineBreaksPublishes(t *testing.T) {
 		if got := utf8.RuneCountInString(value); got > maxActivityTextLength {
 			t.Fatalf("published %s = %d runes, want at most %d", name, got, maxActivityTextLength)
 		}
+	}
+}
+
+// TestNormalizeActivityDoesNotMutateCallerButtons guards the one piece of an
+// Activity that is not copied by value: the Buttons slice shares its backing
+// array with the caller, and normalizeActivity's field setters write through
+// a.Buttons[i].Label. writer.go holds a `desired` Activity across ticks and
+// derives `rejected` from it, so normalizing must not reach back into caller
+// state. sanitizeActivity allocated a fresh slice for this reason; the guard
+// has to survive its removal.
+func TestNormalizeActivityDoesNotMutateCallerButtons(t *testing.T) {
+	const rawLabel = "ctrl\x1bX label"
+	callerButtons := []Button{{Label: rawLabel, URL: "https://example.test"}}
+
+	assertCallerIntact := func(t *testing.T, after string) {
+		t.Helper()
+		if callerButtons[0].Label != rawLabel {
+			t.Fatalf("caller's button label = %q after %s, want it untouched (%q)", callerButtons[0].Label, after, rawLabel)
+		}
+	}
+
+	normalized := normalizeActivity(Activity{Name: "x", Buttons: callerButtons})
+	assertCallerIntact(t, "normalizeActivity")
+	if len(normalized.Buttons) != 1 || strings.ContainsRune(normalized.Buttons[0].Label, '\x1b') {
+		t.Fatalf("normalized buttons = %+v, want the returned copy sanitized", normalized.Buttons)
+	}
+
+	payload := captureSetActivity(t, Activity{Name: "x", Buttons: callerButtons})
+	assertCallerIntact(t, "SetActivity")
+	if len(payload.Args.Activity.Buttons) != 1 || strings.ContainsRune(payload.Args.Activity.Buttons[0].Label, '\x1b') {
+		t.Fatalf("published buttons = %+v, want a sanitized label on the wire", payload.Args.Activity.Buttons)
 	}
 }
 
