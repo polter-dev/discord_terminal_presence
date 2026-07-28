@@ -347,7 +347,7 @@ print_setup_cta() {
 	printf '\n\n'
 
 	if [ "$box_width" -ge 27 ]; then
-		printf '%soptional: termp start%s\n' "$muted" "$reset"
+		printf '%soptional:  termp start%s\n' "$muted" "$reset"
 		printf '%slogin off: termp uninstall%s\n' "$muted" "$reset"
 	else
 		printf '%stermp start%s\n' "$muted" "$reset"

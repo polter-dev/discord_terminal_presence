@@ -236,17 +236,43 @@ func TestUninstallBinaryCommand(t *testing.T) {
 }
 
 func TestRemoveUninstallTargetRejectsBroadDirectory(t *testing.T) {
-	called := false
-	err := removeUninstallTarget(
-		uninstallRemovalTarget{label: "config", path: filepath.Clean(string(filepath.Separator)), directory: true},
-		func(string) error { called = true; return nil },
-		func(string) error { called = true; return nil },
-	)
-	if err == nil || !strings.Contains(err.Error(), "unsafe") {
-		t.Fatalf("removeUninstallTarget() error = %v, want unsafe path error", err)
+	tests := []struct {
+		name       string
+		target     uninstallRemovalTarget
+		wantErrMsg string
+	}{
+		{
+			name:       "volume root",
+			target:     uninstallRemovalTarget{label: "config", path: filepath.Clean(string(filepath.Separator)), directory: true},
+			wantErrMsg: "unsafe",
+		},
+		{
+			name:       "relative directory",
+			target:     uninstallRemovalTarget{label: "config", path: "termp", directory: true},
+			wantErrMsg: "relative",
+		},
+		{
+			name:       "relative file",
+			target:     uninstallRemovalTarget{label: "config", path: filepath.Join("termp", "config.toml")},
+			wantErrMsg: "relative",
+		},
 	}
-	if called {
-		t.Fatal("removal function called for broad directory")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			err := removeUninstallTarget(
+				tt.target,
+				func(string) error { called = true; return nil },
+				func(string) error { called = true; return nil },
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErrMsg) {
+				t.Fatalf("removeUninstallTarget() error = %v, want %s path error", err, tt.wantErrMsg)
+			}
+			if called {
+				t.Fatal("removal function called for refused path")
+			}
+		})
 	}
 }
 

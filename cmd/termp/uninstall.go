@@ -213,6 +213,9 @@ func validateUninstallTarget(target uninstallRemovalTarget) error {
 	if target.path == "" || path == "." || path == filepath.VolumeName(path)+string(filepath.Separator) {
 		return fmt.Errorf("refuse unsafe %s removal path %q", target.label, target.path)
 	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("refuse relative %s removal path %q", target.label, target.path)
+	}
 	if target.directory && filepath.Base(path) != "termp" {
 		return fmt.Errorf("refuse unsafe %s directory %q", target.label, target.path)
 	}
