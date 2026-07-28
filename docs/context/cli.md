@@ -92,13 +92,19 @@ directory; Homebrew and Go notices continue to print their direct package comman
 Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned
 hand-written Formula draft was removed under #303.
-Homebrew Cask installs and deb/rpm postinstall scripts print the same prominent,
-fixed-width 80-column ASCII setup box. Homebrew prints Cask caveats unindented at
-column 0, so the box renders intact. GoReleaser's caveats templating trims the
-authored padding blank lines, so deb/rpm is the only channel whose padding comes
-from this repo; Homebrew renders the box directly under its own `==> Caveats`
-header, followed by a single trailing blank line that Homebrew itself emits. The
-package script always exits successfully so guidance cannot break an install.
+Homebrew Cask installs, Scoop's post-install hook, and deb/rpm postinstall scripts use
+the same prominent, fixed-width ASCII setup-box treatment; the generic installer uses
+an adaptive-width counterpart. Homebrew prints Cask caveats unindented at column 0, so
+the box renders intact, but `Cask::Installer#install` prints them before fetching,
+staging, installing artifacts, and running the quarantine hook. The Homebrew box
+therefore tells users to run setup after Homebrew finishes; the post-install surfaces
+retain their installed/run-now wording. For a single-cask install, Homebrew's final
+message collector does not reprint caveats, so the
+binary's config-missing first-run card remains the Homebrew user's only setup reminder
+at invocation time. GoReleaser's caveats templating trims authored padding blank lines;
+Homebrew instead emits one trailing blank line through the installer's caveats heredoc.
+The deb/rpm package script always exits successfully so guidance cannot break an
+install.
 
 CI snapshot-builds and installs the real deb and rpm artifacts in digest-pinned
 `debian:stable`, `fedora:latest`, and `opensuse/leap:latest` containers. Before the

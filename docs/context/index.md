@@ -21,5 +21,5 @@ Linux mount semantics run only on their native OS. Windows terminal presence is 
 by dedicated Windows tests; five Unix-specific TTY-atime/tmux fixture tests remain
 skipped on Windows.
 
-Package-manager setup guidance and its non-TTY rendering safety contract live in the
-CLI module entry.
+Package-manager setup guidance, including Homebrew's pre-install caveat ordering and
+the non-TTY rendering safety contract, lives in the CLI module entry.
