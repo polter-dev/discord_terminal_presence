@@ -4,9 +4,12 @@ On macOS and Linux, the default location is `~/.config/termp/config.toml`, or
 `$XDG_CONFIG_HOME/termp/config.toml` when `XDG_CONFIG_HOME` is set. Windows uses the
 native user config directory, normally `%AppData%\termp\config.toml`.
 
-The format is TOML. Valid changes hot-reload; an invalid edit leaves the daemon's
-last-good behavior in place and is surfaced through logs or `termp status`. Unknown keys
-produce warnings instead of aborting the load.
+The format is TOML. Valid changes hot-reload; an invalid edit leaves a running daemon's
+last-good behavior in place. If an existing config is already invalid when the daemon
+starts, the daemon stays running but disables presence until a valid change reloads.
+Missing config files still use enabled first-run defaults. Load failures are surfaced
+through stderr, daemon logs, and `termp status`. Unknown keys produce warnings instead
+of aborting the load.
 
 Generate the current fully commented schema with:
 

@@ -173,10 +173,13 @@ the detector read-only, leaving `presence.json` persistence exclusively to the d
 It shares the daemon's config-change transaction and hot-reconfigures detector settings;
 display-only changes re-render the last detection without forcing another scan.
 When initial config loading fails, `watch --once` warns on stderr that built-in defaults
-are active and points to `termp status`; interactive watch shows the same warning inside
-the alternate-screen view so it remains visible without corrupting the terminal. That
-banner renders through `SanitizeSingleLine`, matching every other single-line render
-boundary in the CLI.
+are active with presence disabled and points to `termp status`; interactive watch shows
+the same warning inside the alternate-screen view so it remains visible without
+corrupting the terminal. At daemon startup an invalid existing config is reported to the
+invoking stderr and daemon log, the daemon stays running with presence off, and a valid
+hot reload restores normal operation. `termp status` labels presence as off beside the
+config error. That banner and startup error render through `SanitizeSingleLine`,
+matching every other single-line render boundary in the CLI.
 
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.

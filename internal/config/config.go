@@ -454,22 +454,22 @@ func LoadPath(path string) (Config, error) {
 		return cloneConfig(cfg), nil
 	}
 	if err != nil {
-		return cfg, err
+		return invalidFallbackWithPath(path), err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return cfg, err
+		return invalidFallbackWithPath(path), err
 	}
 	if info.Size() > maxConfigFileSize {
-		return cfg, fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)
+		return invalidFallbackWithPath(path), fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxConfigFileSize+1))
 	if err != nil {
-		return cfg, err
+		return invalidFallbackWithPath(path), err
 	}
 	if len(data) > maxConfigFileSize {
-		return cfg, fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)
+		return invalidFallbackWithPath(path), fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)
 	}
 
 	raw := fileConfig{
@@ -493,7 +493,7 @@ func LoadPath(path string) (Config, error) {
 	}
 	meta, err := toml.Decode(string(data), &raw)
 	if err != nil {
-		return DefaultWithPath(path), err
+		return invalidFallbackWithPath(path), err
 	}
 	cfg.Enabled = raw.Enabled
 	cfg.StartAtLogin = raw.StartAtLogin
@@ -517,7 +517,7 @@ func LoadPath(path string) (Config, error) {
 	cfg.Warnings = unknownKeyWarnings(meta.Undecoded())
 	markDefinedFields(&cfg, meta)
 	if err := validate(&cfg); err != nil {
-		return DefaultWithPath(path), err
+		return invalidFallbackWithPath(path), err
 	}
 	return cloneConfig(cfg), nil
 }
@@ -550,6 +550,12 @@ func convertCustomTools(raw []customTool) []registry.CustomTool {
 func DefaultWithPath(path string) Config {
 	cfg := Default()
 	cfg.Path = path
+	return cfg
+}
+
+func invalidFallbackWithPath(path string) Config {
+	cfg := DefaultWithPath(path)
+	cfg.Enabled = false
 	return cfg
 }
 

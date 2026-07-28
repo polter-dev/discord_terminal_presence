@@ -889,6 +889,23 @@ func TestFormatStatusGroupedAlignedAndComplete(t *testing.T) {
 	}
 }
 
+func TestFormatStatusReportsInvalidConfigDisablesPresence(t *testing.T) {
+	got := formatStatus(statusInfo{
+		configPath:  "/tmp/config.toml",
+		configOK:    false,
+		configError: errors.New("invalid config"),
+	})
+	for _, want := range []string{
+		"  Valid     no\n",
+		"  Presence  off (invalid config)\n",
+		"  Error     invalid config\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatStatus() missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestFormatStatusSanitizesExternallyDerivedText(t *testing.T) {
 	got := formatStatus(statusInfo{
 		detectedTool:   "safe\x1b]52;c;clipboard\x07\u200fevil",
@@ -2469,7 +2486,7 @@ func TestWatchOnceReportsInvalidConfigFallback(t *testing.T) {
 	got := stderr.String()
 	for _, want := range []string{
 		"config load failed",
-		"using built-in defaults",
+		"presence is off until the config is valid",
 		`termp status`,
 	} {
 		if !strings.Contains(got, want) {

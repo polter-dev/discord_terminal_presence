@@ -265,6 +265,65 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	}
 }
 
+func TestManagerStartupConfigPolicy(t *testing.T) {
+	t.Run("absent file uses enabled defaults", func(t *testing.T) {
+		path := withConfigHome(t)
+		manager := NewManagerPath(path)
+
+		cfg, err := manager.Current()
+		if err != nil {
+			t.Fatalf("Current() error = %v, want nil", err)
+		}
+		if !cfg.Enabled {
+			t.Fatal("missing config disabled presence, want enabled first-run default")
+		}
+	})
+
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "syntax error",
+			content: "enabled = false\nthis line is a syntax error\n",
+		},
+		{
+			name:    "validation error",
+			content: "enabled = true\nscan_interval = \"not-a-duration\"\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := withConfigHome(t)
+			writeConfig(t, path, tt.content)
+			manager := NewManagerPath(path)
+
+			cfg, err := manager.Current()
+			if err == nil {
+				t.Fatal("Current() error = nil, want invalid-config error")
+			}
+			if cfg.Enabled {
+				t.Fatal("invalid existing config left presence enabled")
+			}
+			if cfg.Path != path {
+				t.Fatalf("fallback path = %q, want %q", cfg.Path, path)
+			}
+
+			writeConfig(t, path, "enabled = true\n")
+			if err := manager.Reload(); err != nil {
+				t.Fatalf("Reload() after repair = %v", err)
+			}
+			cfg, err = manager.Current()
+			if err != nil {
+				t.Fatalf("Current() after repair = %v", err)
+			}
+			if !cfg.Enabled {
+				t.Fatal("valid reload did not restore enabled presence")
+			}
+		})
+	}
+}
+
 func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
 	path := withConfigHome(t)
 	if err := InitFile(path, false); err != nil {
