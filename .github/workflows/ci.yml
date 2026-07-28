@@ -243,17 +243,15 @@ jobs:
               detected=$(/usr/bin/termp)
               test "$detected" = "$EXPECTED_METHOD"
 
-              # Negative control: remove the package (and with it, ownership of
-              # /usr/bin/termp), then confirm detection now reports system-package.
-              # This proves the assertion above is sensitive to ownership in both
-              # directions, not just parroting a fixed fallback value.
-              case "$EXPECTED_METHOD" in
-                debian) dpkg --purge termp ;;
-                rpm) rpm -e termp ;;
-              esac
-              cp /tmp/detect-install /usr/bin/termp
-              detected_after_removal=$(/usr/bin/termp)
-              test "$detected_after_removal" = "system-package"
+              # Negative control: run the same probe binary from a path the package
+              # manager does not own (/tmp/detect-install itself, bind-mounted from
+              # outside the container) and confirm detection now reports
+              # system-package. This proves the assertion above is sensitive to
+              # ownership in both directions, not a constant-true ownership check --
+              # without purging the real package, which would corrupt the update
+              # exercise below.
+              detected_unowned=$(/tmp/detect-install)
+              test "$detected_unowned" = "system-package"
 
               cp /tmp/packaged-termp /usr/bin/termp
 

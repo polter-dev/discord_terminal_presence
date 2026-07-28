@@ -97,9 +97,11 @@ stub, `classifySystemPackage`'s tool-presence fallback alone reproduces the expe
 so the assertion could pass even if live ownership detection were completely broken.
 With both tools appearing present, the fallback always resolves to `system-package`, so
 a `debian`/`rpm` result from the package-owned `/usr/bin/termp` probe can only come from
-a real, successful `dpkg-query`/`rpm` ownership query. The job then purges the package
-and re-runs the probe as a negative control, asserting detection now reports
-`system-package` once ownership is gone. The packaged CLI then uses a local TLS release
+a real, successful `dpkg-query`/`rpm` ownership query. The job then re-runs the same
+probe binary from its unowned bind-mount path (`/tmp/detect-install`) as a negative
+control, asserting detection reports `system-package` for a path the package manager
+does not own, without purging the real package (which would corrupt the update exercise
+below). The packaged CLI then uses a local TLS release
 stub with outbound networking disabled; the job asserts a redirected update refuses
 before `curl` and leaves `/usr/local/bin` unchanged. Because the containers run as root,
 this does not cover an interactive sudo password prompt (#382), which needs a pty and a
