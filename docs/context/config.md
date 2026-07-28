@@ -41,6 +41,18 @@ the reset and shortening paths. A missing file is not provisional when the manag
 never accepted an existing file, so first-run reloads do not incur the settle budget.
 `LoadPath` remains a single-read operation and does not use settle semantics.
 
+This is a mitigation, not a guarantee, and two gaps are known and tracked. A stalled
+partial write whose bytes are **not** a prefix of the last accepted content (a writer that
+changes an early byte before stalling) is not classified as provisional, settles on two
+agreeing reads, and can still revert `enabled = false` to the default (#434) — the
+provisional rule is bound to a content relationship, so any writer that diverges early
+escapes it. Separately, the **startup** load in `NewManagerPath` has no settle check at
+all, and both daemon entry points construct the manager before installing the watcher, so
+an in-flight save at startup can leave a daemon on defaults with no event ever arriving to
+correct it (#435). A candidate that becomes provisional-stable partway through the budget
+also cannot reach acceptance in that call, which is safe: the reload is a no-op and the
+next fsnotify event starts a fresh budget with the settled content as its first read.
+
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,
 so config does not expose a second directory formatter that could diverge from it.
