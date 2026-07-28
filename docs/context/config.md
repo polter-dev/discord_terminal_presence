@@ -17,8 +17,13 @@ or documented warnings rather than silently changing privacy behavior. An existi
 config that cannot be read, decoded, or validated returns an in-memory default config
 with global presence disabled; a missing file still returns enabled first-run defaults.
 The manager keeps that fail-closed startup config until a valid hot reload replaces it,
-without persisting a last-good copy. Windows migrates legacy state to the native config
-directory on a best-effort basis.
+without persisting a last-good copy. Its buffered reload-result stream coalesces bursts
+to the newest ordered success or failure, so consumers cannot clear a newer failure with
+an older queued success. Watcher-backend errors use a separate coalescing channel, so
+they cannot replace an unread config reload, change `LastError`, or invalidate the
+last-good config; daemon/watch rendering labels them as watcher errors instead of reload
+failures. Windows migrates legacy state to the native config directory on a best-effort
+basis.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,

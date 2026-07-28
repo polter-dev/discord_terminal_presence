@@ -181,7 +181,7 @@ func requireSymlink(t *testing.T) {
 	}
 }
 
-func TestLaunchAgentPathsUseHomeAndLabel(t *testing.T) {
+func TestLaunchAgentPathUsesHomeAndLabel(t *testing.T) {
 	requireGOOS(t, "darwin")
 	home := fakeHome(t)
 	path, err := launchAgentPath()
@@ -191,13 +191,6 @@ func TestLaunchAgentPathsUseHomeAndLabel(t *testing.T) {
 	want := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
 	if path != want {
 		t.Fatalf("launchAgentPath() = %q, want %q", path, want)
-	}
-	logPath, err := launchAgentLogPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := filepath.Join(home, "Library", "Logs", "termp.log"); logPath != want {
-		t.Fatalf("launchAgentLogPath() = %q, want %q", logPath, want)
 	}
 }
 
@@ -336,7 +329,7 @@ func TestValidateInstallExecutableResolvesNestedSymlinkAndHonorsForce(t *testing
 }
 
 func TestBuildLaunchAgentPlist(t *testing.T) {
-	content, err := BuildLaunchAgentPlist("/opt/Term Presence/termp", "/tmp/termp.log")
+	content, err := BuildLaunchAgentPlist("/opt/Term Presence/termp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,11 +339,11 @@ func TestBuildLaunchAgentPlist(t *testing.T) {
 		"<string>/opt/Term Presence/termp</string>",
 		"<string>start</string>",
 		"<string>--foreground</string>",
+		"<string>--internal-daemon-log</string>",
 		"<key>RunAtLoad</key>\n\t<true/>",
 		"<key>KeepAlive</key>\n\t<true/>",
-		"<key>StandardOutPath</key>",
-		"<key>StandardErrorPath</key>",
-		"<string>/tmp/termp.log</string>",
+		"<key>StandardOutPath</key>\n\t<string>/dev/null</string>",
+		"<key>StandardErrorPath</key>\n\t<string>/dev/null</string>",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("plist missing %q:\n%s", want, text)
@@ -840,7 +833,7 @@ func TestUnixMutationsRefuseForeignDefinitions(t *testing.T) {
 			name: "darwin",
 			goos: "darwin",
 			definition: func(exe string) ([]byte, error) {
-				return BuildLaunchAgentPlist(exe, filepath.Join(os.TempDir(), "termp.log"))
+				return BuildLaunchAgentPlist(exe)
 			},
 			path: launchAgentPath,
 		},
@@ -1029,7 +1022,7 @@ func TestUnixReadableOwnedAndUnparseableDefinitionsProceed(t *testing.T) {
 			name: "darwin",
 			goos: "darwin",
 			definition: func(exe string) ([]byte, error) {
-				return BuildLaunchAgentPlist(exe, filepath.Join(os.TempDir(), "termp.log"))
+				return BuildLaunchAgentPlist(exe)
 			},
 			executable:  launchAgentExecutable,
 			unparseable: []byte("not a plist"),
@@ -1127,7 +1120,7 @@ func TestUnixForceMutatesForeignDefinitions(t *testing.T) {
 			name: "darwin",
 			goos: "darwin",
 			definition: func(exe string) ([]byte, error) {
-				return BuildLaunchAgentPlist(exe, filepath.Join(os.TempDir(), "termp.log"))
+				return BuildLaunchAgentPlist(exe)
 			},
 			executable: launchAgentExecutable,
 			path:       launchAgentPath,
@@ -2176,12 +2169,12 @@ func TestUnsupportedOS(t *testing.T) {
 }
 
 func TestServiceUnitEscapingEdges(t *testing.T) {
-	plist, err := BuildLaunchAgentPlist(`/opt/a&b/<termp>`, `/tmp/a&b.log`)
+	plist, err := BuildLaunchAgentPlist(`/opt/a&b/<termp>`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(plist)
-	for _, escaped := range []string{`/opt/a&amp;b/&lt;termp&gt;`, `/tmp/a&amp;b.log`} {
+	for _, escaped := range []string{`/opt/a&amp;b/&lt;termp&gt;`} {
 		if !strings.Contains(text, escaped) {
 			t.Fatalf("plist missing escaped value %q:\n%s", escaped, text)
 		}

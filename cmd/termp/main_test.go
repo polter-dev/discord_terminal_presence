@@ -917,6 +917,50 @@ func TestFormatStatusReportsInvalidConfigDisablesPresence(t *testing.T) {
 	}
 }
 
+func TestFormatStatusReportsInvalidReloadUsesLastGoodConfig(t *testing.T) {
+	got := formatStatus(statusInfo{
+		running:             true,
+		configPath:          "/tmp/config.toml",
+		configOK:            false,
+		configError:         errors.New("invalid reload"),
+		configUsingLastGood: true,
+	})
+	for _, want := range []string{
+		"  Valid     no\n",
+		"  Presence  using last-good config\n",
+		"  Error     invalid reload\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatStatus() missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestStatusConfigHealthDistinguishesStartupFromReloadFailure(t *testing.T) {
+	configOK := false
+	loadErr := errors.New("invalid config")
+	for _, test := range []struct {
+		name          string
+		usingLastGood bool
+		wantLastGood  bool
+	}{
+		{name: "startup failure", usingLastGood: false, wantLastGood: false},
+		{name: "reload failure", usingLastGood: true, wantLastGood: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ok, err, usingLastGood := statusConfigHealth(loadErr, 42, daemonDiscordState{
+				PID:                 42,
+				ConfigOK:            &configOK,
+				ConfigError:         "daemon config error",
+				ConfigUsingLastGood: test.usingLastGood,
+			}, true)
+			if ok || err == nil || err.Error() != "daemon config error" || usingLastGood != test.wantLastGood {
+				t.Fatalf("health = (%t, %v, %t), want (false, daemon config error, %t)", ok, err, usingLastGood, test.wantLastGood)
+			}
+		})
+	}
+}
+
 func TestFormatStatusSanitizesExternallyDerivedText(t *testing.T) {
 	got := formatStatus(statusInfo{
 		detectedTool:   "safe\x1b]52;c;clipboard\x07\u200fevil",

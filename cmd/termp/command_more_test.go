@@ -495,6 +495,16 @@ func TestDetachedChildConstructionAndMarker(t *testing.T) {
 	}
 }
 
+func TestLaunchAgentDaemonLogMarker(t *testing.T) {
+	options, err := parseStartOptions([]string{"--foreground", "--" + daemonLogFlag}, false, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.foreground || !options.daemonLog || options.detachedChild {
+		t.Fatalf("launch-agent options = %#v, want foreground daemon-owned logging", options)
+	}
+}
+
 func TestCommandsRejectInvalidArgumentsBeforeSideEffects(t *testing.T) {
 	tests := []struct {
 		name string

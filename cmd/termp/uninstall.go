@@ -158,6 +158,10 @@ func defaultUninstallTargets() ([]uninstallRemovalTarget, error) {
 		{label: "presence state", path: parentPath(detector.EpisodeStatePath()), directory: true},
 		{label: "update cache", path: parentPath(updatepkg.DefaultCachePath()), directory: true},
 		{label: "log", path: logPath},
+		{label: "log rotation lock", path: logPath + ".lock"},
+		{label: "rotated log", path: logPath + ".1"},
+		{label: "rotated log", path: logPath + ".2"},
+		{label: "rotated log", path: logPath + ".3"},
 		{label: "runtime state", path: pidFilePath()},
 	}
 	targets := make([]uninstallRemovalTarget, 0, len(candidates))

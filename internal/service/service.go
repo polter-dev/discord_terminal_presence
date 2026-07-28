@@ -258,14 +258,6 @@ func launchAgentPath() (string, error) {
 	return filepath.Join(home, "Library", "LaunchAgents", Label+".plist"), nil
 }
 
-func launchAgentLogPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, "Library", "Logs", "termp.log"), nil
-}
-
 func systemdUnitPath() (string, error) {
 	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
 		return filepath.Join(configHome, "systemd", "user", ServiceName), nil
@@ -277,7 +269,7 @@ func systemdUnitPath() (string, error) {
 	return filepath.Join(home, ".config", "systemd", "user", ServiceName), nil
 }
 
-func BuildLaunchAgentPlist(exe, logPath string) ([]byte, error) {
+func BuildLaunchAgentPlist(exe string) ([]byte, error) {
 	var b bytes.Buffer
 	esc := func(s string) string {
 		var out bytes.Buffer
@@ -295,18 +287,19 @@ func BuildLaunchAgentPlist(exe, logPath string) ([]byte, error) {
 		<string>%s</string>
 		<string>start</string>
 		<string>--foreground</string>
+		<string>--internal-daemon-log</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>%s</string>
+	<string>/dev/null</string>
 	<key>StandardErrorPath</key>
-	<string>%s</string>
+	<string>/dev/null</string>
 </dict>
 </plist>
-`, esc(Label), esc(exe), esc(logPath), esc(logPath))
+`, esc(Label), esc(exe))
 	return b.Bytes(), nil
 }
 

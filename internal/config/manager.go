@@ -11,11 +11,18 @@ import (
 
 // Manager owns the current last-good config and watches it for edits.
 type Manager struct {
-	path    string
-	mu      sync.RWMutex
-	current Config
-	lastErr error
-	changes chan Config
+	path      string
+	mu        sync.RWMutex
+	current   Config
+	lastErr   error
+	reloads   chan ReloadResult
+	watchErrs chan error
+}
+
+// ReloadResult reports the newest automatic or explicit reload outcome.
+type ReloadResult struct {
+	Config Config
+	Err    error
 }
 
 // NewManager loads the config at the default path. If an existing file cannot
@@ -28,10 +35,11 @@ func NewManager() *Manager {
 func NewManagerPath(path string) *Manager {
 	cfg, err := LoadPath(path)
 	return &Manager{
-		path:    path,
-		current: cfg,
-		lastErr: err,
-		changes: make(chan Config, 1),
+		path:      path,
+		current:   cfg,
+		lastErr:   err,
+		reloads:   make(chan ReloadResult, 1),
+		watchErrs: make(chan error, 1),
 	}
 }
 
@@ -49,37 +57,63 @@ func (m *Manager) LastError() error {
 	return m.lastErr
 }
 
-// Changes emits the latest config copy after one or more successful reloads.
-// Bursty reloads may be coalesced when the consumer has not caught up.
-func (m *Manager) Changes() <-chan Config {
-	return m.changes
+// Reloads emits the latest reload result. Bursty results may be coalesced when
+// the consumer has not caught up, preserving the newest success or failure.
+func (m *Manager) Reloads() <-chan ReloadResult {
+	return m.reloads
+}
+
+// WatchErrors emits watcher-backend failures without changing config validity.
+func (m *Manager) WatchErrors() <-chan error {
+	return m.watchErrs
 }
 
 // Reload reloads the file, preserving the last-good config on error.
 func (m *Manager) Reload() error {
 	cfg, err := LoadPath(m.path)
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if err != nil {
 		m.lastErr = err
+		m.publishReloadLocked(ReloadResult{Err: err})
+		m.mu.Unlock()
 		return err
 	}
 	m.current = cfg
 	m.lastErr = nil
-	next := cloneConfig(cfg)
+	next := ReloadResult{Config: cloneConfig(cfg)}
+	m.publishReloadLocked(next)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) publishReloadLocked(next ReloadResult) {
 	select {
-	case m.changes <- next:
+	case m.reloads <- next:
 	default:
-		// Reloads are serialized by mu. Replace a queued stale config with the
-		// newest one. If a consumer drains it first, the channel is already
-		// empty; either way, the buffered send below cannot block.
 		select {
-		case <-m.changes:
+		case <-m.reloads:
 		default:
 		}
-		m.changes <- next
+		select {
+		case m.reloads <- next:
+		default:
+		}
 	}
-	return nil
+}
+
+func (m *Manager) reportWatchFailure(err error) {
+	select {
+	case m.watchErrs <- err:
+	default:
+		select {
+		case <-m.watchErrs:
+		default:
+		}
+		select {
+		case m.watchErrs <- err:
+		default:
+		}
+	}
 }
 
 // Watch reloads config changes until ctx is cancelled.
@@ -112,9 +146,7 @@ func (m *Manager) Watch(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				m.mu.Lock()
-				m.lastErr = err
-				m.mu.Unlock()
+				m.reportWatchFailure(err)
 			case <-ctx.Done():
 				return
 			}

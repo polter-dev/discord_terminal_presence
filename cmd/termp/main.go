@@ -18,6 +18,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -821,7 +822,23 @@ func start(args []string) error {
 		return err
 	}
 	verbose = options.verbose
-	if !options.detachedChild {
+	ownsDaemonLog := options.detachedChild || options.daemonLog
+	if ownsDaemonLog {
+		logPath, err := detachedLogPath()
+		if err != nil {
+			return err
+		}
+		logWriter, err := newRotatingLogWriter(logPath, detachedLogMaxBytes, detachedLogRetained)
+		if err != nil {
+			return err
+		}
+		if err := logWriter.RedirectStderr(); err != nil {
+			_ = logWriter.Close()
+			return err
+		}
+		log.SetOutput(logWriter)
+	}
+	if !ownsDaemonLog {
 		maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
 	}
 
@@ -905,9 +922,32 @@ func logDaemonConfigWarning(warning string) {
 	log.Print(terminaltext.SanitizeSingleLine(warning))
 }
 
+func configReloadFailure(err error) string {
+	return terminaltext.SanitizeSingleLine(fmt.Sprintf(
+		"config reload failed; keeping last-good behavior: %v",
+		err,
+	))
+}
+
+func logConfigReloadFailure(err error) {
+	log.Print(configReloadFailure(err))
+}
+
+func configWatchFailure(err error) string {
+	return terminaltext.SanitizeSingleLine(fmt.Sprintf(
+		"config watcher error; continuing with current config: %v",
+		err,
+	))
+}
+
+func logConfigWatchFailure(err error) {
+	log.Print(configWatchFailure(err))
+}
+
 type startOptions struct {
 	detach        bool
 	detachedChild bool
+	daemonLog     bool
 	foreground    bool
 	verbose       bool
 }
@@ -919,6 +959,7 @@ func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (st
 	fs.BoolVar(&options.detach, "detach", false, "start the daemon in the background")
 	fs.BoolVar(&options.detach, "d", false, "start the daemon in the background")
 	fs.BoolVar(&options.detachedChild, detachedChildFlag, false, "internal detached child marker")
+	fs.BoolVar(&options.daemonLog, daemonLogFlag, false, "internal daemon log marker")
 	fs.BoolVar(&options.foreground, "foreground", false, "keep the daemon attached to the terminal")
 	fs.BoolVar(&options.foreground, "f", false, "keep the daemon attached to the terminal")
 	fs.BoolVar(&options.verbose, "verbose", defaultVerbose, "enable verbose logging")
@@ -942,7 +983,7 @@ func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (st
 }
 
 func run(ctx context.Context, manager *config.Manager, control *daemonControl) error {
-	cfg, _ := manager.Current()
+	cfg, initialConfigErr := manager.Current()
 	fallbackMessage := selectFallbackMessage(cfg.FallbackMessages)
 	applied, err := newDetectionRuntime(cfg)
 	if err != nil {
@@ -958,8 +999,8 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	debugf("daemon started: scan_interval=%s", applied.detectorConfig.ScanInterval)
 
 	writerOptions := []presence.WriterOption{}
-	publishDiscordState := runDaemonDiscordStatePublisher(ctx, daemonDiscordStatePath(), daemonDiscordStateWriteInterval, os.Getpid())
-	writerOptions = append(writerOptions, presence.WithConnectionState(publishDiscordState))
+	statePublishers := runDaemonDiscordStatePublisher(ctx, daemonDiscordStatePath(), daemonDiscordStateWriteInterval, os.Getpid(), initialConfigErr)
+	writerOptions = append(writerOptions, presence.WithConnectionState(statePublishers.connection))
 	if verbose {
 		writerOptions = append(writerOptions, presence.WithDebugf(debugf))
 	}
@@ -1001,8 +1042,9 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	go func() {
 		defer close(activities)
 		var (
-			last     detector.Detection
-			haveLast bool
+			last           detector.Detection
+			haveLast       bool
+			haveGoodConfig = initialConfigErr == nil
 		)
 		send := func(a *presence.Activity) bool {
 			select {
@@ -1029,21 +1071,30 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 				if !send(buildActivity(applied.config, detection, fallbackMessage)) {
 					return
 				}
-			case nextCfg := <-manager.Changes():
-				next, change, err := applyConfigChange(applied, nextCfg)
+			case reload := <-manager.Reloads():
+				if reload.Err != nil {
+					logConfigReloadFailure(reload.Err)
+					statePublishers.config(reload.Err, haveGoodConfig)
+					continue
+				}
+				next, change, err := applyConfigChange(applied, reload.Config)
 				if err != nil {
-					log.Printf("config reload rejected, keeping last-good behavior: %v", err)
+					logConfigReloadFailure(err)
+					statePublishers.config(err, haveGoodConfig)
 					continue
 				}
 				if change.detector {
 					if err := det.Reconfigure(ctx, next.registry, next.detectorConfig); err != nil {
 						if ctx.Err() == nil {
-							log.Printf("config reload rejected, keeping last-good behavior: %v", err)
+							logConfigReloadFailure(err)
+							statePublishers.config(err, haveGoodConfig)
 						}
 						continue
 					}
 				}
 				applied = next
+				haveGoodConfig = true
+				statePublishers.config(nil, false)
 				if usageStore != nil {
 					usageStore.Prune(registryToolIDs(applied.registry.Tools()), time.Now())
 				}
@@ -1053,6 +1104,8 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 						return
 					}
 				}
+			case watchErr := <-manager.WatchErrors():
+				logConfigWatchFailure(watchErr)
 			case <-ctx.Done():
 				return
 			}
@@ -1371,23 +1424,26 @@ func status(args []string) error {
 	if cfg.AutoUpdate && runtime.GOOS == "windows" {
 		updateMethod = updatepkg.DetectInstallMethod()
 	}
+	daemonState, daemonStateOK := readFreshDaemonDiscordState(daemonDiscordStatePath(), time.Now(), daemonDiscordStateStaleAfter)
+	configOK, configError, configUsingLastGood := statusConfigHealth(loadErr, daemonPID, daemonState, daemonStateOK)
 	info := statusInfo{
-		running:          running,
-		discord:          probes.discord,
-		detectedTool:     probes.detectedTool,
-		serviceSupported: serviceState.Supported,
-		serviceInstalled: serviceState.Installed,
-		serviceLoaded:    serviceState.Loaded,
-		serviceEnabled:   serviceState.Enabled,
-		servicePath:      serviceState.Path,
-		servicePathLabel: autostartLocationLabel(runtime.GOOS),
-		serviceMessage:   serviceState.Message,
-		configPath:       cfg.Path,
-		configOK:         loadErr == nil,
-		configError:      loadErr,
-		configWarnings:   cfg.Warnings,
-		updateFailure:    automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, runtime.GOOS, updateMethod),
-		homeDir:          homeDir,
+		running:             running,
+		discord:             probes.discord,
+		detectedTool:        probes.detectedTool,
+		serviceSupported:    serviceState.Supported,
+		serviceInstalled:    serviceState.Installed,
+		serviceLoaded:       serviceState.Loaded,
+		serviceEnabled:      serviceState.Enabled,
+		servicePath:         serviceState.Path,
+		servicePathLabel:    autostartLocationLabel(runtime.GOOS),
+		serviceMessage:      serviceState.Message,
+		configPath:          cfg.Path,
+		configOK:            configOK,
+		configError:         configError,
+		configUsingLastGood: configUsingLastGood,
+		configWarnings:      cfg.Warnings,
+		updateFailure:       automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, runtime.GOOS, updateMethod),
+		homeDir:             homeDir,
 	}
 
 	if registryErr != nil {
@@ -1408,6 +1464,27 @@ func statusDaemonPID(pidPath, discordStatePath string, now time.Time, alive, loo
 		return state.PID
 	}
 	return 0
+}
+
+func statusConfigHealth(loadErr error, daemonPID int, state daemonDiscordState, stateOK bool) (bool, error, bool) {
+	configOK := loadErr == nil
+	configError := loadErr
+	usingLastGood := false
+	if !stateOK || daemonPID <= 0 || state.PID != daemonPID || state.ConfigOK == nil {
+		return configOK, configError, usingLastGood
+	}
+	if !*state.ConfigOK {
+		configOK = false
+		if state.ConfigError != "" {
+			configError = errors.New(state.ConfigError)
+		}
+		usingLastGood = state.ConfigUsingLastGood
+	} else if loadErr != nil {
+		// The invalid file may be newer than the daemon's latest watch event.
+		// Until it processes that event, its previously valid config is active.
+		usingLastGood = true
+	}
+	return configOK, configError, usingLastGood
 }
 
 type statusProbeFuncs struct {
@@ -1502,64 +1579,100 @@ func runStatusProbes(ctx context.Context, probes statusProbeFuncs) statusProbeRe
 }
 
 type daemonDiscordState struct {
-	Connected bool      `json:"connected"`
-	UpdatedAt time.Time `json:"updated_at"`
-	PID       int       `json:"pid"`
-	StartTime uint64    `json:"start_time,omitempty"`
+	Connected           bool      `json:"connected"`
+	UpdatedAt           time.Time `json:"updated_at"`
+	PID                 int       `json:"pid"`
+	StartTime           uint64    `json:"start_time,omitempty"`
+	ConfigOK            *bool     `json:"config_ok,omitempty"`
+	ConfigError         string    `json:"config_error,omitempty"`
+	ConfigUsingLastGood bool      `json:"config_using_last_good,omitempty"`
 }
 
 func daemonDiscordStatePath() string {
 	return filepath.Join(filepath.Dir(usagepkg.StatePath()), "discord.json")
 }
 
-func runDaemonDiscordStatePublisher(ctx context.Context, path string, interval time.Duration, pid int) func(bool) {
-	updates := make(chan bool, 1)
+type daemonStatePublishers struct {
+	connection func(bool)
+	config     func(error, bool)
+}
+
+func runDaemonDiscordStatePublisher(ctx context.Context, path string, interval time.Duration, pid int, initialConfigErr error) daemonStatePublishers {
 	startTime, _ := processStartTime(pid)
-	go func() {
-		connected := false
-		writeDaemonDiscordState(path, daemonDiscordState{
-			Connected: connected,
-			UpdatedAt: time.Now(),
-			PID:       pid,
-			StartTime: startTime,
-		})
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case connected = <-updates:
-				writeDaemonDiscordState(path, daemonDiscordState{
-					Connected: connected,
-					UpdatedAt: time.Now(),
-					PID:       pid,
-					StartTime: startTime,
-				})
-			case <-ticker.C:
-				writeDaemonDiscordState(path, daemonDiscordState{
-					Connected: connected,
-					UpdatedAt: time.Now(),
-					PID:       pid,
-					StartTime: startTime,
-				})
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return func(connected bool) {
+	configOK := initialConfigErr == nil
+	state := daemonDiscordState{
+		PID:         pid,
+		StartTime:   startTime,
+		ConfigOK:    &configOK,
+		ConfigError: errorString(initialConfigErr),
+	}
+	updates := make(chan daemonDiscordState, 1)
+	var stateMu sync.Mutex
+	publish := func(update func(*daemonDiscordState)) {
+		stateMu.Lock()
+		update(&state)
+		snapshot := state
 		select {
-		case updates <- connected:
+		case updates <- snapshot:
 		default:
 			select {
 			case <-updates:
 			default:
 			}
 			select {
-			case updates <- connected:
+			case updates <- snapshot:
 			default:
 			}
 		}
+		stateMu.Unlock()
 	}
+	go func() {
+		writeState := func(snapshot daemonDiscordState) {
+			snapshot.UpdatedAt = time.Now()
+			_ = writeDaemonDiscordState(path, snapshot)
+		}
+		stateMu.Lock()
+		initial := state
+		stateMu.Unlock()
+		writeState(initial)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case snapshot := <-updates:
+				writeState(snapshot)
+			case <-ticker.C:
+				stateMu.Lock()
+				snapshot := state
+				stateMu.Unlock()
+				writeState(snapshot)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return daemonStatePublishers{
+		connection: func(connected bool) {
+			publish(func(state *daemonDiscordState) {
+				state.Connected = connected
+			})
+		},
+		config: func(err error, usingLastGood bool) {
+			publish(func(state *daemonDiscordState) {
+				ok := err == nil
+				state.ConfigOK = &ok
+				state.ConfigError = errorString(err)
+				state.ConfigUsingLastGood = err != nil && usingLastGood
+			})
+		},
+	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func writeDaemonDiscordState(path string, state daemonDiscordState) error {
@@ -1676,22 +1789,23 @@ func applyStatusStageResult(results *statusProbeResults, result statusStageResul
 }
 
 type statusInfo struct {
-	running          bool
-	discord          string
-	detectedTool     string
-	serviceSupported bool
-	serviceInstalled bool
-	serviceLoaded    string
-	serviceEnabled   string
-	servicePath      string
-	servicePathLabel string
-	serviceMessage   string
-	configPath       string
-	configOK         bool
-	configError      error
-	configWarnings   []string
-	updateFailure    string
-	homeDir          string
+	running             bool
+	discord             string
+	detectedTool        string
+	serviceSupported    bool
+	serviceInstalled    bool
+	serviceLoaded       string
+	serviceEnabled      string
+	servicePath         string
+	servicePathLabel    string
+	serviceMessage      string
+	configPath          string
+	configOK            bool
+	configError         error
+	configUsingLastGood bool
+	configWarnings      []string
+	updateFailure       string
+	homeDir             string
 }
 
 func formatStatus(info statusInfo) string {
@@ -1717,7 +1831,11 @@ func formatStatus(info statusInfo) string {
 		{label: "Valid", value: yesNo(info.configOK)},
 	}
 	if info.configError != nil {
-		configFields = append(configFields, outputField{label: "Presence", value: "off (invalid config)"})
+		presenceState := "off (invalid config)"
+		if info.configUsingLastGood {
+			presenceState = "using last-good config"
+		}
+		configFields = append(configFields, outputField{label: "Presence", value: presenceState})
 		configFields = append(configFields, outputField{label: "Error", value: info.configError.Error()})
 	}
 	for _, warning := range info.configWarnings {
@@ -1947,17 +2065,19 @@ type detectorReconfigurer interface {
 }
 
 func bridgeWatchActivities(ctx context.Context, manager *config.Manager, det detectorReconfigurer, applied detectionRuntime, detections <-chan detector.Detection, program *tea.Program, fallbackMessage string) {
-	bridgeWatchActivityUpdates(ctx, manager.Changes(), det, applied, detections, func(cfg config.Config, detection detector.Detection) {
+	bridgeWatchActivityUpdates(ctx, manager.Reloads(), manager.WatchErrors(), det, applied, detections, func(cfg config.Config, detection detector.Detection) {
 		activity := buildActivity(cfg, detection, fallbackMessage)
 		name := ""
 		if activity != nil {
 			name = detection.Tool.DisplayName
 		}
 		program.Send(tui.ActivityMsg{Activity: activity, FeaturedName: name})
+	}, func(warning string) {
+		program.Send(tui.WarningMsg(warning))
 	})
 }
 
-func bridgeWatchActivityUpdates(ctx context.Context, changes <-chan config.Config, det detectorReconfigurer, applied detectionRuntime, detections <-chan detector.Detection, send func(config.Config, detector.Detection)) {
+func bridgeWatchActivityUpdates(ctx context.Context, reloads <-chan config.ReloadResult, watchErrs <-chan error, det detectorReconfigurer, applied detectionRuntime, detections <-chan detector.Detection, send func(config.Config, detector.Detection), warn func(string)) {
 	var (
 		last     detector.Detection
 		haveLast bool
@@ -1970,25 +2090,32 @@ func bridgeWatchActivityUpdates(ctx context.Context, changes <-chan config.Confi
 			}
 			last, haveLast = detection, true
 			send(applied.config, detection)
-		case nextCfg := <-changes:
-			next, change, err := applyConfigChange(applied, nextCfg)
+		case reload := <-reloads:
+			if reload.Err != nil {
+				warn(configReloadFailure(reload.Err))
+				continue
+			}
+			next, change, err := applyConfigChange(applied, reload.Config)
 			if err != nil {
-				log.Printf("config reload rejected, keeping last-good behavior: %v", err)
+				warn(configReloadFailure(err))
 				continue
 			}
 			if change.detector {
 				if err := det.Reconfigure(ctx, next.registry, next.detectorConfig); err != nil {
 					if ctx.Err() == nil {
-						log.Printf("config reload rejected, keeping last-good behavior: %v", err)
+						warn(configReloadFailure(err))
 					}
 					continue
 				}
 			}
 			applied = next
+			warn("")
 			debugf("config reloaded")
 			if haveLast && !change.detector {
 				send(applied.config, last)
 			}
+		case watchErr := <-watchErrs:
+			warn(configWatchFailure(watchErr))
 		case <-ctx.Done():
 			return
 		}
