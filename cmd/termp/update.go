@@ -196,6 +196,12 @@ func updateCommand(args []string) error {
 }
 
 func runUpdate(checkCtx, updateCtx context.Context, current string, checker latestChecker, runner updatepkg.CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {
+	return runUpdateForPlatform(checkCtx, updateCtx, current, checker, runner, stdin, stdout, stderr, runtime.GOOS)
+}
+
+// runUpdateForPlatform is runUpdate with an injectable goos so tests can
+// exercise the Windows-generic-install path from any host.
+func runUpdateForPlatform(checkCtx, updateCtx context.Context, current string, checker latestChecker, runner updatepkg.CommandRunner, stdin io.Reader, stdout, stderr io.Writer, goos string) error {
 	result, err := checker.Latest(checkCtx, current)
 	if err != nil {
 		return fmt.Errorf("unable to check for updates: %w", err)
@@ -208,6 +214,18 @@ func runUpdate(checkCtx, updateCtx context.Context, current string, checker late
 		fmt.Fprintf(stdout, "Update available: %s -> %s\n\n", current, result.Latest)
 		fmt.Fprintln(stdout, "To update:")
 		fmt.Fprintf(stdout, "  %s\n", updatepkg.GuidanceForMethod(result.Method, result.Latest).Text)
+		return nil
+	}
+	if goos == "windows" && result.Method == updatepkg.InstallGeneric {
+		// Windows locks a running executable, so a generic (archive/zip)
+		// install can never self-update — genericUpdatePlatformError refuses
+		// it every time. That's a permanent platform limitation, not a
+		// transient failure, so there is nothing to "retry": skip the
+		// attempt entirely and hand the user the two real options up front.
+		fmt.Fprintf(stdout, "Update available: %s -> %s\n\n", current, result.Latest)
+		fmt.Fprintln(stdout, "termp cannot update a Windows archive install.")
+		fmt.Fprintln(stdout, "To update:")
+		fmt.Fprintln(stdout, updatepkg.WindowsArchiveGuidance(result.Latest).Text)
 		return nil
 	}
 	if updatepkg.IsSystemPackageInstall(result.Method) {

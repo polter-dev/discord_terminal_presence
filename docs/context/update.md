@@ -48,7 +48,11 @@ running executable's directory so a vanished custom environment does not create 
 second binary. The stored generic installer pipeline remains exact-tagged and
 injection-free, but user-facing notices deliberately print `termp update` instead of
 that pipeline so the resolved install directory is preserved. Windows generic self-update
-is unsupported. Scoop exposes `scoop update termp` guidance but is rejected by
+is unsupported: it is a permanent platform limitation (Windows locks a running
+executable), not a transient failure, so `runUpdate` detects a Windows generic install
+before calling `PerformUpdate` and prints non-runnable `go install`/release-archive
+guidance (`WindowsArchiveGuidance`) instead of attempting and then telling the user to
+retry. Scoop exposes `scoop update termp` guidance but is rejected by
 `PerformUpdate`, preserving package-manager ownership. Interactive Linux system-package
 updates download the matching exact-tag,
 architecture-specific GitHub release `.deb` or `.rpm` and `checksums.txt` into private
@@ -76,8 +80,10 @@ group so `sudo` and the generic installer can read a password from the controlli
 terminal. Non-interactive automatic update commands run in a separate process group so
 context cancellation kills the complete command tree; their existing preflights prevent
 any path that could prompt. Failed interactive Homebrew and Go updates display the retry command produced
-by `UpdateCommandForMethod`; generic failures tell users to resolve the reported error and
-retry `termp update`, avoiding a fallback installer invocation that could drift `BINDIR`.
+by `UpdateCommandForMethod`; non-Windows generic failures tell users to resolve the
+reported error and retry `termp update`, avoiding a fallback installer invocation that
+could drift `BINDIR`. A Windows generic install never reaches that retry path at all —
+see above.
 
 Homebrew-owned installs delegate to `brew upgrade polter-dev/tap/termp` without `--cask`;
 Homebrew resolves that fully qualified token to the Cask published by GoReleaser.

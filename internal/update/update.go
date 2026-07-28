@@ -37,6 +37,7 @@ const (
 	genericInstallerURL = "https://raw.githubusercontent.com/polter-dev/discord_terminal_presence/%s/install.sh"
 	packageDownloadURL  = "https://github.com/polter-dev/discord_terminal_presence/releases/download/%s/%s"
 	workerDownloadURL   = "https://termp.polter.sh/dl/update/%s/%s/%s"
+	latestReleasePage   = "https://github.com/polter-dev/discord_terminal_presence/releases/latest"
 )
 
 var removeTemporaryInstaller = os.Remove
@@ -699,6 +700,21 @@ func RPMRemoveCommand(manager string) string {
 		return "sudo rpm -e termp"
 	default:
 		return fmt.Sprintf("remove termp with your RPM package manager (%s)", rpmManagerFallback)
+	}
+}
+
+// WindowsArchiveGuidance describes how to update a Windows archive (generic)
+// install. Windows locks a running executable, so termp cannot self-replace
+// it the way it does on other platforms; this is a permanent platform
+// limitation, not a transient failure. The guidance is not Runnable because
+// it presents two independent options rather than a single command.
+func WindowsArchiveGuidance(tag string) Guidance {
+	return Guidance{
+		Text: fmt.Sprintf(
+			"  %s\n\nOr download the new release archive from:\n  %s",
+			GoCommand(tag),
+			latestReleasePage,
+		),
 	}
 }
 

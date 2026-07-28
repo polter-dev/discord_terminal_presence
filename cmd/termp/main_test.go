@@ -1796,14 +1796,22 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 		t.Run(string(tt.method), func(t *testing.T) {
 			runner := &recordingUpdateRunner{}
 			checker := stubLatestChecker{result: updatepkg.Result{Current: "1.0.0", Latest: "v1.1.0", Method: tt.method}}
-			err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, io.Discard, io.Discard)
+			var stdout bytes.Buffer
+			err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, &stdout, io.Discard)
 			if tt.method == updatepkg.InstallGeneric && runtime.GOOS == "windows" {
-				if err == nil || !strings.Contains(err.Error(), "not supported on Windows") ||
-					!strings.Contains(err.Error(), "go install") {
-					t.Fatalf("Windows generic update error = %v, want supported-path guidance", err)
+				if err != nil {
+					t.Fatalf("Windows generic update error = %v, want nil (permanent limitation, not a failure)", err)
 				}
 				if runner.calls != 0 {
 					t.Fatalf("unsupported Windows generic update invoked runner %d times", runner.calls)
+				}
+				for _, want := range []string{"cannot update a Windows archive install", "go install", "releases/latest"} {
+					if !strings.Contains(stdout.String(), want) {
+						t.Fatalf("Windows generic update output = %q, want guidance containing %q", stdout.String(), want)
+					}
+				}
+				if strings.Contains(stdout.String(), "Updating termp from") {
+					t.Fatalf("Windows generic update printed misleading in-progress line:\n%s", stdout.String())
 				}
 				return
 			}
@@ -1864,6 +1872,51 @@ func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 				t.Fatalf("package fallback error = %q, want clear reason", stderr.String())
 			}
 		})
+	}
+}
+
+// TestRunUpdatePrintsWindowsGenericGuidanceWithoutRunningCommand exercises the
+// Windows archive (generic) install path via the injectable-goos variant so
+// it runs on every CI host, not just Windows. A generic install on Windows
+// can never self-update (Windows locks a running executable), so this must
+// be treated as permanent guidance, not a retryable failure: see issue #389.
+func TestRunUpdatePrintsWindowsGenericGuidanceWithoutRunningCommand(t *testing.T) {
+	checker := stubLatestChecker{result: updatepkg.Result{
+		Current: "v0.1.0",
+		Latest:  "v0.1.1",
+		Method:  updatepkg.InstallGeneric,
+	}}
+	runner := &recordingUpdateRunner{}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := runUpdateForPlatform(context.Background(), context.Background(), "v0.1.0", checker, runner, nil, &stdout, &stderr, "windows")
+	if err != nil {
+		t.Fatalf("runUpdateForPlatform() error = %v, want nil (permanent limitation, not a failure)", err)
+	}
+	const want = "Update available: v0.1.0 -> v0.1.1\n\n" +
+		"termp cannot update a Windows archive install.\n" +
+		"To update:\n" +
+		"  go install github.com/polter-dev/discord_terminal_presence/cmd/termp@v0.1.1\n\n" +
+		"Or download the new release archive from:\n" +
+		"  https://github.com/polter-dev/discord_terminal_presence/releases/latest\n"
+	if stdout.String() != want {
+		t.Fatalf("Windows generic update output = %q, want %q", stdout.String(), want)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("Windows generic update ran %d commands, want 0", runner.calls)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("Windows generic update stderr = %q, want empty", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "Updating termp from") {
+		t.Fatalf("Windows generic update printed misleading in-progress line:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "resolve the error above") {
+		t.Fatalf("Windows generic update printed unresolvable retry line:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "\nRun:") {
+		t.Fatalf("Windows generic update used Runnable label for non-runnable guidance:\n%s", stdout.String())
 	}
 }
 
@@ -1945,6 +1998,7 @@ func TestRunUpdateFailurePrintsMethodRetryCommand(t *testing.T) {
 				Latest:  "v1.1.0",
 				Method:  tt.method,
 			}}
+			var stdout bytes.Buffer
 			var stderr bytes.Buffer
 			err := runUpdate(
 				context.Background(),
@@ -1953,17 +2007,29 @@ func TestRunUpdateFailurePrintsMethodRetryCommand(t *testing.T) {
 				checker,
 				runner,
 				nil,
-				io.Discard,
+				&stdout,
 				&stderr,
 			)
 			if tt.method == updatepkg.InstallGeneric && runtime.GOOS == "windows" {
-				if err == nil || !strings.Contains(err.Error(), "generic self-update is not supported on Windows") ||
-					!strings.Contains(err.Error(), updatepkg.GoCommand("v1.1.0")) ||
-					!strings.Contains(err.Error(), "install the release archive manually") {
-					t.Fatalf("Windows generic update error = %v, want unsupported-method recovery guidance", err)
+				// A Windows generic install is a permanent platform
+				// limitation: runUpdate must skip the attempt (and thus the
+				// injected runner failure) entirely rather than retrying.
+				if err != nil {
+					t.Fatalf("Windows generic update error = %v, want nil (permanent limitation, not a failure)", err)
 				}
 				if runner.calls != 0 {
 					t.Fatalf("unsupported Windows generic update invoked runner %d times", runner.calls)
+				}
+				if stderr.Len() != 0 {
+					t.Fatalf("Windows generic update stderr = %q, want empty (no unresolvable retry line)", stderr.String())
+				}
+				for _, want := range []string{"cannot update a Windows archive install", updatepkg.GoCommand("v1.1.0"), "releases/latest"} {
+					if !strings.Contains(stdout.String(), want) {
+						t.Fatalf("Windows generic update output = %q, want guidance containing %q", stdout.String(), want)
+					}
+				}
+				if strings.Contains(stdout.String(), "resolve the error above") {
+					t.Fatalf("Windows generic update printed unresolvable retry line:\n%s", stdout.String())
 				}
 				return
 			}
