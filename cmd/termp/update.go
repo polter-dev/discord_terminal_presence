@@ -171,6 +171,15 @@ func automaticUpdatePlatformPreflight(goos string, method updatepkg.InstallMetho
 	return nil
 }
 
+// commandsLoadConfigForOwnAlert names commands that already call config.Load
+// for their own real work and print the update alert from that same result,
+// so main()'s pre-dispatch check must skip loading config a second time just
+// to evaluate eligibility (issue #442).
+var commandsLoadConfigForOwnAlert = map[string]bool{
+	"setup":    true,
+	"settings": true,
+}
+
 func eligibleForUpdateAlert(command string, args []string, interactive bool) bool {
 	switch command {
 	case "install", "uninstall", "disable", "enable", "start", "stop":

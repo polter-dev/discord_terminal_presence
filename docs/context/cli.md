@@ -9,7 +9,9 @@ Windows also exposes `connect`. `install.sh` is the canonical generic release in
 
 **Key files:** `cmd/termp/main.go` owns dispatch, daemon operation, status, setup, and
 usage/config wiring. `cmd/termp/connect.go` and `control_*` own daemon control.
-`cmd/termp/update.go` owns manual notices and opt-in automatic updates. `spawn_*`,
+`cmd/termp/update.go` owns manual notices and opt-in automatic updates.
+`cmd/termp/configload.go` owns the slow-load stderr notice and the pre-dispatch
+update-alert eligibility/dedup gate (#442). `spawn_*`,
 `pidfile_*`, and `shutdown_*` contain platform lifecycle behavior. `install.sh` installs
 tag-pinned archives. `.github/workflows/release.yml` and `.goreleaser.yaml` own releases,
 including gated Homebrew Cask and Scoop manifest publication;
@@ -278,6 +280,25 @@ ordinary settle budget from durably erasing the user's opt-out and unrelated set
 (#438). A continuously changing file instead returns `ErrConfigBeingWritten`; both
 commands propagate it before any save or TUI work, leaving the file byte-identical.
 Their normal nonblank path still adds only the ordinary settle interval.
+
+A genuinely blank config is deliberately ambiguous and the resulting wait is correct
+(#438/#434), but a silent multi-second pause with no output looked like a hang: `setup`
+and `settings` sat for the full ~3s horizon, and `status`/the `version` subcommand paid
+config's ~300ms settle bound, with **no indication why** (#442). `loadConfigWithNotice`
+(`cmd/termp/configload.go`) wraps a config load in a goroutine and prints one `checking
+config…` line to stderr only if the load has not returned within
+`checkingConfigNoticeDelay` (150ms) — normal existing configs and missing first-run files
+resolve well under that and print nothing new; a blank or continuously-rewritten file
+does. `main()`'s pre-dispatch update-alert check previously called `config.LoadReadOnly`
+unconditionally before evaluating `eligibleForUpdateAlert`, so a command that is not
+alert-eligible (`status`, non-interactive `settings`) or that loads config again itself
+(`setup`, `settings`) paid the settle/horizon cost twice for the same file with no benefit.
+`maybePrintCommandUpdateAlert` now checks eligibility (and a `commandsLoadConfigForOwnAlert`
+skip-list for setup/settings) before loading anything, and setup/settings print the same
+alert from their own already-loaded config instead of main() loading a second time.
+`status`'s own load goes through the package var `readOnlyConfigLoader` (defaults to
+`config.LoadReadOnly`) so tests can substitute a counting stub and assert "loads config
+exactly once" on an observable rather than on timing.
 
 If the daemon cannot start its config watcher at all — `config.EnsureConfigDir` or
 `Manager.Watch` failing, for example because the config directory path is occupied by a
