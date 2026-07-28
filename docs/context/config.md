@@ -94,6 +94,18 @@ before computing its posture (a local copy used only for this comparison, not th
 `prev.Enabled` used anywhere else), so per-tool overrides are actually applied and can be
 compared against next's resolved state; only the global (`""`) posture's own enabled
 dimension is then neutralized.
+
+A `[tools]` override key must be non-blank. `""` is the sentinel that posture comparison
+uses for the tool-agnostic global row, and `""` is also a legal TOML map key, so a
+`[tools.""]` section would occupy the same slot as the sentinel. `validate` rejects
+blank/whitespace override IDs, which removes that collision by construction instead of
+asking the guard to tolerate it, and matches the blank-ID rejection custom tools already
+have. A manager-level reproduction of an actual masked loosening through the collision was
+attempted and **not** obtained — the global allowlist gate held at ~320ms with `[tools.""]`
+present, in both file orderings tried, including the one where the section survives a
+top-down truncation. So this is defence in depth against a sentinel collision, not a fix
+for a demonstrated leak. No generated config has ever emitted such a section, so unlike the
+`directory_allowlist = []` case there is no upgrade exposure.
 `TestManagerReloadPreservesPerToolOptOutWhileGlobalEnabledAlsoLoosens` is the regression:
 a config with the global flag off and `[tools.vim] enabled = false` moves to a stalled
 partial containing only `enabled = true` (the per-tool override not yet rewritten), and
