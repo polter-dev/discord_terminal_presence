@@ -258,11 +258,26 @@ reload clears that health error and the watch banner. A reload-introduced config
 same `logConfigWarnings` helper startup warnings use (issue #416 comment), not just
 surfaced the next time something re-loads the file for `termp status`.
 Daemon and interactive-watch startup share `newWatchedConfigManager`, which constructs
-the manager, installs or attempts the watcher, performs one settled `Manager.Reload`, and
-only then returns the config used by warnings, automatic updates, detection, and startup
-error rendering. Thus a non-atomic save that completes during startup is either read by
-the settled reload or leaves a queued watcher event instead of stranding transient
-defaults for the process lifetime (#435).
+the manager from a settled snapshot, installs or attempts the watcher, performs one
+settled `Manager.Reload`, and only then returns the config used by warnings, automatic
+updates, detection, and startup error rendering. An existing empty snapshot at
+construction is held fail-closed and keeps config's `enabled` loosening guard armed. Thus
+a non-atomic save that completes during startup is either read by a settled load/reload
+or leaves a queued watcher event instead of stranding transient defaults for the process
+lifetime (#435, #440).
+
+Every direct CLI config read inherits config's settled-read protection. Read-only paths
+such as update notices, version, pre-spawn error rendering, status, and `watch --once`
+use `LoadReadOnly`, so stable existing files add one ~15ms poll interval and a missing
+first-run config remains immediate. If another process keeps rewriting the file,
+read-only commands render from the newest snapshot after config's 500ms standalone
+bound instead of hanging. Setup/settings use the safe-by-default `Load` because they can
+save the loaded whole document: an existing blank must persist through the three-second
+loosening horizon before it can seed defaults, preventing a truncate stall beyond the
+ordinary settle budget from durably erasing the user's opt-out and unrelated settings
+(#438). A continuously changing file instead returns `ErrConfigBeingWritten`; both
+commands propagate it before any save or TUI work, leaving the file byte-identical.
+Their normal nonblank path still adds only the ordinary settle interval.
 
 If the daemon cannot start its config watcher at all — `config.EnsureConfigDir` or
 `Manager.Watch` failing, for example because the config directory path is occupied by a

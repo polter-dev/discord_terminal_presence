@@ -666,6 +666,49 @@ func TestSetupNonInteractivePreservesExistingConfig(t *testing.T) {
 	}
 }
 
+func TestWholeDocumentCommandsDoNotWriteWhenConfigIsBeingWritten(t *testing.T) {
+	withTermpConfigHome(t)
+	path := config.DefaultPath()
+	original := []byte("enabled = false\npin = \"codex-cli\"\n")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loadBusy := func() (config.Config, error) {
+		return config.Config{}, config.ErrConfigBeingWritten
+	}
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "setup",
+			run:  func() error { return setupWithConfigLoader(nil, loadBusy) },
+		},
+		{
+			name: "settings",
+			run:  func() error { return settingsWithConfigLoader(nil, true, loadBusy) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.run(); !errors.Is(err, config.ErrConfigBeingWritten) {
+				t.Fatalf("%s error = %v, want ErrConfigBeingWritten", tt.name, err)
+			}
+			onDisk, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(onDisk, original) {
+				t.Fatalf("%s changed config after busy load error:\ngot:  %q\nwant: %q", tt.name, onDisk, original)
+			}
+		})
+	}
+}
+
 func TestCompletionScriptRejectsUnknownShell(t *testing.T) {
 	if _, err := completionScript("powershell"); err == nil || !strings.Contains(err.Error(), "unsupported shell") {
 		t.Fatalf("error = %v, want unsupported shell", err)

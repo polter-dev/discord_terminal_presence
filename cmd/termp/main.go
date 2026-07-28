@@ -103,7 +103,7 @@ func main() {
 		return
 	}
 
-	cfg, loadErr := config.Load()
+	cfg, loadErr := config.LoadReadOnly()
 	interactive := isTerminal(os.Stdin) && isTerminal(os.Stdout)
 	printCommandUpdateAlert(command, args, interactive, cfg, loadErr, os.Stderr)
 
@@ -349,7 +349,7 @@ func versionCommand(args []string) error {
 		return err
 	}
 	fmt.Print(formatVersion(currentVersionInfo()))
-	cfg, loadErr := config.Load()
+	cfg, loadErr := config.LoadReadOnly()
 	printAvailableUpdate(cfg, loadErr)
 	return nil
 }
@@ -480,6 +480,10 @@ func configInit(args []string) error {
 }
 
 func setup(args []string) error {
+	return setupWithConfigLoader(args, config.Load)
+}
+
+func setupWithConfigLoader(args []string, load func() (config.Config, error)) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	if err := parseCommandFlags(fs, args); err != nil {
@@ -488,7 +492,7 @@ func setup(args []string) error {
 	if err := rejectUnexpectedArgs(fs, "termp setup [--verbose]"); err != nil {
 		return err
 	}
-	cfg, err := config.Load()
+	cfg, err := load()
 	if err != nil {
 		return err
 	}
@@ -848,7 +852,7 @@ func start(args []string) error {
 	}
 	background := !options.foreground
 	if background && !options.detachedChild {
-		cfg, loadErr := config.Load()
+		cfg, loadErr := config.LoadReadOnly()
 		if loadErr != nil {
 			printStartupConfigError(os.Stderr, cfg.Path, loadErr)
 		}
@@ -1184,7 +1188,7 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 				haveGoodConfig = true
 				statePublishers.config(nil, false)
 				// A reload-introduced warning previously reached `termp
-				// status` (a fresh config.Load() there recomputes the same
+				// status` (a fresh config.LoadReadOnly() there recomputes the same
 				// warnings) but never the daemon log, unlike a startup
 				// warning logged via the same helper (issue #416 comment).
 				// Routing both origins through logConfigWarnings keeps a
@@ -1478,7 +1482,7 @@ func status(args []string) error {
 
 	statusCtx, cancelStatus := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancelStatus()
-	cfg, loadErr := config.Load()
+	cfg, loadErr := config.LoadReadOnly()
 	defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
 	daemonPID := statusDaemonPID(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermp)
 	running := daemonPID > 0
@@ -2092,6 +2096,11 @@ func abbreviateHome(path, homeDir string) string {
 }
 
 func settings(args []string) error {
+	terminal := isTerminal(os.Stdin) && isTerminal(os.Stdout)
+	return settingsWithConfigLoader(args, terminal, config.Load)
+}
+
+func settingsWithConfigLoader(args []string, terminal bool, load func() (config.Config, error)) error {
 	fs := flag.NewFlagSet("settings", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	if err := parseCommandFlags(fs, args); err != nil {
@@ -2100,11 +2109,11 @@ func settings(args []string) error {
 	if err := rejectUnexpectedArgs(fs, "termp settings [--verbose]"); err != nil {
 		return err
 	}
-	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+	if !terminal {
 		fmt.Fprintln(os.Stderr, "termp settings requires an interactive terminal (TTY)")
 		return errors.New("settings requires a TTY")
 	}
-	cfg, err := config.Load()
+	cfg, err := load()
 	if err != nil {
 		return err
 	}
@@ -2188,7 +2197,7 @@ func watch(args []string) error {
 }
 
 func watchSnapshot(now time.Time) (string, []string, error) {
-	cfg, loadErr := config.Load()
+	cfg, loadErr := config.LoadReadOnly()
 	reg, err := registry.NewWithCustom(cfg.CustomTools...)
 	if err != nil {
 		return "", nil, err

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -434,6 +435,186 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadThenSaveRejectsChangingNonAtomicTruncationWindow is the #438
+// regression. Setup and settings both load the user's whole config and later
+// save that whole document. A transient empty read must not seed that write
+// with defaults and durably erase the user's opt-out and unrelated settings.
+func TestLoadThenSaveRejectsChangingNonAtomicTruncationWindow(t *testing.T) {
+	const contents = `enabled = false
+pin = "codex-cli"
+
+[[custom_tools]]
+id = "mine"
+display_name = "Mine"
+match = { name = "mine" }
+image_key = "mine"
+`
+	for _, stall := range []time.Duration{
+		50 * time.Millisecond,
+		250 * time.Millisecond,
+		400 * time.Millisecond,
+		time.Second,
+	} {
+		t.Run(stall.String(), func(t *testing.T) {
+			path := withConfigHome(t)
+			writeConfig(t, path, contents)
+
+			writer := newNonAtomicWriter(t)
+			writer.write(path, contents, stall)
+			<-writer.truncated
+
+			cfg, err := LoadPath(path)
+			if err != nil {
+				t.Fatalf("LoadPath() during %v non-atomic save = %v", stall, err)
+			}
+			if err := Save(cfg, path); err != nil {
+				t.Fatalf("Save() after protected load = %v", err)
+			}
+			writer.wait(t)
+
+			onDisk, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read config after whole-document save: %v", err)
+			}
+			if !bytes.Contains(onDisk, []byte("enabled = false")) {
+				t.Fatalf("%v stall: on-disk config lost enabled=false:\n%s", stall, onDisk)
+			}
+			if !bytes.Contains(onDisk, []byte(`pin = "codex-cli"`)) {
+				t.Fatalf("%v stall: on-disk config lost pin:\n%s", stall, onDisk)
+			}
+
+			persisted, err := LoadPath(path)
+			if err != nil {
+				t.Fatalf("LoadPath() after whole-document save = %v", err)
+			}
+			if persisted.Enabled {
+				t.Fatalf("%v stall: whole-document save durably changed enabled=false to true", stall)
+			}
+			if persisted.Pin != "codex-cli" {
+				t.Fatalf("%v stall: whole-document save changed pin to %q, want codex-cli", stall, persisted.Pin)
+			}
+			if len(persisted.CustomTools) != 1 || persisted.CustomTools[0].ID != "mine" {
+				t.Fatalf("%v stall: whole-document save changed custom tools to %#v, want mine", stall, persisted.CustomTools)
+			}
+		})
+	}
+}
+
+func TestLoadPathBlankAndNonBlankLatencyPolicy(t *testing.T) {
+	t.Run("deliberate blank waits through loosening horizon", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeConfig(t, path, " \n\t")
+
+		start := time.Now()
+		cfg, err := LoadPath(path)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("LoadPath() deliberate blank = %v", err)
+		}
+		if !cfg.Enabled || cfg.Pin != "" {
+			t.Fatalf("LoadPath() deliberate blank = %#v, want defaults", cfg)
+		}
+		if elapsed < enabledLooseningHorizon {
+			t.Fatalf("deliberate blank returned after %v, want at least %v", elapsed, enabledLooseningHorizon)
+		}
+		t.Logf("deliberate blank update load latency: %v", elapsed)
+	})
+
+	t.Run("normal config keeps settle latency", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeConfig(t, path, `pin = "vim"`)
+
+		start := time.Now()
+		cfg, err := LoadPath(path)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("LoadPath() normal config = %v", err)
+		}
+		if !cfg.Enabled || cfg.Pin != "vim" {
+			t.Fatalf("LoadPath() normal config = %#v, want enabled default and pin", cfg)
+		}
+		if elapsed >= enabledLooseningHorizon {
+			t.Fatalf("normal config returned after %v, want less than horizon %v", elapsed, enabledLooseningHorizon)
+		}
+		t.Logf("normal nonblank update load latency: %v", elapsed)
+	})
+
+	t.Run("read-only blank does not pay update horizon", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeConfig(t, path, "")
+
+		start := time.Now()
+		cfg, err := LoadPathReadOnly(path)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("LoadPathReadOnly() blank = %v", err)
+		}
+		if !cfg.Enabled {
+			t.Fatalf("LoadPathReadOnly() blank = %#v, want defaults", cfg)
+		}
+		if elapsed >= enabledLooseningHorizon {
+			t.Fatalf("read-only blank returned after %v, want less than update horizon %v", elapsed, enabledLooseningHorizon)
+		}
+		t.Logf("read-only blank load latency: %v", elapsed)
+	})
+}
+
+func TestLoadPathNeverSettlingWriterIsBounded(t *testing.T) {
+	tests := []struct {
+		name string
+		load func(string, func(string) fileSnapshot, func() time.Time, func(time.Duration)) (Config, error)
+	}{
+		{
+			name: "read-only returns latest snapshot",
+			load: loadPathReadOnlyWith,
+		},
+		{
+			name: "whole-document returns busy error",
+			load: loadPathWith,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Unix(0, 0)
+			sleep := func(delay time.Duration) {
+				now = now.Add(delay)
+			}
+			revision := 0
+			snapshot := func(string) fileSnapshot {
+				revision++
+				if revision > 100 {
+					t.Fatalf("snapshot reader called %d times; settle loop exceeded its bound", revision)
+				}
+				return fileSnapshot{
+					exists: true,
+					data:   []byte(fmt.Sprintf("pin = %q\n", fmt.Sprintf("revision-%d", revision))),
+				}
+			}
+
+			start := now
+			cfg, err := tt.load("config.toml", snapshot, func() time.Time { return now }, sleep)
+			elapsed := now.Sub(start)
+			if elapsed > standaloneLoadSettleTimeout {
+				t.Fatalf("%s returned after %v virtual time, want no more than %v",
+					tt.name, elapsed, standaloneLoadSettleTimeout)
+			}
+			if tt.name == "read-only returns latest snapshot" {
+				if err != nil {
+					t.Fatalf("LoadPathReadOnly() error = %v, want latest readable snapshot", err)
+				}
+				if cfg.Pin == "" {
+					t.Fatalf("LoadPathReadOnly() pin = %q, want latest readable snapshot", cfg.Pin)
+				}
+				return
+			}
+			if !errors.Is(err, ErrConfigBeingWritten) {
+				t.Fatalf("LoadPath() error = %v, want ErrConfigBeingWritten", err)
+			}
+		})
+	}
+}
+
 func TestManagerStartupConfigPolicy(t *testing.T) {
 	t.Run("absent file uses enabled defaults", func(t *testing.T) {
 		path := withConfigHome(t)
@@ -445,6 +626,22 @@ func TestManagerStartupConfigPolicy(t *testing.T) {
 		}
 		if !cfg.Enabled {
 			t.Fatal("missing config disabled presence, want enabled first-run default")
+		}
+	})
+
+	t.Run("deliberately blank file resolves to enabled defaults", func(t *testing.T) {
+		path := withConfigHome(t)
+		writeConfig(t, path, "")
+		manager := NewManagerPath(path)
+
+		assertManagerEnabledFalse(t, manager, "while constructor blank is pending")
+		select {
+		case reload := <-manager.Reloads():
+			if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != Default().ScanInterval {
+				t.Fatalf("deliberate constructor blank reload = %#v, want enabled defaults", reload)
+			}
+		case <-time.After(enabledLooseningHorizon + time.Second):
+			t.Fatal("timed out waiting for deliberate constructor blank to load defaults")
 		}
 	})
 
@@ -490,6 +687,46 @@ func TestManagerStartupConfigPolicy(t *testing.T) {
 				t.Fatal("valid reload did not restore enabled presence")
 			}
 		})
+	}
+}
+
+// TestManagerStartupTruncatedPastSettleBudgetFailClosesAndKeepsGuardArmed is
+// the #440 regression. A stable-for-the-budget empty file is ambiguous at
+// construction time, so it must not seed enabled=true and bypass the later
+// false-to-true guard.
+func TestManagerStartupTruncatedPastSettleBudgetFailClosesAndKeepsGuardArmed(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+
+	writer := newNonAtomicWriter(t)
+	writer.write(path, "scan_interval = \"5s\"\n", reloadSettleInterval*time.Duration(reloadSettleAttempts+5))
+	<-writer.truncated
+
+	manager := NewManagerPath(path)
+	assertManagerEnabledFalse(t, manager, "after construction from ambiguous blank")
+	writer.wait(t)
+
+	start := time.Now()
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() of defaulted final content = %v", err)
+	}
+	assertManagerEnabledFalse(t, manager, "while constructor-seeded guard is pending")
+	select {
+	case reload := <-manager.Reloads():
+		t.Fatalf("guarded defaulted read published before the horizon: %#v", reload)
+	default:
+	}
+
+	select {
+	case reload := <-manager.Reloads():
+		if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != "5s" {
+			t.Fatalf("post-horizon reload = %#v, want enabled defaults with scan interval 5s", reload)
+		}
+		if elapsed := time.Since(start); elapsed < enabledLooseningHorizon {
+			t.Fatalf("defaulted read applied after %v, want at least the %v loosening horizon", elapsed, enabledLooseningHorizon)
+		}
+	case <-time.After(enabledLooseningHorizon + time.Second):
+		t.Fatal("timed out waiting for guarded defaulted read to apply")
 	}
 }
 
