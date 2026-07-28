@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,29 @@ func TestAutomaticGenericUpdateSkipsNonWritableDestination(t *testing.T) {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status update reason %q missing %q", status, want)
 		}
+	}
+}
+
+func TestAutomaticGenericUpdateSkipsInstallDirResolutionFailure(t *testing.T) {
+	stubGenericUpdateInstallDir(t, "", errors.New("locate running executable: unavailable"))
+	cfg, checker, statePath := automaticGenericUpdateTestInputs(t)
+	runner := &recordingUpdateRunner{}
+
+	runAutomaticUpdateWithStatePath(context.Background(), cfg, "1.0.0", checker, runner, statePath)
+
+	if runner.calls != 0 {
+		t.Fatalf("install-dir resolution failure ran updater %d times", runner.calls)
+	}
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
+	if !ok || !attempt.Skipped || attempt.Target != "v1.1.0" {
+		t.Fatalf("recorded attempt = (%+v, %t), want skipped v1.1.0 attempt", attempt, ok)
+	}
+	if !strings.Contains(attempt.Error, "locate running executable: unavailable") {
+		t.Fatalf("recorded skip %q missing install-dir error", attempt.Error)
+	}
+	status := automaticUpdateFailure(statePath)
+	if !strings.Contains(status, "skipped for v1.1.0") {
+		t.Fatalf("status update reason %q does not report a skip", status)
 	}
 }
 

@@ -48,7 +48,10 @@ skip; Go and Homebrew installs remain eligible. Debian/RPM-owned installs record
 managed-package skip without invoking an updater. Attempts are visible in `termp status`,
 and a later success clears the reported failure/skip. Interactive `termp update` prints
 apt/dnf guidance without self-installing for a system package; a failed executable update
-prints the exact retry command built for its detected Homebrew, Go, or generic method.
+prints the exact retry command for Homebrew and Go, while a generic failure says to
+resolve the reported error and retry `termp update`. Update notices likewise print
+`termp update` for generic installs, preserving the resolved executable directory;
+Homebrew and Go notices continue to print their direct package commands.
 
 Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned

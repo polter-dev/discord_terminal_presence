@@ -39,10 +39,14 @@ failed/skipped attempts; recording a later success leaves no reportable error an
 All updater commands validate and pin the exact semver tag. Generic updates download the
 tagged installer, pass a tagged archive URL, and explicitly set `BINDIR` to the resolved
 running executable's directory so a vanished custom environment does not create a
-second binary. Windows generic self-update is unsupported. System-package methods expose
+second binary. The stored generic installer pipeline remains exact-tagged and
+injection-free, but user-facing notices deliberately print `termp update` instead of
+that pipeline so the resolved install directory is preserved. Windows generic self-update
+is unsupported. System-package methods expose
 apt/dnf guidance but are rejected by `PerformUpdate`, preserving package-manager
-ownership. Failed interactive updates display the retry command produced by
-`UpdateCommandForMethod`, keeping recovery guidance identical to executable selection.
+ownership. Failed interactive Homebrew and Go updates display the retry command produced
+by `UpdateCommandForMethod`; generic failures tell users to resolve the reported error and
+retry `termp update`, avoiding a fallback installer invocation that could drift `BINDIR`.
 
 Homebrew-owned installs delegate to `brew upgrade polter-dev/tap/termp` without `--cask`;
 Homebrew resolves that fully qualified token to the Cask published by GoReleaser.

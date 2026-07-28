@@ -210,7 +210,11 @@ func runUpdate(checkCtx, updateCtx context.Context, current string, checker late
 	fmt.Fprintf(stdout, "Updating termp from %s to %s...\n", current, result.Latest)
 	// Generic installs use the exact-tag installer before replacing the binary.
 	if err := updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, stdin, stdout, stderr); err != nil {
-		fmt.Fprintf(stderr, "termp update: retry with: %s\n", updateRetryCommand(retryCommand))
+		if result.Method == updatepkg.InstallGeneric {
+			fmt.Fprintln(stderr, "termp update: update failed; resolve the error above, then retry: termp update")
+		} else {
+			fmt.Fprintf(stderr, "termp update: retry with: %s\n", updateRetryCommand(retryCommand))
+		}
 		return err
 	}
 	return nil
@@ -241,16 +245,20 @@ func formatUpdateNotice(result updatepkg.Result, renderer *lipgloss.Renderer, wi
 
 	headerStyle := newStyle().Foreground(lipgloss.Color("11")).Bold(true)
 	commandStyle := newStyle().Foreground(lipgloss.Color("14"))
-	header := fmt.Sprintf("Update available: %s (current %s)", result.Latest, result.Current)
+	header := fmt.Sprintf("Update available: %s -> %s", result.Current, result.Latest)
 
 	lines := wrapOutputText(header, width)
 	for i := range lines {
 		lines[i] = style(lines[i], headerStyle)
 	}
-	lines = append(lines, "Run:")
-	commandLines := wrapShellCommand(result.Command, width)
+	lines = append(lines, "", "Run:")
+	command := result.Command
+	if result.Method == updatepkg.InstallGeneric {
+		command = "termp update"
+	}
+	commandLines := wrapShellCommand(command, width-2)
 	for _, line := range commandLines {
-		lines = append(lines, style(line, commandStyle))
+		lines = append(lines, "  "+style(line, commandStyle))
 	}
 	return strings.Join(lines, "\n") + "\n"
 }

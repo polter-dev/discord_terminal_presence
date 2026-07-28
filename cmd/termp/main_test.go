@@ -1303,7 +1303,7 @@ func TestRunStatusProbesDoesNotWaitForHungProbe(t *testing.T) {
 }
 
 func TestUpdateNoticeHasNoANSIWithoutColorSupport(t *testing.T) {
-	result := updatepkg.Result{Current: "1.0.0", Latest: "1.1.0", Command: updatepkg.BrewCommand}
+	result := updatepkg.Result{Current: "1.0.0", Latest: "1.1.0", Method: updatepkg.InstallHomebrew, Command: updatepkg.BrewCommand}
 	for _, renderer := range []*lipgloss.Renderer{nil, newInstallRenderer(os.Stdout, true, true)} {
 		got := formatUpdateNotice(result, renderer, 80)
 		if strings.Contains(got, "\x1b") {
@@ -1320,17 +1320,24 @@ func TestUpdateNoticeUsesColorWhenSupported(t *testing.T) {
 	defer output.Close()
 	renderer := lipgloss.NewRenderer(output)
 	renderer.SetColorProfile(termenv.ANSI256)
-	result := updatepkg.Result{Current: "1.0.0", Latest: "1.1.0", Command: updatepkg.BrewCommand}
+	result := updatepkg.Result{Current: "1.0.0", Latest: "1.1.0", Method: updatepkg.InstallHomebrew, Command: updatepkg.BrewCommand}
 	if got := formatUpdateNotice(result, renderer, 80); !strings.Contains(got, "\x1b") {
 		t.Fatalf("color update notice contains no ANSI: %q", got)
 	}
 }
 
 func TestUpdateNoticeLinesStayWithinOutputWidth(t *testing.T) {
-	commands := []string{updatepkg.BrewCommand, updatepkg.GoCommand("v12.34.56"), updatepkg.GenericCommand("v12.34.56")}
+	methods := []struct {
+		method  updatepkg.InstallMethod
+		command string
+	}{
+		{method: updatepkg.InstallHomebrew, command: updatepkg.BrewCommand},
+		{method: updatepkg.InstallGo, command: updatepkg.GoCommand("v12.34.56")},
+		{method: updatepkg.InstallGeneric, command: updatepkg.GenericCommand("v12.34.56")},
+	}
 	for _, width := range []int{20, 40, 80, 120} {
-		for _, command := range commands {
-			result := updatepkg.Result{Current: "1.0.0+abc123", Latest: "v12.34.56+def456", Command: command}
+		for _, tt := range methods {
+			result := updatepkg.Result{Current: "1.0.0+abc123", Latest: "v12.34.56+def456", Method: tt.method, Command: tt.command}
 			got := formatUpdateNotice(result, nil, width)
 			maxWidth := min(max(width, 20), maxInstallCTAWidth)
 			for lineNumber, line := range strings.Split(got, "\n") {
@@ -1339,6 +1346,52 @@ func TestUpdateNoticeLinesStayWithinOutputWidth(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestUpdateNoticeUsesMethodSpecificGuidance(t *testing.T) {
+	tests := []struct {
+		name   string
+		result updatepkg.Result
+		want   string
+	}{
+		{
+			name: "generic",
+			result: updatepkg.Result{
+				Current: "v0.1.0",
+				Latest:  "v0.1.1",
+				Method:  updatepkg.InstallGeneric,
+				Command: updatepkg.GenericCommand("v0.1.1"),
+			},
+			want: "Update available: v0.1.0 -> v0.1.1\n\nRun:\n  termp update\n",
+		},
+		{
+			name: "homebrew",
+			result: updatepkg.Result{
+				Current: "v0.1.0",
+				Latest:  "v0.1.1",
+				Method:  updatepkg.InstallHomebrew,
+				Command: updatepkg.BrewCommand,
+			},
+			want: "Update available: v0.1.0 -> v0.1.1\n\nRun:\n  " + updatepkg.BrewCommand + "\n",
+		},
+		{
+			name: "go",
+			result: updatepkg.Result{
+				Current: "v0.1.0",
+				Latest:  "v0.1.1",
+				Method:  updatepkg.InstallGo,
+				Command: updatepkg.GoCommand("v0.1.1"),
+			},
+			want: "Update available: v0.1.0 -> v0.1.1\n\nRun:\n  " + updatepkg.GoCommand("v0.1.1") + "\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatUpdateNotice(tt.result, nil, maxInstallCTAWidth); got != tt.want {
+				t.Fatalf("notice = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1774,7 +1827,7 @@ func TestRunUpdateFailurePrintsMethodRetryCommand(t *testing.T) {
 	}{
 		{method: updatepkg.InstallHomebrew, want: updatepkg.BrewCommand},
 		{method: updatepkg.InstallGo, want: updatepkg.GoCommand("v1.1.0")},
-		{method: updatepkg.InstallGeneric, want: updatepkg.GenericCommand("v1.1.0")},
+		{method: updatepkg.InstallGeneric, want: "update failed; resolve the error above, then retry: termp update"},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.method), func(t *testing.T) {
@@ -1810,6 +1863,9 @@ func TestRunUpdateFailurePrintsMethodRetryCommand(t *testing.T) {
 				t.Fatalf("runUpdate() error = %v, want simulated failure", err)
 			}
 			want := "termp update: retry with: " + tt.want + "\n"
+			if tt.method == updatepkg.InstallGeneric {
+				want = "termp update: " + tt.want + "\n"
+			}
 			if got := stderr.String(); got != want {
 				t.Fatalf("retry output = %q, want %q", got, want)
 			}
