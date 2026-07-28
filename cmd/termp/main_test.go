@@ -1806,7 +1806,7 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 	}
 }
 
-func TestRunUpdatePrintsSystemPackageGuidanceWithoutInstalling(t *testing.T) {
+func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 	tests := []struct {
 		method updatepkg.InstallMethod
 		want   string
@@ -1822,13 +1822,18 @@ func TestRunUpdatePrintsSystemPackageGuidanceWithoutInstalling(t *testing.T) {
 				Latest:  "v1.1.0",
 				Method:  tt.method,
 			}}
-			runner := &recordingUpdateRunner{}
+			runner := &recordingUpdateRunner{err: errors.New("sudo unavailable")}
 			var stdout bytes.Buffer
-			if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, &stdout, io.Discard); err != nil {
+			var stderr bytes.Buffer
+			if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, &stdout, &stderr); err != nil {
 				t.Fatal(err)
 			}
-			if runner.calls != 0 {
-				t.Fatalf("package-managed update ran %d commands, want none", runner.calls)
+			wantCalls := 1
+			if tt.method == updatepkg.InstallSystemPackage || runtime.GOOS != "linux" {
+				wantCalls = 0
+			}
+			if runner.calls != wantCalls {
+				t.Fatalf("package-managed fallback ran %d commands, want %d", runner.calls, wantCalls)
 			}
 			for _, want := range []string{"managed by your system package manager", "To update:", tt.want} {
 				if !strings.Contains(stdout.String(), want) {
@@ -1837,6 +1842,9 @@ func TestRunUpdatePrintsSystemPackageGuidanceWithoutInstalling(t *testing.T) {
 			}
 			if strings.Contains(stdout.String(), "\nRun:") {
 				t.Fatalf("package guidance printed beneath Run label:\n%s", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "automatic package update unavailable") {
+				t.Fatalf("package fallback error = %q, want clear reason", stderr.String())
 			}
 		})
 	}

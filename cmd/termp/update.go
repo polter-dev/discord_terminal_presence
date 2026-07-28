@@ -206,9 +206,15 @@ func runUpdate(checkCtx, updateCtx context.Context, current string, checker late
 	}
 	if updatepkg.IsSystemPackageInstall(result.Method) {
 		fmt.Fprintln(stdout, "termp is managed by your system package manager.")
-		fmt.Fprintln(stdout, "To update:")
-		fmt.Fprintln(stdout, updatepkg.GuidanceForMethod(result.Method, result.Latest).Text)
-		return nil
+		fmt.Fprintf(stdout, "Updating termp from %s to %s...\n", current, result.Latest)
+		if err := updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, stdin, stdout, stderr); err == nil {
+			return nil
+		} else {
+			fmt.Fprintf(stderr, "termp update: automatic package update unavailable: %v\n", err)
+			fmt.Fprintln(stdout, "To update:")
+			fmt.Fprintln(stdout, updatepkg.GuidanceForMethod(result.Method, result.Latest).Text)
+			return nil
+		}
 	}
 	retryCommand, err := updatepkg.UpdateCommandForMethod(result.Method, result.Latest)
 	if err != nil {

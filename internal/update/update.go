@@ -81,7 +81,7 @@ const (
 )
 
 // IsSystemPackageInstall reports whether method is owned by a Linux package
-// manager and must be updated outside termp.
+// manager.
 func IsSystemPackageInstall(method InstallMethod) bool {
 	switch method {
 	case InstallDebian, InstallRPM, InstallSystemPackage:
@@ -689,6 +689,9 @@ func PerformUpdate(ctx context.Context, method InstallMethod, tag string, runner
 	}
 	if method == InstallGeneric {
 		return performGenericUpdate(ctx, tag, runner, stdin, stdout, stderr)
+	}
+	if IsSystemPackageInstall(method) {
+		return performSystemPackageUpdate(ctx, method, tag, runner, stdin, stdout, stderr)
 	}
 	command, err := UpdateCommandForMethod(method, tag)
 	if err != nil {

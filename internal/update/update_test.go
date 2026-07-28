@@ -297,13 +297,6 @@ func TestSystemPackageGuidance(t *testing.T) {
 			if _, err := UpdateCommandForMethod(tt.method, "v2.3.4"); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("UpdateCommandForMethod(%q) error = %v, want package guidance", tt.method, err)
 			}
-			runner := &recordingRunner{}
-			if err := PerformUpdate(context.Background(), tt.method, "v2.3.4", runner, nil, io.Discard, io.Discard); err == nil {
-				t.Fatalf("PerformUpdate(%q) error = nil, want package guidance", tt.method)
-			}
-			if runner.calls != 0 {
-				t.Fatalf("PerformUpdate(%q) ran %d commands, want none", tt.method, runner.calls)
-			}
 		})
 	}
 }

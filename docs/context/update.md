@@ -42,10 +42,19 @@ running executable's directory so a vanished custom environment does not create 
 second binary. The stored generic installer pipeline remains exact-tagged and
 injection-free, but user-facing notices deliberately print `termp update` instead of
 that pipeline so the resolved install directory is preserved. Windows generic self-update
-is unsupported. System-package methods expose exact-tag commands that download the
-matching GitHub release `.deb` or `.rpm` and install the local file with apt or dnf; they
-are rejected by `PerformUpdate`, preserving package-manager ownership. Failed interactive
-Homebrew and Go updates display the retry command produced
+is unsupported. Interactive system-package updates download the matching exact-tag,
+architecture-specific GitHub release `.deb` or `.rpm` and `checksums.txt` into private
+temporary files, require exactly one valid matching SHA-256 entry, and only then invoke
+`sudo apt install -y <file>` or `sudo dnf install -y <file>` as discrete argv. Temporary
+files are removed on every return path. A missing tool or TTY, ambiguous package type,
+download error, empty artifact, missing/invalid checksum, checksum mismatch, or install
+error fails closed and leaves the existing exact-tag manual package instructions as the
+interactive fallback. Package updates never use the generic installer or write a shadow
+binary under `/usr/local/bin`.
+
+Automatic updates remain non-interactive: all system-package methods short-circuit before
+`PerformUpdate`, record a managed-package skip, and invoke no download, `sudo`, apt, or dnf
+command. Failed interactive Homebrew and Go updates display the retry command produced
 by `UpdateCommandForMethod`; generic failures tell users to resolve the reported error and
 retry `termp update`, avoiding a fallback installer invocation that could drift `BINDIR`.
 
