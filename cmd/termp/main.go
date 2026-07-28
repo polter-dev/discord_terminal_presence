@@ -58,7 +58,7 @@ var commandHelp = []struct {
 }{
 	{"autostart", "manage login autostart with grouped actions"},
 	{"install", "alias for \"termp autostart install\" (not the binary)"},
-	{"uninstall", "alias for \"termp autostart uninstall\" (not the binary)"},
+	{"uninstall", "remove start-at-login; --all removes all termp-created data"},
 	{"disable", "alias for \"termp autostart disable\""},
 	{"enable", "alias for \"termp autostart enable\""},
 	{"start", "run daemon (background by default; --foreground keeps it attached)"},
@@ -146,8 +146,13 @@ func dispatchCommandWithAutostartHandlers(command string, args []string, handler
 	}
 	var err error
 	switch command {
-	case "install", "uninstall", "disable", "enable", "status":
+	case "install", "disable", "enable", "status":
 		err = dispatchAutostartAction(command, args, handlers)
+	case "uninstall":
+		err = dispatchAutostartAction(command, args, handlers)
+		if err == nil && !uninstallAllRequested(args) {
+			fmt.Println("To remove everything, run: termp uninstall --all")
+		}
 	case "autostart":
 		err = dispatchAutostartCommand(args, handlers)
 	case "start":
@@ -177,6 +182,15 @@ func dispatchCommandWithAutostartHandlers(command string, args []string, handler
 		return nil
 	}
 	return err
+}
+
+func uninstallAllRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--all" || arg == "--all=true" {
+			return true
+		}
+	}
+	return false
 }
 
 func commandNames() []string {
@@ -672,6 +686,9 @@ _termp_complete() {
     install)
       COMPREPLY=( $(compgen -W "--force --help -h" -- "$cur") )
       ;;
+    uninstall)
+      COMPREPLY=( $(compgen -W "--all --yes --force --help -h" -- "$cur") )
+      ;;
     watch)
       COMPREPLY=( $(compgen -W "--once --verbose -v --help -h" -- "$cur") )
       ;;
@@ -732,6 +749,9 @@ _termp() {
       install)
         compadd -- --force --help -h
         ;;
+      uninstall)
+        compadd -- --all --yes --force --help -h
+        ;;
       watch)
         compadd -- --once --verbose -v --help -h
         ;;
@@ -776,6 +796,9 @@ compdef _termp termp
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from autostart; and __fish_seen_subcommand_from install' -l force -d 'install even when the executable path is unstable'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from autostart; and __fish_seen_subcommand_from status' -s v -l verbose -d 'enable verbose logging'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from install' -l force -d 'install even when the executable path is unstable'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from uninstall' -l all -d 'remove all termp-created data'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from uninstall' -l yes -d 'skip full-uninstall confirmation'\n")
+		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from uninstall' -l force -d 'remove another installation task'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from watch' -l once -d 'render one preview snapshot and exit'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start' -s f -l foreground -d 'keep the daemon attached to the terminal'\n")
 		b.WriteString("complete -c termp -n '__fish_seen_subcommand_from start' -s d -l detach -d 'start the daemon in the background (default)'\n")

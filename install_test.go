@@ -106,6 +106,20 @@ printf '%064d  %s\n' 0 "$1"
 	}
 }
 
+func TestInstallerLabelsUninstallAsLoginOnly(t *testing.T) {
+	script, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	if strings.Contains(text, "remove:   termp uninstall") {
+		t.Fatal("installer still labels the start-at-login alias as full removal")
+	}
+	if !strings.Contains(text, "login off: termp uninstall") {
+		t.Fatal("installer missing login-only guidance")
+	}
+}
+
 func writeExecutable(t *testing.T, dir, name, contents string) {
 	t.Helper()
 	path := filepath.Join(dir, name)

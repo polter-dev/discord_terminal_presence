@@ -4,8 +4,8 @@
 wiring, update policy, installation guidance, and TUI startup.
 
 **Public surface:** The `termp` binary exposes start/stop/status, autostart,
-settings/watch/setup, config, completion, version, and update commands. Windows also
-exposes `connect`. `install.sh` is the canonical generic release installer.
+settings/watch/setup, config, completion, version, update, and full-uninstall commands.
+Windows also exposes `connect`. `install.sh` is the canonical generic release installer.
 
 **Key files:** `cmd/termp/main.go` owns dispatch, daemon operation, status, setup, and
 usage/config wiring. `cmd/termp/connect.go` and `control_*` own daemon control.
@@ -44,16 +44,26 @@ daemon. Config/autostart success survives a completion-only failure and the summ
 reports that partial outcome. Completion removal attempts every shell; details live in
 [`completioninstall.md`](completioninstall.md).
 
+Plain `termp uninstall` remains the start-at-login removal alias and points users to
+`termp uninstall --all`. Full uninstall confirms unless `--yes` is supplied, stops and
+validates the daemon through the same process-image-aware stop path before deleting
+anything, then removes autostart, completions, config, state/cache, and the platform log.
+It never deletes the running executable. It reuses install ownership detection and the
+resolved generic install directory to print exact Homebrew, Scoop, apt, dnf, Go, generic
+Unix, or Windows binary-removal guidance. Destructive tests inject paths beneath an
+asserted temporary home.
+
 Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
 installs preflight the resolved running executable's directory and record a skipped
 reason when it is not writable. Generic Windows installs record an unsupported-platform
 skip; Go and Homebrew installs remain eligible. Scoop- and Debian/RPM-owned installs
 record a managed-package skip without invoking an updater. Attempts are visible in
 `termp status`, and a later success clears the reported failure/skip. Interactive
-`termp update` on a Scoop install prints `scoop update termp` without running an
-installer. For a known Debian/RPM-owned install it downloads the exact-tag,
-architecture-specific release package and `checksums.txt` into private temporary files,
-verifies SHA-256 fail-closed,
+`termp update` on a Scoop install prints the available-version header and
+`To update: scoop update termp` guidance without a system-package preamble, an
+`Updating...` line, stderr output, or an installer command. For a known Debian/RPM-owned
+install it downloads the exact-tag, architecture-specific release package and
+`checksums.txt` into private temporary files, verifies SHA-256 fail-closed,
 and then runs `sudo apt install -y <file>` or `sudo dnf install -y <file>`. It never uses
 the generic installer or writes to `/usr/local/bin`. When sudo, the package manager, or a
 TTY is unavailable, package ownership is ambiguous, or download/checksum/install fails,
@@ -77,7 +87,8 @@ from this repo; Homebrew renders the box directly under its own `==> Caveats`
 header, followed by a single trailing blank line that Homebrew itself emits. The
 package script always exits successfully so guidance cannot break an install.
 
-The installer resolves one tag for archive/checksum, prefers
+The installer labels `termp uninstall` as a login-only action rather than implying that
+it removes the binary. It resolves one tag for archive/checksum, prefers
 `https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}`, and falls back to the tag-pinned
 GitHub asset. Every fatal installer path prints the advertised fetch-and-pipe retry
 command, with explicitly supplied `VERSION`, `BINDIR`, and `TERMP_DOWNLOAD_CHANNEL`

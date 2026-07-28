@@ -1812,7 +1812,6 @@ func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 		method updatepkg.InstallMethod
 		want   string
 	}{
-		{method: updatepkg.InstallScoop, want: updatepkg.ScoopCommand},
 		{method: updatepkg.InstallDebian, want: updatepkg.GuidanceForMethod(updatepkg.InstallDebian, "v1.1.0").Text},
 		{method: updatepkg.InstallRPM, want: updatepkg.GuidanceForMethod(updatepkg.InstallRPM, "v1.1.0").Text},
 		{method: updatepkg.InstallSystemPackage, want: updatepkg.GuidanceForMethod(updatepkg.InstallSystemPackage, "v1.1.0").Text},
@@ -1831,7 +1830,7 @@ func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantCalls := 1
-			if tt.method == updatepkg.InstallScoop || tt.method == updatepkg.InstallSystemPackage || runtime.GOOS != "linux" {
+			if tt.method == updatepkg.InstallSystemPackage || runtime.GOOS != "linux" {
 				wantCalls = 0
 			}
 			if runner.calls != wantCalls {
@@ -1849,6 +1848,34 @@ func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 				t.Fatalf("package fallback error = %q, want clear reason", stderr.String())
 			}
 		})
+	}
+}
+
+func TestRunUpdatePrintsScoopGuidanceWithoutRunningCommand(t *testing.T) {
+	checker := stubLatestChecker{result: updatepkg.Result{
+		Current: "v0.1.0",
+		Latest:  "v0.1.1",
+		Method:  updatepkg.InstallScoop,
+	}}
+	runner := &recordingUpdateRunner{}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if err := runUpdate(context.Background(), context.Background(), "v0.1.0", checker, runner, nil, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	const want = "Update available: v0.1.0 -> v0.1.1\n\nTo update:\n  scoop update termp\n"
+	if stdout.String() != want {
+		t.Fatalf("Scoop update output = %q, want %q", stdout.String(), want)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("Scoop update ran %d commands, want 0", runner.calls)
+	}
+	if strings.Contains(stdout.String(), "system package manager") {
+		t.Fatalf("Scoop update used system-package preamble:\n%s", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("Scoop update stderr = %q, want empty", stderr.String())
 	}
 }
 

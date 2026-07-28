@@ -204,6 +204,12 @@ func runUpdate(checkCtx, updateCtx context.Context, current string, checker late
 		fmt.Fprintf(stdout, "You're already on the latest version (%s).\n", result.Latest)
 		return nil
 	}
+	if result.Method == updatepkg.InstallScoop {
+		fmt.Fprintf(stdout, "Update available: %s -> %s\n\n", current, result.Latest)
+		fmt.Fprintln(stdout, "To update:")
+		fmt.Fprintf(stdout, "  %s\n", updatepkg.GuidanceForMethod(result.Method, result.Latest).Text)
+		return nil
+	}
 	if updatepkg.IsSystemPackageInstall(result.Method) {
 		fmt.Fprintln(stdout, "termp is managed by your system package manager.")
 		fmt.Fprintf(stdout, "Updating termp from %s to %s...\n", current, result.Latest)
