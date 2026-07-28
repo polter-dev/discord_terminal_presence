@@ -76,11 +76,17 @@ TTY is unavailable, package ownership is ambiguous, or download/checksum/install
 the command reports the reason and prints the existing exact-tag GitHub release download
 and local apt or detected-RPM-front-end instructions. Automatic/background updates never enter this path and
 continue to record a managed-package skip with zero commands. A failed executable update
-prints the exact retry command for Homebrew and Go, while a generic failure says to
-resolve the reported error and retry `termp update`. Update notices label multi-step
-system-package instructions `To update:` rather than `Run:`. They print `termp update`
-for generic installs, preserving the resolved executable directory; Homebrew and Go
-notices continue to print their direct package commands under `Run:`.
+prints the exact retry command for Homebrew and Go, while a non-Windows generic failure
+says to resolve the reported error and retry `termp update`. A Windows generic (archive)
+install is a permanent platform limitation rather than a transient failure — Windows locks
+a running executable — so `runUpdate` never attempts `PerformUpdate` for it: it skips the
+misleading `Updating termp from X to Y...` line and prints non-runnable `To update:`
+guidance (tag-pinned `go install ...` plus the GitHub releases/latest URL) with no retry
+line and exit code 0, matching the Scoop path's exit-0 convention (issue #389). Update
+notices label multi-step system-package instructions `To update:` rather than `Run:`.
+They print `termp update` for generic installs, preserving the resolved executable
+directory; Homebrew and Go notices continue to print their direct package commands under
+`Run:`.
 
 Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homebrew
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned
