@@ -4,8 +4,9 @@
 serialization, and hot-reload manager.
 
 **Public surface:** `Config` and its nested UI/display/privacy/CTA/tool types are the
-runtime schema. `Default`, `DefaultPath`, settled-by-default `Load`/`LoadPath`, explicitly
-unprotected `LoadUnsettled`/`LoadPathUnsettled`, and `Save` resolve and persist it.
+runtime schema. `Default`, `DefaultPath`, horizon-protected settled `Load`/`LoadPath`,
+settled `LoadReadOnly`/`LoadPathReadOnly`, explicitly unprotected
+`LoadUnsettled`/`LoadPathUnsettled`, and `Save` resolve and persist it.
 `AnnotatedSample` and `InitFile(path, force)` support `termp config init`. `Manager`
 watches a path and publishes validated changes.
 
@@ -92,12 +93,20 @@ a genuinely blank file restores defaults after the existing horizon. Normal non-
 configs whose `enabled` key is absent seed enabled defaults after one settle interval,
 and missing first-run files seed them immediately.
 
-Because `Load`/`LoadPath` are settled by default, setup/settings whole-document saves and
-read-only CLI commands inherit the protection without per-command patches (#438). A
-candidate that becomes provisional-stable partway through the budget also cannot reach
-acceptance in that call: reload is a no-op, while standalone loads retry with the new
-content as their first snapshot. With no accepted baseline, a stable non-empty partial
-cannot be recognized as a strict prefix; it receives the normal two-read settle check.
+`Load`/`LoadPath` are safe by default for callers that may save the loaded whole document
+back over the user's file (#438). If an existing file is still empty or whitespace-only
+after the normal settle budget, these entry points treat it as ambiguous for the same
+three-second loosening horizon used by `Manager`: content that appears within the
+horizon is settled and returned, while a blank that persists for the entire horizon is
+accepted as a deliberate reset. Normal nonblank loads still take only the ordinary
+settle interval. Explicitly read-only CLI paths use `LoadReadOnly`/`LoadPathReadOnly`, so
+they inherit the normal settle protection without paying the update horizon.
+
+A candidate that becomes provisional-stable partway through the normal budget also
+cannot reach acceptance in that call: reload is a no-op, while standalone loads retry
+with the new content as their first snapshot. With no accepted baseline, a stable
+non-empty partial cannot be recognized as a strict prefix; it receives the normal
+two-read settle check.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,
@@ -113,10 +122,13 @@ Config reads are capped at 1 MiB before TOML decoding.
 
 Most watch tests write config changes atomically so they exercise malformed content
 rather than a truncation window. Dedicated regression tests use deliberately divergent,
-chunked, shrinking, unlink/recreate, and rename/append writers, and a fixed-seed
-randomized writer-schedule property test asserts that a save whose final content sets
-`enabled = false` never exposes `enabled = true` before completion. Schedules stalled
-beyond the loosening horizon are intentionally excluded as the documented residual.
+chunked, shrinking, unlink/recreate, and rename/append writers. The destructive-load
+regression sweeps truncate stalls of 50ms, 250ms, 400ms, and 1s across both sides of the
+normal settle budget, then asserts the saved TOML still contains `enabled = false` and
+the user's `pin`. A fixed-seed randomized writer-schedule property test asserts that a
+save whose final content sets `enabled = false` never exposes `enabled = true` before
+completion. Schedules stalled beyond the loosening horizon are intentionally excluded
+as the documented residual.
 
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically

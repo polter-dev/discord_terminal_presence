@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -439,7 +440,6 @@ func TestLoadMissingFileUsesDefaults(t *testing.T) {
 // save that whole document. A transient empty read must not seed that write
 // with defaults and durably erase the user's opt-out and unrelated settings.
 func TestLoadThenSaveRejectsChangingNonAtomicTruncationWindow(t *testing.T) {
-	path := withConfigHome(t)
 	const contents = `enabled = false
 pin = "codex-cli"
 
@@ -449,34 +449,114 @@ display_name = "Mine"
 match = { name = "mine" }
 image_key = "mine"
 `
-	writeConfig(t, path, contents)
+	for _, stall := range []time.Duration{
+		50 * time.Millisecond,
+		250 * time.Millisecond,
+		400 * time.Millisecond,
+		time.Second,
+	} {
+		t.Run(stall.String(), func(t *testing.T) {
+			path := withConfigHome(t)
+			writeConfig(t, path, contents)
 
-	writer := newNonAtomicWriter(t)
-	writer.write(path, contents, 100*time.Millisecond)
-	<-writer.truncated
+			writer := newNonAtomicWriter(t)
+			writer.write(path, contents, stall)
+			<-writer.truncated
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() during non-atomic save = %v", err)
-	}
-	if err := Save(cfg, path); err != nil {
-		t.Fatalf("Save() after protected load = %v", err)
-	}
-	writer.wait(t)
+			cfg, err := LoadPath(path)
+			if err != nil {
+				t.Fatalf("LoadPath() during %v non-atomic save = %v", stall, err)
+			}
+			if err := Save(cfg, path); err != nil {
+				t.Fatalf("Save() after protected load = %v", err)
+			}
+			writer.wait(t)
 
-	persisted, err := LoadPath(path)
-	if err != nil {
-		t.Fatalf("LoadPath() after whole-document save = %v", err)
+			onDisk, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read config after whole-document save: %v", err)
+			}
+			if !bytes.Contains(onDisk, []byte("enabled = false")) {
+				t.Fatalf("%v stall: on-disk config lost enabled=false:\n%s", stall, onDisk)
+			}
+			if !bytes.Contains(onDisk, []byte(`pin = "codex-cli"`)) {
+				t.Fatalf("%v stall: on-disk config lost pin:\n%s", stall, onDisk)
+			}
+
+			persisted, err := LoadPath(path)
+			if err != nil {
+				t.Fatalf("LoadPath() after whole-document save = %v", err)
+			}
+			if persisted.Enabled {
+				t.Fatalf("%v stall: whole-document save durably changed enabled=false to true", stall)
+			}
+			if persisted.Pin != "codex-cli" {
+				t.Fatalf("%v stall: whole-document save changed pin to %q, want codex-cli", stall, persisted.Pin)
+			}
+			if len(persisted.CustomTools) != 1 || persisted.CustomTools[0].ID != "mine" {
+				t.Fatalf("%v stall: whole-document save changed custom tools to %#v, want mine", stall, persisted.CustomTools)
+			}
+		})
 	}
-	if persisted.Enabled {
-		t.Fatal("whole-document save durably changed enabled=false to true")
-	}
-	if persisted.Pin != "codex-cli" {
-		t.Fatalf("whole-document save changed pin to %q, want codex-cli", persisted.Pin)
-	}
-	if len(persisted.CustomTools) != 1 || persisted.CustomTools[0].ID != "mine" {
-		t.Fatalf("whole-document save changed custom tools to %#v, want mine", persisted.CustomTools)
-	}
+}
+
+func TestLoadPathBlankAndNonBlankLatencyPolicy(t *testing.T) {
+	t.Run("deliberate blank waits through loosening horizon", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeConfig(t, path, " \n\t")
+
+		start := time.Now()
+		cfg, err := LoadPath(path)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("LoadPath() deliberate blank = %v", err)
+		}
+		if !cfg.Enabled || cfg.Pin != "" {
+			t.Fatalf("LoadPath() deliberate blank = %#v, want defaults", cfg)
+		}
+		if elapsed < enabledLooseningHorizon {
+			t.Fatalf("deliberate blank returned after %v, want at least %v", elapsed, enabledLooseningHorizon)
+		}
+		t.Logf("deliberate blank update load latency: %v", elapsed)
+	})
+
+	t.Run("normal config keeps settle latency", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeConfig(t, path, `pin = "vim"`)
+
+		start := time.Now()
+		cfg, err := LoadPath(path)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("LoadPath() normal config = %v", err)
+		}
+		if !cfg.Enabled || cfg.Pin != "vim" {
+			t.Fatalf("LoadPath() normal config = %#v, want enabled default and pin", cfg)
+		}
+		if elapsed >= enabledLooseningHorizon {
+			t.Fatalf("normal config returned after %v, want less than horizon %v", elapsed, enabledLooseningHorizon)
+		}
+		t.Logf("normal nonblank update load latency: %v", elapsed)
+	})
+
+	t.Run("read-only blank does not pay update horizon", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeConfig(t, path, "")
+
+		start := time.Now()
+		cfg, err := LoadPathReadOnly(path)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("LoadPathReadOnly() blank = %v", err)
+		}
+		if !cfg.Enabled {
+			t.Fatalf("LoadPathReadOnly() blank = %#v, want defaults", cfg)
+		}
+		if elapsed >= enabledLooseningHorizon {
+			t.Fatalf("read-only blank returned after %v, want less than update horizon %v", elapsed, enabledLooseningHorizon)
+		}
+		t.Logf("read-only blank load latency: %v", elapsed)
+	})
 }
 
 func TestManagerStartupConfigPolicy(t *testing.T) {

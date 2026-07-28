@@ -29,11 +29,11 @@ type pendingEnabledLoosening struct {
 	retry     *time.Timer
 }
 
-// enabledLooseningHorizon is a judgment call: three seconds covers realistic
-// multi-step editor writes without making an intentional reset unreasonably
-// slow. A valid partial that omits enabled and remains stalled beyond this
-// horizon is indistinguishable from a deliberate blank and can still
-// re-enable presence.
+// enabledLooseningHorizon is shared by manager commits and whole-document
+// update loads. Three seconds covers realistic multi-step editor writes
+// without making an intentional reset unreasonably slow. A valid partial that
+// omits enabled and remains stalled beyond this horizon is indistinguishable
+// from a deliberate blank and can still re-enable presence.
 const enabledLooseningHorizon = 3 * time.Second
 
 // ReloadResult reports the newest automatic or explicit reload outcome.
@@ -50,15 +50,15 @@ func NewManager() *Manager {
 
 // NewManagerPath loads the config at path.
 func NewManagerPath(path string) *Manager {
-	snap := settledConfigSnapshotForLoad(path)
+	snap := settledConfigSnapshotForRead(path)
 	cfg, err := loadSnapshot(path, snap)
 	accepted := fileSnapshot{}
 	if err == nil {
 		accepted = snap
 	}
-	ambiguousBlank := err == nil && snap.exists && len(snap.data) == 0
+	ambiguousBlank := err == nil && ambiguousBlankConfigSnapshot(snap)
 	pendingCfg := cfg
-	// An existing empty file is ambiguous at construction: it may be a
+	// An existing blank file is ambiguous at construction: it may be a
 	// deliberate reset or a non-atomic writer stalled after truncation. There
 	// is no previously accepted snapshot to disambiguate it, so seed presence
 	// off while retaining the snapshot as the baseline. The first Reload then

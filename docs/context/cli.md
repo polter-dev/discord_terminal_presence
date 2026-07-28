@@ -266,11 +266,15 @@ a non-atomic save that completes during startup is either read by a settled load
 or leaves a queued watcher event instead of stranding transient defaults for the process
 lifetime (#435, #440).
 
-Every direct CLI config read uses config's settled-by-default `Load`: update notices,
-version, setup, pre-spawn error rendering, status, settings, and `watch --once` therefore
-inherit non-atomic-save protection. In particular, setup/settings no longer seed a
-whole-document save from a single transient read (#438). Stable existing files add one
-~15ms poll interval per load; a missing first-run config remains immediate.
+Every direct CLI config read inherits config's settled-read protection. Read-only paths
+such as update notices, version, pre-spawn error rendering, status, and `watch --once`
+use `LoadReadOnly`, so stable existing files add one ~15ms poll interval and a missing
+first-run config remains immediate. Setup/settings use the safe-by-default `Load`
+because they can save the loaded whole document: an existing blank must persist through
+the three-second loosening horizon before it can seed defaults, preventing a truncate
+stall beyond the ordinary settle budget from durably erasing the user's opt-out and
+unrelated settings (#438). Their normal nonblank path still adds only the ordinary
+settle interval.
 
 If the daemon cannot start its config watcher at all — `config.EnsureConfigDir` or
 `Manager.Watch` failing, for example because the config directory path is occupied by a

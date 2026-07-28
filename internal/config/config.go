@@ -409,10 +409,18 @@ func InitFile(path string, force bool) error {
 	return nil
 }
 
-// Load reads a settled snapshot of the default config path. A missing file
-// returns defaults immediately.
+// Load reads the default config path for a caller that may write the loaded
+// document back. A missing file returns defaults immediately; an existing
+// blank must remain blank through the enabled-loosening horizon before it is
+// accepted as defaults.
 func Load() (Config, error) {
 	return LoadPath(DefaultPath())
+}
+
+// LoadReadOnly reads a settled snapshot of the default config path without
+// extending an ambiguous blank through the update horizon.
+func LoadReadOnly() (Config, error) {
+	return LoadPathReadOnly(DefaultPath())
 }
 
 // LoadUnsettled reads the default config path once without settle protection.
@@ -451,10 +459,20 @@ func Save(cfg Config, path string) error {
 	return os.Rename(tmpPath, path)
 }
 
-// LoadPath reads a settled TOML config from path. A missing file returns
-// defaults immediately.
+// LoadPath reads a settled TOML config for a caller that may write the loaded
+// document back. An existing blank file is ambiguous after the normal settle
+// budget: it may be a deliberate reset or a writer stalled after truncation.
+// This load waits through the enabled-loosening horizon so a completed write
+// is returned instead of allowing defaults to overwrite it.
 func LoadPath(path string) (Config, error) {
 	return loadSnapshot(path, settledConfigSnapshotForLoad(path))
+}
+
+// LoadPathReadOnly reads a settled TOML config without extending an ambiguous
+// blank through the update horizon. It is for callers that cannot write the
+// loaded document back over path.
+func LoadPathReadOnly(path string) (Config, error) {
+	return loadSnapshot(path, settledConfigSnapshotForRead(path))
 }
 
 // LoadPathUnsettled reads a TOML config from path once without settle
@@ -582,16 +600,47 @@ func settledConfigSnapshot(path string, accepted fileSnapshot) (fileSnapshot, bo
 	return fileSnapshot{}, false
 }
 
-// settledConfigSnapshotForLoad retries changing snapshots until it has a
+// settledConfigSnapshotForRead retries changing snapshots until it has a
 // settled result. Unlike Manager.Reload, a standalone load has no last-good
 // state it can retain when a write changes during the settle budget.
-func settledConfigSnapshotForLoad(path string) fileSnapshot {
+func settledConfigSnapshotForRead(path string) fileSnapshot {
 	for {
 		snap, ok := settledConfigSnapshot(path, fileSnapshot{})
 		if ok {
 			return snap
 		}
 	}
+}
+
+// settledConfigSnapshotForLoad extends the normal settled read only for an
+// existing blank snapshot. Whole-document editors must not seed a later Save
+// with defaults from a truncate-then-write window.
+func settledConfigSnapshotForLoad(path string) fileSnapshot {
+	started := time.Now()
+	snap := settledConfigSnapshotForRead(path)
+	if !ambiguousBlankConfigSnapshot(snap) {
+		return snap
+	}
+
+	for {
+		remaining := enabledLooseningHorizon - time.Since(started)
+		if remaining <= 0 {
+			return snap
+		}
+		delay := min(reloadSettleInterval, remaining)
+		time.Sleep(delay)
+
+		next := snapshotConfigFile(path)
+		if ambiguousBlankConfigSnapshot(next) {
+			snap = next
+			continue
+		}
+		return settledConfigSnapshotForRead(path)
+	}
+}
+
+func ambiguousBlankConfigSnapshot(snap fileSnapshot) bool {
+	return snap.exists && snap.err == nil && len(bytes.TrimSpace(snap.data)) == 0
 }
 
 // loadSnapshot decodes an already-read snapshot into a Config, applying the
