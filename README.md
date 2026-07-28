@@ -57,6 +57,19 @@ brew install --cask polter-dev/tap/termp
 The Cask is published from the
 [`polter-dev/homebrew-tap`](https://github.com/polter-dev/homebrew-tap).
 
+### Windows — Scoop (recommended)
+
+```powershell
+scoop bucket add polter-dev https://github.com/polter-dev/scoop-bucket
+scoop install termp
+```
+
+To upgrade after exiting termp:
+
+```powershell
+scoop update termp
+```
+
 ### Release downloads
 
 Download the files for your platform from the
@@ -64,6 +77,8 @@ Download the files for your platform from the
 macOS and Linux archives are named `termp_VERSION_OS_ARCH.tar.gz`, Linux
 packages use `termp_VERSION_OS_ARCH.deb` or `.rpm`, and Windows archives use
 `termp_VERSION_windows_ARCH.zip`. `VERSION` has no leading `v`.
+On Windows, prefer Scoop because archive installs cannot self-update; to upgrade
+an archive install, download and replace it with the new release archive.
 
 ### From source
 
@@ -193,7 +208,8 @@ install script. For detected deb/rpm installs, termp downloads the matching pack
 `checksums.txt`, verifies the package's SHA-256 integrity, then runs
 `sudo apt install -y` for deb, or the first RPM front-end found on the system
 (`dnf`, `zypper`, `yum`, then `rpm -U`) for rpm. Scoop installs are not
-self-updated; termp prints `scoop update termp` for you to run after it exits.
+self-updated; after exiting termp, run `scoop update termp`. `termp update`
+detects Scoop installs and prints that command.
 Windows archive installs cannot self-update; download the new release archive
 or use `go install`.
 Automatic updates are opt-in with `auto_update = true`; they run silently when
