@@ -52,9 +52,11 @@ Homebrew updates run `brew upgrade polter-dev/tap/termp` without `--cask`. Homeb
 resolves the fully qualified token to the GoReleaser-published Cask; the orphaned
 hand-written Formula draft was removed under #303.
 Homebrew Cask installs and deb/rpm postinstall scripts print the same prominent,
-fixed-width ASCII setup box with blank-line separation. Homebrew's uniform caveats
-indentation preserves the box, and the package script always exits successfully so
-guidance cannot break an install.
+fixed-width 80-column ASCII setup box. Homebrew prints Cask caveats unindented at
+column 0, so the box renders intact. GoReleaser's caveats templating trims the
+padding blank lines, so blank-line separation applies only to the deb/rpm
+postinstall; the package script always exits successfully so guidance cannot break
+an install.
 
 The installer resolves one tag for archive/checksum, prefers
 `https://termp.polter.sh/dl/curl/{os}/{arch}/{tag}`, and falls back to the tag-pinned
