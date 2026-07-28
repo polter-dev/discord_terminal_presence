@@ -90,14 +90,15 @@ status 2; use `termp watch --once` for a non-interactive snapshot.
 | `termp watch` | Opens a live terminal preview. Use `--once` for one snapshot. |
 | `termp autostart <install\|uninstall\|enable\|disable\|status>` | Manages start-at-login with grouped actions. |
 | `termp install` | Alias for `termp autostart install`: installs start-at-login and starts termp using a Windows scheduled task, macOS LaunchAgent, or Linux systemd user service. It does not install the binary. |
-| `termp uninstall` | Removes start-at-login. It does not remove the binary; use `--all` to remove termp-created data and get the correct binary removal command. |
+| `termp uninstall` | Removes start-at-login only. It does not remove termp data or the binary. |
+| `termp uninstall --all` | Stops the validated daemon, removes start-at-login, shell completions, config, state, cache, and the platform log, then prints the correct command to remove the binary. Confirms first unless `--yes` is supplied. |
 | `termp enable` / `termp disable` | Resumes or pauses start-at-login without removing it. |
 | `termp settings` | Opens the interactive settings menu. |
 | `termp setup` | Runs first-time setup; without an interactive terminal, writes the config, skips autostart, and prints the next steps. |
 | `termp config init` | Writes a commented sample config. Add `--force` to replace an existing config. |
 | `termp completion <bash\|zsh\|fish>` | Prints a tab-completion script for your shell. |
 | `termp version` | Prints the version, commit, build date, Go version, OS, and architecture. |
-| `termp update` | Checks for a newer release and updates using Homebrew, Go, or the shell installer as appropriate. |
+| `termp update` | Checks for a newer release and updates Homebrew, Go, shell/binary, and deb/rpm installs as appropriate. Scoop installs get the command to run instead. |
 
 `termp watch`, `termp settings`, and the interactive setup wizard need a real
 terminal window. Applying setup reconciles start-at-login in both directions: enabling it
@@ -140,11 +141,11 @@ with these instructions as comments, so it remains safe to redirect to a file.
 Start-at-login is optional and works on Windows, macOS, and Linux:
 
 ```sh
-termp install     # install the login service and start it
-termp disable     # pause it without removing it
-termp enable      # resume it
-termp uninstall   # remove the login service
-termp uninstall --all   # remove all termp data and print binary removal guidance
+termp install           # install the login service and start it
+termp disable           # pause it without removing it
+termp enable            # resume it
+termp uninstall         # remove start-at-login only
+termp uninstall --all   # remove all termp-created data
 ```
 
 On Windows, this creates and immediately runs the Task Scheduler task
@@ -153,6 +154,14 @@ macOS, this creates `~/Library/LaunchAgents/dev.termp.daemon.plist`, restarts
 termp after a crash, and writes logs to `~/Library/Logs/termp.log`. On Linux, it
 creates `~/.config/systemd/user/termp.service` and enables and starts the systemd
 user service.
+
+For complete removal, `termp uninstall --all` shows its plan and asks for
+confirmation; pass `--yes` to skip the prompt. It safely stops the termp daemon,
+removes start-at-login, installed shell completions, config, state and cache
+files, and the platform log. The command is safe to run again. It never deletes
+the binary; instead, it prints the command for the detected install method so a
+package-managed install is removed without leaving its package database
+inconsistent.
 
 ## Your privacy
 
@@ -179,7 +188,11 @@ Either setting is enough.
 
 Run `termp update` to check for a newer release and update using the detected
 install method. Homebrew installs use `brew upgrade`, source installs use
-`go install ...@latest`, and shell/binary installs reuse the install script.
+`go install` for the new release, and shell/binary installs reuse the install
+script. For detected deb/rpm installs, termp downloads the matching package and
+`checksums.txt`, verifies the package's SHA-256 integrity, then runs
+`sudo apt install -y` or `sudo dnf install -y`. Scoop installs are not
+self-updated; termp prints `scoop update termp` for you to run after it exits.
 Automatic updates are opt-in with `auto_update = true`; they run silently when
 `termp start` launches, never delay daemon startup, and take effect next start.
 
