@@ -101,9 +101,10 @@ header, followed by a single trailing blank line that Homebrew itself emits. The
 package script always exits successfully so guidance cannot break an install.
 
 CI snapshot-builds and installs the real deb and rpm artifacts in digest-pinned
-`debian:stable` and `fedora:latest` containers. Before the detection probe runs, the job
-plants a disabled stub for the *other* package tool (`rpm` on the debian job,
-`dpkg-query` on the fedora job) into `/usr/sbin`, never `/usr/local/bin`. Without that
+`debian:stable`, `fedora:latest`, and `opensuse/leap:latest` containers. Before the
+detection probe runs, the job plants a disabled stub for the *other* package tool (`rpm`
+on the debian job, `dpkg-query` on the fedora/openSUSE jobs) into `/usr/sbin`, never
+`/usr/local/bin`. Without that
 stub, `classifySystemPackage`'s tool-presence fallback alone reproduces the expected
 `debian`/`rpm` answer in these images (each image ships exactly one of the two tools),
 so the assertion could pass even if live ownership detection were completely broken.
@@ -124,6 +125,12 @@ human. It also cannot cover #364 shadowing on a *successful* update: the update 
 always refused, so the `/usr/local/bin` before/after snapshot only proves a refused
 update writes nothing — it compares empty to empty, not a real shadowing binary against
 the package-managed one.
+
+The openSUSE leg additionally removes the RPM and installs the real unsigned snapshot
+artifact with `zypper --non-interactive --no-gpg-checks install`, matching the updater
+argv, then re-runs the package-ownership assertion. This guards the observed zypper
+behavior: plain `--non-interactive` chooses the safe default and aborts on the unsigned
+RPM.
 
 The installer labels `termp uninstall` as a login-only action rather than implying that
 it removes the binary. It resolves one tag for archive/checksum, prefers

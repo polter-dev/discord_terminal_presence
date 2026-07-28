@@ -157,6 +157,11 @@ jobs:
             image: fedora:latest@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898
             extension: rpm
             method: rpm
+          - distribution: opensuse/leap:latest
+            image: opensuse/leap:latest@sha256:f239b4819f4dd322d99509f1b5b14f2107bf23857f9ccd3c14333f0928a2bcc6
+            extension: rpm
+            method: rpm
+            rpm_frontend: zypper
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -192,6 +197,7 @@ jobs:
           CONTAINER_IMAGE: ${{ matrix.image }}
           EXPECTED_METHOD: ${{ matrix.method }}
           PACKAGE_EXTENSION: ${{ matrix.extension }}
+          RPM_FRONTEND: ${{ matrix.rpm_frontend }}
         run: |
           package="$(find dist -maxdepth 1 -type f -name "termp_*_linux_amd64.${PACKAGE_EXTENSION}" -print -quit)"
           test -n "$package"
@@ -211,15 +217,16 @@ jobs:
           docker run --rm -i --network none \
             --add-host api.github.com:127.0.0.1 \
             -e EXPECTED_METHOD \
-            -v "$PWD/$package:/tmp/termp-package:ro" \
+            -e RPM_FRONTEND \
+            -v "$PWD/$package:/tmp/termp-package.${PACKAGE_EXTENSION}:ro" \
             -v "$RUNNER_TEMP/detect-install:/tmp/detect-install:ro" \
             -v "$RUNNER_TEMP/network-guard:/tmp/network-guard:ro" \
             -v "$RUNNER_TEMP/release-stub.crt:/tmp/release-stub.crt:ro" \
             -v "$RUNNER_TEMP/release-stub.key:/tmp/release-stub.key:ro" \
             "$CONTAINER_IMAGE" /bin/sh -euxc '
               case "$EXPECTED_METHOD" in
-                debian) dpkg --install /tmp/termp-package ;;
-                rpm) rpm --upgrade --verbose --hash /tmp/termp-package ;;
+                debian) dpkg --install /tmp/termp-package.deb ;;
+                rpm) rpm --upgrade --verbose --hash /tmp/termp-package.rpm ;;
                 *) echo "unsupported method: $EXPECTED_METHOD" >&2; exit 1 ;;
               esac
 
@@ -262,12 +269,28 @@ jobs:
               test "$detected_unowned" = "system-package"
 
               case "$EXPECTED_METHOD" in
-                debian) dpkg --install /tmp/termp-package ;;
-                rpm) rpm --upgrade --verbose --hash /tmp/termp-package ;;
+                debian) dpkg --install /tmp/termp-package.deb ;;
+                rpm) rpm --upgrade --verbose --hash /tmp/termp-package.rpm ;;
               esac
               cp /tmp/detect-install /usr/bin/termp
               detected_reinstalled=$(/usr/bin/termp)
               test "$detected_reinstalled" = "$EXPECTED_METHOD"
+
+              # Exercise the interactive updater argv against the real unsigned
+              # snapshot package. Plain --non-interactive aborts at the
+              # signature decision, so match the compatibility-safe updater
+              # global option (supported before --allow-unsigned-rpm existed).
+              if test "$RPM_FRONTEND" = "zypper"; then
+                rpm -e termp
+                # The integration container has networking disabled. Disable
+                # its repositories so unrelated refresh errors do not mask the
+                # local RPM signature and installation result.
+                zypper modifyrepo --all --disable
+                zypper --non-interactive --no-gpg-checks install /tmp/termp-package.rpm
+                cp /tmp/detect-install /usr/bin/termp
+                detected_frontend=$(/usr/bin/termp)
+                test "$detected_frontend" = "$EXPECTED_METHOD"
+              fi
               cp /tmp/packaged-termp /usr/bin/termp
 
               snapshot_local_bin() {

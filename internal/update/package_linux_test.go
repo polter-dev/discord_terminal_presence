@@ -62,7 +62,7 @@ func TestPerformSystemPackageUpdateVerifiesAndInstalls(t *testing.T) {
 	}{
 		{name: "debian", method: InstallDebian, extension: ".deb", wantArgs: []string{"apt", "install", "-y"}},
 		{name: "rpm dnf", method: InstallRPM, extension: ".rpm", rpmManager: "dnf", wantArgs: []string{"dnf", "install", "-y"}},
-		{name: "rpm zypper", method: InstallRPM, extension: ".rpm", rpmManager: "zypper", wantArgs: []string{"zypper", "--non-interactive", "install"}},
+		{name: "rpm zypper", method: InstallRPM, extension: ".rpm", rpmManager: "zypper", wantArgs: []string{"zypper", "--non-interactive", "--no-gpg-checks", "install"}},
 		{name: "rpm yum", method: InstallRPM, extension: ".rpm", rpmManager: "yum", wantArgs: []string{"yum", "install", "-y"}},
 		{name: "rpm plain", method: InstallRPM, extension: ".rpm", rpmManager: "rpm", wantArgs: []string{"rpm", "-U"}},
 	} {

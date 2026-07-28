@@ -310,7 +310,7 @@ func TestRPMCommandsNameTheDetectedManager(t *testing.T) {
 		argsAfter []string
 	}{
 		{manager: "dnf", install: "sudo dnf install ./pkg.rpm", remove: "sudo dnf remove termp", argsAfter: []string{"dnf", "install", "-y", "/tmp/pkg.rpm"}},
-		{manager: "zypper", install: "sudo zypper install ./pkg.rpm", remove: "sudo zypper remove termp", argsAfter: []string{"zypper", "--non-interactive", "install", "/tmp/pkg.rpm"}},
+		{manager: "zypper", install: "sudo zypper install ./pkg.rpm", remove: "sudo zypper remove termp", argsAfter: []string{"zypper", "--non-interactive", "--no-gpg-checks", "install", "/tmp/pkg.rpm"}},
 		{manager: "yum", install: "sudo yum install ./pkg.rpm", remove: "sudo yum remove termp", argsAfter: []string{"yum", "install", "-y", "/tmp/pkg.rpm"}},
 		{manager: "rpm", install: "sudo rpm -U ./pkg.rpm", remove: "sudo rpm -e termp", argsAfter: []string{"rpm", "-U", "/tmp/pkg.rpm"}},
 		{
