@@ -46,17 +46,18 @@ the guard applies specifically to the global top-level `enabled` key; it does no
 other default-true settings such as update checks or display/CTA options. An `enabled`
 transition from `false` to `true` applies immediately when TOML metadata says the file
 explicitly defined the top-level key. When the value came from the default because the
-key is absent, the candidate snapshot must remain byte-identical for a separate
-three-second loosening horizon spanning reload attempts (#434). While a loosening is
-pending, the manager retains its current and accepted snapshots, leaves `LastError`
-unchanged, and publishes no reload result; daemon behavior and status therefore continue
-to reflect the active last-good config. A retry makes a deliberate blank, deletion, or
-trailing-line deletion take effect after the horizon even if no further filesystem event
-arrives. If a retry observes a different loosening snapshot, it starts a fresh horizon
-and arms another retry without relying on an fsnotify event. Transitions to `false`,
-non-`enabled` changes that retain `enabled = false`, and explicit `enabled = true` keep
-the normal settle latency. Reload attempts are serialized so concurrent fsnotify events
-cannot commit stale candidates around the guard.
+key is absent, the candidate snapshot is recorded at the first sampled reload and must
+match the snapshot seen at later reload samples, including the retry fired for the
+separate three-second loosening horizon (#434). While a loosening is pending, the manager
+retains its current and accepted snapshots, leaves `LastError` unchanged, and publishes
+no reload result; daemon behavior and status therefore continue to reflect the active
+last-good config. A retry makes a deliberate blank, deletion, or trailing-line deletion
+take effect after the horizon even if no further filesystem event arrives. If a retry
+observes a different loosening snapshot, it starts a fresh horizon and arms another retry
+without relying on an fsnotify event. Transitions to `false`, non-`enabled` changes that
+retain `enabled = false`, and explicit `enabled = true` keep the normal settle latency.
+Reload attempts are serialized so concurrent fsnotify events cannot commit stale
+candidates around the guard.
 
 `Manager` currently has no lifecycle/`Close` method. Its `time.AfterFunc` retry retains
 the manager until it fires and may read the config path after the daemon has otherwise
@@ -75,11 +76,13 @@ using only the post-reload `Current` config; a completion event during that sequ
 therefore queued instead of missed. `NewManagerPath` itself still performs a single
 **unsettled** read and stores it as the `accepted` baseline — the compensation lives in
 those two callers, not in the constructor, so a new caller that loads config directly
-does not inherit it. `config.Load`/`LoadPath` are likewise single unsettled reads, which
-is why the load-then-save commands are tracked separately (#438). A candidate that
-becomes provisional-stable partway through the budget also cannot reach acceptance in
-that call, which is safe: the reload is a no-op and the next fsnotify event starts a
-fresh budget with the settled content as its first read.
+does not inherit it. The constructor's unsettled read can also seed `enabled = true`,
+which disarms this guard for that manager's lifetime because the guard protects only a
+`false`-to-`true` transition (#440). `config.Load`/`LoadPath` are likewise single
+unsettled reads, which is why the load-then-save commands are tracked separately (#438).
+A candidate that becomes provisional-stable partway through the budget also cannot
+reach acceptance in that call, which is safe: the reload is a no-op and the next
+fsnotify event starts a fresh budget with the settled content as its first read.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,

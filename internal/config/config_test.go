@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2103,6 +2104,31 @@ func TestManagerReloadRandomWriterSchedules(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "config.toml")
 				writeConfig(t, path, "scan_interval = \"9s\"\nenabled = false\n")
 				manager := NewManagerPath(path)
+				var enabledObservations atomic.Int64
+				stopObserver := make(chan struct{})
+				observerDone := make(chan struct{})
+				var stopObserverOnce sync.Once
+				stopAndWaitForObserver := func() {
+					stopObserverOnce.Do(func() {
+						close(stopObserver)
+						<-observerDone
+					})
+				}
+				t.Cleanup(stopAndWaitForObserver)
+				go func() {
+					defer close(observerDone)
+					for {
+						select {
+						case <-stopObserver:
+							return
+						default:
+						}
+						cfg, _ := manager.Current()
+						if cfg.Enabled {
+							enabledObservations.Add(1)
+						}
+					}
+				}()
 
 				scanSeconds := 4 + rng.Intn(5)
 				firstLine := fmt.Sprintf("scan_interval = \"%ds\"\n", scanSeconds)
@@ -2188,12 +2214,14 @@ func TestManagerReloadRandomWriterSchedules(t *testing.T) {
 				if err := manager.Reload(); err != nil {
 					t.Fatalf("Reload() during randomized write = %v", err)
 				}
-				assertManagerEnabledFalse(t, manager, "during randomized write")
 				waitScheduledConfigWrite(t, write)
 				if err := manager.Reload(); err != nil {
 					t.Fatalf("Reload() after randomized write = %v", err)
 				}
-				assertManagerEnabledFalse(t, manager, "after randomized write")
+				stopAndWaitForObserver()
+				if got := enabledObservations.Load(); got != 0 {
+					t.Fatalf("Current() exposed enabled=true %d times during randomized write", got)
+				}
 			})
 		}
 	}
