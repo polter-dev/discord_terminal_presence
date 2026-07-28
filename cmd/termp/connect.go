@@ -149,7 +149,7 @@ func waitForDaemonConnection(
 			return fmt.Errorf("daemon pid %d exited before the Discord connection was confirmed", targetPID)
 		}
 		if timeout <= 0 || pollInterval <= 0 || waited >= timeout {
-			return fmt.Errorf("Discord connection could not be confirmed within %s for daemon pid %d", timeout, targetPID)
+			return fmt.Errorf("could not confirm the Discord connection within %s for daemon pid %d", timeout, targetPID)
 		}
 		delay := min(pollInterval, timeout-waited)
 		sleep(delay)

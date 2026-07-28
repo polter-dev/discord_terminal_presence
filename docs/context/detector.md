@@ -45,7 +45,8 @@ and elapsed-session anchor every scan.
 Per-tool enablement is applied before matched processes are enriched or selected. A
 disabled tool cannot become featured or appear in `Others`; changing enablement
 reconfigures the running detector and immediately re-resolves the selection while
-preserving eligible tools' directories and episode anchors.
+preserving eligible tools' directories and episode anchors. Selection helpers must have
+live callers; the CI Staticcheck job treats orphaned helpers as errors.
 
 Process-list failures retain the last presence for one or two consecutive
 scans. On the third consecutive failure, the detector emits `None` immediately

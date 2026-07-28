@@ -23,6 +23,8 @@ becomes `"a ; b"`. Other than that one documented asymmetry, anything not in the
 list either isn't a line-break candidate or is already removed by `Sanitize`. Consecutive
 separators (e.g. from a blank line) collapse to one, and leading/trailing separators are
 trimmed, so substitution never leaves dangling or doubled punctuation at the edges.
+Tests spell these separator controls with Unicode escapes so static analysis can inspect
+the source without encountering literal control characters.
 
 **Key files:** `internal/terminaltext/sanitize.go` contains the shared sanitizer.
 

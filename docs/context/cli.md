@@ -30,7 +30,8 @@ and readiness share a bound. Non-Windows transport remains explicitly unsupporte
 help and shell completions hide `connect` there and direct invocation reports that the
 command is not yet supported on the platform.
 Status trusts a fresh connected publisher instead of probing Discord and exposes
-concurrent PID/publisher faults.
+concurrent PID/publisher faults. Internal command errors are phrased to compose after the
+CLI adds its user-facing prefix while retaining proper-noun capitalization.
 
 Plain legacy PID records remain readable for stale-file cleanup, but a true legacy
 record without a process start time never authorizes signaling. New records explicitly
@@ -117,7 +118,8 @@ Homebrew instead emits one trailing blank line through the installer's caveats h
 The deb/rpm package script always exits successfully so guidance cannot break an
 install.
 
-CI snapshot-builds and installs the real deb and rpm artifacts in digest-pinned
+CI runs Staticcheck 2025.1.1 in its own pinned job. It also snapshot-builds and installs
+the real deb and rpm artifacts in digest-pinned
 `debian:stable`, `fedora:latest`, and `opensuse/leap:latest` containers. Before the
 detection probe runs, the job plants a disabled stub for the *other* package tool (`rpm`
 on the debian job, `dpkg-query` on the fedora/openSUSE jobs) into `/usr/sbin`, never
@@ -169,7 +171,11 @@ Config initialization safety is documented in [`config.md`](config.md), terminal
 rendering in [`tui.md`](tui.md), update cache/detection in [`update.md`](update.md), and
 usage retention in [`usage.md`](usage.md).
 
-Structured CLI output, verbose log messages, and daemon/watch config warnings sanitize
+The macOS process-image verifier calls `proc_pidpath` through `SYS_PROC_INFO` because
+`x/sys` exposes no libSystem wrapper for it; that single call carries a narrow Staticcheck
+SA1019 suppression rather than disabling the check repository-wide.
+
+Structured CLI output and verbose log messages sanitize
 externally derived terminal text. Detection logs resolve the working directory through
 the same effective privacy policy and path-reduction helper as presence output, cap
 expanded paths at their final two components, and report `hidden` when directory display
@@ -180,7 +186,9 @@ alignment, gluing tokens, or permitting log-line injection. The substitution rec
 every line/record-break character a terminal or log pipeline could honor (not just
 CR/LF; see [`terminaltext.md`](terminaltext.md) for the exact list), collapses runs of
 separators, and trims leading/trailing separators so a leading/trailing or blank-line
-break in the source value never leaves dangling or doubled punctuation. The
+break in the source value never leaves dangling or doubled punctuation. Daemon,
+interactive-watch, and `watch --once` config warnings share one logging helper that owns
+both iteration and single-line sanitization. The
 package-manager-unknown update guidance from `internal/update` is the concrete case that
 motivated the collapsing: it joins Debian and RPM instructions with a blank line.
 Per-tool enablement is passed into detector selection, and hot reloads that change it
