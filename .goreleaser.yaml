@@ -83,8 +83,20 @@ homebrew_casks:
     directory: Casks
     homepage: https://github.com/polter-dev/discord_terminal_presence
     description: Discord Rich Presence daemon for terminal tools.
-    caveats: |
-      Run `termp setup`; Discord stays blank until you do.
+    caveats: |+
+
+      +------------------------------------------------------------------------------+
+      |                                                                              |
+      |   TERMP INSTALLED                                                            |
+      |                                                                              |
+      |   NEXT STEP - RUN THIS NOW:                                                  |
+      |                                                                              |
+      |                            >>>  termp setup  <<<                             |
+      |                                                                              |
+      |   Discord stays blank until you do.                                          |
+      |                                                                              |
+      +------------------------------------------------------------------------------+
+
     hooks:
       post:
         install: |

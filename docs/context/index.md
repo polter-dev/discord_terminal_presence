@@ -20,3 +20,6 @@ Platform-specific test contracts live with their module entries: launchd/systemd
 Linux mount semantics run only on their native OS. Windows terminal presence is covered
 by dedicated Windows tests; five Unix-specific TTY-atime/tmux fixture tests remain
 skipped on Windows.
+
+Package-manager setup guidance and its non-TTY rendering safety contract live in the
+CLI module entry.
