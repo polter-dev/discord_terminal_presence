@@ -13,8 +13,12 @@ paths, annotated sample, initialization, load, and atomic save. `internal/config
 contains polling-based reload and config-directory setup.
 
 **Invariants / gotchas:** A missing config loads defaults; invalid values return errors
-or documented warnings rather than silently changing privacy behavior. Windows migrates
-legacy state to the native config directory on a best-effort basis.
+or documented warnings rather than silently changing privacy behavior. An existing
+config that cannot be read, decoded, or validated returns an in-memory default config
+with global presence disabled; a missing file still returns enabled first-run defaults.
+The manager keeps that fail-closed startup config until a valid hot reload replaces it,
+without persisting a last-good copy. Windows migrates legacy state to the native config
+directory on a best-effort basis.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,

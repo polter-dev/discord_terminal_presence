@@ -18,8 +18,8 @@ type Manager struct {
 	changes chan Config
 }
 
-// NewManager loads the config at the default path. If the file is malformed,
-// defaults remain current and LastError exposes the parse/validation error.
+// NewManager loads the config at the default path. If an existing file cannot
+// be loaded, presence remains disabled and LastError exposes the load error.
 func NewManager() *Manager {
 	return NewManagerPath(DefaultPath())
 }
@@ -27,9 +27,6 @@ func NewManager() *Manager {
 // NewManagerPath loads the config at path.
 func NewManagerPath(path string) *Manager {
 	cfg, err := LoadPath(path)
-	if err != nil {
-		cfg = DefaultWithPath(path)
-	}
 	return &Manager{
 		path:    path,
 		current: cfg,

@@ -830,6 +830,10 @@ func start(args []string) error {
 	}
 	background := !options.foreground
 	if background && !options.detachedChild {
+		cfg, loadErr := config.Load()
+		if loadErr != nil {
+			printStartupConfigError(os.Stderr, cfg.Path, loadErr)
+		}
 		pid, logPath, err := spawnDetachedStart(options.verbose)
 		if err != nil {
 			return err
@@ -864,7 +868,7 @@ func start(args []string) error {
 	manager := config.NewManager()
 	cfg, loadErr := manager.Current()
 	if loadErr != nil {
-		log.Printf("config load error, using last-good/default config: %v", loadErr)
+		log.Print(startupConfigError(cfg.Path, loadErr))
 	}
 	for _, warning := range cfg.Warnings {
 		logDaemonConfigWarning(warning)
@@ -882,6 +886,18 @@ func start(args []string) error {
 	}
 
 	return run(ctx, manager, control)
+}
+
+func startupConfigError(path string, err error) string {
+	return terminaltext.SanitizeSingleLine(fmt.Sprintf(
+		"config load failed for %s; presence is off until the config is valid: %v",
+		path,
+		err,
+	))
+}
+
+func printStartupConfigError(w io.Writer, path string, err error) {
+	fmt.Fprintf(w, "termp: %s\n", startupConfigError(path, err))
 }
 
 func logDaemonConfigWarning(warning string) {
@@ -1700,6 +1716,7 @@ func formatStatus(info statusInfo) string {
 		{label: "Valid", value: yesNo(info.configOK)},
 	}
 	if info.configError != nil {
+		configFields = append(configFields, outputField{label: "Presence", value: "off (invalid config)"})
 		configFields = append(configFields, outputField{label: "Error", value: info.configError.Error()})
 	}
 	for _, warning := range info.configWarnings {
@@ -1921,7 +1938,7 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 }
 
 func configLoadFallbackWarning(err error) string {
-	return fmt.Sprintf(`config load failed; using built-in defaults; run "termp status" for details: %v`, err)
+	return fmt.Sprintf(`config load failed; presence is off until the config is valid; run "termp status" for details: %v`, err)
 }
 
 type detectorReconfigurer interface {
