@@ -103,6 +103,15 @@ the sticky-global-`/tmp` carve-out, which is compared against the resolved path)
 path itself is still `lstat`-ed, never `stat`-ed, inside the resolved directory, so a symlinked
 socket planted by another user is still refused.
 
+Unix IPC socket fixtures use `newIsolatedIPCSocket`, which binds a short
+`/tmp/termp-ipc-*/s/discord-ipc-0` path, verifies the bound socket and path-length margin,
+and cleans up the listener and directory. The extra `s` directory is required: production
+discovery always globs `/tmp/*/discord-ipc-*`, so a fixture directly below its temporary
+directory is visible to unrelated concurrent test processes. Tests that need to prove
+fallback discovery point the fallback environment variables at the outer temporary
+directory, whose one-level glob still reaches the nested socket without exposing it through
+the global `/tmp` glob (#431).
+
 **Depends on / used by:** Consumes `internal/detector` and `internal/registry`; used by
 the daemon, status command, and TUI activity rendering.
 

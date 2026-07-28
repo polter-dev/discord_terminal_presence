@@ -22,6 +22,43 @@ type fakeFileInfo struct {
 	sys  any
 }
 
+func newIsolatedIPCSocket(t *testing.T) (outerDir, socketPath string, listener net.Listener) {
+	t.Helper()
+
+	outerDir, err := os.MkdirTemp("/tmp", "termp-ipc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outerDir) })
+
+	socketDir := filepath.Join(outerDir, "s")
+	if err := os.Mkdir(socketDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socketPath = filepath.Join(socketDir, "discord-ipc-0")
+	if filepath.Clean(filepath.Dir(socketPath)) == "/tmp" {
+		t.Fatalf("IPC test socket %q must not be directly globbable from /tmp", socketPath)
+	}
+	const comfortableUnixSocketPathLimit = 90
+	if len(socketPath) > comfortableUnixSocketPathLimit {
+		t.Fatalf("IPC test socket path length = %d, want <= %d: %q", len(socketPath), comfortableUnixSocketPathLimit, socketPath)
+	}
+
+	listener, err = net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	info, err := os.Lstat(socketPath)
+	if err != nil {
+		t.Fatalf("IPC test socket did not bind: %v", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("IPC test socket mode = %v, want Unix socket", info.Mode())
+	}
+	return outerDir, socketPath, listener
+}
+
 func (f fakeFileInfo) Name() string       { return f.name }
 func (f fakeFileInfo) Size() int64        { return 0 }
 func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
@@ -109,20 +146,7 @@ func TestDiscordIPCOverrideCandidates(t *testing.T) {
 // through to the default candidate search — which, on a real machine, could
 // connect to a genuine running Discord instance and leak live presence.
 func TestDialDiscordIPCOverrideAuthoritative(t *testing.T) {
-	decoyDir, err := os.MkdirTemp("/tmp", "termp-decoy-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(decoyDir) })
-	decoyPath := filepath.Join(decoyDir, "discord-ipc-0")
-	listener, err := net.Listen("unix", decoyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	if _, lerr := os.Lstat(decoyPath); lerr != nil {
-		t.Fatalf("decoy socket did not bind: %v", lerr)
-	}
+	decoyDir, _, listener := newIsolatedIPCSocket(t)
 
 	accepted := make(chan struct{}, 1)
 	go func() {
@@ -173,17 +197,7 @@ func TestDialDiscordIPCRejectsRelativeOverrideAsError(t *testing.T) {
 }
 
 func TestStatusProbeReturnsPromptlyWhenContextCancelled(t *testing.T) {
-	socketDir, err := os.MkdirTemp("/tmp", "termp-status-probe-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
-	socketPath := filepath.Join(socketDir, "discord-ipc-0")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
+	_, socketPath, listener := newIsolatedIPCSocket(t)
 	t.Setenv("DISCORD_IPC_PATH", socketPath)
 
 	handshakeRead := make(chan error, 1)
@@ -272,27 +286,12 @@ func TestDiscordIPCGlobCandidatesFiltersSortsAndDedupes(t *testing.T) {
 // anti-symlink security guarantee (a symlinked *socket* path is still
 // refused) using the same real directories.
 func TestValidateSocketCandidateRealSymlinkedParentDirectory(t *testing.T) {
-	base, err := os.MkdirTemp("/tmp", "termp-sym-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(base) })
-
-	realDir := filepath.Join(base, "real")
-	if err := os.Mkdir(realDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	base, socketPath, _ := newIsolatedIPCSocket(t)
+	realDir := filepath.Dir(socketPath)
 	linkDir := filepath.Join(base, "link")
 	if err := os.Symlink(realDir, linkDir); err != nil {
 		t.Fatal(err)
 	}
-
-	socketPath := filepath.Join(realDir, "discord-ipc-0")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
 
 	t.Run("accepts socket reached through a symlinked parent directory", func(t *testing.T) {
 		viaSymlink := filepath.Join(linkDir, "discord-ipc-0")
