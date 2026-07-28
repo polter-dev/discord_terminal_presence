@@ -20,8 +20,6 @@
 !/docs/product/config-schema.md
 !/docs/product/detection.md
 !/docs/product/overview.md
-/AGENTS.md
-/CLAUDE.md
 /ROADMAP.md
 /.claude/
 /HANDOFF-*.md
@@ -52,6 +50,8 @@
 # ── Local dev / runtime ──────────────────────────────────────
 # Personal manual-test scratchpad + feedback — never pushed.
 /forDev/
+# External-tester scripts (LINUX.md / WINDOWS.md) — local only.
+/testing/
 *.pid
 *.log
 *.local
