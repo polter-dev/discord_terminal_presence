@@ -20,6 +20,7 @@ const DefaultAppID = "1523168764793847918"
 const defaultDetailsFormat = "Using {tool}"
 
 const (
+	minActivityTextLength = 2
 	maxActivityTextLength = 128
 	maxImageValueLength   = 256
 )
@@ -98,6 +99,12 @@ func validateActivity(activity Activity) error {
 	for _, field := range textFields {
 		if utf8.RuneCountInString(field.value) > maxActivityTextLength {
 			return &activityValidationError{message: fmt.Sprintf("%s must be at most %d characters", field.name, maxActivityTextLength)}
+		}
+	}
+	for _, field := range textFields[1:3] {
+		length := utf8.RuneCountInString(field.value)
+		if length > 0 && length < minActivityTextLength {
+			return &activityValidationError{message: fmt.Sprintf("%s must be at least %d characters when present", field.name, minActivityTextLength)}
 		}
 	}
 	imageFields := []struct {
@@ -200,7 +207,11 @@ func ActivityFromDetection(detection detector.Detection, options DisplayOptions)
 }
 
 func boundActivityText(value string) string {
-	if utf8.RuneCountInString(value) <= maxActivityTextLength {
+	length := utf8.RuneCountInString(value)
+	if length > 0 && length < minActivityTextLength {
+		return ""
+	}
+	if length <= maxActivityTextLength {
 		return value
 	}
 	return string([]rune(value)[:maxActivityTextLength-1]) + "…"

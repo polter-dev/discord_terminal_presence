@@ -57,6 +57,9 @@ two images, or more than two buttons.
 | Tool buttons plus optional CTA | At most two buttons when `display.buttons` is enabled |
 | `details_format` and fallback messages | Details/state text selected by the activity mapper |
 
+When present, `details` and `state` contain 2–128 characters. A rendered one-character
+value is omitted so it cannot make Discord reject the entire presence.
+
 ## Privacy reminder
 
 The working directory is the field most likely to reveal a sensitive name. Directory

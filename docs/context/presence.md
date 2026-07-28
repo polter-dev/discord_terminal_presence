@@ -17,15 +17,16 @@ dial IPC endpoints. `internal/presence/writer.go` owns client lifecycle.
 **Invariants / gotchas:** Directory display is off by default and callers pass only an
 allowlisted display directory. Buttons are capped at two. One writer goroutine owns all
 client calls; the default activity write throttle remains 15 seconds. Final rendered
-details and state are capped at 128 runes with an ellipsis, and opted-in directory or
-collection placement does not depend on tool-name display.
+details and state are capped at 128 runes with an ellipsis; one-rune values are omitted
+so Discord receives only empty or 2–128-rune values. Opted-in directory or collection
+placement does not depend on tool-name display.
 
-The IPC boundary validates bounded activity text, image values, button labels/count, and
-absolute HTTP(S) URLs before encoding. Discord IPC code 4000 is a permanent rejection for
-the current payload: the writer keeps a healthy connection, does not schedule transport
-backoff or reapply that payload, and attempts normally again when the desired activity
-changes. Transport, timeout, and connection failures retain the existing reconnect
-backoff.
+The IPC boundary validates that non-empty details/state contain 2–128 runes, along with
+the other bounded activity text, image values, button labels/count, and absolute HTTP(S)
+URLs before encoding. Discord IPC code 4000 is a permanent rejection for the current
+payload: the writer keeps a healthy connection, does not schedule transport backoff or
+reapply that payload, and attempts normally again when the desired activity changes.
+Transport, timeout, and connection failures retain the existing reconnect backoff.
 
 Directory path reduction is centralized in `DirectoryDisplay`: basename-only mode returns
 one component and expanded mode returns at most the final two. Presence adds the folder
