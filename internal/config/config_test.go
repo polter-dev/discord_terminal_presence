@@ -2987,7 +2987,8 @@ func TestDirectoryAllowlistToolOverrideBlankEntryRejected(t *testing.T) {
 // whose allowlist entries were silently altered by loading.
 func TestSaveDoesNotRewriteAllowlistMeaning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = [\"/allowed/only\"]\n")
+	entry := filepath.Join(string(filepath.Separator), "allowed", "only")
+	writeConfig(t, path, "enabled = true\n[privacy]\nshow_directory = true\ndirectory_allowlist = [\""+filepath.ToSlash(entry)+"\"]\n")
 
 	cfg, err := LoadPath(path)
 	if err != nil {
@@ -2996,14 +2997,22 @@ func TestSaveDoesNotRewriteAllowlistMeaning(t *testing.T) {
 	if err := Save(cfg, path); err != nil {
 		t.Fatalf("Save() = %v", err)
 	}
-	onDisk, err := os.ReadFile(path)
+
+	// Assert the MEANING survives a save/reload round trip rather than the
+	// exact bytes: filepath.Clean normalizes separators per platform, so a
+	// byte comparison here asserts the host's path style, not the contract.
+	reloaded, err := LoadPath(path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("LoadPath() after Save() = %v", err)
 	}
-	if bytes.Contains(onDisk, []byte("directory_allowlist = []")) {
-		t.Fatalf("Save() rewrote a non-blank allowlist to an empty one:\n%s", onDisk)
+	if got := len(reloaded.Privacy.DirectoryAllowlist); got != 1 {
+		t.Fatalf("allowlist has %d entries after Save(), want 1: %#v", got, reloaded.Privacy.DirectoryAllowlist)
 	}
-	if !bytes.Contains(onDisk, []byte("/allowed/only")) {
-		t.Fatalf("Save() lost the allowlist entry:\n%s", onDisk)
+	tool := registry.Tool{ID: "claude-code"}
+	if !reloaded.Resolve(tool).DirectoryAllowed(entry) {
+		t.Fatalf("Save() changed the allowlist meaning: %q no longer allowed (allowlist=%#v)", entry, reloaded.Privacy.DirectoryAllowlist)
+	}
+	if reloaded.Resolve(tool).DirectoryAllowed(filepath.Join(string(filepath.Separator), "somewhere", "else")) {
+		t.Fatal("Save() widened the allowlist to allow an unlisted path")
 	}
 }
