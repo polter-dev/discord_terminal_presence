@@ -1998,6 +1998,39 @@ func TestDebugfSanitizesTerminalText(t *testing.T) {
 	}
 }
 
+func TestConfigWarningLogBoundariesSanitizeTerminalText(t *testing.T) {
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+
+	log.SetFlags(0)
+	log.SetPrefix("")
+
+	for _, tt := range []struct {
+		name string
+		log  func(string)
+	}{
+		{name: "daemon run", log: logDaemonConfigWarning},
+		{name: "interactive watch", log: logWatchConfigWarning},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			log.SetOutput(&output)
+
+			tt.log("bad\x1b[31m warning")
+
+			if got := output.String(); got != "bad warning\n" {
+				t.Fatalf("warning output = %q, want sanitized log line", got)
+			}
+		})
+	}
+}
+
 func TestDebugDetectionDirectoryHonorsPrivacy(t *testing.T) {
 	cfg := config.Default()
 	detection := detector.Detection{

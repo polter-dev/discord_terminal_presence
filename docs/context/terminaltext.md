@@ -8,9 +8,10 @@ bidirectional formatting controls while preserving ordinary Unicode text.
 
 **Key files:** `internal/terminaltext/sanitize.go` contains the shared sanitizer.
 
-**Invariants / gotchas:** CLI status output, verbose logging, and TUI rendering must pass
-externally derived text through this package. Sanitization is a rendering-boundary
-defense and does not replace validation or directory privacy resolution.
+**Invariants / gotchas:** CLI status output, verbose logging, daemon and interactive-watch
+config warnings, and TUI rendering must pass externally derived text through this package.
+Sanitization is a rendering-boundary defense and does not replace validation or directory
+privacy resolution.
 
 **Depends on / used by:** Depends on Charm's ANSI parser; used by `cmd/termp` and
 `internal/tui`.
