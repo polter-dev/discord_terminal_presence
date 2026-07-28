@@ -145,11 +145,24 @@ always refused, so the `/usr/local/bin` before/after snapshot only proves a refu
 update writes nothing — it compares empty to empty, not a real shadowing binary against
 the package-managed one.
 
-The openSUSE leg additionally removes the RPM and installs the real unsigned snapshot
-artifact with `zypper --non-interactive --no-gpg-checks install`, matching the updater
-argv, then re-runs the package-ownership assertion. This guards the observed zypper
-behavior: plain `--non-interactive` chooses the safe default and aborts on the unsigned
-RPM.
+Every rpm-method leg sets a matrix `rpm_frontend` and asserts it is non-empty before
+proceeding, so a typo'd or omitted matrix key fails loudly instead of silently skipping
+the front-end exercise below and passing having installed nothing (#406). The fedora leg
+(`rpm_frontend: dnf`) and the openSUSE leg (`rpm_frontend: zypper`) each remove the RPM
+and install the real unsigned snapshot artifact with their claimed front-end, then
+re-run the package-ownership assertion and additionally assert `DetectRPMManager()`
+(printed by the probe binary's `rpm-manager` argument) equals the claimed front-end, so
+the leg proves the manager termp would actually pick, not just the broader install
+method (#405, #406). The fedora leg runs `dnf install -y`, matching the updater argv.
+`opensuse/leap:latest` ships zypper >= 1.14, so the openSUSE leg's primary install runs
+`zypper --non-interactive install --allow-unsigned-rpm`, the exact argv `rpmInstallArgs`
+selects on that platform (#407) — this is now the observed path, not a reasoned one. It
+then also reinstalls with the older global `zypper --non-interactive --no-gpg-checks`
+flag as a secondary check, confirming a current zypper still accepts it; that is
+regression coverage for the fallback flag's continued acceptance, not a substitute for
+real zypper 1.13 coverage, which does not exist (see `update.md`'s open gap). A
+`yum`/CentOS 7 leg was considered but skipped as lower priority; the `yum)` case arm in
+the script is unreachable scaffolding until such a leg exists.
 
 The installer labels `termp uninstall` as a login-only action rather than implying that
 it removes the binary. It resolves one tag for archive/checksum, prefers

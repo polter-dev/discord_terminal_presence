@@ -280,6 +280,16 @@ func pinRPMManager(t *testing.T, manager string) {
 	t.Cleanup(func() { resolveRPMManager = previous })
 }
 
+// pinZypperVersion forces the detected zypper version for the duration of a
+// test so the version-adaptive flag choice does not depend on whether zypper
+// is installed, or which version, on the machine running the test.
+func pinZypperVersion(t *testing.T, version string) {
+	t.Helper()
+	previous := resolveZypperVersion
+	resolveZypperVersion = func() string { return version }
+	t.Cleanup(func() { resolveZypperVersion = previous })
+}
+
 func TestDetectRPMManagerPrefersDependencyResolvingFrontEnds(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
@@ -324,6 +334,15 @@ func TestRPMCommandsNameTheDetectedManager(t *testing.T) {
 		},
 	} {
 		t.Run(tt.manager, func(t *testing.T) {
+			if tt.manager == "zypper" {
+				// rpmInstallArgs(zypper) is version-adaptive (#407); pin an
+				// old version here so this table continues to exercise the
+				// long-standing global-flag argv regardless of what zypper
+				// version (if any) is installed on the machine running the
+				// test. TestZypperInstallArgsAreVersionAdaptive covers the
+				// >= 1.14 branch.
+				pinZypperVersion(t, "1.13.44")
+			}
 			if got := RPMInstallCommand(tt.manager, "./pkg.rpm"); got != tt.install {
 				t.Fatalf("RPMInstallCommand(%q) = %q, want %q", tt.manager, got, tt.install)
 			}
@@ -332,6 +351,84 @@ func TestRPMCommandsNameTheDetectedManager(t *testing.T) {
 			}
 			if got := rpmInstallArgs(tt.manager, "/tmp/pkg.rpm"); !reflect.DeepEqual(got, tt.argsAfter) && !(len(got) == 0 && len(tt.argsAfter) == 0) {
 				t.Fatalf("rpmInstallArgs(%q) = %#v, want %#v", tt.manager, got, tt.argsAfter)
+			}
+		})
+	}
+}
+
+// TestZypperInstallArgsAreVersionAdaptive covers #407: zypper >= 1.14 should
+// use the semantically scoped --allow-unsigned-rpm install option, while
+// 1.13 and any unparseable/unknown version must keep the long-standing
+// global --no-gpg-checks flag chosen in #394 (1.13 does not recognize
+// --allow-unsigned-rpm at all).
+func TestZypperInstallArgsAreVersionAdaptive(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		version string
+		want    []string
+	}{
+		{
+			name:    "1.14 supports the scoped flag",
+			version: "1.14.63",
+			want:    []string{"zypper", "--non-interactive", "install", "--allow-unsigned-rpm", "/tmp/pkg.rpm"},
+		},
+		{
+			name:    "newer major version supports the scoped flag",
+			version: "2.0.0",
+			want:    []string{"zypper", "--non-interactive", "install", "--allow-unsigned-rpm", "/tmp/pkg.rpm"},
+		},
+		{
+			name:    "1.13 falls back to the global flag",
+			version: "1.13.44",
+			want:    []string{"zypper", "--non-interactive", "--no-gpg-checks", "install", "/tmp/pkg.rpm"},
+		},
+		{
+			name:    "older major version falls back to the global flag",
+			version: "0.9.0",
+			want:    []string{"zypper", "--non-interactive", "--no-gpg-checks", "install", "/tmp/pkg.rpm"},
+		},
+		{
+			name:    "unknown version fails closed to the global flag",
+			version: "",
+			want:    []string{"zypper", "--non-interactive", "--no-gpg-checks", "install", "/tmp/pkg.rpm"},
+		},
+		{
+			name:    "unparseable version fails closed to the global flag",
+			version: "not-a-version",
+			want:    []string{"zypper", "--non-interactive", "--no-gpg-checks", "install", "/tmp/pkg.rpm"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pinZypperVersion(t, tt.version)
+			if got := rpmInstallArgs("zypper", "/tmp/pkg.rpm"); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("rpmInstallArgs(zypper) with version %q = %#v, want %#v", tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDetectZypperVersionParsesVersionOutput covers the raw `zypper
+// --version` output parsing that feeds the version-adaptive flag choice.
+func TestDetectZypperVersionParsesVersionOutput(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		output string
+		err    error
+		want   string
+	}{
+		{name: "typical output", output: "zypper 1.14.63\n", want: "1.14.63"},
+		{name: "command error", output: "", err: errors.New("not found"), want: ""},
+		{name: "unparseable output", output: "zypper unknown\n", want: ""},
+		{
+			name:   "libzypp line precedes the zypper line",
+			output: "libzypp 17.31.7\nzypper 1.14.68\n",
+			want:   "1.14.68",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectZypperVersion(func() (string, error) { return tt.output, tt.err })
+			if got != tt.want {
+				t.Fatalf("detectZypperVersion() = %q, want %q", got, tt.want)
 			}
 		})
 	}

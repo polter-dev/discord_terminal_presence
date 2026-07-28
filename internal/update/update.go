@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -672,14 +673,103 @@ func rpmInstallArgs(manager, path string) []string {
 		return []string{manager, "install", "-y", path}
 	case "zypper":
 		// --non-interactive is a global option accepted by every zypper
-		// release. --no-gpg-checks is also global (including zypper 1.13),
-		// so an unsigned release RPM does not abort at the safe default.
+		// release. zypper >= 1.14 supports the semantically scoped
+		// install-command option --allow-unsigned-rpm, which covers exactly
+		// the unsigned-commandline-rpm case; older releases (including
+		// 1.13) do not recognize it, so those -- and any release whose
+		// version cannot be determined -- fall back to the long-standing
+		// global --no-gpg-checks option chosen in #394 (also global on
+		// 1.13, so an unsigned release RPM does not abort at the safe
+		// default). Plain --non-interactive alone always aborts there.
+		if zypperSupportsAllowUnsignedRPM(resolveZypperVersion()) {
+			return []string{manager, "--non-interactive", "install", "--allow-unsigned-rpm", path}
+		}
 		return []string{manager, "--non-interactive", "--no-gpg-checks", "install", path}
 	case "rpm":
 		return []string{manager, "-U", path}
 	default:
 		return nil
 	}
+}
+
+var cachedZypperVersion = sync.OnceValue(func() string {
+	return detectZypperVersion(runZypperVersionCommand)
+})
+
+// resolveZypperVersion is a variable so tests can pin the detected zypper
+// version without invoking the real binary, the same pattern used for
+// resolveRPMManager.
+var resolveZypperVersion = func() string { return cachedZypperVersion() }
+
+func runZypperVersionCommand() (string, error) {
+	output, err := exec.Command("zypper", "--version").Output()
+	return string(output), err
+}
+
+// detectZypperVersion extracts zypper's own version (e.g. "1.14.63") from
+// `zypper --version` output such as "zypper 1.14.63". It anchors on the
+// token immediately following a literal "zypper" field so a multi-line or
+// multi-tool report (some builds also print a "libzypp N.N.N" line, whose
+// own version numbering is unrelated to zypper's) cannot be mistaken for
+// zypper's version. If that anchor is not found, it falls back to the first
+// parseable dotted-version token in case the output format ever changes.
+// It returns "" when the command fails or nothing parses, so callers fail
+// closed to the older, universally supported flag.
+func detectZypperVersion(runVersion func() (string, error)) string {
+	output, err := runVersion()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(output)
+	for i, field := range fields {
+		if field != "zypper" || i+1 >= len(fields) {
+			continue
+		}
+		if _, _, ok := parseZypperVersion(fields[i+1]); ok {
+			return fields[i+1]
+		}
+	}
+	for _, field := range fields {
+		if _, _, ok := parseZypperVersion(field); ok {
+			return field
+		}
+	}
+	return ""
+}
+
+// zypperSupportsAllowUnsignedRPM reports whether version is new enough
+// (>= 1.14) to accept the --allow-unsigned-rpm install option. An
+// unparseable or empty version fails closed to false, preserving the
+// global --no-gpg-checks flag that has worked since zypper 1.13.
+func zypperSupportsAllowUnsignedRPM(version string) bool {
+	major, minor, ok := parseZypperVersion(version)
+	if !ok {
+		return false
+	}
+	if major != 1 {
+		return major > 1
+	}
+	return minor >= 14
+}
+
+func parseZypperVersion(version string) (major, minor int, ok bool) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return 0, 0, false
+	}
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	minor, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
 }
 
 // RPMInstallCommand renders the human-runnable install command for manager.
