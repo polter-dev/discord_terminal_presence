@@ -55,9 +55,10 @@ func TestWatchConfigChangeMakesCustomToolDetectable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reloads := make(chan config.ReloadResult)
+	watchErrs := make(chan error)
 	updates := make(chan watchActivityUpdate, 4)
 	detections := det.RunReadOnly(ctx)
-	go bridgeWatchActivityUpdates(ctx, reloads, det, applied, detections, func(cfg config.Config, detection detector.Detection) {
+	go bridgeWatchActivityUpdates(ctx, reloads, watchErrs, det, applied, detections, func(cfg config.Config, detection detector.Detection) {
 		updates <- watchActivityUpdate{config: cfg, detection: detection}
 	}, func(string) {})
 
@@ -98,10 +99,11 @@ func TestWatchDisplayOnlyChangeRerendersWithoutReconfigure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reloads := make(chan config.ReloadResult)
+	watchErrs := make(chan error)
 	detections := make(chan detector.Detection)
 	updates := make(chan watchActivityUpdate, 2)
 	reconfigurer := &watchTestReconfigurer{}
-	go bridgeWatchActivityUpdates(ctx, reloads, reconfigurer, applied, detections, func(cfg config.Config, detection detector.Detection) {
+	go bridgeWatchActivityUpdates(ctx, reloads, watchErrs, reconfigurer, applied, detections, func(cfg config.Config, detection detector.Detection) {
 		updates <- watchActivityUpdate{config: cfg, detection: detection}
 	}, func(string) {})
 
@@ -134,11 +136,12 @@ func TestWatchRejectsInvalidConfigAndKeepsSessionRunning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reloads := make(chan config.ReloadResult)
+	watchErrs := make(chan error)
 	detections := make(chan detector.Detection)
 	updates := make(chan watchActivityUpdate, 2)
 	warnings := make(chan string, 1)
 	reconfigurer := &watchTestReconfigurer{err: errors.New("Reconfigure must not be called")}
-	go bridgeWatchActivityUpdates(ctx, reloads, reconfigurer, applied, detections, func(cfg config.Config, detection detector.Detection) {
+	go bridgeWatchActivityUpdates(ctx, reloads, watchErrs, reconfigurer, applied, detections, func(cfg config.Config, detection detector.Detection) {
 		updates <- watchActivityUpdate{config: cfg, detection: detection}
 	}, func(warning string) {
 		warnings <- warning
@@ -177,5 +180,36 @@ func TestWatchRejectsInvalidConfigAndKeepsSessionRunning(t *testing.T) {
 	}
 	if reconfigurer.calls != 0 {
 		t.Fatalf("Reconfigure calls = %d, want 0 for rejected config", reconfigurer.calls)
+	}
+}
+
+func TestWatchLabelsWatcherErrorWithoutTreatingItAsReloadFailure(t *testing.T) {
+	cfg := config.Default()
+	applied, err := newDetectionRuntime(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reloads := make(chan config.ReloadResult)
+	watchErrs := make(chan error)
+	detections := make(chan detector.Detection)
+	warnings := make(chan string, 1)
+	go bridgeWatchActivityUpdates(ctx, reloads, watchErrs, &watchTestReconfigurer{}, applied, detections, func(config.Config, detector.Detection) {}, func(warning string) {
+		warnings <- warning
+	})
+
+	watchErrs <- errors.New("watch backend failed")
+	select {
+	case warning := <-warnings:
+		if !strings.Contains(warning, "config watcher error; continuing with current config") {
+			t.Fatalf("watch warning = %q, want watcher-specific message", warning)
+		}
+		if strings.Contains(warning, "reload failed") {
+			t.Fatalf("watch warning mislabeled as reload failure: %q", warning)
+		}
+		t.Logf("watcher warning: %s", warning)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for watcher warning")
 	}
 }

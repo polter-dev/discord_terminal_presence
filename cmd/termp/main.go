@@ -821,7 +821,8 @@ func start(args []string) error {
 		return err
 	}
 	verbose = options.verbose
-	if options.detachedChild {
+	ownsDaemonLog := options.detachedChild || options.daemonLog
+	if ownsDaemonLog {
 		logPath, err := detachedLogPath()
 		if err != nil {
 			return err
@@ -830,9 +831,13 @@ func start(args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := logWriter.RedirectStderr(); err != nil {
+			_ = logWriter.Close()
+			return err
+		}
 		log.SetOutput(logWriter)
 	}
-	if !options.detachedChild {
+	if !ownsDaemonLog {
 		maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
 	}
 
@@ -927,9 +932,21 @@ func logConfigReloadFailure(err error) {
 	log.Print(configReloadFailure(err))
 }
 
+func configWatchFailure(err error) string {
+	return terminaltext.SanitizeSingleLine(fmt.Sprintf(
+		"config watcher error; continuing with current config: %v",
+		err,
+	))
+}
+
+func logConfigWatchFailure(err error) {
+	log.Print(configWatchFailure(err))
+}
+
 type startOptions struct {
 	detach        bool
 	detachedChild bool
+	daemonLog     bool
 	foreground    bool
 	verbose       bool
 }
@@ -941,6 +958,7 @@ func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (st
 	fs.BoolVar(&options.detach, "detach", false, "start the daemon in the background")
 	fs.BoolVar(&options.detach, "d", false, "start the daemon in the background")
 	fs.BoolVar(&options.detachedChild, detachedChildFlag, false, "internal detached child marker")
+	fs.BoolVar(&options.daemonLog, daemonLogFlag, false, "internal daemon log marker")
 	fs.BoolVar(&options.foreground, "foreground", false, "keep the daemon attached to the terminal")
 	fs.BoolVar(&options.foreground, "f", false, "keep the daemon attached to the terminal")
 	fs.BoolVar(&options.verbose, "verbose", defaultVerbose, "enable verbose logging")
@@ -1085,6 +1103,8 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 						return
 					}
 				}
+			case watchErr := <-manager.WatchErrors():
+				logConfigWatchFailure(watchErr)
 			case <-ctx.Done():
 				return
 			}
@@ -2044,7 +2064,7 @@ type detectorReconfigurer interface {
 }
 
 func bridgeWatchActivities(ctx context.Context, manager *config.Manager, det detectorReconfigurer, applied detectionRuntime, detections <-chan detector.Detection, program *tea.Program, fallbackMessage string) {
-	bridgeWatchActivityUpdates(ctx, manager.Reloads(), det, applied, detections, func(cfg config.Config, detection detector.Detection) {
+	bridgeWatchActivityUpdates(ctx, manager.Reloads(), manager.WatchErrors(), det, applied, detections, func(cfg config.Config, detection detector.Detection) {
 		activity := buildActivity(cfg, detection, fallbackMessage)
 		name := ""
 		if activity != nil {
@@ -2056,7 +2076,7 @@ func bridgeWatchActivities(ctx context.Context, manager *config.Manager, det det
 	})
 }
 
-func bridgeWatchActivityUpdates(ctx context.Context, reloads <-chan config.ReloadResult, det detectorReconfigurer, applied detectionRuntime, detections <-chan detector.Detection, send func(config.Config, detector.Detection), warn func(string)) {
+func bridgeWatchActivityUpdates(ctx context.Context, reloads <-chan config.ReloadResult, watchErrs <-chan error, det detectorReconfigurer, applied detectionRuntime, detections <-chan detector.Detection, send func(config.Config, detector.Detection), warn func(string)) {
 	var (
 		last     detector.Detection
 		haveLast bool
@@ -2093,6 +2113,8 @@ func bridgeWatchActivityUpdates(ctx context.Context, reloads <-chan config.Reloa
 			if haveLast && !change.detector {
 				send(applied.config, last)
 			}
+		case watchErr := <-watchErrs:
+			warn(configWatchFailure(watchErr))
 		case <-ctx.Done():
 			return
 		}

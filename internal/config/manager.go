@@ -11,11 +11,12 @@ import (
 
 // Manager owns the current last-good config and watches it for edits.
 type Manager struct {
-	path    string
-	mu      sync.RWMutex
-	current Config
-	lastErr error
-	reloads chan ReloadResult
+	path      string
+	mu        sync.RWMutex
+	current   Config
+	lastErr   error
+	reloads   chan ReloadResult
+	watchErrs chan error
 }
 
 // ReloadResult reports the newest automatic or explicit reload outcome.
@@ -34,10 +35,11 @@ func NewManager() *Manager {
 func NewManagerPath(path string) *Manager {
 	cfg, err := LoadPath(path)
 	return &Manager{
-		path:    path,
-		current: cfg,
-		lastErr: err,
-		reloads: make(chan ReloadResult, 1),
+		path:      path,
+		current:   cfg,
+		lastErr:   err,
+		reloads:   make(chan ReloadResult, 1),
+		watchErrs: make(chan error, 1),
 	}
 }
 
@@ -59,6 +61,11 @@ func (m *Manager) LastError() error {
 // the consumer has not caught up, preserving the newest success or failure.
 func (m *Manager) Reloads() <-chan ReloadResult {
 	return m.reloads
+}
+
+// WatchErrors emits watcher-backend failures without changing config validity.
+func (m *Manager) WatchErrors() <-chan error {
+	return m.watchErrs
 }
 
 // Reload reloads the file, preserving the last-good config on error.
@@ -94,11 +101,19 @@ func (m *Manager) publishReloadLocked(next ReloadResult) {
 	}
 }
 
-func (m *Manager) reportFailure(err error) {
-	m.mu.Lock()
-	m.lastErr = err
-	m.publishReloadLocked(ReloadResult{Err: err})
-	m.mu.Unlock()
+func (m *Manager) reportWatchFailure(err error) {
+	select {
+	case m.watchErrs <- err:
+	default:
+		select {
+		case <-m.watchErrs:
+		default:
+		}
+		select {
+		case m.watchErrs <- err:
+		default:
+		}
+	}
 }
 
 // Watch reloads config changes until ctx is cancelled.
@@ -131,7 +146,7 @@ func (m *Manager) Watch(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				m.reportFailure(err)
+				m.reportWatchFailure(err)
 			case <-ctx.Done():
 				return
 			}

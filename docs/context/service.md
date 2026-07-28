@@ -43,6 +43,10 @@ targets remain fail-open rather than risking a parser gap blocking legitimate
 users from reconciling termp's own definitions. A definition that cannot be read
 is different: its ownership cannot be verified, so non-forced mutations refuse it
 with an actionable `--force` message, while forced install and uninstall proceed.
+The macOS launch agent runs `start --foreground --internal-daemon-log` and sends
+launchd-managed stdout/stderr to `/dev/null`; the daemon opens and rotates
+`~/Library/Logs/termp.log` itself, preventing launchd from retaining a renamed inode.
+Linux continues to leave output ownership to journald.
 
 The Windows task retries a failed daemon up to three times at one-minute
 intervals. Disable and uninstall treat `schtasks /End` as required: disable

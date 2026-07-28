@@ -3,12 +3,17 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestRotatingLogWriterKeepsWholeLinesAcrossOpenWriters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file handles do not share delete access, so an open second writer prevents rename-based rotation")
+	}
 	path := filepath.Join(t.TempDir(), "termp.log")
 	first, err := newRotatingLogWriter(path, 24, 3)
 	if err != nil {
@@ -74,4 +79,35 @@ func TestRotatingLogWriterBoundsRetainedFiles(t *testing.T) {
 	if _, err := os.Stat(path + ".4"); !os.IsNotExist(err) {
 		t.Fatalf("unexpected generation 4: %v", err)
 	}
+}
+
+func TestRotatingLogWriterCapturesPanicOnRedirectedStderr(t *testing.T) {
+	if os.Getenv("TERMP_TEST_PANIC_LOG") != "" {
+		writer, err := newRotatingLogWriter(os.Getenv("TERMP_TEST_PANIC_LOG"), 1<<20, 3)
+		if err != nil {
+			panic(err)
+		}
+		if err := writer.RedirectStderr(); err != nil {
+			panic(err)
+		}
+		panic("detached-child-panic-marker")
+	}
+
+	path := filepath.Join(t.TempDir(), "termp.log")
+	command := exec.Command(os.Args[0], "-test.run=^TestRotatingLogWriterCapturesPanicOnRedirectedStderr$")
+	command.Env = append(os.Environ(), "TERMP_TEST_PANIC_LOG="+path)
+	command.Stdout = nil
+	command.Stderr = nil
+	if err := command.Run(); err == nil {
+		t.Fatal("panic helper exited successfully")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "panic: detached-child-panic-marker") ||
+		!strings.Contains(string(data), "TestRotatingLogWriterCapturesPanicOnRedirectedStderr") {
+		t.Fatalf("panic log does not contain panic and stack:\n%s", data)
+	}
+	t.Logf("captured detached child panic in %s:\n%s", path, data)
 }

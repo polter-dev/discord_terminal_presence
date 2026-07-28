@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const detachedChildFlag = "internal-detached-child"
+const (
+	detachedChildFlag = "internal-detached-child"
+	daemonLogFlag     = "internal-daemon-log"
+)
 
 const (
 	detachedStartTimeout      = 2 * time.Second
@@ -41,14 +44,20 @@ func spawnDetachedStart(enableVerbose bool) (int, string, error) {
 		return 0, "", fmt.Errorf("open null input: %w", err)
 	}
 	defer nullFile.Close()
+	panicLog, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, "", fmt.Errorf("open detached daemon panic log: %w", err)
+	}
 
 	command := exec.Command(executable, detachedChildArgs(enableVerbose)...)
 	command.Stdin = nullFile
 	command.Stdout = nullFile
-	command.Stderr = nullFile
+	command.Stderr = panicLog
 	if err := startDetachedProcess(command); err != nil {
+		_ = panicLog.Close()
 		return 0, "", fmt.Errorf("start detached daemon: %w", err)
 	}
+	_ = panicLog.Close()
 	pid := command.Process.Pid
 	_ = command.Process.Release()
 	if err := waitForDetachedStart(pidFilePath(), pid, detachedStartTimeout, detachedStartPollInterval, readPID, processAlive, processLooksLikeTermp, time.Sleep); err != nil {

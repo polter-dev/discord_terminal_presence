@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -996,6 +997,36 @@ func TestManagerWatchReportsMalformedReload(t *testing.T) {
 	if current.ScanInterval != "7s" {
 		t.Fatalf("last-good scan interval = %q, want 7s", current.ScanInterval)
 	}
+}
+
+func TestManagerWatcherErrorDoesNotInvalidateConfig(t *testing.T) {
+	path := withConfigHome(t)
+	writeConfig(t, path, `scan_interval = "7s"`)
+	manager := NewManagerPath(path)
+
+	manager.reportWatchFailure(errors.New("watch backend failed"))
+
+	select {
+	case watchErr := <-manager.WatchErrors():
+		if watchErr == nil || !strings.Contains(watchErr.Error(), "watch backend failed") {
+			t.Fatalf("watcher error = %v, want backend failure", watchErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for watcher error")
+	}
+	current, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v, want valid config after watcher error", err)
+	}
+	if current.ScanInterval != "7s" {
+		t.Fatalf("current scan interval = %q, want 7s", current.ScanInterval)
+	}
+	select {
+	case reload := <-manager.Reloads():
+		t.Fatalf("watcher error leaked into reload stream: %#v", reload)
+	default:
+	}
+	t.Logf("watcher error left Current valid with scan_interval=%s", current.ScanInterval)
 }
 
 func TestManagerConcurrentCurrentDuringReloadKeepsLastGood(t *testing.T) {

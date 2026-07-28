@@ -185,11 +185,17 @@ record carries config health, so `termp status` distinguishes startup failure (`
 from reload failure (`using last-good config`) while showing the error. A successful
 reload clears that health error and the watch banner.
 
-Detached daemon logging uses a dependency-free rotating writer with a 1 MiB threshold
-and three retained generations. Rotation happens before a complete logger write, uses
-rename rather than copy/truncate, and coordinates writers through a cross-process lock;
-a writer whose open file was rotated reopens the current path before its next line.
-This keeps individual log records intact and bounds normal verbose/crash-loop growth.
+Detached daemons and the macOS launchd foreground daemon own their log file through the
+same dependency-free rotating writer with a 1 MiB threshold and three retained
+generations. The launch agent sends its inherited stdout/stderr to `/dev/null` and passes
+an internal marker that makes the daemon open the log itself, so launchd never retains a
+rotated inode. Linux autostart is not covered by file rotation because systemd sends its
+output to journald. Rotation happens before a complete logger write, uses rename rather
+than copy/truncate, and coordinates writers through a cross-process lock; a writer whose
+open file was rotated reopens the current path before its next line. Daemon stderr is
+rebound whenever the current generation changes so Go panic stacks remain in the bounded
+log rather than following an orphaned inode. This keeps individual log records intact
+and bounds normal verbose/crash-loop growth.
 The banner, startup error, and reload error render through `SanitizeSingleLine`, matching
 every other single-line render boundary in the CLI.
 

@@ -19,6 +19,7 @@ type rotatingLogWriter struct {
 	retained int
 	lockFile *os.File
 	file     *os.File
+	stderr   bool
 	mu       sync.Mutex
 }
 
@@ -43,17 +44,7 @@ func newRotatingLogWriter(path string, maxBytes int64, retained int) (*rotatingL
 		lockFile: lockFile,
 	}
 	if err := writer.withRotationLock(func() error {
-		if err := writer.openCurrentLocked(); err != nil {
-			return err
-		}
-		info, err := writer.file.Stat()
-		if err != nil {
-			return err
-		}
-		if info.Size() >= writer.maxBytes {
-			return writer.rotateLocked()
-		}
-		return nil
+		return writer.openCurrentLocked()
 	}); err != nil {
 		_ = lockFile.Close()
 		return nil, err
@@ -101,6 +92,30 @@ func (w *rotatingLogWriter) Close() error {
 	return errors.Join(fileErr, lockErr)
 }
 
+// RedirectStderr keeps runtime panic output on the same bounded log stream.
+// Rotation rebinds stderr to the newly opened current generation.
+func (w *rotatingLogWriter) RedirectStderr() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.openCurrentLocked(); err != nil {
+		return err
+	}
+	if err := redirectStderr(w.file); err != nil {
+		return fmt.Errorf("redirect daemon stderr: %w", err)
+	}
+	w.stderr = true
+	info, err := w.file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() >= w.maxBytes {
+		if err := w.withRotationLock(w.rotateLocked); err != nil {
+			return fmt.Errorf("rotate daemon log after redirecting stderr: %w", err)
+		}
+	}
+	return nil
+}
+
 func (w *rotatingLogWriter) withRotationLock(fn func() error) error {
 	if err := lockLogRotation(w.lockFile); err != nil {
 		return err
@@ -124,6 +139,13 @@ func (w *rotatingLogWriter) openCurrentLocked() error {
 		return fmt.Errorf("open daemon log: %w", err)
 	}
 	w.file = file
+	if w.stderr {
+		if err := redirectStderr(file); err != nil {
+			_ = file.Close()
+			w.file = nil
+			return fmt.Errorf("redirect daemon stderr after log rotation: %w", err)
+		}
+	}
 	return nil
 }
 

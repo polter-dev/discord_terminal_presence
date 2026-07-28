@@ -29,14 +29,7 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 	if err != nil {
 		return State{Supported: true}, err
 	}
-	logPath, err := launchAgentLogPath()
-	if err != nil {
-		return State{Supported: true, Path: path}, err
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return State{Supported: true, Path: path}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return State{Supported: true, Path: path}, err
 	}
 	if launch {
@@ -44,7 +37,7 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 			return State{Supported: true, Path: path}, fmt.Errorf("cannot replace launch agent before unloading the existing job: %w", err)
 		}
 	}
-	content, err := BuildLaunchAgentPlist(exe, logPath)
+	content, err := BuildLaunchAgentPlist(exe)
 	if err != nil {
 		return State{Supported: true, Path: path}, err
 	}
