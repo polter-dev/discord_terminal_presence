@@ -463,6 +463,19 @@ func (c *Checker) resultFor(current, latest string) (Result, bool) {
 	}, true
 }
 
+// DisabledByEnv reports whether NO_UPDATE_CHECK is set, which opts the user out
+// of update checks regardless of config. Any value counts, including the empty
+// string: `NO_UPDATE_CHECK=` is how a shell most often expresses "off".
+//
+// Checker already enforces this on every lookup, so callers do not need it to
+// avoid a network call. It is exported for callers that must know the user has
+// opted out in order to skip work that is *not* a lookup — the daemon's
+// automatic-update path uses it to stay entirely inert rather than merely
+// offline (issue #463).
+func DisabledByEnv() bool {
+	return updateCheckDisabledByEnv()
+}
+
 func updateCheckDisabledByEnv() bool {
 	_, disabled := os.LookupEnv("NO_UPDATE_CHECK")
 	return disabled

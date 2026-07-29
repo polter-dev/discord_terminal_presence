@@ -9,7 +9,8 @@ release lookup and caching. `Checker.Check` (memoized, one lookup per process),
 `Checker.Refresh` (same lookup without that memoization, for long-lived callers), and
 `Checker.CachedCheck` (cache-only, never networked) are its three entry points, and
 `CacheLifetime` exposes how long a recorded check suppresses the next lookup.
-`DefaultCachePath` resolves update state. `InstallMethod`,
+`DisabledByEnv` reports the `NO_UPDATE_CHECK` opt-out for callers that must skip work
+which is *not* a lookup. `DefaultCachePath` resolves update state. `InstallMethod`,
 `DetectInstallMethod`, `IsSystemPackageInstall`, `GuidanceForMethod`,
 `UpdateCommandForMethod`, `GenericInstallDir`, and `PerformUpdate` select/run an
 install-aware exact-tag updater. `AutomaticUpdateAttempt`,
@@ -24,7 +25,11 @@ installer download. `internal/update/exec_*.go` run platform commands.
 opt-out, unusable cache paths, and passive lookup errors fail closed to no result. That
 gate lives in one place (`Checker.lookupPermitted`) and every passive entry point —
 `Check`, `Refresh`, `CachedCheck` — runs it, so an opt-out cannot be honoured by one and
-missed by another. `Refresh` differs from `Check` in exactly one respect: it skips the
+missed by another. `lookupPermitted` governs **lookups only**, which is why the exported
+`DisabledByEnv` exists: a caller that also has non-lookup work to skip when the user has
+opted out cannot infer that from a `false` result (dev builds and unparseable versions
+produce the same answer). `cmd/termp`'s automatic-update path uses it so both opt-outs
+are inert rather than merely offline — see [`cli.md`](cli.md) (#463). `Refresh` differs from `Check` in exactly one respect: it skips the
 `sync.Once`, so a process that outlives `CacheLifetime` (the daemon, issue #460) can keep
 the shared cache fresh instead of sitting on a fired `Once` while the cache-only command
 alert goes silent. It is not a cache bypass — a still-fresh entry from any process
