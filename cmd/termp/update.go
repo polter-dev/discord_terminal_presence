@@ -194,9 +194,23 @@ func runAutomaticUpdateWithStatePath(ctx context.Context, cfg config.Config, cur
 }
 
 func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.Config, current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner, statePath, goos string) {
-	// update_check == false (or NO_UPDATE_CHECK) means no network call at all,
-	// for either purpose. Privacy wins.
-	if !cfg.UpdateCheck || checker == nil {
+	// Either opt-out — update_check = false or NO_UPDATE_CHECK — makes the
+	// whole automatic-update path inert: no network call for either purpose,
+	// and no write to the state file below.
+	//
+	// The env opt-out is checked here as well as inside Checker, which is
+	// redundant for the lookup and deliberate for everything after it. Relying
+	// on Checker alone stopped the network call but let
+	// retireStaleAutomaticUpdateAttempt run and clear a recorded attempt from
+	// cached data, so the two opt-outs differed in observable side effects
+	// (issue #463). Retirement is a state mutation, so "we made no network
+	// call" is not the same promise as "we did nothing", and a user who set
+	// NO_UPDATE_CHECK asked for the second one.
+	//
+	// The cost is that a stale attempt record is not retired while an opt-out
+	// is in force. That is already true of update_check = false and is
+	// recoverable: unset the opt-out and the next daemon start clears it.
+	if !cfg.UpdateCheck || updatepkg.DisabledByEnv() || checker == nil {
 		return
 	}
 	// Refresh writes the result to the shared cache even when the running
