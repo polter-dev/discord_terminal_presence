@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -275,7 +275,6 @@ func TestPeriodicUpdateRefreshNeverInstallsWithAutoUpdateOff(t *testing.T) {
 	_ = os.Unsetenv("NO_UPDATE_CHECK")
 	t.Cleanup(func() { _ = os.Unsetenv("NO_UPDATE_CHECK") })
 
-	statePath := filepath.Join(t.TempDir(), "update-check.json")
 	checker := &flagIgnoringChecker{latest: "1.1.0"}
 	runner := &recordingUpdateRunner{}
 	cfg := config.Default()
@@ -308,8 +307,56 @@ func TestPeriodicUpdateRefreshNeverInstallsWithAutoUpdateOff(t *testing.T) {
 	if runner.calls != 0 {
 		t.Fatalf("auto_update off ran the update runner %d times", runner.calls)
 	}
-	if _, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath); ok {
-		t.Fatal("cache-only refresh recorded an automatic update attempt")
+}
+
+// TestPeriodicUpdateMidRunOptInStillInstalls: turning auto_update ON while the
+// daemon runs must install at the next tick. The install dedupe must not have
+// "burned" the target while installs were disabled — recording an attempt that
+// never happened would silently defer the requested install to the next daemon
+// restart. (This is the test that distinguishes `gate.mayInstall =
+// cfg.AutoUpdate` from an unconditional `= true`.)
+func TestPeriodicUpdateMidRunOptInStillInstalls(t *testing.T) {
+	_ = os.Unsetenv("NO_UPDATE_CHECK")
+	t.Cleanup(func() { _ = os.Unsetenv("NO_UPDATE_CHECK") })
+
+	checker := &flagIgnoringChecker{latest: "1.1.0"}
+	runner := &recordingUpdateRunner{}
+	var optedIn atomic.Bool
+	currentConfig := func() (config.Config, error) {
+		cfg := config.Default()
+		cfg.UpdateCheck = true
+		cfg.AutoUpdate = optedIn.Load()
+		return cfg, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPeriodicInBackground(ctx, currentConfig, checker, runner, time.Millisecond)
+
+	// Let several installs-off refreshes happen first, so the dedupe map has
+	// had every opportunity to mis-record the target.
+	deadline := time.After(10 * time.Second)
+	for checker.callsSafe() < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("harness broken: only %d refreshes happened", checker.callsSafe())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	optedIn.Store(true)
+	flipped := checker.callsSafe()
+	for checker.callsSafe() < flipped+3 {
+		select {
+		case <-deadline:
+			t.Fatalf("harness broken: only %d refreshes happened after the opt-in", checker.callsSafe())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	waitForStop(t, done)
+
+	if runner.calls != 1 {
+		t.Fatalf("after a mid-run auto_update opt-in the installer ran %d times, want exactly 1", runner.calls)
 	}
 }
 
