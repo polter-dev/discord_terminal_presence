@@ -134,7 +134,7 @@ proves that state really is retirable.
 
 **Stale automatic-attempt clearing (#418, #458).** `retireStaleAutomaticUpdateAttempt`
 (cmd/termp/update.go) owns the rule and runs on every daemon startup where neither
-update-check opt-out is in force (see **Update-check opt-outs** below),
+update-check opt-out is in force (see **Update-check opt-outs** above),
 *before* the `auto_update` branch — a record recorded while
 automatic updates were enabled and then stranded by turning them off (often *because*
 they failed) is exactly the case that has to clear (#458 cause 1, gate moved in #459).
@@ -421,7 +421,7 @@ cannot become a retry loop on an offline machine.
 Config is re-read on every refresh through `Manager.Current` rather than captured at
 startup, so `update_check = false` takes effect at the next tick instead of the next
 daemon restart. Both opt-outs suppress every network call, the alert itself, and the
-whole automatic-update body (see **Update-check opt-outs** below), on the startup refresh
+whole automatic-update body (see **Update-check opt-outs** above), on the startup refresh
 and on every tick alike. A config that cannot be read suppresses the refresh entirely
 (it may hold an opt-out we cannot see — the same rule the alert paths already applied to
 `loadErr`); previously the startup refresh ran anyway on the fallback config. Automatic
