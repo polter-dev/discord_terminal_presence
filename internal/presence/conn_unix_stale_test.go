@@ -79,6 +79,61 @@ func newStaleIPCSocket(t *testing.T) (socketDir, socketPath string) {
 	return socketDir, socketPath
 }
 
+// newLiveIPCSocket binds a real Unix socket and leaves a listener accepting on
+// it, so a scan that reaches the socket connects successfully. It returns the
+// socket's own directory, matching newStaleIPCSocket/newNonSocketCandidate/
+// newAbsentCandidate so every row of the classification table is scanned the
+// same way.
+//
+// It proves the listener bound *and* accepted a connection before returning. A
+// bind that failed silently would make the positive control vacuous — which is
+// the exact failure mode the control exists to remove.
+func newLiveIPCSocket(t *testing.T) (socketDir, socketPath string) {
+	t.Helper()
+	_, socketPath, listener := newIsolatedIPCSocket(t)
+	socketDir = filepath.Dir(socketPath)
+
+	firstAccept := make(chan error, 1)
+	go func() {
+		// Discord's real peer keeps the connection open, so this one holds
+		// every accepted conn until the listener closes. Closing eagerly
+		// would race the dialer's own post-connect validation.
+		var accepted []net.Conn
+		defer func() {
+			for _, conn := range accepted {
+				_ = conn.Close()
+			}
+		}()
+		first := true
+		for {
+			conn, err := listener.Accept()
+			if first {
+				firstAccept <- err
+				first = false
+			}
+			if err != nil {
+				return
+			}
+			accepted = append(accepted, conn)
+		}
+	}()
+
+	probe, err := net.DialTimeout("unix", socketPath, time.Second)
+	if err != nil {
+		t.Fatalf("live socket did not accept a connection: %v", err)
+	}
+	_ = probe.Close()
+	select {
+	case err := <-firstAccept:
+		if err != nil {
+			t.Fatalf("live socket accept failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("live socket never accepted; harness is broken")
+	}
+	return socketDir, socketPath
+}
+
 // newNonSocketCandidate creates a plain regular file named discord-ipc-0.
 func newNonSocketCandidate(t *testing.T) (dir, path string) {
 	t.Helper()
@@ -201,14 +256,37 @@ func TestDialDiscordIPCSocketEndpointEvidence(t *testing.T) {
 // because there was nothing to classify rather than because the fix works.
 func scanClassification(t *testing.T, dir, fixturePath string) error {
 	t.Helper()
-	if fixturePath != "" {
-		if got := filepath.Dir(fixturePath); got != dir {
-			t.Fatalf("fixture %q is not directly inside the scanned dir %q (got %q)", fixturePath, dir, got)
-		}
-		if _, err := os.Lstat(fixturePath); err != nil {
-			t.Fatalf("fixture disappeared before the scan: %v", err)
-		}
+	assertFixturePresent(t, dir, fixturePath)
+	conn, err := runScan(t, map[string]string{"XDG_RUNTIME_DIR": dir})
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("scan connected to something; harness is not isolated")
 	}
+	return err
+}
+
+// assertFixturePresent guards against a wrong dir making the scan find nothing.
+func assertFixturePresent(t *testing.T, dir, fixturePath string) {
+	t.Helper()
+	if fixturePath == "" {
+		return
+	}
+	if got := filepath.Dir(fixturePath); got != dir {
+		t.Fatalf("fixture %q is not directly inside the scanned dir %q (got %q)", fixturePath, dir, got)
+	}
+	if _, err := os.Lstat(fixturePath); err != nil {
+		t.Fatalf("fixture disappeared before the scan: %v", err)
+	}
+}
+
+// runScan drives the full dialDiscordIPC scan with every base-directory
+// environment variable set explicitly: those named in dirs get that value,
+// every other one is cleared. Clearing rather than inheriting is what makes a
+// single-source subtest meaningful — otherwise the ambient TMPDIR could reach
+// the fixture and the test would pass no matter which name production reads.
+// t.Setenv also restores the previous value, so no subtest leaks into the next.
+func runScan(t *testing.T, dirs map[string]string) (net.Conn, error) {
+	t.Helper()
 	// dialDiscordIPC always appends /tmp to its base dirs, so a real Discord
 	// socket there would contribute an endpoint this harness does not
 	// control and the assertion would fail for the wrong reason.
@@ -217,24 +295,13 @@ func scanClassification(t *testing.T, dir, fixturePath string) error {
 			t.Skipf("cannot isolate scan: %s matches %v", pattern, matches)
 		}
 	}
-	empty, err := os.MkdirTemp("/tmp", "termp-empty-")
-	if err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, dirs[name])
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(empty) })
-	t.Setenv("XDG_RUNTIME_DIR", dir)
-	t.Setenv("TMPDIR", empty)
-	t.Setenv("TMP", empty)
-	t.Setenv("TEMP", empty)
 	t.Setenv("DISCORD_IPC_PATH", "")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := dialDiscordIPC(ctx)
-	if conn != nil {
-		_ = conn.Close()
-		t.Fatal("scan connected to something; harness is not isolated")
-	}
-	return err
+	return dialDiscordIPC(ctx)
 }
 
 // TestDialDiscordIPCScanClassification is the end-to-end half of #468: it
@@ -266,6 +333,48 @@ func TestDialDiscordIPCScanClassification(t *testing.T) {
 			t.Errorf("scan classified %v, want ErrDiscordIPCNotFound", err)
 		}
 	})
+
+	// Positive control. Every other row asserts a negative outcome, so the
+	// whole table would keep passing if the scan stopped reaching the
+	// fixtures at all — a scan that never looks anywhere reports not-found
+	// for all three. This row fails the moment that happens.
+	t.Run("live socket scans as connected (positive control)", func(t *testing.T) {
+		dir, socketPath := newLiveIPCSocket(t)
+		assertFixturePresent(t, dir, socketPath)
+		conn, err := runScan(t, map[string]string{"XDG_RUNTIME_DIR": dir})
+		t.Logf("LIVE SOCKET (positive control) scan: err=%v", err)
+		if err != nil {
+			t.Fatalf("scan failed to connect to a live socket: %v", err)
+		}
+		if conn == nil {
+			t.Fatal("scan returned no connection and no error")
+		}
+		_ = conn.Close()
+	})
+}
+
+// TestDialDiscordIPCScanEnvSources pins live discovery through each base-
+// directory environment variable independently. The negative rows above cannot
+// distinguish the sources: dropping any single name from dialDiscordIPC's
+// envNames left every one of them passing. Each subtest here sets exactly one
+// name and clears the rest, so dropping that name from envNames fails exactly
+// this subtest.
+func TestDialDiscordIPCScanEnvSources(t *testing.T) {
+	for _, envName := range []string{"XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"} {
+		t.Run(envName, func(t *testing.T) {
+			dir, socketPath := newLiveIPCSocket(t)
+			assertFixturePresent(t, dir, socketPath)
+			conn, err := runScan(t, map[string]string{envName: dir})
+			t.Logf("LIVE SOCKET via %s: err=%v", envName, err)
+			if err != nil {
+				t.Fatalf("scan did not discover the live socket through %s: %v", envName, err)
+			}
+			if conn == nil {
+				t.Fatal("scan returned no connection and no error")
+			}
+			_ = conn.Close()
+		})
+	}
 }
 
 // TestDialDiscordIPCSocketStillReportsUnreachable covers the conditions that
