@@ -18,6 +18,14 @@ import (
 
 const discordIPCDialBudget = 2 * time.Second
 
+// Candidate-rejection sentinels. They exist so callers can classify a
+// validateSocketCandidate failure with errors.Is instead of matching message
+// bytes, which vary by platform and path.
+var (
+	errIPCCandidateNotSocket    = errors.New("candidate is not a Unix socket")
+	errIPCCandidateForeignOwner = errors.New("socket owner UID does not match effective UID")
+)
+
 func dialDiscordIPC(ctx context.Context) (net.Conn, error) {
 	envNames := []string{"XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"}
 	baseDirs := make([]string, 0, len(envNames)+1)
@@ -112,20 +120,78 @@ func dialDiscordIPC(ctx context.Context) (net.Conn, error) {
 	return nil, fmt.Errorf("%w:\n%s", ErrDiscordIPCUnreachable, failures.String())
 }
 
+// dialDiscordIPCSocket returns the connection, whether the candidate is
+// evidence that a Discord IPC endpoint exists, and the failure if any. The
+// boolean is what dialDiscordIPC aggregates into endpointFound, which picks
+// ErrDiscordIPCUnreachable over ErrDiscordIPCNotFound and so decides whether
+// `termp status` says "running but unreachable" or "not running". It must
+// therefore claim no more than the probe actually established (issue #468;
+// the same principle formatDiscordStatus records from the #423 review).
 func dialDiscordIPCSocket(ctx context.Context, path string) (net.Conn, bool, error) {
 	before, err := validateSocketCandidate(path, os.Geteuid())
 	if err != nil {
-		return nil, !errors.Is(err, os.ErrNotExist), err
+		return nil, validationErrorProvesEndpoint(err), err
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
 	if err != nil {
-		return nil, true, err
+		return nil, dialErrorProvesEndpoint(err), err
 	}
 	if err := validateConnectedSocket(conn, path, before, os.Geteuid()); err != nil {
+		// A completed connect proves a listener held this socket, whatever
+		// the post-connect validation went on to reject. Always an endpoint.
 		_ = conn.Close()
 		return nil, true, err
 	}
 	return conn, true, nil
+}
+
+// validationErrorProvesEndpoint classifies a pre-dial validateSocketCandidate
+// failure. The sub-cases are not equivalent and must not be blanket-mapped:
+//
+//   - absent path: nothing there. Not an endpoint.
+//   - not a Unix socket (a regular file or directory named discord-ipc-N):
+//     nothing at that path could be Discord, so it is not evidence Discord is
+//     running. Not an endpoint (issue #468).
+//   - socket owned by another UID: someone's Discord genuinely is running,
+//     this user just cannot use it. Still an endpoint — "unreachable" is the
+//     truthful answer, and downgrading it would mask the ownership gate
+//     added in #450.
+//   - anything else (directory resolution, lstat, world-writable parent,
+//     undeterminable owner): establishes nothing either way. Kept as an
+//     endpoint because that is the conservative reading — it never asserts
+//     the absence the probe failed to observe, and the underlying failure is
+//     reproduced verbatim in the aggregated error text.
+func validationErrorProvesEndpoint(err error) bool {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return false
+	case errors.Is(err, errIPCCandidateNotSocket):
+		return false
+	default:
+		return true
+	}
+}
+
+// dialErrorProvesEndpoint classifies a failed connect(2) to a path that
+// already passed socket validation.
+//
+// ECONNREFUSED on a Unix socket is positive evidence in the other direction:
+// the inode exists and no process holds a listening socket bound to it. That
+// is the residue a crashed or killed Discord leaves behind, so it means
+// Discord is not running rather than unreachable (issue #468).
+//
+// A path that vanished between the lstat and the connect is likewise nothing.
+// Everything else — deadline exceeded, EACCES, or an unrecognised errno —
+// keeps the endpoint claim, because none of them rule out a live listener.
+func dialErrorProvesEndpoint(err error) bool {
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return false
+	case errors.Is(err, os.ErrNotExist):
+		return false
+	default:
+		return true
+	}
 }
 
 func discordIPCOverrideCandidates(value string, lstat func(string) (os.FileInfo, error)) []string {
@@ -260,14 +326,14 @@ func validateSocketCandidateWithLstat(path string, euid int, lstat func(string) 
 		return nil, fmt.Errorf("inspect socket: %w", err)
 	}
 	if info.Mode()&os.ModeSocket == 0 {
-		return nil, fmt.Errorf("candidate is not a Unix socket")
+		return nil, errIPCCandidateNotSocket
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return nil, fmt.Errorf("cannot determine socket owner")
 	}
 	if int(stat.Uid) != euid {
-		return nil, fmt.Errorf("socket owner UID %d does not match effective UID %d", stat.Uid, euid)
+		return nil, fmt.Errorf("%w: socket owner UID %d, effective UID %d", errIPCCandidateForeignOwner, stat.Uid, euid)
 	}
 	return info, nil
 }

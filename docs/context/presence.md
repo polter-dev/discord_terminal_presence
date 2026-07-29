@@ -165,6 +165,53 @@ the sticky-global-`/tmp` carve-out, which is compared against the resolved path)
 path itself is still `lstat`-ed, never `stat`-ed, inside the resolved directory, so a symlinked
 socket planted by another user is still refused.
 
+Every failed Unix candidate is classified for whether it is *evidence a Discord IPC
+endpoint exists*. That per-candidate boolean is OR-ed into `endpointFound`, which is the
+only thing that selects `ErrDiscordIPCUnreachable` over `ErrDiscordIPCNotFound` — i.e. it
+decides whether `termp status` says "connection failed (Discord is running but
+unreachable)" or "not running". Before #468 every failure on a path that existed counted
+as an endpoint, so a leftover socket file or a plain file named `discord-ipc-N` made
+`status` claim Discord was running. The classification is now (`validationErrorProvesEndpoint`
+and `dialErrorProvesEndpoint`, both in `conn_unix.go`):
+
+**Not an endpoint → `ErrDiscordIPCNotFound` → "not running":**
+
+- the path does not exist (`os.ErrNotExist`, including a parent directory that does not
+  exist), or it vanished between the `lstat` and the `connect`;
+- the path exists but is not a Unix socket (`errIPCCandidateNotSocket` — a regular file or
+  a directory named `discord-ipc-N`): nothing at that path could be Discord;
+- `connect(2)` returned `ECONNREFUSED`: on a Unix socket that positively establishes that
+  the inode exists and no process holds a listening socket bound to it. This is the state a
+  crashed or SIGKILLed Discord demonstrably leaves behind (reproduced in #468). Whether a
+  *clean* Discord quit also leaves the socket behind is **not established** — it has never
+  been observed on real Linux hardware here — so do not repeat that as fact.
+
+**Still an endpoint → `ErrDiscordIPCUnreachable` → "running but unreachable":**
+
+- the socket is owned by another UID (`errIPCCandidateForeignOwner`). Someone's Discord
+  genuinely is running; this user just cannot use it, and downgrading it to "not running"
+  would mask the effective-UID gate from #450;
+- `connect(2)` failed for any other reason — deadline exceeded, `EACCES`/`EPERM`, an
+  unrecognised errno — none of which rule out a live listener;
+- the connect *succeeded* and `validateConnectedSocket` then rejected the peer. A completed
+  connect proves a listener held the socket whatever the post-connect check found, so that
+  branch claims an endpoint unconditionally;
+- any other validation failure (parent-directory resolution, `lstat`, world-writable parent,
+  undeterminable owner). These establish nothing either way; they are kept as endpoints
+  because that is the conservative reading — it never asserts an absence the probe failed to
+  observe — and the underlying failure is reproduced verbatim in the aggregated error text.
+  It does overstate slightly in the other direction ("running but unreachable" when the probe
+  only established "could not tell"); routing those to a third indeterminate sentinel is the
+  known follow-up, deliberately out of scope for #468.
+
+The two candidate-rejection sentinels exist so this classification uses `errors.Is` rather
+than matching message bytes, which vary by platform and path. Windows is not affected by
+#468: a named pipe cannot go stale (the name disappears when the server drops its last
+handle), the pipe path cannot hold a non-pipe object, and `discordIPCPipeExists` maps
+`ERROR_FILE_NOT_FOUND`/`ERROR_PATH_NOT_FOUND` to not-found while treating every other
+result as an endpoint — the same conservative default Unix now uses. (Verified by reading
+and cross-compiling only; no Windows execution was available.)
+
 Unix IPC socket fixtures use `newIsolatedIPCSocket`, which binds a short
 `/tmp/termp-ipc-*/s/discord-ipc-0` path, verifies the bound socket and path-length margin,
 and cleans up the listener and directory. The extra `s` directory is required: production
