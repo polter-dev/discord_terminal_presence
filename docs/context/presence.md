@@ -221,6 +221,18 @@ fallback discovery point the fallback environment variables at the outer tempora
 directory, whose one-level glob still reaches the nested socket without exposing it through
 the global `/tmp` glob (#431).
 
+The end-to-end scan table (`TestDialDiscordIPCScanClassification`) asserted only negative
+outcomes, so it could have passed vacuously: a scan that stopped reaching its fixtures
+entirely would still report not-found for all three rows. Mutating `dialDiscordIPC` to drop
+`XDG_RUNTIME_DIR` from `envNames` left every row green. It now carries a live-socket
+positive control, and `TestDialDiscordIPCScanEnvSources` pins live discovery through each
+base-directory environment variable (`XDG_RUNTIME_DIR`, `TMPDIR`, `TMP`, `TEMP`)
+*independently* — one set, the other three cleared — so dropping any single name from
+`envNames` fails exactly one subtest. Earlier tests set all four to the same decoy and so
+could not tell them apart. The fixture helpers assert the listener bound *and* accepted a
+connection before anything is measured; a silently failed bind would make the positive
+control as vacuous as the hole it closes.
+
 **Depends on / used by:** Consumes `internal/detector` and `internal/registry`; used by
 the daemon, status command, and TUI activity rendering.
 
