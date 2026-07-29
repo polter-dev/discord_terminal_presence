@@ -18,14 +18,27 @@ import (
 const updateCheckTimeout = 2 * time.Second
 const automaticUpdateTimeout = 5 * time.Minute
 
+// daemonUpdateRefreshInterval is how often the daemon re-runs the update-check
+// refresh. It is deliberately shorter than the cache lifetime: ticking at
+// exactly the lifetime means a tick that lands a moment before the entry
+// expires finds it still fresh, makes no lookup, and leaves the cache stale for
+// nearly a whole further period. A tick whose cache entry is fresh costs one
+// local file read and no network call, so the extra ticks are cheap and the
+// real lookup rate stays at most one per cache lifetime.
+const daemonUpdateRefreshInterval = updatepkg.CacheLifetime / 4
+
 var releaseChecker = updatepkg.NewChecker(nil, updatepkg.DefaultCachePath())
 
 type latestChecker interface {
 	Latest(context.Context, string) (updatepkg.Result, error)
 }
 
+// automaticUpdateChecker is the daemon's view of the release checker. It uses
+// Refresh rather than Check because the daemon outlives the cache: Check
+// answers once per process and would leave a daemon that has been up for more
+// than a cache lifetime with a stale cache and a silent alert (issue #460).
 type automaticUpdateChecker interface {
-	Check(context.Context, string, bool) (updatepkg.Result, bool)
+	Refresh(context.Context, string, bool) (updatepkg.Result, bool)
 }
 
 func printAvailableUpdate(cfg config.Config, loadErr error) {
@@ -62,6 +75,103 @@ func printCommandUpdateAlert(command string, args []string, stderrTerminal bool,
 	fmt.Fprintf(stderr, "A new version (%s) is available — run `termp update`\n", result.Latest)
 }
 
+// runPeriodicAutomaticUpdate keeps the shared update-check cache fresh for as
+// long as the daemon runs. It performs the startup refresh, then repeats it
+// every interval until ctx is cancelled.
+//
+// Why a loop at all: the cache entry expires after updatepkg.CacheLifetime, and
+// the one-line command alert reads only that cache. A daemon started at login
+// and left running — a desktop that is never rebooted, a laptop that only
+// sleeps — used to refresh once and then go quiet, so the alert stopped firing
+// exactly on the long-lived sessions where a release is most likely to have
+// shipped (issue #460).
+//
+// What this promises: while the daemon runs, the cache is refreshed within
+// interval of expiring. What it does not promise: an alert the instant a
+// release publishes (the cache lifetime still bounds that), nor any refresh at
+// all while no daemon is running.
+//
+// currentConfig is re-read on every tick rather than captured once, so turning
+// update_check off takes effect at the next tick instead of at the next daemon
+// restart, and so a config that has become unreadable stops the checks: it may
+// contain an opt-out we cannot see, and privacy wins over checking. It is
+// caller-supplied so it can be the daemon's live config manager.
+//
+// Only the refresh repeats. The install does not: see installOncePerTarget.
+//
+// The whole loop is best-effort: callers run it in a goroutine, so neither the
+// startup refresh nor any tick can delay, block, or fail daemon startup or the
+// run loop, and every failure is swallowed by runAutomaticUpdate.
+func runPeriodicAutomaticUpdate(ctx context.Context, currentConfig func() (config.Config, error), current string, checker automaticUpdateChecker, runner updatepkg.CommandRunner, interval time.Duration) {
+	gate := &installOncePerTarget{inner: checker, attempted: map[string]bool{}}
+	refresh := func() {
+		cfg, err := currentConfig()
+		if err != nil {
+			debugf("update refresh skipped: config unreadable: %v", err)
+			return
+		}
+		gate.mayInstall = cfg.AutoUpdate
+		runAutomaticUpdate(ctx, cfg, current, gate, runner)
+	}
+
+	refresh()
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// A tick that arrives together with cancellation must not start
+			// another refresh; select picks randomly among ready cases.
+			if ctx.Err() != nil {
+				return
+			}
+			refresh()
+		}
+	}
+}
+
+// installOncePerTarget wraps the daemon's checker so a repeating refresh does
+// not re-run the installer for a release it has already acted on in this
+// process. The refresh half has to repeat — that is what the ticker is for —
+// but the install half must not: the running process keeps reporting its own
+// old version until it restarts, so without this a daemon with auto_update on
+// would re-run `brew upgrade` (or re-download and re-run the generic installer)
+// on every tick, whether the previous attempt succeeded or failed.
+//
+// Reporting "no update" for an already-attempted target suppresses only the
+// install: the cache write already happened inside Refresh, and the caller's
+// stale-attempt retirement still sees the version through Result.Latest.
+//
+// The dedupe is per process and per target, so a newly published release is
+// still installed, and a failed install is retried on the next daemon start
+// exactly as it was before the ticker existed.
+//
+// It is only ever used by runPeriodicAutomaticUpdate's single goroutine, which
+// is why the fields need no locking.
+type installOncePerTarget struct {
+	inner      automaticUpdateChecker
+	mayInstall bool
+	attempted  map[string]bool
+}
+
+func (c *installOncePerTarget) Refresh(ctx context.Context, current string, configEnabled bool) (updatepkg.Result, bool) {
+	result, ok := c.inner.Refresh(ctx, current, configEnabled)
+	if !ok || !c.mayInstall {
+		return result, ok
+	}
+	if c.attempted[result.Latest] {
+		debugf("automatic update for %s was already attempted by this daemon; not repeating", result.Latest)
+		return result, false
+	}
+	c.attempted[result.Latest] = true
+	return result, ok
+}
+
 // runAutomaticUpdate refreshes the update-check cache and, only when
 // auto_update is enabled, installs the newer release.
 //
@@ -89,11 +199,11 @@ func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.
 	if !cfg.UpdateCheck || checker == nil {
 		return
 	}
-	// Check writes the result to the shared cache even when the running
+	// Refresh writes the result to the shared cache even when the running
 	// version is already current, which is what keeps the command alert
 	// current for auto_update-off users.
 	checkCtx, cancelCheck := context.WithTimeout(ctx, updateCheckTimeout)
-	result, ok := checker.Check(checkCtx, current, cfg.UpdateCheck)
+	result, ok := checker.Refresh(checkCtx, current, cfg.UpdateCheck)
 	cancelCheck()
 	// Retiring a stale record runs on both check outcomes and ahead of the
 	// auto_update branch below. A record stranded by turning auto_update off

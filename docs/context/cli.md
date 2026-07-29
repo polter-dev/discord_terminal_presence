@@ -363,13 +363,49 @@ invisible:
    after the check it returns before any preflight/install when `auto_update` is off.
    Automatic *installing* is unchanged and still requires `auto_update`.
 
-Scope of the refresh, stated honestly: it happens once per daemon process, at daemon
-start, because `internal/update`'s `Checker` performs at most one lookup per process and
-caches for `cacheLifetime` (24h). A machine whose daemon keeps running past 24h without a
-restart still has no periodic refresh; `termp version`, `termp status`, and `termp
-update` remain the other refresh points. `update_check = false` and `NO_UPDATE_CHECK`
-still suppress every network call and the alert itself, and a config load error still
-suppresses the alert.
+Scope of the refresh (issue #460 closed the freshness half): the daemon runs the refresh
+at startup and then on a ticker for as long as it lives, so a machine whose daemon keeps
+running past the cache lifetime no longer goes quiet. `runPeriodicAutomaticUpdate`
+(cmd/termp/update.go) performs the startup refresh, then repeats it every
+`daemonUpdateRefreshInterval` (`updatepkg.CacheLifetime / 4`, i.e. 6h) until the daemon's
+context is cancelled, at which point the ticker is stopped and the goroutine returns. The
+interval is deliberately *below* the cache lifetime rather than equal to it: a tick that
+lands moments before the entry expires finds it still fresh, makes no lookup, and would
+otherwise leave the cache stale for nearly another whole period. It is injectable so
+tests drive the loop instead of sleeping.
+
+What this promises and what it does not: while a daemon runs, the cache is refreshed
+within one interval of expiring. It does not promise an alert the moment a release
+publishes — `cacheLifetime` (24h) still bounds the real lookup rate, because a tick whose
+cache entry is fresh short-circuits to a local file read with no network call — and it
+promises nothing at all while no daemon is running, where `termp version`, `termp
+status`, and `termp update` remain the refresh points.
+
+The daemon calls `Checker.Refresh`, not `Checker.Check`: `Check`'s `sync.Once` gives a
+short-lived CLI run one lookup and one stable answer, which is correct there and was
+exactly what kept a long-lived daemon from ever looking again. See
+[`update.md`](update.md). Failed lookups are cached like successful ones, so ticking
+cannot become a retry loop on an offline machine.
+
+Config is re-read on every refresh through `Manager.Current` rather than captured at
+startup, so `update_check = false` takes effect at the next tick instead of the next
+daemon restart. `update_check = false` and `NO_UPDATE_CHECK` still suppress every network
+call and the alert itself. A config that cannot be read suppresses the refresh entirely
+(it may hold an opt-out we cannot see — the same rule the alert paths already applied to
+`loadErr`); previously the startup refresh ran anyway on the fallback config. Automatic
+*installing* is unchanged and still requires `auto_update`: repetition must not turn into
+a repeated unattended install for someone who declined it.
+
+Only the refresh repeats — the install does not. `installOncePerTarget` wraps the
+daemon's checker and reports "no update" for a target this process already acted on, so
+a daemon with `auto_update` on does not re-run `brew upgrade` (or re-download and re-run
+the generic installer) every 6h. It would, otherwise: the running process keeps reporting
+its own old version until it restarts, so the same target looks new on every tick. The
+dedupe is per process and per target, so a release published mid-session is still
+installed and a failed install is still retried at the next daemon start, exactly as
+before the ticker existed. It suppresses only the install: the cache write already
+happened inside `Refresh`, and stale-record retirement still sees the version through
+`Result.Latest`.
 
 Cost note: broadening eligibility means commands that load config for their own work now
 also pay `main()`'s pre-dispatch `LoadReadOnly` — one extra settled read, the same one

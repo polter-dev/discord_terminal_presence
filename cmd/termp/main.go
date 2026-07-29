@@ -904,8 +904,11 @@ func start(args []string) error {
 
 	// Refreshing the update-check cache (and, if auto_update is on, installing)
 	// is best-effort and asynchronous: it is triggered before the run loop, but
-	// can never delay or prevent daemon startup.
-	go runAutomaticUpdate(ctx, cfg, version, releaseChecker, updatepkg.ExecRunner{Interactive: false})
+	// can never delay or prevent daemon startup. It then repeats on a ticker so
+	// the cache does not go stale on a daemon that stays up past the cache
+	// lifetime (issue #460), and stops with ctx on shutdown. The config is read
+	// per refresh through the manager, so an opt-out applies from the next tick.
+	go runPeriodicAutomaticUpdate(ctx, manager.Current, version, releaseChecker, updatepkg.ExecRunner{Interactive: false}, daemonUpdateRefreshInterval)
 
 	return run(ctx, manager, control)
 }

@@ -5,7 +5,11 @@ install outcomes, detects install ownership, and runs the matching updater witho
 replacing the running process in place.
 
 **Public surface:** `ReleaseSource`, `GitHubReleaseSource`, `Checker`, and `Result` own
-release lookup and caching. `DefaultCachePath` resolves update state. `InstallMethod`,
+release lookup and caching. `Checker.Check` (memoized, one lookup per process),
+`Checker.Refresh` (same lookup without that memoization, for long-lived callers), and
+`Checker.CachedCheck` (cache-only, never networked) are its three entry points, and
+`CacheLifetime` exposes how long a recorded check suppresses the next lookup.
+`DefaultCachePath` resolves update state. `InstallMethod`,
 `DetectInstallMethod`, `IsSystemPackageInstall`, `GuidanceForMethod`,
 `UpdateCommandForMethod`, `GenericInstallDir`, and `PerformUpdate` select/run an
 install-aware exact-tag updater. `AutomaticUpdateAttempt`,
@@ -17,8 +21,19 @@ cache/lock handling, attempt persistence, updater commands, install detection, a
 installer download. `internal/update/exec_*.go` run platform commands.
 
 **Invariants / gotchas:** `NO_UPDATE_CHECK` is presence-based; invalid/`dev` versions,
-opt-out, unusable cache paths, and passive lookup errors fail closed to no result. Failed
-checks are cached for 24 hours and a short-lived lock prevents concurrent checks. Lock
+opt-out, unusable cache paths, and passive lookup errors fail closed to no result. That
+gate lives in one place (`Checker.lookupPermitted`) and every passive entry point —
+`Check`, `Refresh`, `CachedCheck` — runs it, so an opt-out cannot be honoured by one and
+missed by another. `Refresh` differs from `Check` in exactly one respect: it skips the
+`sync.Once`, so a process that outlives `CacheLifetime` (the daemon, issue #460) can keep
+the shared cache fresh instead of sitting on a fired `Once` while the cache-only command
+alert goes silent. It is not a cache bypass — a still-fresh entry from any process
+short-circuits the lookup — and it deliberately does not publish into `Check`'s memoized
+result, so a concurrent `Refresh` cannot change the single stable answer a short-lived CLI
+run gets. Failed
+checks are cached for 24 hours and a short-lived lock prevents concurrent checks. Caching
+failures is what stops a repeating caller from becoming a retry loop against an
+unreachable source. Lock
 files older than 30 seconds are reclaimed so a crashed process cannot suppress checks for
 the cache lifetime. Release requests send only `termp/<version>` as User-Agent.
 
