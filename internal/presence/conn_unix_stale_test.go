@@ -21,9 +21,18 @@ import (
 // The directory layout deliberately mirrors newIsolatedIPCSocket: a short
 // path (macOS caps sun_path near 104 bytes, and t.TempDir() overflows it) and
 // never one level under /tmp, which production globs as /tmp/*/discord-ipc-*.
+//
+// It returns the socket's own directory, not the outer
+// temporary directory newIsolatedIPCSocket hands back. Production discovery
+// reaches the socket either way — directly when a base dir is the socket's own
+// directory, or via the one-level /tmp/*/discord-ipc-* glob from the outer one
+// — but the inner directory exercises direct candidate enumeration rather than
+// the glob, and it matches what newNonSocketCandidate and newAbsentCandidate
+// return, so all three rows of the classification table are scanned the same
+// way and the absent-path control stays a like-for-like comparison.
 func newStaleIPCSocket(t *testing.T) (socketDir, socketPath string) {
 	t.Helper()
-	socketDir, socketPath, listener := newIsolatedIPCSocket(t)
+	_, socketPath, listener := newIsolatedIPCSocket(t)
 	socketDir = filepath.Dir(socketPath)
 
 	unixListener, ok := listener.(*net.UnixListener)
@@ -185,10 +194,21 @@ func TestDialDiscordIPCSocketEndpointEvidence(t *testing.T) {
 }
 
 // scanClassification points the whole candidate search at dir and returns the
-// sentinel dialDiscordIPC settles on. TMPDIR/TMP/TEMP are pinned to an empty
-// directory so only dir contributes candidates.
-func scanClassification(t *testing.T, dir string) error {
+// sentinel dialDiscordIPC settles on. fixturePath, when non-empty, is the
+// candidate the caller planted; it is asserted to be a direct child of dir and
+// to still be there. Without that assertion a wrong dir would make the scan
+// find nothing and the test would pass vacuously — reporting "not found"
+// because there was nothing to classify rather than because the fix works.
+func scanClassification(t *testing.T, dir, fixturePath string) error {
 	t.Helper()
+	if fixturePath != "" {
+		if got := filepath.Dir(fixturePath); got != dir {
+			t.Fatalf("fixture %q is not directly inside the scanned dir %q (got %q)", fixturePath, dir, got)
+		}
+		if _, err := os.Lstat(fixturePath); err != nil {
+			t.Fatalf("fixture disappeared before the scan: %v", err)
+		}
+	}
 	// dialDiscordIPC always appends /tmp to its base dirs, so a real Discord
 	// socket there would contribute an endpoint this harness does not
 	// control and the assertion would fail for the wrong reason.
@@ -221,8 +241,8 @@ func scanClassification(t *testing.T, dir string) error {
 // asserts the sentinel `termp status` actually renders from.
 func TestDialDiscordIPCScanClassification(t *testing.T) {
 	t.Run("stale socket scans as not found", func(t *testing.T) {
-		dir, _ := newStaleIPCSocket(t)
-		err := scanClassification(t, dir)
+		dir, socketPath := newStaleIPCSocket(t)
+		err := scanClassification(t, dir, socketPath)
 		t.Logf("STALE SOCKET scan: %v", err)
 		if !errors.Is(err, ErrDiscordIPCNotFound) {
 			t.Errorf("scan classified %v, want ErrDiscordIPCNotFound", err)
@@ -230,8 +250,8 @@ func TestDialDiscordIPCScanClassification(t *testing.T) {
 	})
 
 	t.Run("non-socket file scans as not found", func(t *testing.T) {
-		dir, _ := newNonSocketCandidate(t)
-		err := scanClassification(t, dir)
+		dir, path := newNonSocketCandidate(t)
+		err := scanClassification(t, dir, path)
 		t.Logf("NON-SOCKET FILE scan: %v", err)
 		if !errors.Is(err, ErrDiscordIPCNotFound) {
 			t.Errorf("scan classified %v, want ErrDiscordIPCNotFound", err)
@@ -240,7 +260,7 @@ func TestDialDiscordIPCScanClassification(t *testing.T) {
 
 	t.Run("absent path scans as not found (control)", func(t *testing.T) {
 		dir, _ := newAbsentCandidate(t)
-		err := scanClassification(t, dir)
+		err := scanClassification(t, dir, "")
 		t.Logf("ABSENT (control) scan: %v", err)
 		if !errors.Is(err, ErrDiscordIPCNotFound) {
 			t.Errorf("scan classified %v, want ErrDiscordIPCNotFound", err)
