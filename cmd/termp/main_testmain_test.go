@@ -26,8 +26,9 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("XDG_CACHE_HOME", cacheHome); err != nil {
 		panic(err)
 	}
-	// Windows ignores XDG_CACHE_HOME in DefaultCachePath and asks
-	// os.UserCacheDir, which reads LOCALAPPDATA.
+	// DefaultCachePath prefers XDG_CACHE_HOME on every platform, but belt and
+	// braces for Windows: with it unset there, os.UserCacheDir reads
+	// LOCALAPPDATA, so redirect that too.
 	if err := os.Setenv("LOCALAPPDATA", filepath.Join(cacheHome, "local")); err != nil {
 		panic(err)
 	}
