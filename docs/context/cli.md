@@ -103,9 +103,39 @@ update behavior that is not currently running. `runAutomaticUpdateWithStatePathF
 (cmd/termp/update.go) additionally erases the stale record outright rather than leaving
 the stale JSON sitting in the cache indefinitely.
 
+**Update-check opt-outs (#463).** There are two, and since #463 they are *exactly*
+equivalent in effect:
+
+- `update_check = false` in config, and
+- the `NO_UPDATE_CHECK` environment variable being **present**, whatever its value
+  (`NO_UPDATE_CHECK=` counts — that is how shells usually spell "off").
+
+Either one makes `runAutomaticUpdateWithStatePathForPlatform` (cmd/termp/update.go)
+return immediately. Precisely: no release lookup, no cache write, **and no state-file
+mutation** — `retireStaleAutomaticUpdateAttempt` does not run. The env opt-out is tested
+at this call site with `updatepkg.DisabledByEnv()` even though `Checker` already enforces
+it internally; that inner gate stops the network call but not the retirement that follows
+it, which is the asymmetry #463 reported. "Made no network call" and "did nothing" are
+different promises, and a user who sets `NO_UPDATE_CHECK` asked for the second.
+
+The accepted cost: while either opt-out is in force a stale automatic-update record is
+not retired, so `termp status` may keep showing a failure for a target that is no longer
+on offer. This was already true of `update_check = false`, it is recoverable (unset the
+opt-out and the next daemon start clears it), and nothing else in the system can act on
+the record while checks are off anyway.
+
+Pinned by `TestAutomaticUpdateOptOutsLeaveStateAlone` plus its control,
+`TestAutomaticUpdateRetiresSeededStateWithoutAnOptOut`
+(cmd/termp/update_optout_symmetry_test.go). The control is load-bearing: retirement draws
+no conclusion from an empty cache, so the pre-#463 opt-out test — which seeded only an
+attempt record and no cached latest — reported "not cleared" under either behaviour and
+pinned neither. The opt-out cases therefore seed a **non-empty** cache and the control
+proves that state really is retirable.
+
 **Stale automatic-attempt clearing (#418, #458).** `retireStaleAutomaticUpdateAttempt`
-(cmd/termp/update.go) owns the rule and runs on every daemon startup where
-`update_check` is on, *before* the `auto_update` branch — a record recorded while
+(cmd/termp/update.go) owns the rule and runs on every daemon startup where neither
+update-check opt-out is in force (see **Update-check opt-outs** below),
+*before* the `auto_update` branch — a record recorded while
 automatic updates were enabled and then stranded by turning them off (often *because*
 they failed) is exactly the case that has to clear (#458 cause 1, gate moved in #459).
 A recorded **failure** is stale when either:
@@ -359,9 +389,10 @@ invisible:
 3. The load-bearing part: `printCommandUpdateAlert` reads `CachedCheck`, which never
    touches the network, and the daemon used to refresh that cache only when
    `auto_update` was on — i.e. never for the exact population the alert exists for.
-   `runAutomaticUpdateWithStatePathForPlatform` is now gated on `update_check` alone;
-   after the check it returns before any preflight/install when `auto_update` is off.
-   Automatic *installing* is unchanged and still requires `auto_update`.
+   `runAutomaticUpdateWithStatePathForPlatform` is now gated on the update-check
+   opt-outs alone (not `auto_update`); after the check it returns before any
+   preflight/install when `auto_update` is off. Automatic *installing* is unchanged and
+   still requires `auto_update`.
 
 Scope of the refresh (issue #460 closed the freshness half): the daemon runs the refresh
 at startup and then on a ticker for as long as it lives, so a machine whose daemon keeps
@@ -389,8 +420,9 @@ cannot become a retry loop on an offline machine.
 
 Config is re-read on every refresh through `Manager.Current` rather than captured at
 startup, so `update_check = false` takes effect at the next tick instead of the next
-daemon restart. `update_check = false` and `NO_UPDATE_CHECK` still suppress every network
-call and the alert itself. A config that cannot be read suppresses the refresh entirely
+daemon restart. Both opt-outs suppress every network call, the alert itself, and the
+whole automatic-update body (see **Update-check opt-outs** below), on the startup refresh
+and on every tick alike. A config that cannot be read suppresses the refresh entirely
 (it may hold an opt-out we cannot see — the same rule the alert paths already applied to
 `loadErr`); previously the startup refresh ran anyway on the fallback config. Automatic
 *installing* is unchanged and still requires `auto_update`: repetition must not turn into
@@ -406,6 +438,16 @@ installed and a failed install is still retried at the next daemon start, exactl
 before the ticker existed. It suppresses only the install: the cache write already
 happened inside `Refresh`, and stale-record retirement still sees the version through
 `Result.Latest`.
+
+Test isolation for the update cache (found while fixing #463): `runAutomaticUpdate`
+reaches the state file through `updatepkg.DefaultCachePath()` rather than an injected
+path, so every test that drives it — the periodic-loop tests included — used to read and
+**write** whatever cache the ambient environment pointed at. Probed: a
+`~/.cache/termp/update-check.json` holding a recorded attempt for `9.9.9` came out of
+`go test ./cmd/termp` with the attempt deleted. `TestMain`
+(cmd/termp/main_testmain_test.go) now redirects `XDG_CACHE_HOME` (and `LOCALAPPDATA`,
+which `DefaultCachePath` uses on Windows) to a temporary directory for the whole package.
+Tests needing a specific location still override with `t.Setenv`, which wins.
 
 Cost note: broadening eligibility means commands that load config for their own work now
 also pay `main()`'s pre-dispatch `LoadReadOnly` — one extra settled read, the same one
