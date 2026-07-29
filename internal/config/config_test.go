@@ -3118,3 +3118,130 @@ func TestNonBlankToolOverrideIDStillLoads(t *testing.T) {
 		t.Fatal("a normal per-tool override was lost")
 	}
 }
+
+// TestManagerReloadWaitsOutTornMidStringWrite is the deterministic form of
+// #462. CI saw TestManagerReloadRandomWriterSchedules surface
+//
+//	toml: line 2 (last key "idle_clear_timeout"): unexpected EOF; expected '"'
+//
+// from Reload(). The randomized test only hits that window when two settle
+// polls happen to straddle one inter-chunk pause, so it is flaky by
+// construction; this drives the same state on purpose.
+//
+// The writer changes line 1 as well as appending line 2, so the torn file is
+// NOT a prefix of the accepted content and the prefix-based provisional rule
+// does not fire. Under the settled-read model Reload() must wait the torn
+// write out and report no new information, never hand partial bytes to the
+// decoder.
+func TestManagerReloadWaitsOutTornMidStringWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "scan_interval = \"9s\"\nenabled = false\n")
+	manager := NewManagerPath(path)
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Truncated mid-string-value: exactly the shape CI reported.
+	if _, err := f.WriteString("scan_interval = \"5s\"\nidle_clear_timeout = \""); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() {
+		// Long enough that consecutive settle polls agree on the torn bytes,
+		// short enough that the write completes well inside the settle budget.
+		// A slower machine only makes Reload observe the finished file, which
+		// also passes: this test can fail only if partial bytes were decoded.
+		time.Sleep(60 * time.Millisecond)
+		_, err := f.WriteString("10m\"\nenabled = false\n")
+		finished <- errors.Join(err, f.Close())
+	}()
+
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() during torn mid-string write = %v, want nil", err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() after torn write completed = %v", err)
+	}
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() error = %v", err)
+	}
+	if cfg.ScanInterval != "5s" || cfg.IdleClearTimeout != "10m" || cfg.Enabled {
+		t.Fatalf("Current() = %#v, want the completed write applied", cfg)
+	}
+}
+
+// TestManagerReloadStillReportsGenuineSyntaxError is the other half of #462:
+// treating undecodable bytes as provisional must not turn a config a user
+// really did save broken into an infinite wait. It has to settle and surface.
+func TestManagerReloadStillReportsGenuineSyntaxError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "scan_interval = \"9s\"\nenabled = false\n")
+	manager := NewManagerPath(path)
+	writeConfig(t, path, "scan_interval = \"5s\"\nidle_clear_timeout = \"")
+
+	start := time.Now()
+	err := manager.Reload()
+	if err == nil {
+		t.Fatal("Reload() = nil for a genuinely unparseable config; want the parse error")
+	}
+	if !strings.Contains(err.Error(), "toml") {
+		t.Fatalf("Reload() = %v, want a TOML parse error", err)
+	}
+	if elapsed := time.Since(start); elapsed >= enabledLooseningHorizon {
+		t.Fatalf("settling a broken config took %v; must stay inside the settle budget, not the %v horizon", elapsed, enabledLooseningHorizon)
+	}
+	// Last-good is retained: an unparseable edit must not re-enable presence.
+	cfg, lastErr := manager.Current()
+	if lastErr == nil {
+		t.Fatal("Current() lost the load error")
+	}
+	if cfg.Enabled {
+		t.Fatalf("broken config exposed enabled=true: %#v", cfg)
+	}
+}
+
+// TestLoadPathStillReportsGenuineSyntaxError guards the standalone read path:
+// the syntax probe must not push a broken config past the 500ms standalone
+// bound and convert a parse error into ErrConfigBeingWritten.
+func TestLoadPathStillReportsGenuineSyntaxError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "scan_interval = \"5s\"\nidle_clear_timeout = \"")
+
+	_, err := LoadPath(path)
+	if err == nil {
+		t.Fatal("LoadPath() = nil for an unparseable config; want the parse error")
+	}
+	if errors.Is(err, ErrConfigBeingWritten) {
+		t.Fatalf("LoadPath() = %v, want the TOML parse error, not a still-being-written verdict", err)
+	}
+	if !strings.Contains(err.Error(), "toml") {
+		t.Fatalf("LoadPath() = %v, want a TOML parse error", err)
+	}
+}
+
+// TestGeneratedConfigIsNotProvisional is the upgrade trap: a rule about config
+// bytes must never classify what `termp config init` writes today as an
+// in-flight write, or every existing user's reload would stall. Assert on the
+// generated document, not on a hand-written sample.
+func TestGeneratedConfigIsNotProvisional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := Save(Default(), path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parsesAsTOML(data) {
+		t.Fatalf("the freshly generated config does not parse as TOML:\n%s", data)
+	}
+	if provisionalConfigSnapshot(fileSnapshot{exists: true, data: data}, fileSnapshot{}) {
+		t.Fatal("the freshly generated config is classified as an in-flight write")
+	}
+}

@@ -33,9 +33,32 @@ empty, or partial file; an empty or partial file is often still syntactically va
 on its own. Before accepting a read, `settledConfigSnapshot` normally waits for two
 consecutive reads of the file to agree, reading every ~15ms, up to 20 attempts (~300ms
 budget). A candidate is instead provisional when a previously accepted file is now
-missing, when it is an existing empty file, or when its bytes are a strict prefix of the
-manager's last successfully accepted, error-free file snapshot. Provisional candidates
-must remain unchanged across the full settle budget before acceptance.
+missing, when it is an existing empty file, when its bytes are a strict prefix of the
+manager's last successfully accepted, error-free file snapshot, or (since #462) when its
+bytes do not parse as TOML at all. Provisional candidates must remain unchanged across
+the full settle budget before acceptance.
+
+The undecodable-bytes rule closes #462. The prefix rule only recognises a writer that
+re-emits the accepted bytes verbatim before appending. A writer that also edits an
+earlier line — the ordinary case, an editor saving a changed document — diverges from the
+accepted content on its first chunk, so every later mid-write read is a non-prefix and was
+accepted as settled the moment two 15ms polls happened to straddle one inter-chunk pause.
+`Manager.Reload` then handed a file truncated mid-string-value to the decoder and returned
+`toml: line 2 (last key "idle_clear_timeout"): unexpected EOF; expected '"'` to the
+caller, which the settled-read model forbids. This was **reproduced deterministically**
+(accept `scan_interval = "9s"\nenabled = false\n`, truncate, write
+`scan_interval = "5s"\nidle_clear_timeout = "`, stall 60ms, then finish): 5/5 failures
+before the fix, and the mutation check — forcing the new branch to `false` — fails the
+suite. It is a real defect, not a flaky assertion; the randomized schedule test was merely
+the (rare, timing-dependent) way CI noticed.
+
+The probe is `parsesAsTOML`, decoding into a generic `map[string]any` so only *syntax*
+counts as evidence of a write in flight. Unknown keys, wrong-typed values, and failed
+semantic validation are real config errors and still surface normally. A config a user
+genuinely saved unparseable is therefore stable, holds for the full ~300ms budget, and
+then surfaces its parse error — inside the settle budget, never the 3s horizon, and never
+an unbounded wait. `settledConfigSnapshotUntilWith` memoises the provisional verdict per
+distinct candidate so the probe runs once per candidate, not once per poll.
 
 If a provisional candidate changes during that budget, `Manager.Reload` leaves last-good
 and `LastError` untouched and relies on the save's completion to fire another fsnotify
@@ -244,8 +267,18 @@ own lesson about clock-driven flicker tests being flaky in CI.
 A candidate that becomes provisional-stable partway through the normal budget also
 cannot reach acceptance in that call: reload is a no-op, while standalone loads retry
 with the new content as their first snapshot. With no accepted baseline, a stable
-non-empty partial cannot be recognized as a strict prefix; it receives the normal
-two-read settle check.
+non-empty partial cannot be recognized as a strict prefix; if it parses it receives the
+normal two-read settle check, and if it does not it is provisional on the #462 rule.
+
+#462's regression set is `TestManagerReloadWaitsOutTornMidStringWrite` (the deterministic
+torn-write repro; the pre-existing `TestManagerReloadRandomWriterSchedules` only reaches
+that window by timing luck and is kept as-is, not loosened),
+`TestManagerReloadStillReportsGenuineSyntaxError` and
+`TestLoadPathStillReportsGenuineSyntaxError` (a truly broken config must still error, and
+`LoadPath` must return the parse error rather than `ErrConfigBeingWritten` — the ~300ms
+settle fits inside the 500ms standalone bound), and `TestGeneratedConfigIsNotProvisional`,
+which asserts against the document `Save(Default())` actually emits so a future bytes-level
+rule cannot classify every shipped user's config as an in-flight write.
 
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,
