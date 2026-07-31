@@ -312,6 +312,40 @@ func TestValidateCustomToolRejectsTooShortDisplayName(t *testing.T) {
 	}
 }
 
+func TestValidateCustomToolRejectsInvalidRegexes(t *testing.T) {
+	tests := []struct {
+		name string
+		tool CustomTool
+		want string
+	}{
+		{
+			name: "match regex",
+			tool: CustomTool{
+				DisplayName: "Custom",
+				Match:       CustomMatch{Regex: "([a-z"},
+			},
+			want: "match.regex: error parsing regexp",
+		},
+		{
+			name: "exclude regex",
+			tool: CustomTool{
+				DisplayName: "Custom",
+				Exclude:     "(*bad",
+			},
+			want: "exclude: error parsing regexp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCustomTool(tt.tool)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ValidateCustomTool() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // TestValidateHTTPURLRejectsControlC1AndBidiRunes guards #444:
 // url.ParseRequestURI only rejects ASCII control characters, so a bidi
 // override or a C1 control could otherwise reach an image or button URL and

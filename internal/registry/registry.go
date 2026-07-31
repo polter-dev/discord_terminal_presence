@@ -259,6 +259,16 @@ func ValidateCustomTool(tool CustomTool) error {
 	if position, r, found := firstDisallowedRune(tool.DisplayName); found {
 		return controlCharacterError("display_name", r, position)
 	}
+	if tool.Match.Regex != "" {
+		if _, err := regexp.Compile("(?i:" + tool.Match.Regex + ")"); err != nil {
+			return fmt.Errorf("match.regex: %w", err)
+		}
+	}
+	if tool.Exclude != "" {
+		if _, err := regexp.Compile("(?i:" + tool.Exclude + ")"); err != nil {
+			return fmt.Errorf("exclude: %w", err)
+		}
+	}
 	resolved := Tool{
 		ImageKey:   tool.ImageKey,
 		ImageURL:   tool.ImageURL,
