@@ -22,7 +22,14 @@ package-layout integration probes.
 
 **Invariants / gotchas:** Start treats the validated PID file as final arbiter, also
 recognizes a fresh same-user/same-executable `discord.json` publisher, and waits for
-bounded child readiness. Stop targets both a valid PID owner and a distinct valid
+bounded child readiness. New PID and Discord-state records capture the daemon's own
+normalized executable path; process validation compares the live image against that
+recorded path alongside same-user ownership and start time. This preserves PID-reuse and
+foreign-process refusal after an upgrade moves the invoking binary. A new `start` from a
+different path refuses to launch a duplicate, names the old path, and directs the user to
+`termp stop`; `status` recognizes that daemon and `stop` can signal it through the same
+record-bound validation (#476). Legacy records without an executable path retain the
+current-binary comparison. Stop targets both a valid PID owner and a distinct valid
 publisher. Windows publishes readiness only after shutdown primitives exist. Autostart
 disable/uninstall stop the tracked daemon and report partial failure if it survives.
 

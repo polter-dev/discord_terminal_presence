@@ -395,6 +395,83 @@ func TestPIDFileMatchesOwnerRequiresPIDAndFileIdentity(t *testing.T) {
 	}
 }
 
+func TestPIDRecordPersistsDaemonExecutablePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	record, _, err := readPIDIdentity(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := currentProcessExecutablePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ExecutablePath != want {
+		t.Fatalf("recorded executable path = %q, want %q", record.ExecutablePath, want)
+	}
+}
+
+func TestMovedBinaryRefusalNamesOldPathAndRecovery(t *testing.T) {
+	record := daemonPIDRecord{PID: 4242, ExecutablePath: "/old/cask/termp"}
+	err := daemonAlreadyRunningError(record, "/new/cask/termp")
+	for _, want := range []string{
+		"a termp daemon is already running",
+		`launched from "/old/cask/termp"`,
+		"stop it first with 'termp stop'",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("moved-binary error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestStopDaemonUsesRecordedExecutableAndRefusesForeignProcess(t *testing.T) {
+	useFixtureProcessStartTime(t)
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	record := daemonPIDRecord{
+		PID:            1234,
+		StartTime:      fixtureProcessStartTime,
+		ExecutablePath: "/recorded/termp",
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var checkedPaths []string
+	signaled := false
+	_, err = stopDaemon(
+		path,
+		time.Second,
+		time.Millisecond,
+		func(int) bool { return true },
+		func(_ int, expectedPath string) bool {
+			checkedPaths = append(checkedPaths, expectedPath)
+			return false
+		},
+		func(int, string) error {
+			signaled = true
+			return nil
+		},
+		func(time.Duration) {},
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "stale PID file removed") {
+		t.Fatalf("stopDaemon() error = %v, want foreign-process refusal", err)
+	}
+	if signaled {
+		t.Fatal("foreign process was signaled")
+	}
+	if !reflect.DeepEqual(checkedPaths, []string{"/recorded/termp"}) {
+		t.Fatalf("identity paths = %q, want recorded daemon path", checkedPaths)
+	}
+}
+
 func TestStopDaemonWaitsForExitThenRemovesPIDFile(t *testing.T) {
 	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
@@ -410,7 +487,7 @@ func TestStopDaemonWaitsForExitThenRemovesPIDFile(t *testing.T) {
 		return aliveChecks < 4
 	}
 	signalCalls := 0
-	signal := func(pid int) error {
+	signal := func(pid int, _ string) error {
 		signalCalls++
 		if pid != 1234 {
 			t.Fatalf("signal PID = %d, want 1234", pid)
@@ -420,7 +497,7 @@ func TestStopDaemonWaitsForExitThenRemovesPIDFile(t *testing.T) {
 	var slept time.Duration
 	sleep := func(delay time.Duration) { slept += delay }
 
-	pid, err := stopDaemon(path, time.Second, 10*time.Millisecond, alive, func(int) bool { return true }, signal, sleep, false)
+	pid, err := stopDaemon(path, time.Second, 10*time.Millisecond, alive, func(int, string) bool { return true }, signal, sleep, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,11 +519,11 @@ func TestStopDaemonRechecksIdentityImmediatelyBeforeSignal(t *testing.T) {
 	signaled := false
 	_, err := stopDaemon(path, time.Second, time.Millisecond,
 		func(int) bool { return true },
-		func(int) bool {
+		func(int, string) bool {
 			identityChecks++
 			return identityChecks == 1
 		},
-		func(int) error {
+		func(int, string) error {
 			signaled = true
 			return nil
 		},
@@ -470,9 +547,9 @@ func TestStopDaemonSucceedsWhenDaemonRemovesPIDFile(t *testing.T) {
 	alive := true
 	pid, err := stopDaemon(path, time.Second, time.Millisecond, func(int) bool {
 		return alive
-	}, func(int) bool {
+	}, func(int, string) bool {
 		return true
-	}, func(pid int) error {
+	}, func(pid int, _ string) error {
 		if pid != 1234 {
 			t.Fatalf("signal PID = %d, want 1234", pid)
 		}
@@ -497,8 +574,8 @@ func TestStopDaemonAndPublisherStopsOrphanNotNamedByPIDFile(t *testing.T) {
 	var signaled []int
 	pid, err := stopDaemonAndPublisher(path, daemonPIDRecord{PID: 1111, StartTime: fixtureProcessStartTime}, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
-		func(int) bool { return true },
-		func(pid int) error {
+		func(int, string) bool { return true },
+		func(pid int, _ string) error {
 			signaled = append(signaled, pid)
 			live[pid] = false
 			return nil
@@ -526,8 +603,8 @@ func TestStopDaemonAndPublisherAcceptsAutostartRelaunch(t *testing.T) {
 	live := map[int]bool{1234: true, 5678: false}
 	pid, err := stopDaemonAndPublisher(path, daemonPIDRecord{}, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
-		func(pid int) bool { return pid == 1234 || pid == 5678 },
-		func(pid int) error {
+		func(pid int, _ string) bool { return pid == 1234 || pid == 5678 },
+		func(pid int, _ string) error {
 			live[pid] = false
 			live[5678] = true
 			return writePID(path, 5678)
@@ -563,8 +640,8 @@ func TestStopDaemonAndPublisherRejectsUnexpectedPIDFileTakeover(t *testing.T) {
 	live := map[int]bool{1234: true, 5678: false}
 	_, err := stopDaemonAndPublisher(path, daemonPIDRecord{}, time.Second, time.Millisecond,
 		func(pid int) bool { return live[pid] },
-		func(pid int) bool { return pid == 1234 },
-		func(pid int) error {
+		func(pid int, _ string) bool { return pid == 1234 },
+		func(pid int, _ string) error {
 			live[pid] = false
 			live[5678] = true
 			return writePID(path, 5678)
@@ -590,7 +667,7 @@ func TestKnownDaemonPIDFindsLivePublisherNotNamedByPIDFile(t *testing.T) {
 	})
 	got := knownDaemonPID(pidPath, statePath,
 		func(pid int) bool { return pid == 1111 },
-		func(pid int) bool { return pid == 1111 },
+		func(pid int, _ string) bool { return pid == 1111 },
 	)
 	if got != 1111 {
 		t.Fatalf("knownDaemonPID() = %d, want orphaned publisher 1111", got)
@@ -630,7 +707,7 @@ func TestStopDaemonRemovesStalePIDFile(t *testing.T) {
 	if err := writePID(path, 1234); err != nil {
 		t.Fatal(err)
 	}
-	_, err := stopDaemon(path, time.Second, time.Millisecond, func(int) bool { return false }, func(int) bool { return true }, func(int) error {
+	_, err := stopDaemon(path, time.Second, time.Millisecond, func(int) bool { return false }, func(int, string) bool { return true }, func(int, string) error {
 		t.Fatal("stale PID was signaled")
 		return nil
 	}, func(time.Duration) { t.Fatal("stale PID wait slept") }, false)
@@ -649,7 +726,7 @@ func TestStopDaemonTimeoutKeepsPIDFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	var slept time.Duration
-	_, err := stopDaemon(path, 25*time.Millisecond, 10*time.Millisecond, func(int) bool { return true }, func(int) bool { return true }, func(int) error {
+	_, err := stopDaemon(path, 25*time.Millisecond, 10*time.Millisecond, func(int) bool { return true }, func(int, string) bool { return true }, func(int, string) error {
 		return nil
 	}, func(delay time.Duration) { slept += delay }, false)
 	if err == nil || !strings.Contains(err.Error(), "PID file was not removed") {
@@ -690,8 +767,8 @@ func TestStopDaemonSignalsLiveProcessWhenStartTimeUnavailable(t *testing.T) {
 		time.Millisecond,
 		time.Millisecond,
 		func(int) bool { return true },
-		func(int) bool { return true },
-		func(pid int) error {
+		func(int, string) bool { return true },
+		func(pid int, _ string) error {
 			signals++
 			if pid != 1234 {
 				t.Fatalf("signal PID = %d, want 1234", pid)
@@ -851,7 +928,7 @@ func TestStatusReportsRunningForPIDRecordWithUnavailableStartTime(t *testing.T) 
 		filepath.Join(t.TempDir(), "missing-discord.json"),
 		time.Now(),
 		func(pid int) bool { return pid == 42 },
-		func(pid int) bool { return pid == 42 },
+		func(pid int, _ string) bool { return pid == 42 },
 	)
 	got := formatStatus(statusInfo{running: daemonPID > 0, configOK: true})
 	if daemonPID != 42 || !strings.Contains(got, "  Running        yes\n") {

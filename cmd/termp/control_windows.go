@@ -102,7 +102,7 @@ func validateControlPipeServer(conn net.Conn, expectedPID int) error {
 		return fmt.Errorf("open daemon control pipe server pid %d: %w", serverPID, err)
 	}
 	defer windows.CloseHandle(process)
-	if err := validateWindowsProcessHandle(process); err != nil {
+	if err := validateWindowsProcessHandle(process, ""); err != nil {
 		return fmt.Errorf("validate daemon control pipe server pid %d: %w", serverPID, err)
 	}
 	return nil

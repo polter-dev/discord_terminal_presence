@@ -27,7 +27,19 @@ func processAlive(pid int) bool {
 }
 
 func processLooksLikeTermp(pid int) bool {
-	return validateOtherProcess(pid) == nil
+	return processLooksLikeTermpAtPath(pid, "")
+}
+
+func processLooksLikeTermpAtPath(pid int, expectedPath string) bool {
+	return validateOtherProcess(pid, expectedPath) == nil
+}
+
+func currentProcessExecutablePath() (string, error) {
+	current, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(current)
 }
 
 func processStartTime(pid int) (uint64, error) {
@@ -59,23 +71,31 @@ func canonicalProcessTimeEnvironment(environment []string) []string {
 }
 
 func signalTermpProcess(pid int) error {
-	if err := validateOtherProcess(pid); err != nil {
+	return signalTermpProcessAtPath(pid, "")
+}
+
+func signalTermpProcessAtPath(pid int, expectedPath string) error {
+	if err := validateOtherProcess(pid, expectedPath); err != nil {
 		return err
 	}
 	return syscall.Kill(pid, syscall.SIGTERM)
 }
 
-func validateOtherProcess(pid int) error {
+func validateOtherProcess(pid int, expectedPath string) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")
 	}
-	current, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	current, err = filepath.EvalSymlinks(current)
-	if err != nil {
-		return err
+	var err error
+	if expectedPath == "" {
+		expectedPath, err = currentProcessExecutablePath()
+		if err != nil {
+			return err
+		}
+	} else {
+		expectedPath, err = filepath.EvalSymlinks(expectedPath)
+		if err != nil {
+			return err
+		}
 	}
 	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "uid=", "-o", "comm=").Output()
 	if err != nil {
@@ -90,7 +110,7 @@ func validateOtherProcess(pid int) error {
 		return errors.New("process owner does not match")
 	}
 	actual, err := filepath.EvalSymlinks(strings.Join(fields[1:], " "))
-	if err != nil || filepath.Clean(actual) != filepath.Clean(current) {
+	if err != nil || filepath.Clean(actual) != filepath.Clean(expectedPath) {
 		return fmt.Errorf("process executable does not match")
 	}
 	return nil

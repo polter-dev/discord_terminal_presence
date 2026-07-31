@@ -46,7 +46,7 @@ func TestDarwinProcessStartedWithRelativePath(t *testing.T) {
 	if scanner := bufio.NewScanner(stdout); !scanner.Scan() || scanner.Text() != "ready" {
 		t.Fatalf("relative helper did not become ready: %q, %v", scanner.Text(), scanner.Err())
 	}
-	if _, err := validatedDarwinIdentity(cmd.Process.Pid); err != nil {
+	if _, err := validatedDarwinIdentity(cmd.Process.Pid, ""); err != nil {
 		t.Fatalf("relative process identity was not proven: %v", err)
 	}
 }
@@ -119,7 +119,7 @@ func TestDarwinLiveAndStaleProcessLookup(t *testing.T) {
 	if !processAlive(os.Getpid()) {
 		t.Fatal("current process was not alive")
 	}
-	if _, err := validatedDarwinIdentity(os.Getpid()); err != nil {
+	if _, err := validatedDarwinIdentity(os.Getpid(), ""); err != nil {
 		t.Fatalf("live current process identity was not proven: %v", err)
 	}
 	if processAlive(99999999) || processLooksLikeTermp(99999999) {

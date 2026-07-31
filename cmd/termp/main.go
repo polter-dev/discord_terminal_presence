@@ -569,7 +569,7 @@ func installSetupAutostart(manager setupServiceManager, path string, daemonRunni
 }
 
 func currentDaemonPID() int {
-	return knownDaemonPID(pidFilePath(), daemonDiscordStatePath(), processAlive, processLooksLikeTermp)
+	return knownDaemonPID(pidFilePath(), daemonDiscordStatePath(), processAlive, processLooksLikeTermpAtPath)
 }
 
 func completion(args []string) error {
@@ -853,8 +853,12 @@ func start(args []string) error {
 	}
 
 	pidPath := pidFilePath()
-	if pid := knownDaemonPID(pidPath, daemonDiscordStatePath(), processAlive, processLooksLikeTermp); pid > 0 {
-		return fmt.Errorf("daemon already running with pid %d", pid)
+	if record := knownDaemonRecord(pidPath, daemonDiscordStatePath(), processAlive, processLooksLikeTermpAtPath); record.PID > 0 {
+		currentPath, pathErr := currentProcessExecutablePath()
+		if pathErr != nil {
+			return fmt.Errorf("resolve current executable: %w", pathErr)
+		}
+		return daemonAlreadyRunningError(record, currentPath)
 	}
 	background := !options.foreground
 	if background && !options.detachedChild {
@@ -1417,11 +1421,11 @@ func stop(args []string) error {
 	pidPath := pidFilePath()
 	var publisher daemonPIDRecord
 	if state, ok := readDaemonDiscordState(daemonDiscordStatePath()); ok &&
-		processIdentityMatches(state.PID, state.StartTime, processAlive, processLooksLikeTermp) {
-		publisher = daemonPIDRecord{PID: state.PID, StartTime: state.StartTime}
+		processIdentityMatches(state.PID, state.StartTime, state.ExecutablePath, processAlive, processLooksLikeTermpAtPath) {
+		publisher = daemonPIDRecord{PID: state.PID, StartTime: state.StartTime, ExecutablePath: state.ExecutablePath}
 	}
 	serviceState := service.NewManager().Status()
-	pid, err := stopDaemonAndPublisher(pidPath, publisher, stopTimeout, stopPollInterval, processAlive, processLooksLikeTermp, signalTermpProcess, time.Sleep, serviceWillRelaunch(serviceState))
+	pid, err := stopDaemonAndPublisher(pidPath, publisher, stopTimeout, stopPollInterval, processAlive, processLooksLikeTermpAtPath, signalTermpProcessAtPath, time.Sleep, serviceWillRelaunch(serviceState))
 	if err != nil {
 		return err
 	}
@@ -1433,8 +1437,8 @@ func stopRunningDaemon() (int, bool, error) {
 	pidPath := pidFilePath()
 	var publisher daemonPIDRecord
 	if state, ok := readDaemonDiscordState(daemonDiscordStatePath()); ok &&
-		processIdentityMatches(state.PID, state.StartTime, processAlive, processLooksLikeTermp) {
-		publisher = daemonPIDRecord{PID: state.PID, StartTime: state.StartTime}
+		processIdentityMatches(state.PID, state.StartTime, state.ExecutablePath, processAlive, processLooksLikeTermpAtPath) {
+		publisher = daemonPIDRecord{PID: state.PID, StartTime: state.StartTime, ExecutablePath: state.ExecutablePath}
 	}
 	pid, err := stopDaemonAndPublisher(
 		pidPath,
@@ -1442,8 +1446,8 @@ func stopRunningDaemon() (int, bool, error) {
 		stopTimeout,
 		stopPollInterval,
 		processAlive,
-		processLooksLikeTermp,
-		signalTermpProcess,
+		processLooksLikeTermpAtPath,
+		signalTermpProcessAtPath,
 		time.Sleep,
 		false,
 	)
@@ -1494,7 +1498,7 @@ func status(args []string) error {
 	defer cancelStatus()
 	cfg, loadErr := loadConfigWithNotice(readOnlyConfigLoader, os.Stderr)
 	defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
-	daemonPID := statusDaemonPID(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermp)
+	daemonPID := statusDaemonPID(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermpAtPath)
 	running := daemonPID > 0
 
 	reg, registryErr := registry.NewWithCustom(cfg.CustomTools...)
@@ -1567,13 +1571,13 @@ func status(args []string) error {
 	return nil
 }
 
-func statusDaemonPID(pidPath, discordStatePath string, now time.Time, alive, looksLikeTermp func(int) bool) int {
+func statusDaemonPID(pidPath, discordStatePath string, now time.Time, alive func(int) bool, looksLikeTermp func(int, string) bool) int {
 	if record, _, err := readPIDIdentity(pidPath); err == nil &&
 		pidRecordIdentityMatches(record, alive, looksLikeTermp) {
 		return record.PID
 	}
 	if state, ok := readFreshDaemonDiscordState(discordStatePath, now, daemonDiscordStateStaleAfter); ok &&
-		processIdentityMatches(state.PID, state.StartTime, alive, looksLikeTermp) {
+		processIdentityMatches(state.PID, state.StartTime, state.ExecutablePath, alive, looksLikeTermp) {
 		return state.PID
 	}
 	return 0
@@ -1713,6 +1717,7 @@ type daemonDiscordState struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 	PID                 int       `json:"pid"`
 	StartTime           uint64    `json:"start_time,omitempty"`
+	ExecutablePath      string    `json:"executable_path,omitempty"`
 	ConfigOK            *bool     `json:"config_ok,omitempty"`
 	ConfigError         string    `json:"config_error,omitempty"`
 	ConfigUsingLastGood bool      `json:"config_using_last_good,omitempty"`
@@ -1743,12 +1748,14 @@ type daemonStatePublishers struct {
 
 func runDaemonDiscordStatePublisher(ctx context.Context, path string, interval time.Duration, pid int, initialConfigErr error) daemonStatePublishers {
 	startTime, _ := processStartTime(pid)
+	executablePath, _ := currentProcessExecutablePath()
 	configOK := initialConfigErr == nil
 	state := daemonDiscordState{
-		PID:         pid,
-		StartTime:   startTime,
-		ConfigOK:    &configOK,
-		ConfigError: errorString(initialConfigErr),
+		PID:            pid,
+		StartTime:      startTime,
+		ExecutablePath: executablePath,
+		ConfigOK:       &configOK,
+		ConfigError:    errorString(initialConfigErr),
 	}
 	updates := make(chan daemonDiscordState, 1)
 	var stateMu sync.Mutex
@@ -1883,22 +1890,40 @@ func readDaemonDiscordState(path string) (daemonDiscordState, bool) {
 	return state, true
 }
 
-func knownDaemonPID(pidPath, discordStatePath string, alive, looksLikeTermp func(int) bool) int {
+func knownDaemonRecord(pidPath, discordStatePath string, alive func(int) bool, looksLikeTermp func(int, string) bool) daemonPIDRecord {
 	if record, _, err := readPIDIdentity(pidPath); err == nil &&
 		pidRecordIdentityMatches(record, alive, looksLikeTermp) {
-		return record.PID
+		return record
 	}
 	if state, ok := readDaemonDiscordState(discordStatePath); ok &&
-		processIdentityMatches(state.PID, state.StartTime, alive, looksLikeTermp) {
-		return state.PID
+		processIdentityMatches(state.PID, state.StartTime, state.ExecutablePath, alive, looksLikeTermp) {
+		return daemonPIDRecord{PID: state.PID, StartTime: state.StartTime, ExecutablePath: state.ExecutablePath}
 	}
-	return 0
+	return daemonPIDRecord{}
+}
+
+func knownDaemonPID(pidPath, discordStatePath string, alive func(int) bool, looksLikeTermp func(int, string) bool) int {
+	return knownDaemonRecord(pidPath, discordStatePath, alive, looksLikeTermp).PID
+}
+
+func executablePathsMatch(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func daemonAlreadyRunningError(record daemonPIDRecord, currentPath string) error {
+	if record.ExecutablePath != "" && !executablePathsMatch(record.ExecutablePath, currentPath) {
+		return fmt.Errorf("a termp daemon is already running (pid %d), launched from %q; stop it first with 'termp stop'", record.PID, record.ExecutablePath)
+	}
+	return fmt.Errorf("daemon already running with pid %d", record.PID)
 }
 
 var lookupProcessStartTime = processStartTime
 
-func processIdentityMatches(pid int, expectedStartTime uint64, alive, looksLikeTermp func(int) bool) bool {
-	if pid <= 0 || !alive(pid) || !looksLikeTermp(pid) {
+func processIdentityMatches(pid int, expectedStartTime uint64, expectedPath string, alive func(int) bool, looksLikeTermp func(int, string) bool) bool {
+	if pid <= 0 || !alive(pid) || !looksLikeTermp(pid, expectedPath) {
 		return false
 	}
 	if expectedStartTime == 0 {
@@ -2363,7 +2388,7 @@ func bridgeWatchConnection(ctx context.Context, program *tea.Program, interval t
 
 func watchDiscordConnected(now time.Time, probe func() error) bool {
 	record, _, err := readPIDIdentity(pidFilePath())
-	if err == nil && pidRecordIdentityMatches(record, processAlive, processLooksLikeTermp) {
+	if err == nil && pidRecordIdentityMatches(record, processAlive, processLooksLikeTermpAtPath) {
 		state, ok := readFreshDaemonDiscordState(daemonDiscordStatePath(), now, daemonDiscordStateStaleAfter)
 		return discordConnectedFromStateOrProbe(record.PID, state, ok, probe)
 	}
@@ -2411,13 +2436,14 @@ type daemonPIDRecord struct {
 	PID                  int    `json:"pid"`
 	StartTime            uint64 `json:"start_time,omitempty"`
 	StartTimeUnavailable bool   `json:"start_time_unavailable,omitempty"`
+	ExecutablePath       string `json:"executable_path,omitempty"`
 }
 
-func pidRecordIdentityMatches(record daemonPIDRecord, alive, looksLikeTermp func(int) bool) bool {
+func pidRecordIdentityMatches(record daemonPIDRecord, alive func(int) bool, looksLikeTermp func(int, string) bool) bool {
 	if record.StartTimeUnavailable {
-		return record.PID > 0 && alive(record.PID) && looksLikeTermp(record.PID)
+		return record.PID > 0 && alive(record.PID) && looksLikeTermp(record.PID, record.ExecutablePath)
 	}
-	return processIdentityMatches(record.PID, record.StartTime, alive, looksLikeTermp)
+	return processIdentityMatches(record.PID, record.StartTime, record.ExecutablePath, alive, looksLikeTermp)
 }
 
 func readPIDRecord(path string) (int, os.FileInfo, error) {
@@ -2507,6 +2533,11 @@ func writePIDOwnedWithHook(path string, pid int, initializingHook func()) (os.Fi
 		return nil, err
 	}
 	record := daemonPIDRecord{PID: pid}
+	executablePath, err := currentProcessExecutablePath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve current executable: %w", err)
+	}
+	record.ExecutablePath = executablePath
 	startTime, startTimeErr := lookupProcessStartTime(pid)
 	if startTimeErr != nil || startTime == 0 {
 		record.StartTimeUnavailable = true
@@ -2580,7 +2611,7 @@ func writePIDOwnedWithHook(path string, pid int, initializingHook func()) (os.Fi
 			existing.Close()
 			return nil, statErr
 		}
-		if readErr == nil && pidRecordIdentityMatches(existingRecord, processAlive, processLooksLikeTermp) {
+		if readErr == nil && pidRecordIdentityMatches(existingRecord, processAlive, processLooksLikeTermpAtPath) {
 			existing.Close()
 			return nil, fmt.Errorf("daemon already running with pid %d", existingRecord.PID)
 		}
@@ -2702,7 +2733,7 @@ func removePIDIfOwned(path string, expectedPID int, expectedInfo os.FileInfo) (b
 	return result == pidRemovalRemoved, err
 }
 
-func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, signal func(int) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
+func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int) bool, looksLikeTermp func(int, string) bool, signal func(int, string) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
 	record, info, err := readPIDIdentity(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2724,7 +2755,7 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLi
 	if !pidRecordIdentityMatches(record, alive, looksLikeTermp) {
 		return 0, fmt.Errorf("refusing to signal pid %d: process identity changed before signaling", pid)
 	}
-	if err := signal(pid); err != nil {
+	if err := signal(pid, record.ExecutablePath); err != nil {
 		return 0, fmt.Errorf("refusing to signal pid %d: %w", pid, err)
 	}
 	if !waitForProcessExit(record, timeout, pollInterval, alive, looksLikeTermp, sleep) {
@@ -2743,7 +2774,7 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive, looksLi
 	return pid, nil
 }
 
-func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, signal func(int) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
+func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pollInterval time.Duration, alive func(int) bool, looksLikeTermp func(int, string) bool, signal func(int, string) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
 	record, info, readErr := readPIDIdentity(path)
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return 0, readErr
@@ -2751,7 +2782,7 @@ func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pol
 	pid := record.PID
 
 	targets := make([]daemonPIDRecord, 0, 2)
-	if processIdentityMatches(publisher.PID, publisher.StartTime, alive, looksLikeTermp) {
+	if processIdentityMatches(publisher.PID, publisher.StartTime, publisher.ExecutablePath, alive, looksLikeTermp) {
 		targets = append(targets, publisher)
 	}
 	if readErr == nil && pidRecordIdentityMatches(record, alive, looksLikeTermp) && pid != publisher.PID {
@@ -2774,7 +2805,7 @@ func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pol
 		if !pidRecordIdentityMatches(target, alive, looksLikeTermp) {
 			return 0, fmt.Errorf("refusing to signal pid %d: process identity changed before signaling", target.PID)
 		}
-		if err := signal(target.PID); err != nil {
+		if err := signal(target.PID, target.ExecutablePath); err != nil {
 			return 0, fmt.Errorf("refusing to signal pid %d: %w", target.PID, err)
 		}
 	}
@@ -2798,13 +2829,13 @@ func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pol
 	return targets[0].PID, nil
 }
 
-func pidFileOwnedByRelaunchedDaemon(path string, stoppedPID int, alive, looksLikeTermp func(int) bool) bool {
+func pidFileOwnedByRelaunchedDaemon(path string, stoppedPID int, alive func(int) bool, looksLikeTermp func(int, string) bool) bool {
 	record, _, err := readPIDIdentity(path)
 	return err == nil && record.PID != stoppedPID &&
 		pidRecordIdentityMatches(record, alive, looksLikeTermp)
 }
 
-func waitForProcessExit(record daemonPIDRecord, timeout, pollInterval time.Duration, alive, looksLikeTermp func(int) bool, sleep func(time.Duration)) bool {
+func waitForProcessExit(record daemonPIDRecord, timeout, pollInterval time.Duration, alive func(int) bool, looksLikeTermp func(int, string) bool, sleep func(time.Duration)) bool {
 	if !pidRecordIdentityMatches(record, alive, looksLikeTermp) {
 		return true
 	}
