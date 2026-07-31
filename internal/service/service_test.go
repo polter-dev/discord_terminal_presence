@@ -328,6 +328,36 @@ func TestValidateInstallExecutableResolvesNestedSymlinkAndHonorsForce(t *testing
 	}
 }
 
+func TestValidateInstallExecutableMissingPathErrorAndForceBypass(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "missing-parent", "termp")
+	absolutePath, err := filepath.Abs(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ValidateInstallExecutable(exe, false); err == nil {
+		t.Fatal("ValidateInstallExecutable() error = nil for missing parent")
+	} else {
+		// Windows can render the path in 8.3 short form (e.g. RUNNER~1), so
+		// assert on the actionable wrapper text and the target leaf rather than
+		// the full long-form absolute path.
+		for _, want := range []string{"resolve executable symlinks", "termp"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("ValidateInstallExecutable() error missing %q: %v", want, err)
+			}
+		}
+		_ = absolutePath
+	}
+
+	got, err := ValidateInstallExecutable(exe, true)
+	if err != nil {
+		t.Fatalf("ValidateInstallExecutable(force) error = %v", err)
+	}
+	if got != absolutePath {
+		t.Fatalf("ValidateInstallExecutable(force) = %q, want %q", got, absolutePath)
+	}
+}
+
 func TestBuildLaunchAgentPlist(t *testing.T) {
 	content, err := BuildLaunchAgentPlist("/opt/Term Presence/termp")
 	if err != nil {
