@@ -12,7 +12,7 @@ Start here, then read the module entry before opening source.
 | Registry | [`registry.md`](registry.md) | `internal/registry` | Defines built-in/custom tools, validates Discord-facing custom fields (including rejecting control/C1/bidi characters, named by codepoint, in display names, image keys, button labels, and — since #444 — every image and button URL), resolves logos, and matches process identity to tools. |
 | Service | [`service.md`](service.md) | `internal/service` | Manages per-OS login services, canonical Windows task ownership, and bounded locale-independent status queries. |
 | Terminal text | [`terminaltext.md`](terminaltext.md) | `internal/terminaltext` | Conservatively sanitizes externally derived text with bounded handling of unterminated sequences and safely flattens multi-line values. |
-| TUI | [`tui.md`](tui.md) | `internal/tui` | Owns setup, settings, confirmation, watch, and card UI with shared safe rendering. |
+| TUI | [`tui.md`](tui.md) | `internal/tui` | Owns setup, dirty-aware settings exit, confirmation, watch, and card UI with shared safe rendering. |
 | Update | [`update.md`](update.md) | `internal/update` | Checks releases (memoized per process for CLI runs, or repeatable via `Refresh` for the long-lived daemon), persists automatic-update outcomes and exposes the last known latest version and semver equality the CLI uses to retire them, exposes the `NO_UPDATE_CHECK` opt-out (`DisabledByEnv`) for callers with non-lookup work to skip, detects generic/Homebrew/Scoop/Go/system-package ownership, and selects safe, real-TTY-gated, network-bounded update guidance or execution. |
 | Usage | [`usage.md`](usage.md) | `internal/usage` | Stores bounded local tool-usage history for settings ranking. |
 

@@ -31,8 +31,11 @@ The settings view clips the whole output to terminal width, drops leftmost colum
 necessary, never wraps/truncates mid-glyph, and keeps focused ancestry when it fits.
 Section-label rows are not selectable. Pin search returns at most six results and ranks
 exact, prefix, substring, subsequence, then bounded Levenshtein matches; no match renders
-an explicit row. The feedback action revalidates its target as a bounded absolute HTTP(S)
-URL immediately before calling the platform opener.
+an explicit row. Settings compares the working config with its last successfully saved
+snapshot: `q` and top-level Esc on a dirty model offer save, discard, or cancel, while a
+clean model quits immediately; Esc still closes an open sub-column first, and Ctrl+C
+remains an unconditional terminal escape hatch. The feedback action revalidates its target
+as a bounded absolute HTTP(S) URL immediately before calling the platform opener.
 
 `RenderCard` does no I/O and never renders a raw asset URL. Watch stores already-resolved
 activities, caps recent featured-tool changes at five, and renders a persistent warning

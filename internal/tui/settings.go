@@ -31,6 +31,7 @@ const (
 	rowQuit
 	rowCategory
 	rowDrill
+	rowDirtyQuit
 )
 
 type row struct {
@@ -68,6 +69,7 @@ const maxPinResults = 6
 // Model is the testable Bubble Tea settings model.
 type Model struct {
 	cfg           config.Config
+	savedCfg      config.Config
 	columns       []settingsColumn
 	input         textinput.Model
 	editing       int
@@ -106,7 +108,8 @@ func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []stri
 	input.CharLimit = 32
 	input.Width = 24
 	return Model{
-		cfg: cfg,
+		cfg:      cfg,
+		savedCfg: cfg,
 		columns: []settingsColumn{{
 			kind:  columnMenu,
 			title: "Categories & actions",
@@ -182,6 +185,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.status = ""
+		m.savedCfg = msg.saved
 		if !reflect.DeepEqual(m.cfg, msg.saved) {
 			m.saved = false
 			if msg.quit {
@@ -227,7 +231,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case rowQuit:
 					m.quitting = true
 					return m, tea.Quit
+				case rowDirtyQuit:
+					return m.startSave(true)
 				}
+			} else if action == rowDirtyQuit {
+				dialog := NewConfirmDialog("Discard changes and quit?", ConfirmNo, m.cfg.UI.AccentColor)
+				m.confirm = &dialog
+				m.confirmAction = rowQuit
 			}
 		}
 		return m, nil
@@ -276,12 +286,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureCursorsVisible()
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+		case "q":
+			if m.dirty() {
+				m.openDirtyQuitConfirm()
+				return m, nil
+			}
 			m.quitting = true
 			return m, tea.Quit
 		case "esc":
 			if len(m.columns) > 1 {
 				m.closeColumn()
+				return m, nil
+			}
+			if m.dirty() {
+				m.openDirtyQuitConfirm()
 				return m, nil
 			}
 			m.quitting = true
@@ -646,6 +667,16 @@ func (m *Model) commitEdit() {
 	row.apply(&m.cfg, strings.TrimSpace(m.input.Value()))
 	m.editing = -1
 	m.input.Blur()
+}
+
+func (m Model) dirty() bool {
+	return !reflect.DeepEqual(m.cfg, m.savedCfg)
+}
+
+func (m *Model) openDirtyQuitConfirm() {
+	dialog := NewConfirmDialog("Save changes before quitting?", ConfirmYes, m.cfg.UI.AccentColor)
+	m.confirm = &dialog
+	m.confirmAction = rowDirtyQuit
 }
 
 func (m *Model) openColumn(kind columnKind, title string, rows []row) {
