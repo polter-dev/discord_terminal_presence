@@ -338,11 +338,15 @@ func TestValidateInstallExecutableMissingPathErrorAndForceBypass(t *testing.T) {
 	if _, err := ValidateInstallExecutable(exe, false); err == nil {
 		t.Fatal("ValidateInstallExecutable() error = nil for missing parent")
 	} else {
-		for _, want := range []string{"resolve executable symlinks", absolutePath} {
+		// Windows can render the path in 8.3 short form (e.g. RUNNER~1), so
+		// assert on the actionable wrapper text and the target leaf rather than
+		// the full long-form absolute path.
+		for _, want := range []string{"resolve executable symlinks", "termp"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Fatalf("ValidateInstallExecutable() error missing %q: %v", want, err)
 			}
 		}
+		_ = absolutePath
 	}
 
 	got, err := ValidateInstallExecutable(exe, true)
