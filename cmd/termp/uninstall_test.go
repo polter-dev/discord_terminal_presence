@@ -238,7 +238,7 @@ func TestUninstallBinaryCommand(t *testing.T) {
 			rpmManager: "zypper",
 			want:       "sudo apt remove termp (Debian/Ubuntu) or sudo zypper remove termp (RPM-based Linux)",
 		},
-		{name: "windows", method: updatepkg.InstallGeneric, goos: "windows", want: "del " + windowsCommandQuote(filepath.Join(binDir, "termp.exe"))},
+		{name: "windows", method: updatepkg.InstallGeneric, goos: "windows", want: "del " + windowsCommandQuote(filepath.Join(binDir, "termp.exe")) + " " + windowsCommandQuote(filepath.Join(binDir, "termpw.exe"))},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

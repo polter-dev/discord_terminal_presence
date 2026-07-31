@@ -259,7 +259,11 @@ func uninstallBinaryCommand(method updatepkg.InstallMethod, goos, rpmManager str
 	}
 	path := filepath.Join(binDir, name)
 	if goos == "windows" {
-		return "del " + windowsCommandQuote(path), nil
+		// The Windows archive ships the daemon alongside the companion
+		// autostart launcher (termpw.exe, issue #473); remove both so a generic
+		// install does not leave the launcher orphaned.
+		launcher := filepath.Join(binDir, "termpw.exe")
+		return "del " + windowsCommandQuote(path) + " " + windowsCommandQuote(launcher), nil
 	}
 	if method == updatepkg.InstallGo {
 		return "rm " + shellQuote(path), nil

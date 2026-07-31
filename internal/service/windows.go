@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -49,7 +50,8 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 		return State{Supported: true, Path: TaskName}, fmt.Errorf("cannot resolve current user for scheduled task")
 	}
 
-	taskXML, err := BuildWindowsTaskXML(exe, username)
+	command, arguments := windowsTaskExec(exe)
+	taskXML, err := BuildWindowsTaskXML(command, arguments, username)
 	if err != nil {
 		return State{Supported: true, Path: TaskName}, err
 	}
@@ -88,12 +90,20 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 	return s.Status(), nil
 }
 
-func BuildWindowsTaskXML(exe, username string) ([]byte, error) {
+// BuildWindowsTaskXML renders the logon task definition that runs command with
+// arguments. command is normally the companion launcher (termpw.exe), which
+// takes no arguments; when the launcher is unavailable it falls back to the
+// daemon itself with "start --foreground".
+func BuildWindowsTaskXML(command, arguments, username string) ([]byte, error) {
 	const description = "Terminal Presence autostart"
 	esc := func(s string) string {
 		var out bytes.Buffer
 		_ = xml.EscapeText(&out, []byte(s))
 		return out.String()
+	}
+	argumentsElement := ""
+	if arguments != "" {
+		argumentsElement = fmt.Sprintf("<Arguments>%s</Arguments>", esc(arguments))
 	}
 	content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -114,10 +124,10 @@ func BuildWindowsTaskXML(exe, username string) ([]byte, error) {
     <Enabled>true</Enabled>
   </Settings>
   <Actions Context="Author">
-    <Exec><Command>%s</Command><Arguments>start --foreground</Arguments></Exec>
+    <Exec><Command>%s</Command>%s</Exec>
   </Actions>
 </Task>
-`, esc(description), esc(username), esc(username), esc(exe))
+`, esc(description), esc(username), esc(username), esc(command), argumentsElement)
 
 	encoded := utf16.Encode([]rune(content))
 	data := make([]byte, 2+len(encoded)*2)
@@ -250,7 +260,7 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 		state.Message = fmt.Sprintf("schtasks query returned invalid XML: %v", err)
 		return state
 	}
-	if s.executable != "" && !sameWindowsExecutable(task.Actions.Exec.Command, s.executable) {
+	if s.executable != "" && !ownsWindowsTaskCommand(task.Actions.Exec.Command, s.executable) {
 		state.Installed = false
 		state.Loaded = "false"
 		state.Enabled = "false"
@@ -276,6 +286,64 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 
 func foreignTaskError(message string) error {
 	return fmt.Errorf("%s; re-run autostart install or uninstall with --force to take it over", message)
+}
+
+// windowsLauncherName is the fixed base name of the companion launcher shipped
+// beside termp.exe in every Windows archive.
+const windowsLauncherName = "termpw.exe"
+
+// windowsTaskExec selects what the logon task runs. When the companion launcher
+// sits beside the daemon (the normal shipped layout) the task runs it with no
+// arguments, so no console window is ever created (issue #473). When the
+// launcher is absent — e.g. a hand-assembled install — it falls back to the
+// daemon's own foreground path so autostart still works, at the cost of the
+// window this fix removes.
+func windowsTaskExec(exe string) (command, arguments string) {
+	if launcher := existingWindowsLauncher(exe); launcher != "" {
+		return launcher, ""
+	}
+	return exe, "start --foreground"
+}
+
+// existingWindowsLauncher returns the sibling launcher path when it exists on
+// disk, using host-native path handling so the on-disk probe is correct on real
+// Windows. It returns "" when no launcher file is present.
+func existingWindowsLauncher(exe string) string {
+	launcher := filepath.Join(filepath.Dir(exe), windowsLauncherName)
+	if info, err := os.Stat(launcher); err == nil && !info.IsDir() {
+		return launcher
+	}
+	return ""
+}
+
+// ownsWindowsTaskCommand reports whether a task whose action runs taskCommand
+// belongs to this installation. It accepts both the daemon itself (tasks written
+// before the launcher existed, and the fallback path) and the companion launcher
+// that lives in the same directory as the daemon. Without this, once a task
+// points at termpw.exe the Status ownership check would report our own task as
+// foreign and lock install/uninstall/enable/disable behind --force (issue #473).
+func ownsWindowsTaskCommand(taskCommand, executable string) bool {
+	if sameWindowsExecutable(taskCommand, executable) {
+		return true
+	}
+	if launcher := windowsLauncherSibling(executable); launcher != "" {
+		return sameWindowsExecutable(taskCommand, launcher)
+	}
+	return false
+}
+
+// windowsLauncherSibling derives the launcher path that sits beside executable,
+// as a Windows-style path, using string handling that is correct regardless of
+// the host OS (the ownership check runs on every platform's Status path).
+func windowsLauncherSibling(executable string) string {
+	normalized := normalizeResolvedWindowsPath(executable)
+	if normalized == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(normalized, `\`); idx >= 0 {
+		return normalized[:idx] + `\` + windowsLauncherName
+	}
+	return windowsLauncherName
 }
 
 func sameWindowsExecutable(taskCommand, executable string) bool {

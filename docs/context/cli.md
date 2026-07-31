@@ -79,9 +79,14 @@ query, so character devices such as `/dev/null` cannot enter the Bubble Tea prom
 stall on EOF. It never deletes the running executable. It reuses install ownership
 detection and the resolved generic install directory to print exact Homebrew, Scoop, apt,
 detected RPM front-end (`dnf`/`zypper`/`yum`, or `rpm -e`), Go, generic Unix, or Windows
-binary-removal guidance. Destructive tests inject paths beneath an asserted temporary
+binary-removal guidance. The generic Windows removal command deletes both
+`termp.exe` and the companion autostart launcher `termpw.exe` (issue #473), which
+the Windows archive ships side by side, so a generic install does not leave the
+launcher orphaned; Scoop/apt/rpm removals already take the whole package.
+Destructive tests inject paths beneath an asserted temporary
 home. Full uninstall also removes the daemon log's rotation lock and three retained
-generations.
+generations. Autostart removal deletes the scheduled task regardless of whether it
+targets the launcher or the daemon, so the task is never left behind.
 
 Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
 installs preflight the resolved running executable's directory and record a skipped

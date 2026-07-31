@@ -28,6 +28,21 @@ builds:
       - arm64
     ldflags:
       - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+  # Companion autostart launcher (issue #473). Linked with -H=windowsgui (the
+  # pythonw pattern) so it has no console of its own; the logon task runs this
+  # instead of termp.exe so no console window stays open for the daemon's life.
+  - id: termpw-windows
+    main: ./cmd/termpw
+    binary: termpw
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -H=windowsgui
 
 archives:
   - id: termp
@@ -42,6 +57,7 @@ archives:
   - id: termp-windows
     ids:
       - termp-windows
+      - termpw-windows
     formats:
       - zip
     name_template: "termp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"

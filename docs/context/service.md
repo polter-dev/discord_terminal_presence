@@ -8,7 +8,8 @@ disable, and context-bounded status. `State` describes support, ownership, loade
 state, paths, and conflicts. Builders render launchd, systemd, and Windows task payloads.
 
 **Key files:** `internal/service/service.go` contains shared management and launchd/
-systemd definitions. `windows.go` contains scheduled-task identity and XML.
+systemd definitions. `windows.go` contains scheduled-task identity and XML. The
+Windows autostart companion launcher lives in `cmd/termpw` (`-H=windowsgui`).
 
 **Invariants / gotchas:** Platform status calls honor their context bound. Installed
 definitions are owned by their executable command; foreign definitions are not modified
@@ -18,7 +19,30 @@ Windows uses the stable scheduled-task name `\Terminal Presence\termp`. Keeping
 one well-known task preserves existing autostart registrations during upgrades
 and avoids leaving obsolete per-installation tasks behind.
 
-The task definition's executable command is its ownership check. Windows expands
+The logon task runs the Windows-only companion launcher `termpw.exe`
+(`cmd/termpw`, linked `-H=windowsgui`) rather than `termp.exe start
+--foreground` (issue #473). The old console-subsystem daemon kept a console
+window open for the daemon's whole life under `InteractiveToken`; the launcher
+has no console of its own, spawns `termp.exe start --foreground` with
+`CREATE_NO_WINDOW`, waits for the daemon's lifetime so Task Scheduler still owns
+the process (`RestartOnFailure` and `schtasks /End` keep working), and
+propagates the daemon's exit status so a real crash still triggers restart.
+`windowsTaskExec` selects the launcher when it sits beside the daemon (the
+shipped layout: goreleaser ships `termpw.exe` in the Windows `.zip` and Scoop
+archives next to `termp.exe`) and falls back to `termp.exe start --foreground`
+when the launcher is absent (a hand-assembled install), trading the fix for a
+working autostart. `BuildWindowsTaskXML` takes an explicit command and
+arguments and omits `<Arguments>` when empty (the launcher takes none).
+
+The task definition's executable command is its ownership check. Because the
+task now points at `termpw.exe` while the running binary is `termp.exe`,
+`ownsWindowsTaskCommand` treats a task command as owned when it is either the
+running executable itself (tasks written before the launcher existed, and the
+fallback path — so upgrades reconcile in place rather than orphan/duplicate) or
+the sibling `termpw.exe` in the same install directory. A `termpw.exe` in any
+other directory is still foreign. Without this the Status ownership check would
+report our own launcher task as foreign and lock install/uninstall/enable/
+disable behind `--force`. Windows expands
 percent-style environment variables and normalizes quotes, separators, dot
 segments, and trailing separators, then compares paths case-insensitively. It
 expands environment variables only in the raw task command, not in resolved
