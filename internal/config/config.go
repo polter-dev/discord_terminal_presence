@@ -1116,13 +1116,13 @@ func permissivenessLoosened(prev, next Config, skipEnabledDimension bool) bool {
 }
 
 func validate(cfg *Config, privacyAllowlistDefined bool) error {
-	if err := validateDuration("scan_interval", cfg.ScanInterval, false); err != nil {
+	if err := validateDuration("scan_interval", cfg.ScanInterval, durationFieldsAllowZero["scan_interval"]); err != nil {
 		return err
 	}
-	if err := validateDuration("idle_clear_timeout", cfg.IdleClearTimeout, true); err != nil {
+	if err := validateDuration("idle_clear_timeout", cfg.IdleClearTimeout, durationFieldsAllowZero["idle_clear_timeout"]); err != nil {
 		return err
 	}
-	if err := validateDuration("headliner_idle_timeout", cfg.HeadlinerIdleTimeout, false); err != nil {
+	if err := validateDuration("headliner_idle_timeout", cfg.HeadlinerIdleTimeout, durationFieldsAllowZero["headliner_idle_timeout"]); err != nil {
 		return err
 	}
 	if utf8.RuneCountInString(cfg.DetailsFormat) > maxActivityTextLength {
@@ -1233,6 +1233,33 @@ func ValidateFeedbackURL(value string) error {
 		return fmt.Errorf("feedback_url must be a valid absolute http/https URL")
 	}
 	return nil
+}
+
+// durationFieldsAllowZero is the single source of truth for whether each
+// duration-typed config field permits a zero value. Both validate (at
+// load/save) and ValidateDurationField (used by the settings TUI to reject a
+// bad value at the point of entry, #475) consult it, so the two paths cannot
+// diverge on the zero-value policy.
+var durationFieldsAllowZero = map[string]bool{
+	"scan_interval":          false,
+	"idle_clear_timeout":     true,
+	"headliner_idle_timeout": false,
+}
+
+// ValidateDurationField reports whether value is an acceptable value for the
+// named duration-typed config field, applying the same rules Load and Save
+// enforce. field must be one of "scan_interval", "idle_clear_timeout", or
+// "headliner_idle_timeout". It lets callers such as the settings TUI reject a
+// bad value (e.g. "5" with no unit) at the point it is typed instead of writing
+// it to disk and locking the user out of the only tool that could repair it
+// (#475). Duration parsing lives here, not in the caller, so the two can never
+// disagree.
+func ValidateDurationField(field, value string) error {
+	allowZero, ok := durationFieldsAllowZero[field]
+	if !ok {
+		return fmt.Errorf("unknown duration field %q", field)
+	}
+	return validateDuration(field, value, allowZero)
 }
 
 func validateDuration(name, value string, allowZero bool) error {

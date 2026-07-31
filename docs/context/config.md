@@ -8,7 +8,10 @@ runtime schema. `Default`, `DefaultPath`, horizon-protected settled `Load`/`Load
 settled `LoadReadOnly`/`LoadPathReadOnly`, explicitly unprotected
 `LoadUnsettled`/`LoadPathUnsettled`, and `Save` resolve and persist it.
 `AnnotatedSample` and `InitFile(path, force)` support `termp config init`. `Manager`
-watches a path and publishes validated changes.
+watches a path and publishes validated changes. `ValidateFeedbackURL` and
+`ValidateDurationField(field, value)` expose individual field validators so callers
+(the settings TUI) can reject a bad value at the point of entry using the exact rules
+`Load`/`Save` enforce, rather than re-implementing parsing.
 
 **Key files:** `internal/config/config.go` contains the schema, validation, platform-aware
 paths, annotated sample, initialization, load, and atomic save. `internal/config/manager.go`
@@ -335,6 +338,13 @@ identity, display, and resolved image fields are bounded before registry constru
 custom-tool display names must contain 2–128 characters.
 The feedback target is likewise bounded and restricted to an absolute HTTP(S) URL.
 Config reads are capped at 1 MiB before TOML decoding.
+
+The three duration-typed fields (`scan_interval`, `idle_clear_timeout`,
+`headliner_idle_timeout`) share one zero-value policy table, `durationFieldsAllowZero`
+(only `idle_clear_timeout` permits zero). Both load/save `validate` and the exported
+`ValidateDurationField` consult it, so the settings TUI cannot accept a value the next
+load would reject (#475); a bad value like `"5"` (no unit), `"0"`, `"fast"`, or
+`"2 minutes"` fails identically at entry and at load.
 
 Most watch tests write config changes atomically so they exercise malformed content
 rather than a truncation window. Dedicated regression tests use deliberately divergent,

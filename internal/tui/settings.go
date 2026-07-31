@@ -45,6 +45,10 @@ type row struct {
 	set         func(*config.Config, bool)
 	text        func(config.Config) string
 	apply       func(*config.Config, string)
+	// validate, when non-nil, rejects a bad edited value before it is
+	// applied so the settings TUI never writes a value that would fail
+	// config validation on the next load and lock the user out (#475).
+	validate func(string) error
 }
 
 type columnKind int
@@ -68,14 +72,22 @@ const maxPinResults = 6
 
 // Model is the testable Bubble Tea settings model.
 type Model struct {
-	cfg           config.Config
-	savedCfg      config.Config
-	columns       []settingsColumn
-	input         textinput.Model
-	editing       int
-	save          SaveFunc
-	openURL       OpenURLFunc
-	err           error
+	cfg      config.Config
+	savedCfg config.Config
+	columns  []settingsColumn
+	input    textinput.Model
+	editing  int
+	save     SaveFunc
+	openURL  OpenURLFunc
+	err      error
+	// editErr holds a rejected-edit validation error for the field the
+	// user is currently editing; it keeps the editor open so they can fix
+	// the value in place instead of committing a lock-out (#475).
+	editErr error
+	// notice is a persistent banner shown when settings opened against a
+	// config that could not be loaded, explaining what was wrong and that
+	// safe defaults are shown for repair (#475).
+	notice        string
 	status        string
 	saved         bool
 	saving        bool
@@ -121,6 +133,14 @@ func NewSettingsModel(cfg config.Config, tools []registry.Tool, rankedIDs []stri
 		openURL: openURL,
 		styles:  defaultStyles(cfg.UI.AccentColor),
 	}
+}
+
+// WithNotice attaches a persistent banner to the settings model, used when the
+// on-disk config could not be loaded and the editor opened against safe
+// defaults so the user can repair it (#475). An empty notice is a no-op.
+func (m Model) WithNotice(notice string) Model {
+	m.notice = notice
+	return m
 }
 
 // OrderToolsByUsage returns tools ranked by usage first, then by display name.
@@ -249,6 +269,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "esc":
 			m.editing = -1
+			m.editErr = nil
 			m.input.Blur()
 			return m, nil
 		}
@@ -336,7 +357,16 @@ func (m Model) View() string {
 	}
 	b.WriteString(m.columnsView())
 	b.WriteByte('\n')
-	if m.err != nil {
+	if m.notice != "" {
+		b.WriteString("\n")
+		b.WriteString(renderTerminalText(m.styles.warning, m.notice))
+		b.WriteByte('\n')
+	}
+	if m.editErr != nil {
+		b.WriteString("\n")
+		b.WriteString(renderTerminalText(m.styles.error, m.editErr.Error()))
+		b.WriteByte('\n')
+	} else if m.err != nil {
 		b.WriteString("\n")
 		b.WriteString(renderTerminalText(m.styles.error, "save failed: "+m.err.Error()))
 		b.WriteByte('\n')
@@ -516,7 +546,10 @@ func (m Model) visibleRowBudget() int {
 	if m.searching() {
 		fixedHeight++
 	}
-	if m.err != nil || m.saved || m.status != "" {
+	if m.notice != "" {
+		fixedHeight += 2
+	}
+	if m.editErr != nil || m.err != nil || m.saved || m.status != "" {
 		fixedHeight += 2
 	}
 	budget := m.height - fixedHeight
@@ -632,6 +665,7 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 		row.set(&m.cfg, !row.get(m.cfg))
 	case rowText:
 		m.editing = column.cursor
+		m.editErr = nil
 		m.input.Placeholder = ""
 		m.input.SetValue(row.text(m.cfg))
 		m.input.CursorEnd()
@@ -664,7 +698,19 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 func (m *Model) commitEdit() {
 	column := m.columns[len(m.columns)-1]
 	row := column.rows[m.editing]
-	row.apply(&m.cfg, strings.TrimSpace(m.input.Value()))
+	value := strings.TrimSpace(m.input.Value())
+	if row.validate != nil {
+		if err := row.validate(value); err != nil {
+			// Reject in place: keep the editor open with the offending
+			// text so the user can correct it, rather than accepting a
+			// value that would fail validation on the next load and
+			// lock them out of settings entirely (#475).
+			m.editErr = err
+			return
+		}
+	}
+	row.apply(&m.cfg, value)
+	m.editErr = nil
 	m.editing = -1
 	m.input.Blur()
 }
@@ -965,7 +1011,7 @@ func (m Model) startOpenFeedback() (tea.Model, tea.Cmd) {
 func settingsRows(tools []registry.Tool) []row {
 	global := []row{
 		toggle("Presence enabled", func(c config.Config) bool { return c.Enabled }, func(c *config.Config, v bool) { c.Enabled = v }),
-		text("Scan interval", func(c config.Config) string { return c.ScanInterval }, func(c *config.Config, v string) { c.ScanInterval = v }),
+		durationText("Scan interval", "scan_interval", func(c config.Config) string { return c.ScanInterval }, func(c *config.Config, v string) { c.ScanInterval = v }),
 		toggle("Automatic updates", func(c config.Config) bool { return c.AutoUpdate }, func(c *config.Config, v bool) { c.AutoUpdate = v }),
 	}
 	display := []row{
@@ -981,7 +1027,7 @@ func settingsRows(tools []registry.Tool) []row {
 	}
 	headliner := []row{
 		toggle("Activity switching", func(c config.Config) bool { return c.ActivitySwitching }, func(c *config.Config, v bool) { c.ActivitySwitching = v }),
-		text("Spotlight idle timeout", func(c config.Config) string { return c.HeadlinerIdleTimeout }, func(c *config.Config, v string) { c.HeadlinerIdleTimeout = v }),
+		durationText("Spotlight idle timeout", "headliner_idle_timeout", func(c config.Config) string { return c.HeadlinerIdleTimeout }, func(c *config.Config, v string) { c.HeadlinerIdleTimeout = v }),
 	}
 	pinChoices := make([]row, 0, len(tools))
 	for _, tool := range tools {
@@ -1024,4 +1070,17 @@ func toggle(label string, get func(config.Config) bool, set func(*config.Config,
 
 func text(label string, get func(config.Config) string, set func(*config.Config, string)) row {
 	return row{kind: rowText, label: label, text: get, apply: set}
+}
+
+// durationText builds a text row whose edits are validated as a duration-typed
+// config field (field is the config key, e.g. "scan_interval") before they are
+// applied, so a value like "5" with no unit is rejected at the point it is typed
+// instead of being written and locking the user out on the next load (#475). The
+// parse rules live in config.ValidateDurationField, never re-implemented here.
+func durationText(label, field string, get func(config.Config) string, set func(*config.Config, string)) row {
+	r := text(label, get, set)
+	r.validate = func(value string) error {
+		return config.ValidateDurationField(field, value)
+	}
+	return r
 }

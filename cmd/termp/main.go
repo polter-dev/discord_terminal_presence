@@ -2110,6 +2110,35 @@ func settings(args []string) error {
 	return settingsWithConfigLoader(args, terminal, config.Load)
 }
 
+// settingsLoadRecovery decides how the settings command should react to a
+// config load error (#475). It returns an optional banner notice to show in the
+// editor, and a fatal error the command should return instead of opening.
+//
+//   - No error: no notice, open normally.
+//   - ErrConfigBeingWritten: fatal. A whole-document write is in flight;
+//     opening now could overwrite it from a partial read, so ask the user to
+//     retry rather than editing against a guess (config.md, #438). The on-disk
+//     bytes are left untouched.
+//   - Any other error (an invalid value such as scan_interval = "5" with no
+//     unit, undecodable TOML, or an unreadable file): NOT fatal. Exiting 1
+//     here would leave settings -- the only tool that can repair the config --
+//     unreachable while every load fails closed with presence off, which is the
+//     lock-out this issue exists to fix. The caller opens the editor against the
+//     fail-closed fallback config (safe defaults, presence disabled) and shows
+//     the returned notice, which names the problem. Saving replaces the whole
+//     file, so any other authored values in the unloadable file are lost --
+//     disclosed in the notice because the invalid file could not be decoded to
+//     preserve them.
+func settingsLoadRecovery(loadErr error) (notice string, fatal error) {
+	if loadErr == nil {
+		return "", nil
+	}
+	if errors.Is(loadErr, config.ErrConfigBeingWritten) {
+		return "", loadErr
+	}
+	return fmt.Sprintf("Could not load your config, so safe defaults are shown (presence is off until it is valid): %v. Fix the value and save to write a valid config; this overwrites the current file.", loadErr), nil
+}
+
 func settingsWithConfigLoader(args []string, terminal bool, load func() (config.Config, error)) error {
 	fs := flag.NewFlagSet("settings", flag.ContinueOnError)
 	addVerboseFlag(fs)
@@ -2123,11 +2152,12 @@ func settingsWithConfigLoader(args []string, terminal bool, load func() (config.
 		fmt.Fprintln(os.Stderr, "termp settings requires an interactive terminal (TTY)")
 		return errors.New("settings requires a TTY")
 	}
-	cfg, err := loadConfigWithNotice(load, os.Stderr)
-	if err != nil {
-		return err
+	cfg, loadErr := loadConfigWithNotice(load, os.Stderr)
+	notice, fatal := settingsLoadRecovery(loadErr)
+	if fatal != nil {
+		return fatal
 	}
-	printCommandUpdateAlert("settings", args, isTerminal(os.Stderr), cfg, nil, os.Stderr)
+	printCommandUpdateAlert("settings", args, isTerminal(os.Stderr), cfg, loadErr, os.Stderr)
 	reg, err := registry.NewWithCustom(cfg.CustomTools...)
 	if err != nil {
 		return err
@@ -2140,7 +2170,7 @@ func settingsWithConfigLoader(args []string, terminal bool, load func() (config.
 	usageStore.Prune(registryToolIDs(reg.Tools()), time.Now())
 	model := tui.NewSettingsModel(cfg, reg.Tools(), usageStore.Rank(), func(next config.Config) error {
 		return config.Save(next, config.DefaultPath())
-	}, openInBrowser)
+	}, openInBrowser).WithNotice(notice)
 	_, err = tea.NewProgram(model, tea.WithAltScreen()).Run()
 	return err
 }

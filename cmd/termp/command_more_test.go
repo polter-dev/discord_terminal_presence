@@ -1047,3 +1047,35 @@ func TestOutputTextEdges(t *testing.T) {
 		t.Fatal("usage omitted global flags")
 	}
 }
+
+func TestSettingsLoadRecovery(t *testing.T) {
+	// #475: an invalid existing config must NOT be a fatal error for the
+	// settings command -- it opens against safe defaults with a notice so the
+	// user can repair it. An in-flight write (ErrConfigBeingWritten) stays
+	// fatal so a partial read cannot clobber the file.
+	invalid := errors.New(`scan_interval: invalid duration "5": time: missing unit in duration "5"`)
+
+	if notice, fatal := settingsLoadRecovery(nil); notice != "" || fatal != nil {
+		t.Fatalf("nil load error: got notice=%q fatal=%v, want empty/nil", notice, fatal)
+	}
+
+	notice, fatal := settingsLoadRecovery(invalid)
+	if fatal != nil {
+		t.Fatalf("invalid config was treated as fatal (would lock the user out): %v", fatal)
+	}
+	if notice == "" {
+		t.Fatal("invalid config produced no recovery notice")
+	}
+	if !strings.Contains(notice, invalid.Error()) {
+		t.Fatalf("recovery notice does not name the problem: %q", notice)
+	}
+
+	if _, fatal := settingsLoadRecovery(config.ErrConfigBeingWritten); !errors.Is(fatal, config.ErrConfigBeingWritten) {
+		t.Fatalf("ErrConfigBeingWritten must stay fatal, got %v", fatal)
+	}
+	// A wrapped busy error must also stay fatal.
+	wrapped := fmt.Errorf("load: %w", config.ErrConfigBeingWritten)
+	if _, fatal := settingsLoadRecovery(wrapped); !errors.Is(fatal, config.ErrConfigBeingWritten) {
+		t.Fatalf("wrapped ErrConfigBeingWritten must stay fatal, got %v", fatal)
+	}
+}
