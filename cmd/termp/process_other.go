@@ -70,10 +70,6 @@ func canonicalProcessTimeEnvironment(environment []string) []string {
 	return append(filtered, "LC_ALL=C", "TZ=UTC")
 }
 
-func signalTermpProcess(pid int) error {
-	return signalTermpProcessAtPath(pid, "")
-}
-
 func signalTermpProcessAtPath(pid int, expectedPath string) error {
 	if err := validateOtherProcess(pid, expectedPath); err != nil {
 		return err

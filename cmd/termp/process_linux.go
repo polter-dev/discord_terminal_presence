@@ -66,10 +66,6 @@ func processStartTime(pid int) (uint64, error) {
 	return startTime, nil
 }
 
-func signalTermpProcess(pid int) error {
-	return signalTermpProcessAtPath(pid, "")
-}
-
 func signalTermpProcessAtPath(pid int, expectedPath string) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")

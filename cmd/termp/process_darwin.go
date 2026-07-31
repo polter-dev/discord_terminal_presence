@@ -64,10 +64,6 @@ func processStartTime(pid int) (uint64, error) {
 	return uint64(kinfo.Proc.P_starttime.Sec)*1_000_000 + uint64(kinfo.Proc.P_starttime.Usec), nil
 }
 
-func signalTermpProcess(pid int) error {
-	return signalTermpProcessAtPath(pid, "")
-}
-
 func signalTermpProcessAtPath(pid int, expectedPath string) error {
 	first, err := validatedDarwinIdentity(pid, expectedPath)
 	if err != nil {
