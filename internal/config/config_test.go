@@ -3101,6 +3101,7 @@ func TestSaveDoesNotRewriteAllowlistMeaning(t *testing.T) {
 func TestSavePreservesAuthoredDirectoryAllowlistPaths(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	path := filepath.Join(t.TempDir(), "config.toml")
 	writeConfig(t, path, "enabled = true\n"+
 		"[privacy]\n"+

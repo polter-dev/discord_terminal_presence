@@ -287,7 +287,9 @@ Authored allowlist entries remain in their original form in the loaded `Config`;
 expansion and path cleaning happen lazily inside `DirectoryAllowed`. Consequently a
 whole-document save preserves portable entries such as `~/projects` instead of baking
 the current home directory into the user's config (#479). This applies to both global
-and per-tool allowlists. `permissivenessLoosened` remains unchanged: it still compares
+and per-tool allowlists. Tests that redirect home while exercising this expansion set
+both `HOME` and `USERPROFILE`, matching `os.UserHomeDir` on Unix and Windows respectively.
+`permissivenessLoosened` remains unchanged: it still compares
 the same resolved privacy posture dimensions through `Config.Resolve`, while the actual
 path expansion is deferred to the point where a candidate directory is checked.
 `DirectoryAllowed` treats a zero-length `DirectoryAllowlist` as "no restriction configured"
