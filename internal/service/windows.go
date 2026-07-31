@@ -31,9 +31,11 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 	if status.ForeignTask && !force {
 		return status, foreignTaskError(status.Message)
 	}
-	if canonical, err := canonicalWindowsExecutable(exe); err == nil {
-		exe = canonical
+	canonical, err := canonicalWindowsExecutable(exe)
+	if err != nil {
+		return State{Supported: true, Path: TaskName}, fmt.Errorf("canonicalize scheduled task executable %q: %w", exe, err)
 	}
+	exe = canonical
 	username := ""
 	if current, err := user.Current(); err == nil && current != nil {
 		username = strings.TrimSpace(current.Username)

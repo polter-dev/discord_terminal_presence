@@ -15,6 +15,12 @@ Windows autostart companion launcher lives in `cmd/termpw` (`-H=windowsgui`).
 definitions are owned by their executable command; foreign definitions are not modified
 without force.
 
+Executable resolution and install validation errors name both the failed operation and
+the path being checked, so platform path errors retain actionable termp context.
+Forced install still makes the supplied path absolute, but deliberately bypasses
+symlink resolution and unstable-path rejection. Windows task installation fails with
+the canonicalization error instead of silently registering the unresolved executable.
+
 Windows uses the stable scheduled-task name `\Terminal Presence\termp`. Keeping
 one well-known task preserves existing autostart registrations during upgrades
 and avoids leaving obsolete per-installation tasks behind.

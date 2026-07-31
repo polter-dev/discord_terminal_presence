@@ -62,25 +62,36 @@ func NewManager() Manager {
 
 func ResolveExecutable() (string, error) {
 	if invocationPath, err := exec.LookPath(os.Args[0]); err == nil {
-		return filepath.Abs(invocationPath)
+		absolutePath, err := filepath.Abs(invocationPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve executable path %q: %w", invocationPath, err)
+		}
+		return absolutePath, nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Abs(exe)
+	absolutePath, err := filepath.Abs(exe)
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path %q: %w", exe, err)
+	}
+	return absolutePath, nil
 }
 
 func ValidateInstallExecutable(exe string, force bool) (string, error) {
 	invocationPath, err := filepath.Abs(exe)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve executable path %q: %w", exe, err)
+	}
+	if force {
+		return invocationPath, nil
 	}
 	resolved, err := filepath.EvalSymlinks(invocationPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve executable symlinks for %q: %w", invocationPath, err)
 	}
-	if force || !isUnstableExecutablePath(resolved) {
+	if !isUnstableExecutablePath(resolved) {
 		return invocationPath, nil
 	}
 	return "", fmt.Errorf(
