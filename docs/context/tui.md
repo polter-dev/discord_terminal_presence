@@ -3,7 +3,9 @@
 **Purpose:** Owns terminal UI models and shared renderers for setup, settings, watch, and
 the Discord-card preview.
 
-**Public surface:** `NewSettingsModel` creates the progressive settings editor.
+**Public surface:** `NewSettingsModel` creates the progressive settings editor;
+`Model.WithNotice` attaches a persistent banner used when the command opened the editor
+against a config that could not be loaded.
 `NewSetupModel` creates onboarding and `WithCompletion` adds its default-off completion
 choice. `ConfirmDialog` provides reusable Yes/No confirmation. `RenderCard` is the pure
 preview renderer. `NewWatchModelWithClock`, `NewWatchModelWithConfig`, `ActivityMsg`, and
@@ -36,6 +38,16 @@ snapshot: `q` and top-level Esc on a dirty model offer save, discard, or cancel,
 clean model quits immediately; Esc still closes an open sub-column first, and Ctrl+C
 remains an unconditional terminal escape hatch. The feedback action revalidates its target
 as a bounded absolute HTTP(S) URL immediately before calling the platform opener.
+
+A text row may carry a `validate` hook; the duration fields (Scan interval, Spotlight
+idle timeout) wire it to `config.ValidateDurationField` so parsing is never
+re-implemented in the TUI. On commit, an invalid value is rejected in place: the value
+is not applied, the editor stays open with the offending text, and the error is shown
+below the table, so a value like `5` (no unit) can never be saved and lock the user out
+of settings on the next load (#475). Esc cancels and clears the error; starting a new
+edit clears it. Separately, `WithNotice` renders a persistent warning banner (used when
+the command recovered from an unloadable config and opened against fail-closed defaults),
+sized into the height budget alongside the save/status line.
 
 `RenderCard` does no I/O and never renders a raw asset URL. Watch stores already-resolved
 activities, caps recent featured-tool changes at five, and renders a persistent warning

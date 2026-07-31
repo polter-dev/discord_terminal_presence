@@ -152,6 +152,73 @@ func TestModelTextEdit(t *testing.T) {
 	}
 }
 
+func TestModelRejectsInvalidDurationEditInPlace(t *testing.T) {
+	// #475: typing an unparseable duration (e.g. "5" with no unit) into a
+	// duration field must be rejected at commit time -- the value is not
+	// applied, the editor stays open with the offending text, and an error
+	// is shown -- instead of being written and locking the user out on the
+	// next load.
+	model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
+	original := model.Config().ScanInterval
+	model = openCategory(t, model, "Global")
+	model.columns[1].cursor = findColumnRow(t, model, 1, rowText, "Scan interval")
+
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+	// Clear the pre-filled value, then type the invalid "5".
+	for range original {
+		updated, _ = model.Update(key("backspace"))
+		model = updated.(Model)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}})
+	model = updated.(Model)
+
+	updated, _ = model.Update(key("enter"))
+	model = updated.(Model)
+
+	if got := model.Config().ScanInterval; got != original {
+		t.Fatalf("invalid duration was applied: scan_interval = %q, want unchanged %q", got, original)
+	}
+	if model.editing < 0 {
+		t.Fatalf("editor closed after rejecting invalid value; it must stay open for correction")
+	}
+	if model.editErr == nil {
+		t.Fatalf("no edit error recorded for rejected value")
+	}
+	view := model.View()
+	if !strings.Contains(view, "scan_interval") || !strings.Contains(view, "invalid duration") {
+		t.Fatalf("rejection error not surfaced in view:\n%s", view)
+	}
+	if !strings.Contains(view, "type to edit  •  enter apply  •  esc cancel") {
+		t.Fatalf("editor hints not shown; editor did not stay open:\n%s", view)
+	}
+}
+
+func TestModelAcceptsValidDurationEdit(t *testing.T) {
+	// The validation guard must not reject a legitimate value.
+	model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
+	model = openCategory(t, model, "Global")
+	model.columns[1].cursor = findColumnRow(t, model, 1, rowText, "Scan interval")
+	updated, _ := model.Update(key("enter"))
+	model = updated.(Model)
+	for range model.Config().ScanInterval {
+		updated, _ = model.Update(key("backspace"))
+		model = updated.(Model)
+	}
+	for _, r := range "10s" {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model = updated.(Model)
+	}
+	updated, _ = model.Update(key("enter"))
+	model = updated.(Model)
+	if got := model.Config().ScanInterval; got != "10s" {
+		t.Fatalf("valid duration not applied: scan_interval = %q, want 10s", got)
+	}
+	if model.editing >= 0 || model.editErr != nil {
+		t.Fatalf("editor stayed open or errored on a valid value: editing=%d err=%v", model.editing, model.editErr)
+	}
+}
+
 func TestModelNavigationStaysInFocusedColumnAndBackClosesIt(t *testing.T) {
 	model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
 	model = openCategory(t, model, "Global")

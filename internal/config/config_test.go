@@ -3312,3 +3312,58 @@ func TestGeneratedConfigIsNotProvisional(t *testing.T) {
 		t.Fatal("the freshly generated config is classified as an in-flight write")
 	}
 }
+
+func TestValidateDurationField(t *testing.T) {
+	// #475: the exported per-field duration validator the settings TUI calls
+	// must apply exactly the rules Load/Save enforce, including each field's
+	// zero-value policy.
+	tests := []struct {
+		field   string
+		value   string
+		wantErr bool
+	}{
+		{"scan_interval", "5s", false},
+		{"scan_interval", "500ms", false},
+		{"scan_interval", "5", true},          // no unit -- the reported bug
+		{"scan_interval", "0", true},          // zero not allowed
+		{"scan_interval", "fast", true},       // not a duration
+		{"scan_interval", "2 minutes", true},  // bad unit
+		{"scan_interval", "-1s", true},        // negative
+		{"headliner_idle_timeout", "0", true}, // zero not allowed here either
+		{"headliner_idle_timeout", "30s", false},
+		{"idle_clear_timeout", "0", false}, // zero IS allowed for this field
+		{"idle_clear_timeout", "0s", false},
+		{"idle_clear_timeout", "5", true},
+		{"unknown_field", "5s", true}, // unknown key rejected, not silently OK
+	}
+	for _, tt := range tests {
+		err := ValidateDurationField(tt.field, tt.value)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("ValidateDurationField(%q, %q) err = %v, wantErr = %v", tt.field, tt.value, err, tt.wantErr)
+		}
+	}
+}
+
+func TestValidateDurationFieldMatchesLoadValidation(t *testing.T) {
+	// The exported validator and the internal load-time validate() must agree
+	// on the zero policy so a value accepted at the TUI cannot be rejected on
+	// the next load (or vice versa). Drive validate() through a real config for
+	// the one field whose policy differs (idle_clear_timeout allows zero).
+	cfg := Default()
+	cfg.IdleClearTimeout = "0"
+	if err := validate(&cfg, false); err != nil {
+		t.Fatalf("validate() rejected idle_clear_timeout = 0, which ValidateDurationField allows: %v", err)
+	}
+	if err := ValidateDurationField("idle_clear_timeout", "0"); err != nil {
+		t.Fatalf("ValidateDurationField rejected idle_clear_timeout = 0: %v", err)
+	}
+
+	cfg = Default()
+	cfg.ScanInterval = "0"
+	if err := validate(&cfg, false); err == nil {
+		t.Fatal("validate() accepted scan_interval = 0, which ValidateDurationField rejects")
+	}
+	if err := ValidateDurationField("scan_interval", "0"); err == nil {
+		t.Fatal("ValidateDurationField accepted scan_interval = 0")
+	}
+}

@@ -355,6 +355,22 @@ ordinary settle budget from durably erasing the user's opt-out and unrelated set
 commands propagate it before any save or TUI work, leaving the file byte-identical.
 Their normal nonblank path still adds only the ordinary settle interval.
 
+An existing config that fails to load for any *other* reason — an invalid value
+(e.g. `scan_interval = "5"` with no unit), undecodable TOML, or an unreadable
+file — is not fatal for `settings` (#475). Exiting non-zero there left settings,
+the only tool that can repair the file, unreachable while every load fails closed
+with presence off. `settingsLoadRecovery` (`cmd/termp/main.go`) classifies the
+load error: `ErrConfigBeingWritten` stays fatal (a partial read must not clobber
+an in-flight whole-document write, #438), any other error is recovered. On
+recovery `settings` opens the editor against the fail-closed fallback config
+(safe defaults, presence off) and shows a persistent banner naming the problem;
+`status` already surfaced the same failure. Saving from that recovered editor
+writes a full valid document, so any other authored values in the unloadable file
+are lost — the banner discloses this, because the invalid file could not be
+decoded to preserve them. Duration edits inside the editor are validated at the
+point of entry, so the editor cannot itself write back a value that would trip
+this recovery on the next load.
+
 A genuinely blank config is deliberately ambiguous and the resulting wait is correct
 (#438/#434), but a silent multi-second pause with no output looked like a hang: `setup`
 and `settings` sat for the full ~3s horizon, and `status`/the `version` subcommand paid
