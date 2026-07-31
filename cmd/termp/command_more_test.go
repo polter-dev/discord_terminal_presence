@@ -927,7 +927,7 @@ func TestLegacyPIDRecordCannotAuthorizeProcessIdentity(t *testing.T) {
 	if record.PID != 4242 || record.StartTime != 0 || record.StartTimeUnavailable {
 		t.Fatalf("legacy PID record = %+v, want pid 4242 without start time", record)
 	}
-	if pidRecordIdentityMatches(record, func(int) bool { return true }, func(int) bool { return true }) {
+	if pidRecordIdentityMatches(record, func(int) bool { return true }, func(int, string) bool { return true }) {
 		t.Fatal("legacy PID record without a start time authorized process identity")
 	}
 }
@@ -938,11 +938,11 @@ func TestProcessIdentityRequiresMatchingStartTime(t *testing.T) {
 	t.Cleanup(func() { lookupProcessStartTime = oldLookup })
 
 	alive := func(int) bool { return true }
-	looksLike := func(int) bool { return true }
-	if !processIdentityMatches(42, 100, alive, looksLike) {
+	looksLike := func(int, string) bool { return true }
+	if !processIdentityMatches(42, 100, "", alive, looksLike) {
 		t.Fatal("matching process start time was rejected")
 	}
-	if processIdentityMatches(42, 101, alive, looksLike) {
+	if processIdentityMatches(42, 101, "", alive, looksLike) {
 		t.Fatal("mismatched process start time was accepted")
 	}
 }
@@ -954,10 +954,10 @@ func TestProcessIdentityFallsBackWhenStartTimeLookupFails(t *testing.T) {
 	}
 	t.Cleanup(func() { lookupProcessStartTime = oldLookup })
 
-	if !processIdentityMatches(42, 100, func(int) bool { return true }, func(int) bool { return true }) {
+	if !processIdentityMatches(42, 100, "", func(int) bool { return true }, func(int, string) bool { return true }) {
 		t.Fatal("live termp process was rejected when its start time could not be verified")
 	}
-	if processIdentityMatches(42, 100, func(int) bool { return true }, func(int) bool { return false }) {
+	if processIdentityMatches(42, 100, "", func(int) bool { return true }, func(int, string) bool { return false }) {
 		t.Fatal("non-termp process was accepted when its start time could not be verified")
 	}
 }
@@ -974,7 +974,7 @@ func TestWaitForProcessExitTreatsPIDReuseAsExit(t *testing.T) {
 		time.Second,
 		time.Millisecond,
 		func(int) bool { return true },
-		func(int) bool { return true },
+		func(int, string) bool { return true },
 		func(time.Duration) {
 			sleeps++
 			currentStartTime = 200
@@ -998,8 +998,8 @@ func TestStopDaemonRejectsMismatchedStartTime(t *testing.T) {
 	signaled := false
 	_, err = stopDaemon(path, time.Second, time.Millisecond,
 		func(int) bool { return true },
-		func(int) bool { return true },
-		func(int) error {
+		func(int, string) bool { return true },
+		func(int, string) error {
 			signaled = true
 			return nil
 		},

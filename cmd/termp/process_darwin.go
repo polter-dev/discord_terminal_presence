@@ -30,8 +30,24 @@ func processAlive(pid int) bool {
 }
 
 func processLooksLikeTermp(pid int) bool {
-	_, err := validatedDarwinIdentity(pid)
+	return processLooksLikeTermpAtPath(pid, "")
+}
+
+func processLooksLikeTermpAtPath(pid int, expectedPath string) bool {
+	_, err := validatedDarwinIdentity(pid, expectedPath)
 	return err == nil
+}
+
+func currentProcessExecutablePath() (string, error) {
+	currentPath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine current executable: %w", err)
+	}
+	currentPath, err = normalizeDarwinExecutablePath(currentPath)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve current executable: %w", err)
+	}
+	return currentPath, nil
 }
 
 func processStartTime(pid int) (uint64, error) {
@@ -48,12 +64,12 @@ func processStartTime(pid int) (uint64, error) {
 	return uint64(kinfo.Proc.P_starttime.Sec)*1_000_000 + uint64(kinfo.Proc.P_starttime.Usec), nil
 }
 
-func signalTermpProcess(pid int) error {
-	first, err := validatedDarwinIdentity(pid)
+func signalTermpProcessAtPath(pid int, expectedPath string) error {
+	first, err := validatedDarwinIdentity(pid, expectedPath)
 	if err != nil {
 		return err
 	}
-	second, err := validatedDarwinIdentity(pid)
+	second, err := validatedDarwinIdentity(pid, expectedPath)
 	if err != nil {
 		return err
 	}
@@ -68,7 +84,7 @@ func signalTermpProcess(pid int) error {
 	return nil
 }
 
-func validatedDarwinIdentity(pid int) (darwinProcessIdentity, error) {
+func validatedDarwinIdentity(pid int, expectedPath string) (darwinProcessIdentity, error) {
 	if pid <= 0 {
 		return darwinProcessIdentity{}, errors.New("invalid PID")
 	}
@@ -76,21 +92,29 @@ func validatedDarwinIdentity(pid int) (darwinProcessIdentity, error) {
 	if err != nil {
 		return darwinProcessIdentity{}, fmt.Errorf("cannot inspect process: %w", err)
 	}
-	currentPath, err := os.Executable()
-	if err != nil {
-		return darwinProcessIdentity{}, fmt.Errorf("cannot determine current executable: %w", err)
+	if expectedPath == "" {
+		expectedPath, err = currentProcessExecutablePath()
+		if err != nil {
+			return darwinProcessIdentity{}, err
+		}
+	} else {
+		expectedPath = filepath.Clean(expectedPath)
 	}
-	currentPath, err = normalizeDarwinExecutablePath(currentPath)
-	if err != nil {
-		return darwinProcessIdentity{}, fmt.Errorf("cannot resolve current executable: %w", err)
-	}
-	imagePath, err := darwinProcessImage(pid)
+	rawImagePath, err := darwinProcessImage(pid)
 	if err != nil {
 		return darwinProcessIdentity{}, err
 	}
-	imagePath, err = normalizeDarwinExecutablePath(imagePath)
+	imagePath, err := normalizeDarwinExecutablePath(rawImagePath)
 	if err != nil {
-		return darwinProcessIdentity{}, fmt.Errorf("cannot resolve process executable: %w", err)
+		// A package upgrade can unlink the old image while the daemon is still
+		// running. The PID record already contains the canonical path captured
+		// at startup, and proc_pidpath returns the kernel's image path, so retain
+		// that absolute identity when there is no longer a file to resolve.
+		imagePath, err = filepath.Abs(rawImagePath)
+		if err != nil {
+			return darwinProcessIdentity{}, fmt.Errorf("cannot resolve process executable: %w", err)
+		}
+		imagePath = filepath.Clean(imagePath)
 	}
 	identity := darwinProcessIdentity{
 		uid:       kinfo.Eproc.Ucred.Uid,
@@ -98,8 +122,8 @@ func validatedDarwinIdentity(pid int) (darwinProcessIdentity, error) {
 		startSec:  kinfo.Proc.P_starttime.Sec,
 		startUsec: kinfo.Proc.P_starttime.Usec,
 	}
-	if !darwinIdentityMatches(identity.uid, uint32(os.Geteuid()), identity.path, currentPath) {
-		return darwinProcessIdentity{}, errors.New("process executable or owner does not match current termp")
+	if !darwinIdentityMatches(identity.uid, uint32(os.Geteuid()), identity.path, expectedPath) {
+		return darwinProcessIdentity{}, errors.New("process executable or owner does not match recorded termp daemon")
 	}
 	return identity, nil
 }

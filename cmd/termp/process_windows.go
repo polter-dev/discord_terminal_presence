@@ -27,6 +27,10 @@ func processAlive(pid int) bool {
 }
 
 func processLooksLikeTermp(pid int) bool {
+	return processLooksLikeTermpAtPath(pid, "")
+}
+
+func processLooksLikeTermpAtPath(pid int, expectedPath string) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -35,7 +39,15 @@ func processLooksLikeTermp(pid int) bool {
 		return false
 	}
 	defer windows.CloseHandle(handle)
-	return validateWindowsProcessHandle(handle) == nil
+	return validateWindowsProcessHandle(handle, expectedPath) == nil
+}
+
+func currentProcessExecutablePath() (string, error) {
+	path, err := processImagePath(windows.CurrentProcess())
+	if err != nil {
+		return "", fmt.Errorf("cannot determine current image path: %w", err)
+	}
+	return normalizeWindowsImagePath(path), nil
 }
 
 func processStartTime(pid int) (uint64, error) {
@@ -54,10 +66,23 @@ func processStartTime(pid int) (uint64, error) {
 	return uint64(creation.HighDateTime)<<32 | uint64(creation.LowDateTime), nil
 }
 
-func signalTermpProcess(pid int) error {
+func signalTermpProcessAtPath(pid int, expectedPath string) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")
 	}
+	handle, err := windowsOpenProcess(
+		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE,
+		false,
+		uint32(pid),
+	)
+	if err != nil {
+		return fmt.Errorf("cannot open process: %w", err)
+	}
+	defer windowsCloseHandle(handle)
+	if err := validateWindowsProcessHandleForSignal(handle, expectedPath); err != nil {
+		return err
+	}
+
 	name, nameErr := windows.UTF16PtrFromString(shutdownEventName(pid))
 	if nameErr == nil {
 		event, err := windowsOpenEvent(windows.EVENT_MODIFY_STATE, false, name)
@@ -71,18 +96,6 @@ func signalTermpProcess(pid int) error {
 		debugf("shutdown event name invalid: %v", nameErr)
 	}
 
-	handle, err := windowsOpenProcess(
-		windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE,
-		false,
-		uint32(pid),
-	)
-	if err != nil {
-		return fmt.Errorf("cannot open process: %w", err)
-	}
-	defer windowsCloseHandle(handle)
-	if err := validateWindowsProcessHandleForSignal(handle); err != nil {
-		return err
-	}
 	// Validation and termination use the same kernel handle, so PID recycling
 	// cannot redirect termination to another process.
 	if err := windowsTerminateProcess(handle, 1); err != nil {
@@ -100,7 +113,7 @@ var (
 	validateWindowsProcessHandleForSignal = validateWindowsProcessHandle
 )
 
-func validateWindowsProcessHandle(handle windows.Handle) error {
+func validateWindowsProcessHandle(handle windows.Handle, expectedPath string) error {
 	var exitCode uint32
 	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
 		return fmt.Errorf("cannot determine process state: %w", err)
@@ -120,12 +133,16 @@ func validateWindowsProcessHandle(handle windows.Handle) error {
 	if err != nil {
 		return fmt.Errorf("cannot determine process image path: %w", err)
 	}
-	currentPath, err := processImagePath(windows.CurrentProcess())
-	if err != nil {
-		return fmt.Errorf("cannot determine current image path: %w", err)
+	if expectedPath == "" {
+		expectedPath, err = currentProcessExecutablePath()
+		if err != nil {
+			return err
+		}
+	} else {
+		expectedPath = normalizeWindowsImagePath(expectedPath)
 	}
-	if !windowsIdentityMatches(actualSID, currentSID, actualPath, currentPath) {
-		return errors.New("process executable or owner SID does not match current termp")
+	if !windowsIdentityMatches(actualSID, currentSID, actualPath, expectedPath) {
+		return errors.New("process executable or owner SID does not match recorded termp daemon")
 	}
 	return nil
 }

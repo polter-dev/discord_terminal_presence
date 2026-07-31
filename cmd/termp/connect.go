@@ -21,7 +21,7 @@ type connectCommandDeps struct {
 	readFresh    func(string, time.Time, time.Duration) (daemonDiscordState, bool)
 	readPID      func(string) (daemonPIDRecord, error)
 	alive        func(int) bool
-	looksLike    func(int) bool
+	looksLike    func(int, string) bool
 	send         func(context.Context, int, controlRequest) (controlResponse, error)
 	sleep        func(time.Duration)
 	pidPath      string
@@ -41,7 +41,7 @@ func defaultConnectCommandDeps() connectCommandDeps {
 			return record, err
 		},
 		alive:        processAlive,
-		looksLike:    processLooksLikeTermp,
+		looksLike:    processLooksLikeTermpAtPath,
 		send:         sendControlRequest,
 		sleep:        time.Sleep,
 		pidPath:      pidFilePath(),
@@ -85,7 +85,7 @@ func connectCommandWith(args []string, output, errorOutput io.Writer, deps conne
 	now := deps.now()
 	targetPID := 0
 	if state, ok := deps.readFresh(deps.discordPath, now, daemonDiscordStateStaleAfter); ok &&
-		processIdentityMatches(state.PID, state.StartTime, deps.alive, deps.looksLike) {
+		processIdentityMatches(state.PID, state.StartTime, state.ExecutablePath, deps.alive, deps.looksLike) {
 		targetPID = state.PID
 	}
 	if targetPID == 0 {

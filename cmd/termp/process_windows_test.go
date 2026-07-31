@@ -94,9 +94,12 @@ func TestSignalTermpProcessFallsBackToTerminateWhenSetEventFails(t *testing.T) {
 		}
 		return processHandle, nil
 	}
-	validateWindowsProcessHandleForSignal = func(handle windows.Handle) error {
+	validateWindowsProcessHandleForSignal = func(handle windows.Handle, expectedPath string) error {
 		if handle != processHandle {
 			t.Fatalf("validate handle = %v, want %v", handle, processHandle)
+		}
+		if expectedPath != "" {
+			t.Fatalf("expected path = %q, want legacy current-process lookup", expectedPath)
 		}
 		return nil
 	}
@@ -112,8 +115,8 @@ func TestSignalTermpProcessFallsBackToTerminateWhenSetEventFails(t *testing.T) {
 		return nil
 	}
 
-	if err := signalTermpProcess(1234); err != nil {
-		t.Fatalf("signalTermpProcess returned error: %v", err)
+	if err := signalTermpProcessAtPath(1234, ""); err != nil {
+		t.Fatalf("signalTermpProcessAtPath returned error: %v", err)
 	}
 	if !openedProcess || !terminated {
 		t.Fatalf("fallback openedProcess=%t terminated=%t, want both true", openedProcess, terminated)

@@ -23,7 +23,23 @@ func processAlive(pid int) bool {
 }
 
 func processLooksLikeTermp(pid int) bool {
-	return validateLinuxProcess(pid) == nil
+	return processLooksLikeTermpAtPath(pid, "")
+}
+
+func processLooksLikeTermpAtPath(pid int, expectedPath string) bool {
+	return validateLinuxProcess(pid, expectedPath) == nil
+}
+
+func currentProcessExecutablePath() (string, error) {
+	currentPath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine current executable: %w", err)
+	}
+	currentPath, err = normalizeLinuxExecutablePath(currentPath)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve current executable: %w", err)
+	}
+	return currentPath, nil
 }
 
 func processStartTime(pid int) (uint64, error) {
@@ -50,7 +66,7 @@ func processStartTime(pid int) (uint64, error) {
 	return startTime, nil
 }
 
-func signalTermpProcess(pid int) error {
+func signalTermpProcessAtPath(pid int, expectedPath string) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")
 	}
@@ -58,7 +74,7 @@ func signalTermpProcess(pid int) error {
 	pidfd, err := unix.PidfdOpen(pid, 0)
 	if err == nil {
 		defer unix.Close(pidfd)
-		if err := validateLinuxProcess(pid); err != nil {
+		if err := validateLinuxProcess(pid, expectedPath); err != nil {
 			return err
 		}
 		fdinfo, err := os.ReadFile(filepath.Join("/proc/self/fdinfo", strconv.Itoa(pidfd)))
@@ -70,7 +86,7 @@ func signalTermpProcess(pid int) error {
 		}
 		if err := unix.PidfdSendSignal(pidfd, unix.SIGTERM, nil, 0); err != nil {
 			if pidfdUnavailable(err) {
-				return signalLinuxByPID(pid)
+				return signalLinuxByPID(pid, expectedPath)
 			}
 			return fmt.Errorf("pidfd signal failed: %w", err)
 		}
@@ -82,11 +98,11 @@ func signalTermpProcess(pid int) error {
 
 	// Older kernels and restricted runtimes cannot create pidfds. Re-check the
 	// full identity immediately before the PID-based signal.
-	return signalLinuxByPID(pid)
+	return signalLinuxByPID(pid, expectedPath)
 }
 
-func signalLinuxByPID(pid int) error {
-	if err := validateLinuxProcess(pid); err != nil {
+func signalLinuxByPID(pid int, expectedPath string) error {
+	if err := validateLinuxProcess(pid, expectedPath); err != nil {
 		return err
 	}
 	if err := unix.Kill(pid, unix.SIGTERM); err != nil {
@@ -115,17 +131,18 @@ func pidfdUnavailable(err error) bool {
 		errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES)
 }
 
-func validateLinuxProcess(pid int) error {
+func validateLinuxProcess(pid int, expectedPath string) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")
 	}
-	currentPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("cannot determine current executable: %w", err)
-	}
-	currentPath, err = normalizeLinuxExecutablePath(currentPath)
-	if err != nil {
-		return fmt.Errorf("cannot resolve current executable: %w", err)
+	var err error
+	if expectedPath == "" {
+		expectedPath, err = currentProcessExecutablePath()
+		if err != nil {
+			return err
+		}
+	} else {
+		expectedPath = filepath.Clean(expectedPath)
 	}
 
 	procPath := filepath.Join("/proc", strconv.Itoa(pid))
@@ -141,8 +158,8 @@ func validateLinuxProcess(pid int) error {
 	if err != nil {
 		return fmt.Errorf("cannot resolve process executable: %w", err)
 	}
-	if !linuxIdentityMatches(stat.Uid, uint32(os.Geteuid()), targetPath, currentPath) {
-		return errors.New("process executable or owner does not match current termp")
+	if !linuxIdentityMatches(stat.Uid, uint32(os.Geteuid()), targetPath, expectedPath) {
+		return errors.New("process executable or owner does not match recorded termp daemon")
 	}
 	return nil
 }
@@ -161,7 +178,14 @@ func resolveLinuxProcessExecutablePath(procExePath string) (string, error) {
 		return "", resolveErr
 	}
 	targetPath = strings.TrimSuffix(targetPath, deletedSuffix)
-	return normalizeLinuxExecutablePath(targetPath)
+	if normalized, err := normalizeLinuxExecutablePath(targetPath); err == nil {
+		return normalized, nil
+	}
+	absolute, err := filepath.Abs(targetPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolute), nil
 }
 
 func normalizeLinuxExecutablePath(path string) (string, error) {

@@ -17,7 +17,7 @@ func baseConnectDeps(now time.Time) connectCommandDeps {
 		readFresh: func(string, time.Time, time.Duration) (daemonDiscordState, bool) { return daemonDiscordState{}, false },
 		readPID:   func(string) (daemonPIDRecord, error) { return daemonPIDRecord{}, errors.New("missing") },
 		alive:     func(int) bool { return false },
-		looksLike: func(int) bool { return false },
+		looksLike: func(int, string) bool { return false },
 		send: func(context.Context, int, controlRequest) (controlResponse, error) {
 			return controlResponse{}, errors.New("unexpected send")
 		},
@@ -69,7 +69,7 @@ func TestConnectCommandTargetsPublisherAndWaitsForNewConnectedState(t *testing.T
 		return daemonPIDRecord{PID: 11, StartTime: fixtureProcessStartTime}, nil
 	}
 	deps.alive = func(pid int) bool { return pid == 11 || pid == 22 }
-	deps.looksLike = deps.alive
+	deps.looksLike = func(pid int, _ string) bool { return deps.alive(pid) }
 	states := []daemonDiscordState{
 		{PID: 22, StartTime: fixtureProcessStartTime, Connected: false, UpdatedAt: now},
 		{PID: 22, StartTime: fixtureProcessStartTime, Connected: false, UpdatedAt: now},
@@ -109,7 +109,7 @@ func TestConnectCommandFallsBackToPIDRecordWithUnavailableStartTime(t *testing.T
 		return daemonPIDRecord{PID: 42, StartTimeUnavailable: true}, nil
 	}
 	deps.alive = func(pid int) bool { return pid == 42 }
-	deps.looksLike = deps.alive
+	deps.looksLike = func(pid int, _ string) bool { return deps.alive(pid) }
 	targetPID := 0
 	deps.send = func(_ context.Context, pid int, _ controlRequest) (controlResponse, error) {
 		targetPID = pid
@@ -133,7 +133,7 @@ func TestConnectCommandSurfacesReconnectFailureWithoutSuccess(t *testing.T) {
 		return daemonPIDRecord{PID: 42, StartTime: fixtureProcessStartTime}, nil
 	}
 	deps.alive = func(pid int) bool { return pid == 42 }
-	deps.looksLike = deps.alive
+	deps.looksLike = func(pid int, _ string) bool { return deps.alive(pid) }
 	deps.send = func(context.Context, int, controlRequest) (controlResponse, error) {
 		return controlResponse{}, errors.New("Discord IPC endpoint not found")
 	}
@@ -158,7 +158,7 @@ func TestConnectCommandTimeoutDoesNotReportSuccess(t *testing.T) {
 		return daemonPIDRecord{PID: 42, StartTime: fixtureProcessStartTime}, nil
 	}
 	deps.alive = func(pid int) bool { return pid == 42 }
-	deps.looksLike = deps.alive
+	deps.looksLike = func(pid int, _ string) bool { return deps.alive(pid) }
 	deps.readState = func(string) (daemonDiscordState, bool) {
 		return daemonDiscordState{PID: 42, Connected: false, UpdatedAt: now}, true
 	}
@@ -184,7 +184,7 @@ func TestConnectCommandReportsAlreadyConnected(t *testing.T) {
 		return daemonPIDRecord{PID: 42, StartTime: fixtureProcessStartTime}, nil
 	}
 	deps.alive = func(pid int) bool { return pid == 42 }
-	deps.looksLike = deps.alive
+	deps.looksLike = func(pid int, _ string) bool { return deps.alive(pid) }
 	deps.send = func(_ context.Context, _ int, request controlRequest) (controlResponse, error) {
 		if request.Force {
 			t.Fatal("ordinary connect unexpectedly forced reconnect")
