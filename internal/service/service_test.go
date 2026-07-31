@@ -1432,7 +1432,7 @@ func TestWindowsInstallDefinitionReconcilesOwnedTaskWithoutLaunching(t *testing.
 }
 
 func TestBuildWindowsTaskXMLWritesUTF16WithBOM(t *testing.T) {
-	data, err := BuildWindowsTaskXML(`C:\termp.exe`, `DOMAIN\user`)
+	data, err := BuildWindowsTaskXML(`C:\termp.exe`, "start --foreground", `DOMAIN\user`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1446,7 +1446,7 @@ func TestBuildWindowsTaskXMLWritesUTF16WithBOM(t *testing.T) {
 }
 
 func TestBuildWindowsTaskXMLEscapesInterpolatedValues(t *testing.T) {
-	data, err := BuildWindowsTaskXML(`C:\A&B\<termp>\termp.exe`, `DOMAIN\a&b<user>`)
+	data, err := BuildWindowsTaskXML(`C:\A&B\<termp>\termp.exe`, "start --foreground", `DOMAIN\a&b<user>`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1467,7 +1467,7 @@ func TestBuildWindowsTaskXMLEscapesInterpolatedValues(t *testing.T) {
 }
 
 func TestBuildWindowsTaskXMLRestartsConservativelyOnFailure(t *testing.T) {
-	data, err := BuildWindowsTaskXML(`C:\termp.exe`, `DOMAIN\user`)
+	data, err := BuildWindowsTaskXML(`C:\termp.exe`, "start --foreground", `DOMAIN\user`)
 	if err != nil {
 		t.Fatal(err)
 	}
