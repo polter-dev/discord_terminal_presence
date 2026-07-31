@@ -574,6 +574,117 @@ func TestModelMenuSaveAndQuitActions(t *testing.T) {
 	})
 }
 
+func TestModelKeyboardQuitProtectsUnsavedChanges(t *testing.T) {
+	dirtyModel := func(t *testing.T, save SaveFunc) Model {
+		t.Helper()
+		model := NewSettingsModel(config.Default(), nil, nil, save, nil)
+		model = openCategory(t, model, "Global")
+		model.columns[1].cursor = findColumnRow(t, model, 1, rowToggle, "Presence enabled")
+		updated, _ := model.Update(key(" "))
+		model = updated.(Model)
+		if !model.dirty() {
+			t.Fatal("changed model should be dirty")
+		}
+		updated, _ = model.Update(key("esc"))
+		model = updated.(Model)
+		if len(model.columns) != 1 || model.confirm != nil || model.quitting {
+			t.Fatal("Esc on a dirty sub-column should close it without confirming or quitting")
+		}
+		return model
+	}
+
+	for _, quitKey := range []string{"q", "esc"} {
+		t.Run("dirty "+quitKey+" offers save discard and cancel", func(t *testing.T) {
+			saveCalls := 0
+			model := dirtyModel(t, func(config.Config) error {
+				saveCalls++
+				return nil
+			})
+
+			updated, cmd := model.Update(key(quitKey))
+			model = updated.(Model)
+			if cmd != nil || model.quitting || model.confirm == nil {
+				t.Fatalf("dirty %s should open a confirmation without quitting", quitKey)
+			}
+			if model.confirmAction != rowDirtyQuit || model.confirm.Highlighted() != ConfirmYes {
+				t.Fatalf("dirty %s confirmation = action %v, highlight %v; want dirty quit, YES", quitKey, model.confirmAction, model.confirm.Highlighted())
+			}
+			if !strings.Contains(model.View(), "Save changes before quitting?") {
+				t.Fatalf("dirty %s confirmation not rendered:\n%s", quitKey, model.View())
+			}
+
+			updated, _ = model.Update(key("esc"))
+			model = updated.(Model)
+			if model.confirm != nil || model.quitting || saveCalls != 0 {
+				t.Fatalf("canceling dirty %s should return without saving or quitting", quitKey)
+			}
+
+			updated, _ = model.Update(key(quitKey))
+			model = updated.(Model)
+			updated, _ = model.Update(key("right"))
+			model = updated.(Model)
+			updated, cmd = model.Update(key("enter"))
+			model = updated.(Model)
+			if cmd != nil || model.quitting || model.confirm == nil {
+				t.Fatalf("declining save after dirty %s should offer discard without quitting", quitKey)
+			}
+			if model.confirmAction != rowQuit || model.confirm.Highlighted() != ConfirmNo {
+				t.Fatalf("dirty %s discard confirmation = action %v, highlight %v; want quit, NO", quitKey, model.confirmAction, model.confirm.Highlighted())
+			}
+			if !strings.Contains(model.View(), "Discard changes and quit?") {
+				t.Fatalf("dirty %s discard confirmation not rendered:\n%s", quitKey, model.View())
+			}
+			updated, _ = model.Update(key("left"))
+			model = updated.(Model)
+			updated, cmd = model.Update(key("enter"))
+			model = updated.(Model)
+			if cmd == nil || !model.quitting || saveCalls != 0 {
+				t.Fatalf("discarding after dirty %s should quit without saving", quitKey)
+			}
+		})
+	}
+
+	t.Run("save persists before quitting", func(t *testing.T) {
+		saveCalls := 0
+		model := dirtyModel(t, func(config.Config) error {
+			saveCalls++
+			return nil
+		})
+		updated, _ := model.Update(key("q"))
+		model = updated.(Model)
+		updated, saveCmd := model.Update(key("enter"))
+		model = updated.(Model)
+		if saveCmd == nil || model.quitting || saveCalls != 0 {
+			t.Fatal("choosing save should start an asynchronous save before quitting")
+		}
+		updated, quitCmd := model.Update(saveCmd())
+		model = updated.(Model)
+		if quitCmd == nil || !model.quitting || saveCalls != 1 || model.dirty() {
+			t.Fatal("successful guarded save should clear dirty state and quit")
+		}
+	})
+
+	t.Run("ctrl+c remains unconditional", func(t *testing.T) {
+		model := dirtyModel(t, nil)
+		updated, cmd := model.Update(key("ctrl+c"))
+		model = updated.(Model)
+		if cmd == nil || !model.quitting || model.confirm != nil {
+			t.Fatal("ctrl+c should quit a dirty model immediately without confirmation")
+		}
+	})
+
+	for _, quitKey := range []string{"q", "esc"} {
+		t.Run("clean "+quitKey+" quits immediately", func(t *testing.T) {
+			model := NewSettingsModel(config.Default(), nil, nil, nil, nil)
+			updated, cmd := model.Update(key(quitKey))
+			model = updated.(Model)
+			if cmd == nil || !model.quitting || model.confirm != nil {
+				t.Fatalf("clean %s should quit immediately without confirmation", quitKey)
+			}
+		})
+	}
+}
+
 func TestModelNarrowWidthDropsWholeLeftColumnsAndStaysGlyphSafe(t *testing.T) {
 	model := NewSettingsModel(config.Default(), []registry.Tool{
 		{ID: "wide", DisplayName: "界界界 Tool"},
