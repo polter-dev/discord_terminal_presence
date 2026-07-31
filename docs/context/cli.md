@@ -303,6 +303,10 @@ interactive-watch, and `watch --once` config warnings share one logging helper t
 both iteration and single-line sanitization. The
 package-manager-unknown update guidance from `internal/update` is the concrete case that
 motivated the collapsing: it joins Debian and RPM instructions with a blank line.
+`TestBuildActivityDirectoryPrivacy` guards the final outgoing `presence.Activity.State`
+boundary: the directory stays absent under the default `show_directory = false`, when
+the cwd is outside the effective allowlist, and under a per-tool opt-out, while an
+allowlisted cwd is present as a non-vacuous control (#478).
 Per-tool enablement is passed into detector selection, and hot reloads that change it
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
 Live watch loads the daemon's episode anchors for matching elapsed-time display but runs
