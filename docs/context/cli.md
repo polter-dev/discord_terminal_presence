@@ -306,7 +306,12 @@ motivated the collapsing: it joins Debian and RPM instructions with a blank line
 `TestBuildActivityDirectoryPrivacy` guards the final outgoing `presence.Activity.State`
 boundary: the directory stays absent under the default `show_directory = false`, when
 the cwd is outside the effective allowlist, and under a per-tool opt-out, while an
-allowlisted cwd is present as a non-vacuous control (#478).
+allowlisted cwd is present as a non-vacuous control (#478). The same table also
+guards `directory_basename_only` at that boundary (#484): with the cwd allowlisted,
+basename-only publishes only the final segment (`📁 project`) while `basename_only =
+false` publishes the fuller two-segment form (`📁 private/project`), and a per-tool
+`directory_basename_only` override reasserts basename-only over a global full-path
+setting — mutating `presence.DirectoryDisplay` to ignore the flag fails these cases.
 Per-tool enablement is passed into detector selection, and hot reloads that change it
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
 Live watch loads the daemon's episode anchors for matching elapsed-time display but runs
