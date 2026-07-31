@@ -789,9 +789,9 @@ func (m Model) keybindingFooter() string {
 	switch column.kind {
 	case columnMenu:
 		if compact {
-			return "↑/↓ move  •  enter open\ns save  •  q/esc quit"
+			return "↑/↓ move  •  enter open\ns save • q/esc quit (asks if unsaved)\nctrl+c force quit"
 		}
-		return "↑/k ↓/j navigate  •  enter/space/right open or activate\ns save  •  q/esc/ctrl+c quit"
+		return "↑/k ↓/j navigate  •  enter/space/right open or activate\ns save • q/esc quit (asks if unsaved) • ctrl+c force quit"
 	case columnChoices:
 		if compact {
 			return "type to search  •  ↑/↓ results\nenter pin  •  esc back  •  ctrl+c quit"
@@ -799,9 +799,9 @@ func (m Model) keybindingFooter() string {
 		return "type to search  •  ↑/↓ navigate results  •  enter pin or unpin\nesc/left back  •  ctrl+c quit"
 	default:
 		if compact {
-			return "↑/↓ move  •  enter change  •  esc back\ns save  •  q quit"
+			return "↑/↓ move  •  enter change  •  esc back\ns save • q quit (asks if unsaved)\nctrl+c force quit"
 		}
-		return "↑/k ↓/j navigate  •  enter/space/right activate, toggle, edit, or open  •  esc/left back\ns save  •  q/ctrl+c quit"
+		return "↑/k ↓/j navigate  •  enter/space/right activate, toggle, edit, or open  •  esc/left back\ns save • q quit (asks if unsaved) • ctrl+c force quit"
 	}
 }
 

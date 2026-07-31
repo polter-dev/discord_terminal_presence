@@ -36,8 +36,10 @@ exact, prefix, substring, subsequence, then bounded Levenshtein matches; no matc
 an explicit row. Settings compares the working config with its last successfully saved
 snapshot: `q` and top-level Esc on a dirty model offer save, discard, or cancel, while a
 clean model quits immediately; Esc still closes an open sub-column first, and Ctrl+C
-remains an unconditional terminal escape hatch. The feedback action revalidates its target
-as a bounded absolute HTTP(S) URL immediately before calling the platform opener.
+remains an unconditional terminal escape hatch. The settings footer distinguishes that
+forced Ctrl+C exit from the guarded `q` and top-level Esc paths, including in compact
+layouts. The feedback action revalidates its target as a bounded absolute HTTP(S) URL
+immediately before calling the platform opener.
 
 A text row may carry a `validate` hook; the duration fields (Scan interval, Spotlight
 idle timeout) wire it to `config.ValidateDurationField` so parsing is never

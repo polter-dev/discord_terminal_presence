@@ -253,7 +253,7 @@ func TestModelViewRendersMasterDetailColumnsAndFriendlyLabels(t *testing.T) {
 		"Categories & actions",
 		"Global", "Display", "Privacy", "Headliner", "Pin Specific Tool",
 		"Leave feedback", "Save & quit", "Quit without saving",
-		"enter/space/right open or activate", "s save", "q/esc/ctrl+c quit",
+		"enter/space/right open or activate", "s save", "q/esc quit (asks if unsaved)", "ctrl+c force quit",
 	} {
 		if !strings.Contains(menuView, want) {
 			t.Errorf("menu View() missing %q:\n%s", want, menuView)
@@ -311,7 +311,7 @@ func TestModelColumnsScrollIndependentlyAndKeepFooterVisible(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
 	model = updated.(Model)
 	view := model.View()
-	for _, want := range []string{"termp settings", "› Global", "s save", "q/esc/ctrl+c quit"} {
+	for _, want := range []string{"termp settings", "› Global", "s save", "q/esc quit (asks if unsaved)", "ctrl+c force quit"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("initial View() missing %q:\n%s", want, view)
 		}
@@ -328,7 +328,7 @@ func TestModelColumnsScrollIndependentlyAndKeepFooterVisible(t *testing.T) {
 		model = updated.(Model)
 	}
 	view = model.View()
-	for _, want := range []string{"› Quit without saving", "s save", "q/esc/ctrl+c quit"} {
+	for _, want := range []string{"› Quit without saving", "s save", "q/esc quit (asks if unsaved)", "ctrl+c force quit"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("scrolled View() missing %q:\n%s", want, view)
 		}
