@@ -53,6 +53,36 @@ func TestBuildActivityDirectoryPrivacy(t *testing.T) {
 			},
 			wantState: "📁 project",
 		},
+		{
+			name: "basename only publishes basename",
+			configure: func(cfg *config.Config) {
+				cfg.Privacy.ShowDirectory = true
+				cfg.Privacy.DirectoryAllowlist = []string{allowedRoot}
+				cfg.Privacy.DirectoryBasenameOnly = true
+			},
+			wantState: "📁 project",
+		},
+		{
+			name: "basename only false publishes fuller path",
+			configure: func(cfg *config.Config) {
+				cfg.Privacy.ShowDirectory = true
+				cfg.Privacy.DirectoryAllowlist = []string{allowedRoot}
+				cfg.Privacy.DirectoryBasenameOnly = false
+			},
+			wantState: "📁 private/project",
+		},
+		{
+			name: "per-tool basename only overrides global full path",
+			configure: func(cfg *config.Config) {
+				cfg.Privacy.ShowDirectory = true
+				cfg.Privacy.DirectoryAllowlist = []string{allowedRoot}
+				cfg.Privacy.DirectoryBasenameOnly = false
+				cfg.Tools[tool.ID] = config.ToolOverride{
+					DirectoryBasenameOnly: boolPointer(true),
+				}
+			},
+			wantState: "📁 project",
+		},
 	}
 
 	for _, test := range tests {
