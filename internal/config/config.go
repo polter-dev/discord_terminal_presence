@@ -995,7 +995,7 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 	}
 	cleanPath := canonicalPrivacyPath(path)
 	for _, allowed := range r.DirectoryAllowlist {
-		if pathHasPrefix(cleanPath, canonicalPrivacyPath(allowed)) {
+		if pathHasPrefix(cleanPath, canonicalPrivacyPath(expandHome(allowed))) {
 			return true
 		}
 	}
@@ -1183,7 +1183,6 @@ func validate(cfg *Config, privacyAllowlistDefined bool) error {
 	if privacyAllowlistDefined && len(cfg.Privacy.DirectoryAllowlist) == 0 {
 		cfg.Warnings = append(cfg.Warnings, "privacy.directory_allowlist is present but empty, which allows every directory; remove the key to make that explicit, or add at least one path to restrict it")
 	}
-	cfg.Privacy.DirectoryAllowlist = expandPaths(cfg.Privacy.DirectoryAllowlist)
 	for id, override := range cfg.Tools {
 		// A blank override ID is rejected for the same reason custom tools
 		// reject one: it matches no tool. It also matters structurally here,
@@ -1202,7 +1201,6 @@ func validate(cfg *Config, privacyAllowlistDefined bool) error {
 		if err := validateAllowlistEntries(fmt.Sprintf("tools.%s", id), override.DirectoryAllowlist); err != nil {
 			return err
 		}
-		override.DirectoryAllowlist = expandPaths(override.DirectoryAllowlist)
 		cfg.Tools[id] = override
 	}
 
@@ -1418,19 +1416,6 @@ func validateAllowlistEntries(context string, entries []string) error {
 		}
 	}
 	return nil
-}
-
-func expandPaths(paths []string) []string {
-	if len(paths) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if expanded := expandHome(path); expanded != "" {
-			out = append(out, filepath.Clean(expanded))
-		}
-	}
-	return out
 }
 
 func expandHome(path string) string {

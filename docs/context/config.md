@@ -283,11 +283,21 @@ rule cannot classify every shipped user's config as an in-flight write.
 `ResolvedTool.DirectoryAllowed` applies the effective directory privacy policy but does
 not format paths for display. Display reduction belongs to the presence mapping boundary,
 so config does not expose a second directory formatter that could diverge from it.
+Authored allowlist entries remain in their original form in the loaded `Config`; `~`
+expansion and path cleaning happen lazily inside `DirectoryAllowed`. Consequently a
+whole-document save preserves portable entries such as `~/projects` instead of baking
+the current home directory into the user's config (#479). This applies to both global
+and per-tool allowlists. Tests that redirect home while exercising this expansion set
+both `HOME` and `USERPROFILE`, matching `os.UserHomeDir` on Unix and Windows respectively.
+`permissivenessLoosened` remains unchanged: it still compares
+the same resolved privacy posture dimensions through `Config.Resolve`, while the actual
+path expansion is deferred to the point where a candidate directory is checked.
 `DirectoryAllowed` treats a zero-length `DirectoryAllowlist` as "no restriction configured"
 (allow every directory once `show_directory` is on) — this is intentional for a genuinely
-absent key, but before #449, `expandPaths` silently dropped blank/whitespace-only entries,
-so a user-authored `directory_allowlist = [""]` (or any list whose every entry expanded to
-nothing) silently collapsed to the same zero-length, allow-everything slice, and `Save`
+absent key, but before #449, validation-time path expansion silently dropped
+blank/whitespace-only entries, so a user-authored `directory_allowlist = [""]` (or any
+list whose every entry expanded to nothing) silently collapsed to the same zero-length,
+allow-everything slice, and `Save`
 then cemented it on disk as `[]`. `validate` now rejects any blank/whitespace-only
 allowlist entry, at both the top-level `[privacy]` allowlist and every per-tool override,
 with a validation error (consistent with #419's reject-don't-silently-strip approach) —

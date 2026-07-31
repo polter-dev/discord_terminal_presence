@@ -31,12 +31,17 @@ Regexes are compiled once and case-insensitively. Image resolution prefers expli
 key, then configured icon source, with the self-hosted generic mark as fallback; flagship
 tools use explicit self-hosted URLs.
 
-`NewWithCustom` validates Discord-facing custom-tool IDs, display names, resolved image
-keys/URLs, and buttons before converting them into runtime tools. Display names contain
-2–128 runes so they can safely populate Discord image tooltip text; this surfaces invalid
-custom configuration before publication. Resolved images are bounded to Discord's limit
-and resolved URLs must be absolute HTTP(S). Button labels are non-empty and at most 32
-characters, each URL is absolute HTTP(S), and no activity receives more than two buttons.
+`NewWithCustom` validates custom-tool match and exclusion regex syntax plus Discord-facing
+IDs, display names, resolved image keys/URLs, and buttons before converting entries into
+runtime tools. Config loading calls the same validation boundary, so a malformed
+`match.regex` or `exclude` is reported with its custom-tool index and the existing config
+fail-closed behavior disables presence instead of allowing registry construction to fail
+later (#477). Registry construction still compiles and retains the validated regexes once
+for matching. Display names contain 2–128 runes so they can safely populate Discord image
+tooltip text; this surfaces invalid custom configuration before publication. Resolved
+images are bounded to Discord's limit and resolved URLs must be absolute HTTP(S). Button
+labels are non-empty and at most 32 characters, each URL is absolute HTTP(S), and no
+activity receives more than two buttons.
 Display names, resolved `image_key`, and button labels are also rejected outright if they
 contain a terminal escape sequence, C0/C1 control character, or Unicode bidi formatting
 control (via `firstDisallowedRune`, built on the same rune class `terminaltext.Sanitize`

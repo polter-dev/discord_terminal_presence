@@ -975,8 +975,11 @@ priority = 5
 	if cfg.CTA.Enabled || cfg.CTA.Label != "Preview termp" || cfg.CTA.URL != "https://example.test/dead-cta" {
 		t.Fatalf("CTA not loaded: %#v", cfg.CTA)
 	}
-	if got := cfg.Privacy.DirectoryAllowlist[0]; got != filepath.Join(canonicalTestPath(t, os.Getenv("HOME")), "dev") {
+	if got := cfg.Privacy.DirectoryAllowlist[0]; got != "~/dev" {
 		t.Fatalf("allowlist = %q", got)
+	}
+	if !cfg.Resolve(registry.Tool{ID: "other"}).DirectoryAllowed(filepath.Join(canonicalTestPath(t, os.Getenv("HOME")), "dev", "termp")) {
+		t.Fatal("authored ~/ allowlist did not resolve against HOME")
 	}
 	override := cfg.Tools["claude-code"]
 	if override.ToolName == nil || !*override.ToolName || override.ShowDirectory == nil || *override.ShowDirectory {
@@ -1793,9 +1796,14 @@ func TestSaveRoundTrip(t *testing.T) {
 	if !loaded.Privacy.ShowDirectory || loaded.Privacy.DirectoryBasenameOnly {
 		t.Fatalf("privacy did not round-trip: %#v", loaded.Privacy)
 	}
-	wantAllow := filepath.Join(canonicalTestPath(t, os.Getenv("HOME")), "dev")
+	wantAllow := "~/dev"
 	if len(loaded.Privacy.DirectoryAllowlist) != 1 || loaded.Privacy.DirectoryAllowlist[0] != wantAllow {
 		t.Fatalf("allowlist = %#v, want %q", loaded.Privacy.DirectoryAllowlist, wantAllow)
+	}
+	privacyCheck := loaded
+	privacyCheck.Enabled = true
+	if !privacyCheck.Resolve(registry.Tool{ID: "other"}).DirectoryAllowed(filepath.Join(canonicalTestPath(t, os.Getenv("HOME")), "dev", "termp")) {
+		t.Fatal("round-tripped ~/ allowlist did not resolve against HOME")
 	}
 	override := loaded.Tools["claude-code"]
 	if override.ToolName == nil || *override.ToolName || override.ShowDirectory == nil || !*override.ShowDirectory {
@@ -3087,6 +3095,65 @@ func TestSaveDoesNotRewriteAllowlistMeaning(t *testing.T) {
 	}
 	if reloaded.Resolve(registry.Tool{ID: "other-tool"}).DirectoryAllowed(outside) {
 		t.Fatal("Save() stopped a tool without an override from inheriting the global allowlist")
+	}
+}
+
+func TestSavePreservesAuthoredDirectoryAllowlistPaths(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = true\n"+
+		"[privacy]\n"+
+		"show_directory = true\n"+
+		"directory_allowlist = [\"~/projects\"]\n"+
+		"[tools.vim]\n"+
+		"directory_allowlist = [\"~/vim-projects\"]\n")
+
+	cfg, err := LoadPath(path)
+	if err != nil {
+		t.Fatalf("LoadPath() = %v", err)
+	}
+	if !cfg.Resolve(registry.Tool{ID: "other"}).DirectoryAllowed(filepath.Join(home, "projects", "termp")) {
+		t.Fatal("global authored ~/ path did not resolve against HOME")
+	}
+	if !cfg.Resolve(registry.Tool{ID: "vim"}).DirectoryAllowed(filepath.Join(home, "vim-projects", "plugin")) {
+		t.Fatal("per-tool authored ~/ path did not resolve against HOME")
+	}
+
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() = %v", err)
+	}
+	saved := string(data)
+	for _, authored := range []string{`"~/projects"`, `"~/vim-projects"`} {
+		if !strings.Contains(saved, authored) {
+			t.Fatalf("saved config does not preserve authored path %s:\n%s", authored, saved)
+		}
+	}
+	if strings.Contains(saved, home) {
+		t.Fatalf("saved config hard-codes HOME %q:\n%s", home, saved)
+	}
+}
+
+func TestMalformedCustomToolRegexFailsClosedDuringLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = true\n"+
+		"[[custom_tools]]\n"+
+		"id = \"x\"\n"+
+		"display_name = \"xx\"\n"+
+		"image_key = \"k\"\n"+
+		"match = { regex = \"([a-z\" }\n")
+
+	cfg, err := LoadPathUnsettled(path)
+	if err == nil || !strings.Contains(err.Error(), "custom_tools[0]: match.regex: error parsing regexp") {
+		t.Fatalf("LoadPathUnsettled() error = %v, want indexed match.regex validation error", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("invalid custom-tool regex must return the fail-closed config with presence disabled")
 	}
 }
 
