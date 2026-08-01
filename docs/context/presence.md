@@ -212,6 +212,19 @@ handle), the pipe path cannot hold a non-pipe object, and `discordIPCPipeExists`
 result as an endpoint — the same conservative default Unix now uses. (Verified by reading
 and cross-compiling only; no Windows execution was available.)
 
+`discordIPCPipeExists` calls `WaitNamedPipeW` with `nTimeOut=1` (ms), not `0`: `0` is
+`NMPWAIT_USE_DEFAULT_WAIT`, which waits up to the *server's* configured default timeout
+(not an immediate poll) when the pipe is momentarily busy, so the probe could block instead
+of returning quickly (#503). It also returns `false`, not `true`, when
+`windows.UTF16PtrFromString(path)` fails to encode the path (e.g. an embedded NUL from an
+untrusted `DISCORD_IPC_PATH` override): an unencodable string can never name a real pipe,
+so it is definitively not an endpoint rather than the conservative "treat as present"
+default used for genuinely indeterminate `WaitNamedPipeW` outcomes. Covered by
+`TestDiscordIPCPipeExistsRejectsUnencodablePath` and
+`TestDiscordIPCPipeExistsMissingPipe` in `conn_windows_test.go` (compiled and unit-tested
+via `GOOS=windows go build`/`go vet` only; runtime behavior against a real Discord pipe is
+unverified here — deferred to the Windows tester).
+
 Unix IPC socket fixtures use `newIsolatedIPCSocket`, which binds a short
 `/tmp/termp-ipc-*/s/discord-ipc-0` path, verifies the bound socket and path-length margin,
 and cleans up the listener and directory. The extra `s` directory is required: production
