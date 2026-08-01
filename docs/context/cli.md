@@ -107,9 +107,30 @@ home. Full uninstall also removes the daemon log's rotation lock and three retai
 generations. Autostart removal deletes the scheduled task regardless of whether it
 targets the launcher or the daemon, so the task is never left behind.
 
-Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
-installs preflight the resolved running executable's directory and record a skipped
-reason when it is not writable. Generic Windows installs record an unsupported-platform
+Automatic updates are asynchronous and non-interactive; the no-sudo rule is absolute for
+them (an unattended update must never invoke `sudo`), so the destination-writability
+preflight below is narrowly fail-*closed*, not fail-open. Unix generic installs preflight
+the resolved running executable's directory (`genericAutomaticUpdatePreflight`,
+`cmd/termp/update_elevation_unix.go`) via `unix.Access(dest, W_OK)` and record a skipped
+reason when it is not writable. Only two outcomes let the updater proceed: the access
+check succeeding, or the destination not existing (`ENOENT`) — `install.sh`'s own
+`[ ! -d "$bindir" ]` guard fails that case closed itself before ever reaching its `sudo`
+branch, so it is safe to let the updater run and report the failure. Every other errno,
+`EACCES` (unwritable permissions) and anything else including `EROFS` (a read-only
+mount), skips with `automaticUpdateElevationError`. This closes issue #495: `unix.Access`
+and `install.sh`'s `[ -w "$bindir" ]` write probe share `access(2)` semantics, so a
+non-EACCES-unwritable directory (chiefly a read-only mount) that used to fail *open* here
+would reach `install.sh`, fail the same write probe there, and hit its `sudo mktemp`/`cp`/
+`mv` escalation branch for a non-interactive automatic update — exactly the sudo-on-
+unattended-update the rule forbids. A read-only mount cannot be created in the sandbox
+this was verified in, so the fix is pinned by an injected-errno unit test
+(`TestAutomaticGenericUpdateSkipsOnNonEACCESUnwritableErrno`, `EROFS` via a stubbed
+`genericInstallDirAccess`) alongside the existing `EACCES`-skips and `ENOENT`-proceeds
+(`TestAutomaticGenericUpdatePreflightFailsOpen`) tests, not an end-to-end RO-mount repro.
+An install-directory *resolution* failure (`genericUpdateInstallDir` erroring, e.g. the
+running executable can no longer be resolved) is unrelated to writability and remains
+fail-open via a separate `automaticUpdateInstallDirError` path — the installer reports and
+persists that failure itself. Generic Windows installs record an unsupported-platform
 skip; Go and Homebrew installs remain eligible. Scoop- and Debian/RPM-owned installs
 record a managed-package skip without invoking an updater. Automatic Unix commands use
 a separate process group so timeout cancellation terminates their full process tree.

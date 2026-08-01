@@ -46,13 +46,26 @@ func genericAutomaticUpdatePreflight() error {
 	if err != nil {
 		return automaticUpdateInstallDirError{err: err}
 	}
-	if err := genericInstallDirAccess(destination, unix.W_OK); err == nil {
+	err = genericInstallDirAccess(destination, unix.W_OK)
+	if err == nil {
 		return nil
-	} else if errors.Is(err, unix.EACCES) {
-		return automaticUpdateElevationError{destination: destination}
+	}
+	if errors.Is(err, unix.ENOENT) {
+		// The destination directory does not exist. install.sh's own
+		// "[ ! -d "$bindir" ]" guard fails closed on this without ever
+		// reaching its sudo branch, so it is safe to let the updater run
+		// and report/persist that failure itself.
+		return nil
 	}
 
-	// Preserve the fail-open contract when writability cannot be determined:
-	// the installer will report and persist any resulting execution failure.
-	return nil
+	// Every other access(2) failure — EACCES (the common case) and any other
+	// errno, notably EROFS on a read-only mount — must skip. install.sh
+	// decides whether to invoke sudo purely from `[ -w "$bindir" ]`, which
+	// shares access(2) semantics with this check: on any of these errnos the
+	// directory really is unwritable, install.sh's write probe would also
+	// fail, and it would escalate with sudo for a non-interactive,
+	// unattended automatic update. The automatic updater must never invoke
+	// sudo (issue #495), so failing open here for anything but "destination
+	// does not exist" is not safe and this used to do exactly that.
+	return automaticUpdateElevationError{destination: destination}
 }
