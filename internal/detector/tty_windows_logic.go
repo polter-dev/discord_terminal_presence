@@ -44,6 +44,49 @@ func consoleProbeRequested(args []string, envPresent bool) bool {
 	return envPresent && len(args) == 2 && args[1] == consoleProbeArg
 }
 
+// windowsConsoleWindow describes what GetConsoleWindow returned for a probed
+// process, together with the observable state of that window. It is populated
+// from Win32 in the probe child (tty_windows.go) but kept free of any platform
+// types so the fail-open decision can be unit-tested on any host.
+type windowsConsoleWindow struct {
+	hwnd uintptr
+	// exists is IsWindow(hwnd): false for a stale or torn-down handle.
+	exists bool
+	// visible is IsWindowVisible(hwnd). A real classic-terminal console window
+	// carries WS_VISIBLE (true even when minimized); a headless ConPTY conhost's
+	// pseudoconsole window is hidden.
+	visible bool
+}
+
+// shouldConsoleFailOpen reports whether a probed console must be treated as the
+// ConPTY / headless-conhost fail-open case (conPTY=true), so Resolve stays
+// TTYUnknown and the tool is always featured and can never be mis-cleared by the
+// idle clock.
+//
+// Fail open when:
+//   - hwnd == 0 — the classic ConPTY case: the attached process has no console
+//     window at all (the original, still-covered path); or
+//   - the returned handle is not a real, visible top-level terminal window: it
+//     does not exist, or it is not visible. A headless ConPTY conhost
+//     (OpenPseudoConsole / `conhost.exe --headless` lineage) can return a
+//     non-null *hidden* window handle on some Windows builds (#501); resolving
+//     that handle would freeze the activity clock because the foreground
+//     WindowsTerminal.exe window never shares its GA_ROOTOWNER, so idle-clear
+//     eventually drops an actively-used session. Treating hidden/absent windows
+//     as fail-open closes that gap.
+//
+// A real terminal console window (visible, existing) is not fail-open: it
+// resolves normally so classic-console focus/idle detection keeps working.
+func shouldConsoleFailOpen(w windowsConsoleWindow) bool {
+	if w.hwnd == 0 {
+		return true
+	}
+	if !w.exists {
+		return true
+	}
+	return !w.visible
+}
+
 func selectConsolePeer(pids []uint32, ownPID uint32) (uint32, bool) {
 	for _, pid := range pids {
 		if pid != 0 && pid != ownPID {

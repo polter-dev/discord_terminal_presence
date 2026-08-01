@@ -95,6 +95,21 @@ live CLI watch uses it so only the daemon persists `presence.json`.
 **Depends on / used by:** Depends on `internal/registry` and gopsutil; produces snapshots
 for the daemon, status, presence mapping, watch, and usage recording.
 
+Windows ConPTY fail-open covers hidden console windows too (#501). `inspectWindowsConsole`
+(`tty_windows.go`) resolves a classic terminal only when `GetConsoleWindow` returns a real,
+*visible* top-level window; the decision is factored into the pure, host-testable
+`shouldConsoleFailOpen`/`windowsConsoleWindow` (`tty_windows_logic.go`, tested by
+`TestShouldConsoleFailOpen`). Fail-open (`conPTY=true`, so `Resolve` stays `TTYUnknown` and the
+tool is always featured) now fires for `hwnd == 0` (the original classic-ConPTY path), for a
+non-existent handle, and for a non-visible handle. The last case is the bug: on some Windows
+builds a headless ConPTY conhost (`OpenPseudoConsole`/`conhost.exe --headless`) returns a
+non-null *hidden* HWND; resolving it froze the activity clock (the foreground
+`WindowsTerminal.exe` window never shares that hidden window's `GA_ROOTOWNER`), so idle-clear
+dropped actively-used sessions after `idle_clear_timeout`. A real terminal window carries
+`WS_VISIBLE` even when minimized, so classic-console focus/idle detection is unaffected.
+Runtime confirmation is deferred to the Windows tester (no Windows hardware here); the change
+cross-compiles and vets under `GOOS=windows` and the host tests are green.
+
 **Open questions / TODO:** Windows classic-console focus and idle detection is implemented
 and covered by dedicated Windows tests. Windows Terminal/ConPTY cannot be attributed to an
 active tab with generic Win32 APIs, so resolution deliberately fails open there. Five
