@@ -1647,10 +1647,13 @@ func TestWindowsRunToleratesBenignRaces(t *testing.T) {
 		listOut  string
 	}{
 		{
-			name:     "already running with German output",
-			out:      "FEHLER: Eine Instanz dieser Aufgabe wird bereits ausgeführt.\n",
-			queryOut: `"COMPUTER","` + TaskName + `","Nicht zutreffend","Bereit","0x41301"` + "\r\n",
-			listOut:  `"` + TaskName + `","Nicht zutreffend","Bereit"` + "\r\n",
+			name: "already running with German output",
+			out:  "FEHLER: Eine Instanz dieser Aufgabe wird bereits ausgeführt.\n",
+			// Realistic German verbose row: SCHED_S_TASK_RUNNING sits in the
+			// locale-independent "Letztes Ausführungsergebnis" (Last Run Result)
+			// column at the fixed verbose index, not an abbreviated column.
+			queryOut: `"COMPUTER","` + TaskName + `","Nicht zutreffend","Wird ausgeführt","Nur interaktiv","28.07.2026 08:59:00","0x41301","DOMAIN\User","C:\Program Files\termp\termpw.exe"` + "\r\n",
+			listOut:  `"` + TaskName + `","Nicht zutreffend","Wird ausgeführt"` + "\r\n",
 		},
 		{
 			name:    "task removed with Japanese output",
@@ -1722,6 +1725,62 @@ func TestWindowsTaskCSVIsRunningToleratesUndoubledCommandQuotes(t *testing.T) {
 	}
 	if !windowsTaskCSVIsRunning(fixture) {
 		t.Fatal("windowsTaskCSVIsRunning() = false, want 0x41301 from realistic verbose row")
+	}
+}
+
+// TestWindowsTaskCSVIsRunningChecksOnlyLastRunResultColumn is the issue #504
+// guard: the running sentinel (SCHED_S_TASK_RUNNING = 0x41301 = 267521) must be
+// read from the fixed "Last Run Result" verbose column only. A coincidental
+// 267521/0x41301 in any other column (a duration, an embedded exit code, a
+// timestamp fragment) must not be mistaken for a running task.
+func TestWindowsTaskCSVIsRunningChecksOnlyLastRunResultColumn(t *testing.T) {
+	// verboseRow renders a representative /V /FO CSV /NH record. lastResult is
+	// the Last Run Result column (index 6); tail fills columns after the
+	// task-to-run, where decoy values are planted.
+	verboseRow := func(lastResult string, tail ...string) string {
+		fields := []string{
+			"WORKSTATION",
+			TaskName,
+			"7/28/2026 9:00:00 AM",
+			"Ready",
+			"Interactive only",
+			"7/28/2026 8:59:00 AM",
+			lastResult,
+			`DOMAIN\User`,
+			`C:\Program Files\termp\termpw.exe`,
+		}
+		fields = append(fields, tail...)
+		quoted := make([]string, len(fields))
+		for i, f := range fields {
+			quoted[i] = `"` + f + `"`
+		}
+		return strings.Join(quoted, ",") + "\r\n"
+	}
+
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{name: "running hex sentinel in last-result column", data: verboseRow("0x41301"), want: true},
+		// 0x41301 == 267009 decimal (the value schtasks prints on some locales).
+		{name: "running decimal sentinel in last-result column", data: verboseRow("267009"), want: true},
+		// Real sentinel value planted in an unrelated column: the old whole-row
+		// scan false-positived here; the positional check must not.
+		{name: "success with real hex sentinel decoy in a later column", data: verboseRow("0x0", "0x41301"), want: false},
+		{name: "success with real decimal sentinel decoy in a later column", data: verboseRow("0x0", "267009", "72:00:00"), want: false},
+		// The decoy called out in issue #504 (267521) planted in another column.
+		{name: "success with issue-reported decoy in a later column", data: verboseRow("0x0", "267521"), want: false},
+		{name: "success without any decoy", data: verboseRow("0x0"), want: false},
+		{name: "short row cannot reach last-result column", data: `"WORKSTATION","` + TaskName + `","0x41301"` + "\r\n", want: false},
+		{name: "empty output", data: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := windowsTaskCSVIsRunning([]byte(tt.data)); got != tt.want {
+				t.Fatalf("windowsTaskCSVIsRunning() = %t, want %t\ninput: %q", got, tt.want, tt.data)
+			}
+		})
 	}
 }
 

@@ -54,8 +54,16 @@ segments, and trailing separators, then compares paths case-insensitively. It
 expands environment variables only in the raw task command, not in resolved
 filesystem paths, and clamps parent traversal at a drive root. On Windows it
 then opens both paths and compares volume/file identity, which recognizes 8.3
-names, junctions, and drive-substituted aliases; final handle paths are stored
-in new task definitions when available. If the stable task targets another
+names, junctions, and drive-substituted aliases. Junction/symlink resolution
+(`GetFinalPathNameByHandle`) is confined to this ownership-identity comparison.
+New task definitions instead persist the stable invocation path exactly as it
+was resolved for install (a Scoop `current` junction or shim, a Homebrew or
+hand-placed path); the write path deliberately does **not** junction-follow,
+because canonicalizing through Scoop's `apps\termp\current` junction would bake a
+versioned `apps\termp\<version>` directory into the task that `scoop update`
+later deletes, silently killing autostart (issue #502). The companion-launcher
+probe (`windowsTaskExec`) likewise resolves `termpw.exe` beside the stable
+invocation path, so the launcher command stays on `current` too. If the stable task targets another
 executable, status reports that conflict explicitly and install, uninstall,
 enable, and disable refuse to modify it by default.
 `autostart install --force` deliberately replaces a foreign task, while
@@ -88,8 +96,11 @@ checked first with a fast targeted headerless CSV query, whose command exit
 status distinguishes presence from absence. Full enumeration is reserved for
 failures where the targeted command did not exit normally; tolerant CSV parsing
 still accepts usable task rows when enumeration also exits nonzero. If `/Run`
-fails, verbose CSV's numeric Task Scheduler result `0x41301` identifies an
-already-running task; a presence query identifies a concurrently removed task.
+fails, the fixed "Last Run Result" column (index 6) of the verbose CSV is read
+for the numeric Task Scheduler result `0x41301` (`SCHED_S_TASK_RUNNING`) to
+identify an already-running task; only that column is checked, so a coincidental
+sentinel value in an unrelated numeric column cannot false-positive (issue #504).
+A presence query identifies a concurrently removed task.
 Synthetic Japanese and German CSV fixtures run on every OS. Separate realistic
 fixtures cover variable-width/error rows and a 30-column verbose row containing
 an embedded quoted executable command. The Windows integration test installs
