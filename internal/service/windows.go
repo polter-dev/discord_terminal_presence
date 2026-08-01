@@ -31,9 +31,14 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 	if status.ForeignTask && !force {
 		return status, foreignTaskError(status.Message)
 	}
-	if canonical, err := canonicalWindowsExecutable(exe); err == nil {
-		exe = canonical
-	}
+	// Persist the stable invocation path exactly as it was resolved for install
+	// (a Scoop `current` junction or shim, a Homebrew/hand-placed path, etc.).
+	// Deliberately do NOT junction-follow here: canonicalizing through Scoop's
+	// `apps\termp\current` junction would bake a versioned `apps\termp\<version>`
+	// directory into the task, which `scoop update` later deletes, silently
+	// killing autostart (issue #502). Junction/symlink resolution stays confined
+	// to the ownership-identity comparison (ownsWindowsTaskCommand ->
+	// sameWindowsExecutable), which must still recognize the task after an update.
 	username := ""
 	if current, err := user.Current(); err == nil && current != nil {
 		username = strings.TrimSpace(current.Username)

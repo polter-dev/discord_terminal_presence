@@ -54,8 +54,16 @@ segments, and trailing separators, then compares paths case-insensitively. It
 expands environment variables only in the raw task command, not in resolved
 filesystem paths, and clamps parent traversal at a drive root. On Windows it
 then opens both paths and compares volume/file identity, which recognizes 8.3
-names, junctions, and drive-substituted aliases; final handle paths are stored
-in new task definitions when available. If the stable task targets another
+names, junctions, and drive-substituted aliases. Junction/symlink resolution
+(`GetFinalPathNameByHandle`) is confined to this ownership-identity comparison.
+New task definitions instead persist the stable invocation path exactly as it
+was resolved for install (a Scoop `current` junction or shim, a Homebrew or
+hand-placed path); the write path deliberately does **not** junction-follow,
+because canonicalizing through Scoop's `apps\termp\current` junction would bake a
+versioned `apps\termp\<version>` directory into the task that `scoop update`
+later deletes, silently killing autostart (issue #502). The companion-launcher
+probe (`windowsTaskExec`) likewise resolves `termpw.exe` beside the stable
+invocation path, so the launcher command stays on `current` too. If the stable task targets another
 executable, status reports that conflict explicitly and install, uninstall,
 enable, and disable refuse to modify it by default.
 `autostart install --force` deliberately replaces a foreign task, while

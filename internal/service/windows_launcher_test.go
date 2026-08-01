@@ -108,6 +108,51 @@ func TestWindowsStatusRejectsForeignLauncherTask(t *testing.T) {
 	}
 }
 
+// TestWindowsInstallPersistsStableInvocationPath is the issue #502 guard: the
+// scheduled-task action must record the invocation path as resolved for install
+// (here a Scoop-style `current` junction), never a junction-followed versioned
+// directory. If canonicalization leaks back into the write path, a real junction
+// resolves `...\current\...` to `...\<version>\...`, which `scoop update` later
+// deletes and autostart dies. The launcher probe must likewise stay on the
+// stable `current` directory.
+func TestWindowsInstallPersistsStableInvocationPath(t *testing.T) {
+	base := t.TempDir()
+	versionDir := filepath.Join(base, "apps", "termp", "1.2.3")
+	if err := os.MkdirAll(versionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"termp.exe", "termpw.exe"} {
+		if err := os.WriteFile(filepath.Join(versionDir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	currentDir := filepath.Join(base, "apps", "termp", "current")
+	if err := os.Symlink(versionDir, currentDir); err != nil {
+		// Creating a directory symlink can require privilege (e.g. Windows
+		// without Developer Mode). The behavior is still exercised on the other
+		// build platforms; skip rather than fail where symlinks are unavailable.
+		t.Skipf("directory symlink unavailable: %v", err)
+	}
+
+	stableDaemon := filepath.Join(currentDir, "termp.exe")
+	stableLauncher := filepath.Join(currentDir, "termpw.exe")
+
+	runner := &windowsInstallRunner{}
+	manager := Manager{GOOS: "windows", Runner: runner, Executable: stableDaemon}
+	if _, err := manager.Install(stableDaemon, false); err != nil {
+		t.Fatal(err)
+	}
+
+	xmlText := decodeUTF16XML(t, runner.xmlData)
+	wantCommand := "<Command>" + stableLauncher + "</Command>"
+	if !strings.Contains(xmlText, wantCommand) {
+		t.Fatalf("task XML missing stable launcher command %q:\n%s", wantCommand, xmlText)
+	}
+	if strings.Contains(xmlText, versionDir) {
+		t.Fatalf("task XML baked the junction-followed versioned path %q:\n%s", versionDir, xmlText)
+	}
+}
+
 func TestOwnsWindowsTaskCommand(t *testing.T) {
 	const exe = `C:\Program Files\termp\termp.exe`
 	tests := []struct {
