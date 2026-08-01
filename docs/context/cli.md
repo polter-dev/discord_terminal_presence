@@ -22,7 +22,26 @@ package-layout integration probes.
 
 **Invariants / gotchas:** Start treats the validated PID file as final arbiter, also
 recognizes a fresh same-user/same-executable `discord.json` publisher, and waits for
-bounded child readiness. New PID and Discord-state records capture the daemon's own
+bounded child readiness. `waitForDetachedStart` (`cmd/termp/spawn.go`) does not report
+success the instant it first observes the detached child owning the PID file: once
+confirmed, it keeps re-checking (in `detachedStartPollInterval` steps, via the new
+`confirmDetachedStartStability` helper) for a `detachedStartStabilityWindow` (400ms,
+bounded by whatever of the overall 2s `detachedStartTimeout` budget remains) that the
+child is still alive and still owns the PID file before returning nil. This closes issue
+#490: the PID file is written before `run()`'s own initialization
+(`newDetectionRuntime`, `detector.New`, `presence.NewWriter`, or a panic during setup),
+and `start()`'s deferred `removePIDIfOwned` removes that PID file the moment `run()`
+returns an error — so without the stability window, a child that died milliseconds after
+publishing its PID file was already invisible to the parent, which had already printed
+`termp started in the background (pid N)` and exited 0. `start` stays intentionally
+lightweight: it still does not wait for the presence loop, first detector scan, or
+steady state — only the short stability window, so a healthy start's added latency stays
+in the hundreds-of-milliseconds range. Verified by instrumenting a temporary build of
+`run()` to sleep 120ms past the PID write and then return an error: before the fix this
+printed the success line and exited 0 with the PID file gone a moment later; after the
+fix `termp start` exits non-zero, prints no "started" message, and the daemon log records
+the injected failure — the instrumentation was reverted before committing (issue #490).
+New PID and Discord-state records capture the daemon's own
 normalized executable path; process validation compares the live image against that
 recorded path alongside same-user ownership and start time. This preserves PID-reuse and
 foreign-process refusal after an upgrade moves the invoking binary. A new `start` from a
@@ -64,6 +83,18 @@ never merely the passage of time. The daemon persists it in `daemon.json`'s
 (cmd/termp/main.go) only trusts a fresh record from the currently-running daemon's PID,
 matching the existing `statusConfigHealth` pattern.
 
+An unparseable PID file (garbage/non-JSON/non-numeric bytes, or a numeric-but-invalid
+record such as a negative PID) is treated like a stale one rather than surfacing the raw
+parser error: `readPIDIdentityFromFile` wraps the `parsePIDRecord` failure in the sentinel
+`errPIDRecordUnparseable`, and `stopDaemon`/`stopDaemonAndPublisher` remove the file on a
+best-effort basis via `removeUnreadablePIDFile` (ownership proven by holding the same
+owner/regular-file-validated, locked handle and re-checking `os.SameFile` immediately
+before removal, so a file that became parseable — a concurrent writer replaced it — is
+left alone) and return `errUnreadablePIDFileRemoved`. `termp stop` prints "removed an
+unreadable PID file; daemon is not running" and exits 0 instead of `log.Fatal`-ing the raw
+JSON error and leaving the file wedged until a manual delete; `stopRunningDaemon` (used by
+autostart disable and full uninstall) treats it the same as "wasn't running" (issue #491).
+
 Plain legacy PID records remain readable for stale-file cleanup, but a true legacy
 record without a process start time never authorizes signaling. New records explicitly
 mark an unavailable start time and fall back to executable identity so a live daemon is
@@ -95,9 +126,30 @@ home. Full uninstall also removes the daemon log's rotation lock and three retai
 generations. Autostart removal deletes the scheduled task regardless of whether it
 targets the launcher or the daemon, so the task is never left behind.
 
-Automatic updates are fail-open, asynchronous, and non-interactive. Unix generic
-installs preflight the resolved running executable's directory and record a skipped
-reason when it is not writable. Generic Windows installs record an unsupported-platform
+Automatic updates are asynchronous and non-interactive; the no-sudo rule is absolute for
+them (an unattended update must never invoke `sudo`), so the destination-writability
+preflight below is narrowly fail-*closed*, not fail-open. Unix generic installs preflight
+the resolved running executable's directory (`genericAutomaticUpdatePreflight`,
+`cmd/termp/update_elevation_unix.go`) via `unix.Access(dest, W_OK)` and record a skipped
+reason when it is not writable. Only two outcomes let the updater proceed: the access
+check succeeding, or the destination not existing (`ENOENT`) — `install.sh`'s own
+`[ ! -d "$bindir" ]` guard fails that case closed itself before ever reaching its `sudo`
+branch, so it is safe to let the updater run and report the failure. Every other errno,
+`EACCES` (unwritable permissions) and anything else including `EROFS` (a read-only
+mount), skips with `automaticUpdateElevationError`. This closes issue #495: `unix.Access`
+and `install.sh`'s `[ -w "$bindir" ]` write probe share `access(2)` semantics, so a
+non-EACCES-unwritable directory (chiefly a read-only mount) that used to fail *open* here
+would reach `install.sh`, fail the same write probe there, and hit its `sudo mktemp`/`cp`/
+`mv` escalation branch for a non-interactive automatic update — exactly the sudo-on-
+unattended-update the rule forbids. A read-only mount cannot be created in the sandbox
+this was verified in, so the fix is pinned by an injected-errno unit test
+(`TestAutomaticGenericUpdateSkipsOnNonEACCESUnwritableErrno`, `EROFS` via a stubbed
+`genericInstallDirAccess`) alongside the existing `EACCES`-skips and `ENOENT`-proceeds
+(`TestAutomaticGenericUpdatePreflightFailsOpen`) tests, not an end-to-end RO-mount repro.
+An install-directory *resolution* failure (`genericUpdateInstallDir` erroring, e.g. the
+running executable can no longer be resolved) is unrelated to writability and remains
+fail-open via a separate `automaticUpdateInstallDirError` path — the installer reports and
+persists that failure itself. Generic Windows installs record an unsupported-platform
 skip; Go and Homebrew installs remain eligible. Scoop- and Debian/RPM-owned installs
 record a managed-package skip without invoking an updater. Automatic Unix commands use
 a separate process group so timeout cancellation terminates their full process tree.

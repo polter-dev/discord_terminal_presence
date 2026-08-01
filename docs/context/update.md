@@ -130,7 +130,14 @@ RPM front-end command. On Unix, interactive update commands remain in the caller
 group so `sudo` and the generic installer can read a password from the controlling
 terminal. Non-interactive automatic update commands run in a separate process group so
 context cancellation kills the complete command tree; their existing preflights prevent
-any path that could prompt. Failed interactive Homebrew and Go updates display the retry command produced
+any path that could prompt. For the generic (non-package-manager) install path, the
+no-`sudo`-on-automatic-update guarantee depends on `cmd/termp`'s
+`genericAutomaticUpdatePreflight` (`cmd/termp/update_elevation_unix.go`, see
+[`cli.md`](cli.md), issue #495) skipping the run whenever the resolved install directory
+is not confirmed writable — this package's own `install.sh` decides whether to `sudo`
+purely from `[ -w "$bindir" ]`, sharing `access(2)` semantics with that preflight, so
+`termp` must skip on anything but a successful write check or a nonexistent directory
+(which `install.sh` itself fails closed on before reaching its `sudo` branch). Failed interactive Homebrew and Go updates display the retry command produced
 by `UpdateCommandForMethod`; non-Windows generic failures tell users to resolve the
 reported error and retry `termp update`, avoiding a fallback installer invocation that
 could drift `BINDIR`. A Windows generic install never reaches that retry path at all —

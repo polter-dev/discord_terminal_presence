@@ -112,6 +112,34 @@ func TestAutomaticGenericUpdateAttemptsWritableDestination(t *testing.T) {
 	}
 }
 
+func TestAutomaticGenericUpdateSkipsOnNonEACCESUnwritableErrno(t *testing.T) {
+	// A non-EACCES, non-ENOENT access(2) failure — EROFS is the realistic
+	// case (a read-only mount) — used to fail open and let the updater run,
+	// which would then hit install.sh's `[ -w "$bindir" ]` sudo branch for a
+	// non-interactive automatic update (issue #495). It must skip like
+	// EACCES does.
+	const destination = "/mnt/readonly/termp"
+	stubGenericUpdateInstallDir(t, destination, nil)
+	stubGenericInstallDirAccess(t, unix.EROFS)
+	cfg, checker, statePath := automaticGenericUpdateTestInputs(t)
+	runner := &recordingUpdateRunner{}
+
+	runAutomaticUpdateWithStatePath(context.Background(), cfg, "1.0.0", checker, runner, statePath)
+
+	if runner.calls != 0 {
+		t.Fatalf("EROFS destination ran updater %d times, want 0 (no sudo on an unattended update)", runner.calls)
+	}
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
+	if !ok || !attempt.Skipped || attempt.Target != "v1.1.0" {
+		t.Fatalf("recorded attempt = (%+v, %t), want skipped v1.1.0 attempt", attempt, ok)
+	}
+	for _, want := range []string{destination, "not writable", "elevated permissions"} {
+		if !strings.Contains(attempt.Error, want) {
+			t.Fatalf("recorded skip %q missing %q", attempt.Error, want)
+		}
+	}
+}
+
 func TestAutomaticGenericUpdatePreflightFailsOpen(t *testing.T) {
 	stubGenericUpdateInstallDir(t, filepath.Join(t.TempDir(), "missing"), nil)
 	stubGenericInstallDirAccess(t, unix.ENOENT)
