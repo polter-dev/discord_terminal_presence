@@ -3367,3 +3367,168 @@ func TestValidateDurationFieldMatchesLoadValidation(t *testing.T) {
 		t.Fatal("ValidateDurationField accepted scan_interval = 0")
 	}
 }
+
+// deeplyNestedInlineTableTOML builds the #497 repro: a syntactically valid
+// TOML document containing a single key whose value is an inline table
+// nested depth levels deep (`x = {a={a=...1...}}`). BurntSushi/toml v1.6.0
+// decodes this shape in O(n^2); at depth ~15000 (~58KB) that takes ~18s with
+// no deadline.
+func deeplyNestedInlineTableTOML(depth int) string {
+	var b strings.Builder
+	b.WriteString("x = ")
+	for i := 0; i < depth; i++ {
+		b.WriteString("{a=")
+	}
+	b.WriteString("1")
+	for i := 0; i < depth; i++ {
+		b.WriteString("}")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// TestDeeplyNestedInlineTableRejectedFast is the load-bearing regression for
+// #497: the issue's exact repro (~15000 levels of inline-table nesting, well
+// under the 1 MiB size cap) must be rejected, and rejected fast, through the
+// real LoadPath entry point. If the O(n) depth guard were removed, this test
+// would hang for ~18s (or longer once toml.Decode's O(n^2) behavior is
+// reached) instead of failing quickly, so a naive "remove the guard, does the
+// suite still pass" mutation is not enough on its own — the explicit timing
+// assertion is what turns a silent multi-second stall into a fast, loud
+// failure.
+func TestDeeplyNestedInlineTableRejectedFast(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, deeplyNestedInlineTableTOML(15000))
+
+	start := time.Now()
+	_, err := LoadPathUnsettled(path)
+	elapsed := time.Since(start)
+
+	if elapsed > time.Second {
+		t.Fatalf("LoadPathUnsettled took %s for a depth-15000 config; want well under 1s (the O(n) guard must reject before decoding)", elapsed)
+	}
+	if err == nil {
+		t.Fatal("LoadPathUnsettled() = nil for a pathologically deep config; want a rejection")
+	}
+	if !errors.Is(err, errConfigNestingTooDeep) {
+		t.Fatalf("LoadPathUnsettled() err = %v, want errConfigNestingTooDeep", err)
+	}
+}
+
+// TestReasonablyNestedConfigsStillLoad proves the depth guard does not
+// false-reject legitimate configs: a config nested 5-10 levels deep, plus a
+// normal config using [section] headers, a string array, and an array of
+// inline tables (the custom_tools shape) must all still load successfully.
+func TestReasonablyNestedConfigsStillLoad(t *testing.T) {
+	t.Run("moderate inline nesting", func(t *testing.T) {
+		for _, depth := range []int{1, 5, 10} {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			writeConfig(t, path, deeplyNestedInlineTableTOML(depth))
+			if _, err := LoadPathUnsettled(path); err != nil {
+				t.Fatalf("depth %d: LoadPathUnsettled() = %v, want a successful load", depth, err)
+			}
+		}
+	})
+
+	t.Run("normal config with sections and arrays", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeConfig(t, path, `enabled = true
+scan_interval = "5s"
+fallback_messages = ["a", "b"]
+
+[privacy]
+show_directory = false
+
+[[custom_tools]]
+id = "mytool"
+display_name = "My Tool"
+match = { name = "mytool" }
+image_key = "mytool"
+`)
+		cfg, err := LoadPathUnsettled(path)
+		if err != nil {
+			t.Fatalf("LoadPathUnsettled() = %v, want a successful load", err)
+		}
+		if len(cfg.FallbackMessages) != 2 || cfg.FallbackMessages[0] != "a" || cfg.FallbackMessages[1] != "b" {
+			t.Fatalf("FallbackMessages = %v, want [a b]", cfg.FallbackMessages)
+		}
+		if len(cfg.CustomTools) != 1 {
+			t.Fatalf("CustomTools = %v, want one entry", cfg.CustomTools)
+		}
+	})
+}
+
+// TestNestingDepthIgnoresStringsAndComments proves the O(n) depth scan does
+// not count brackets that appear inside TOML string values or comments —
+// only real structural nesting counts.
+func TestNestingDepthIgnoresStringsAndComments(t *testing.T) {
+	t.Run("brackets in a string value", func(t *testing.T) {
+		if tomlNestingTooDeep([]byte(`details_format = "using {tool}"`)) {
+			t.Fatal("a single brace pair inside a string value should not count toward nesting depth")
+		}
+		// A string value containing far more brace pairs than the depth
+		// bound, all inside quotes, must not trip the guard.
+		var b strings.Builder
+		b.WriteString(`details_format = "`)
+		for i := 0; i < maxTOMLNestingDepth+50; i++ {
+			b.WriteString("{{{")
+		}
+		b.WriteString(`"` + "\n")
+		if tomlNestingTooDeep([]byte(b.String())) {
+			t.Fatal("brackets inside a string value must not count toward nesting depth, however many there are")
+		}
+	})
+
+	t.Run("brackets in a comment", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString("# ")
+		for i := 0; i < maxTOMLNestingDepth+50; i++ {
+			b.WriteString("{{{")
+		}
+		b.WriteString("\nenabled = true\n")
+		if tomlNestingTooDeep([]byte(b.String())) {
+			t.Fatal("brackets inside a comment must not count toward nesting depth")
+		}
+	})
+
+	t.Run("real config with a comment containing braces still loads", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		writeConfig(t, path, "# a comment with {{{ lots of }}} braces [[[ in it\ndetails_format = \"using {tool}\"\nenabled = true\n")
+		if _, err := LoadPathUnsettled(path); err != nil {
+			t.Fatalf("LoadPathUnsettled() = %v, want a successful load", err)
+		}
+	})
+}
+
+// TestDirectoryAllowedRejectsEmptyPath is the #492 coverage for the
+// `path == ""` guard in DirectoryAllowed (config.go, ~line 990). It is a
+// real mutant-killer: removing `|| path == ""` from the guard makes this
+// test fail, since an enabled, show-directory tool with no allowlist
+// otherwise allows every path, including "".
+func TestDirectoryAllowedRejectsEmptyPath(t *testing.T) {
+	cfg := Default()
+	cfg.Enabled = true
+	cfg.Privacy.ShowDirectory = true
+	resolved := cfg.Resolve(registry.Tool{ID: "any"})
+	if !resolved.Enabled || !resolved.ShowDirectory {
+		t.Fatalf("resolved tool not enabled/show-directory as set up: %+v", resolved)
+	}
+	if resolved.DirectoryAllowed("") {
+		t.Fatal("DirectoryAllowed(\"\") = true, want false: an empty path must never be treated as an allowed directory")
+	}
+}
+
+// TestProvisionalConfigSnapshotTreatsEmptyFileAsProvisional is the #492
+// coverage for the empty-file branch in provisionalConfigSnapshot
+// (config.go, ~line 608: `if len(candidate.data) == 0 { return true }`). It
+// is a real mutant-killer: disabling that branch (e.g. forcing it to
+// `false`) makes this test fail, since an empty candidate would then only be
+// provisional through the unrelated prefix/parse rules below it, which do
+// not fire for an empty accepted-nil comparison.
+func TestProvisionalConfigSnapshotTreatsEmptyFileAsProvisional(t *testing.T) {
+	candidate := fileSnapshot{exists: true, data: nil}
+	accepted := fileSnapshot{}
+	if !provisionalConfigSnapshot(candidate, accepted) {
+		t.Fatal("provisionalConfigSnapshot(empty existing file, no prior accepted) = false, want true: an existing empty file must be treated as an in-flight write, not a settled state")
+	}
+}
