@@ -54,6 +54,17 @@ const (
 
 var errDaemonNotRunning = errors.New("daemon is not running")
 
+// errPIDRecordUnparseable marks a PID file whose contents could not be
+// decoded (garbage bytes, truncated JSON, etc.) as distinct from an I/O
+// failure or an ordinary missing file. Stop paths treat it like a stale PID
+// file: remove it and report the daemon as not running, rather than
+// surfacing the raw parser error (issue #491).
+var errPIDRecordUnparseable = errors.New("PID record is unparseable")
+
+// errUnreadablePIDFileRemoved is returned by the stop paths after an
+// unparseable PID file has been removed on a best-effort basis.
+var errUnreadablePIDFileRemoved = errors.New("removed an unreadable PID file; daemon is not running")
+
 var commandHelp = []struct {
 	name        string
 	description string
@@ -1426,6 +1437,10 @@ func stop(args []string) error {
 	}
 	serviceState := service.NewManager().Status()
 	pid, err := stopDaemonAndPublisher(pidPath, publisher, stopTimeout, stopPollInterval, processAlive, processLooksLikeTermpAtPath, signalTermpProcessAtPath, time.Sleep, serviceWillRelaunch(serviceState))
+	if errors.Is(err, errUnreadablePIDFileRemoved) {
+		fmt.Println(errUnreadablePIDFileRemoved.Error())
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -1451,7 +1466,7 @@ func stopRunningDaemon() (int, bool, error) {
 		time.Sleep,
 		false,
 	)
-	if errors.Is(err, errDaemonNotRunning) {
+	if errors.Is(err, errDaemonNotRunning) || errors.Is(err, errUnreadablePIDFileRemoved) {
 		return 0, false, nil
 	}
 	if err != nil {
@@ -2472,7 +2487,7 @@ func readPIDIdentityFromFile(file *os.File) (daemonPIDRecord, os.FileInfo, error
 	}
 	record, err := parsePIDRecord(data)
 	if err != nil {
-		return daemonPIDRecord{}, nil, err
+		return daemonPIDRecord{}, nil, fmt.Errorf("%w: %v", errPIDRecordUnparseable, err)
 	}
 	info, err := file.Stat()
 	if err != nil {
@@ -2733,11 +2748,64 @@ func removePIDIfOwned(path string, expectedPID int, expectedInfo os.FileInfo) (b
 	return result == pidRemovalRemoved, err
 }
 
+// removeUnreadablePIDFile best-effort removes a PID file whose contents
+// could not be parsed (see errPIDRecordUnparseable). Unlike
+// removePIDIfOwned, there is no known expected PID/identity to compare
+// against — the file never yielded one — so ownership is instead proven by
+// holding an exclusive lock on the already-owner/regular-file-validated
+// handle and re-checking that the path still refers to that same file
+// immediately before removing it. If the file changed underneath us (for
+// example a fresh daemon just replaced it with a valid record), it is left
+// alone.
+func removeUnreadablePIDFile(path string) error {
+	file, err := openValidatedPIDFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+	if err := lockPIDFile(file); err != nil {
+		return fmt.Errorf("PID file is busy: %w", err)
+	}
+	if _, _, err := readPIDIdentityFromFile(file); err == nil {
+		// The file became parseable while we were investigating it (a
+		// concurrent writer replaced it); leave it alone rather than
+		// deleting what may now be a live daemon's PID file.
+		return nil
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	currentInfo, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !os.SameFile(info, currentInfo) {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int) bool, looksLikeTermp func(int, string) bool, signal func(int, string) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
 	record, info, err := readPIDIdentity(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, errDaemonNotRunning
+		}
+		if errors.Is(err, errPIDRecordUnparseable) {
+			if removeErr := removeUnreadablePIDFile(path); removeErr != nil {
+				return 0, fmt.Errorf("remove unreadable PID file: %w", removeErr)
+			}
+			return 0, errUnreadablePIDFileRemoved
 		}
 		return 0, err
 	}
@@ -2776,8 +2844,14 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int
 
 func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pollInterval time.Duration, alive func(int) bool, looksLikeTermp func(int, string) bool, signal func(int, string) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
 	record, info, readErr := readPIDIdentity(path)
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+	unreadable := errors.Is(readErr, errPIDRecordUnparseable)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) && !unreadable {
 		return 0, readErr
+	}
+	if unreadable {
+		if removeErr := removeUnreadablePIDFile(path); removeErr != nil {
+			return 0, fmt.Errorf("remove unreadable PID file: %w", removeErr)
+		}
 	}
 	pid := record.PID
 
@@ -2797,6 +2871,9 @@ func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pol
 			if !removed {
 				return 0, errors.New("stale PID file changed before it could be removed")
 			}
+		}
+		if unreadable {
+			return 0, errUnreadablePIDFileRemoved
 		}
 		return 0, errDaemonNotRunning
 	}

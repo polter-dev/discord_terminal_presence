@@ -64,6 +64,18 @@ never merely the passage of time. The daemon persists it in `daemon.json`'s
 (cmd/termp/main.go) only trusts a fresh record from the currently-running daemon's PID,
 matching the existing `statusConfigHealth` pattern.
 
+An unparseable PID file (garbage/non-JSON/non-numeric bytes, or a numeric-but-invalid
+record such as a negative PID) is treated like a stale one rather than surfacing the raw
+parser error: `readPIDIdentityFromFile` wraps the `parsePIDRecord` failure in the sentinel
+`errPIDRecordUnparseable`, and `stopDaemon`/`stopDaemonAndPublisher` remove the file on a
+best-effort basis via `removeUnreadablePIDFile` (ownership proven by holding the same
+owner/regular-file-validated, locked handle and re-checking `os.SameFile` immediately
+before removal, so a file that became parseable — a concurrent writer replaced it — is
+left alone) and return `errUnreadablePIDFileRemoved`. `termp stop` prints "removed an
+unreadable PID file; daemon is not running" and exits 0 instead of `log.Fatal`-ing the raw
+JSON error and leaving the file wedged until a manual delete; `stopRunningDaemon` (used by
+autostart disable and full uninstall) treats it the same as "wasn't running" (issue #491).
+
 Plain legacy PID records remain readable for stale-file cleanup, but a true legacy
 record without a process start time never authorizes signaling. New records explicitly
 mark an unavailable start time and fall back to executable identity so a live daemon is

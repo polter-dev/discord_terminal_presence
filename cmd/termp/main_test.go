@@ -719,6 +719,45 @@ func TestStopDaemonRemovesStalePIDFile(t *testing.T) {
 	}
 }
 
+func TestStopDaemonRemovesUnparseablePIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := os.WriteFile(path, []byte("\x00\x01garbage\xff"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := stopDaemon(path, time.Second, time.Millisecond, func(int) bool { return true }, func(int, string) bool { return true }, func(int, string) error {
+		t.Fatal("unparseable PID file was signaled")
+		return nil
+	}, func(time.Duration) { t.Fatal("unparseable PID wait slept") }, false)
+	if !errors.Is(err, errUnreadablePIDFileRemoved) {
+		t.Fatalf("stopDaemon() error = %v, want errUnreadablePIDFileRemoved", err)
+	}
+	if strings.Contains(err.Error(), "looking for beginning of value") || strings.Contains(err.Error(), "invalid character") {
+		t.Fatalf("stopDaemon() error leaked raw parser text: %v", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unparseable PID file remains: %v", statErr)
+	}
+}
+
+func TestStopDaemonAndPublisherRemovesUnparseablePIDFile(t *testing.T) {
+	useFixtureProcessStartTime(t)
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := os.WriteFile(path, []byte("\x00\x01garbage\xff"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := stopDaemonAndPublisher(path, daemonPIDRecord{}, time.Second, time.Millisecond, func(int) bool { return true }, func(int, string) bool { return true }, func(int, string) error {
+		t.Fatal("unparseable PID file was signaled")
+		return nil
+	}, func(time.Duration) { t.Fatal("unparseable PID wait slept") }, false)
+	if !errors.Is(err, errUnreadablePIDFileRemoved) {
+		t.Fatalf("stopDaemonAndPublisher() error = %v, want errUnreadablePIDFileRemoved", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unparseable PID file remains: %v", statErr)
+	}
+}
+
 func TestStopDaemonTimeoutKeepsPIDFile(t *testing.T) {
 	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
