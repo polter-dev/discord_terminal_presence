@@ -63,6 +63,22 @@ then surfaces its parse error — inside the settle budget, never the 3s horizon
 an unbounded wait. `settledConfigSnapshotUntilWith` memoises the provisional verdict per
 distinct candidate so the probe runs once per candidate, not once per poll.
 
+Both `parsesAsTOML` and the real decode in `loadSnapshotWithMetadata` run
+`tomlNestingTooDeep` first and never call `toml.Decode` on bytes that fail it. This closes
+#497: BurntSushi/toml v1.6.0 decodes deeply-nested inline tables/arrays in O(n^2), so a
+syntactically valid `x = {a={a=...N...}}` document nested ~15000 levels deep (~58KB, well
+under the 1 MiB `maxConfigFileSize` cap) took ~18s to decode with no deadline — hanging the
+`parsesAsTOML` probe, `LoadPath`/`LoadPathReadOnly`, and the live daemon's `Manager.Reload`
+alike. `tomlNestingTooDeep` is an O(n) byte scan of the raw config bytes that tracks the
+current bracket-nesting depth of `{`/`[` while a small state machine skips brackets found
+inside basic (`"..."`, with backslash escapes), literal (`'...'`), multiline-basic
+(`"""..."""`), and multiline-literal (`'''...'''`) strings, and inside `#` comments. Any
+document whose depth exceeds `maxTOMLNestingDepth` (100 — real configs nest 1-2 levels)
+fails closed with `errConfigNestingTooDeep` ("config nesting too deep") the same way any
+other invalid config does (consistent with #462's fail-closed handling), without the byte
+scan itself ever taking more than linear time regardless of how deep the (rejected) nesting
+claims to be.
+
 If a provisional candidate changes during that budget, `Manager.Reload` leaves last-good
 and `LastError` untouched and relies on the save's completion to fire another fsnotify
 event. Standalone loads and manager construction have no last-good value to retain, so

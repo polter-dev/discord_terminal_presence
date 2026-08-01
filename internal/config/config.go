@@ -25,6 +25,16 @@ const (
 	maxConfigFileSize = 1 << 20
 	// DefaultFeedbackURL deep-links to the live feedback form via the page's only stable anchor, the Turnstile container.
 	DefaultFeedbackURL = "https://termp.polter.sh/#feedback-turnstile"
+	// maxTOMLNestingDepth bounds how deeply inline tables/arrays (`{`/`[`) may
+	// nest before a config is rejected outright, without ever handing the
+	// bytes to the TOML decoder. Real configs nest 1-2 levels deep at most;
+	// 100 is far beyond any legitimate document. This exists because
+	// BurntSushi/toml v1.6.0 decodes deeply-nested inline tables in O(n^2):
+	// a syntactically valid ~58KB document nested ~15000 levels deep takes
+	// ~18s to decode with no deadline, hanging both the parsesAsTOML probe
+	// and the real decode path, including the live daemon's config-reload
+	// path (#497).
+	maxTOMLNestingDepth = 100
 )
 
 const BuiltInFallbackMessage = "Working on something"
@@ -621,10 +631,111 @@ func provisionalConfigSnapshot(candidate, accepted fileSnapshot) bool {
 // into a generic map so only *syntax* decides the answer: unknown keys,
 // wrong-typed values, and failed semantic validation are real config errors
 // that must still surface, not evidence of a write in flight.
+//
+// It rejects excessively deep bracket nesting before ever calling
+// toml.Decode: BurntSushi/toml v1.6.0 decodes deeply-nested inline
+// tables/arrays in O(n^2), so a syntactically valid but pathologically
+// nested document can hang the decoder well within the 1 MiB file-size cap
+// (#497). tomlNestingTooDeep is an O(n) byte scan and runs first so this
+// probe can never itself hang.
 func parsesAsTOML(data []byte) bool {
+	if tomlNestingTooDeep(data) {
+		return false
+	}
 	var probe map[string]any
 	_, err := toml.Decode(string(data), &probe)
 	return err == nil
+}
+
+// errConfigNestingTooDeep is returned when a config's inline table/array
+// nesting exceeds maxTOMLNestingDepth, before any decode is attempted.
+var errConfigNestingTooDeep = errors.New("config nesting too deep")
+
+// tomlNestingTooDeep reports whether data's maximum inline-table/array
+// bracket nesting depth (`{`/`[`) exceeds maxTOMLNestingDepth. It is an O(n)
+// byte scan, run before any TOML decode, so a pathologically nested but
+// syntactically valid document (#497) is rejected in linear time instead of
+// reaching BurntSushi/toml's O(n^2) decode path.
+//
+// Brackets inside TOML strings and comments do not count: the scan tracks
+// basic ("...", including escapes), literal ('...'), multiline-basic
+// ("""...""") and multiline-literal ('''...''') string states, and a '#'
+// comment running to end of line, all while outside any string.
+func tomlNestingTooDeep(data []byte) bool {
+	const (
+		stateDefault = iota
+		stateComment
+		stateBasicString
+		stateLiteralString
+		stateMultilineBasic
+		stateMultilineLiteral
+	)
+
+	state := stateDefault
+	depth := 0
+	n := len(data)
+	for i := 0; i < n; i++ {
+		c := data[i]
+		switch state {
+		case stateDefault:
+			switch c {
+			case '#':
+				state = stateComment
+			case '"':
+				if i+2 < n && data[i+1] == '"' && data[i+2] == '"' {
+					state = stateMultilineBasic
+					i += 2
+				} else {
+					state = stateBasicString
+				}
+			case '\'':
+				if i+2 < n && data[i+1] == '\'' && data[i+2] == '\'' {
+					state = stateMultilineLiteral
+					i += 2
+				} else {
+					state = stateLiteralString
+				}
+			case '{', '[':
+				depth++
+				if depth > maxTOMLNestingDepth {
+					return true
+				}
+			case '}', ']':
+				if depth > 0 {
+					depth--
+				}
+			}
+		case stateComment:
+			if c == '\n' {
+				state = stateDefault
+			}
+		case stateBasicString:
+			switch c {
+			case '\\':
+				i++
+			case '"':
+				state = stateDefault
+			}
+		case stateLiteralString:
+			if c == '\'' {
+				state = stateDefault
+			}
+		case stateMultilineBasic:
+			switch {
+			case c == '\\':
+				i++
+			case c == '"' && i+2 < n && data[i+1] == '"' && data[i+2] == '"':
+				state = stateDefault
+				i += 2
+			}
+		case stateMultilineLiteral:
+			if c == '\'' && i+2 < n && data[i+1] == '\'' && data[i+2] == '\'' {
+				state = stateDefault
+				i += 2
+			}
+		}
+	}
+	return false
 }
 
 // settledConfigSnapshot waits for two consecutive reads of path to agree
@@ -835,6 +946,9 @@ func loadSnapshotWithMetadata(path string, snap fileSnapshot) (Config, bool, err
 		Privacy:              cfg.Privacy,
 		CTA:                  cfg.CTA,
 		Tools:                cfg.Tools,
+	}
+	if tomlNestingTooDeep(data) {
+		return invalidFallbackWithPath(path), false, errConfigNestingTooDeep
 	}
 	meta, err := toml.Decode(string(data), &raw)
 	if err != nil {
