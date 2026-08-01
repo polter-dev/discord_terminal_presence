@@ -540,6 +540,48 @@ func TestWindowsTTYResolveSyscallFailureFailsOpen(t *testing.T) {
 	}
 }
 
+func TestShouldConsoleFailOpen(t *testing.T) {
+	tests := []struct {
+		name string
+		win  windowsConsoleWindow
+		want bool
+	}{
+		{
+			name: "classic ConPTY zero handle fails open",
+			win:  windowsConsoleWindow{hwnd: 0, exists: false, visible: false},
+			want: true,
+		},
+		{
+			name: "headless conhost hidden handle fails open (issue 501)",
+			win:  windowsConsoleWindow{hwnd: 1234, exists: true, visible: false},
+			want: true,
+		},
+		{
+			name: "stale or torn-down handle fails open",
+			win:  windowsConsoleWindow{hwnd: 1234, exists: false, visible: false},
+			want: true,
+		},
+		{
+			name: "real visible terminal window resolves normally",
+			win:  windowsConsoleWindow{hwnd: 1234, exists: true, visible: true},
+			want: false,
+		},
+		{
+			name: "minimized terminal keeps WS_VISIBLE and resolves normally",
+			win:  windowsConsoleWindow{hwnd: 5678, exists: true, visible: true},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldConsoleFailOpen(tt.win); got != tt.want {
+				t.Fatalf("shouldConsoleFailOpen(%+v) = %t, want %t", tt.win, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSelectConsolePeerExcludesCurrentProcess(t *testing.T) {
 	pid, ok := selectConsolePeer([]uint32{0, 42, 99}, 42)
 	if !ok || pid != 99 {

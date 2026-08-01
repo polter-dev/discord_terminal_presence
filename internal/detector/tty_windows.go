@@ -27,6 +27,7 @@ var (
 	procGetLastInputInfo = user32.NewProc("GetLastInputInfo")
 	procGetAncestor      = user32.NewProc("GetAncestor")
 	procGetTickCount     = kernel32.NewProc("GetTickCount")
+	procIsWindowVisible  = user32.NewProc("IsWindowVisible")
 
 	consoleAttachMu sync.Mutex
 )
@@ -130,10 +131,23 @@ func inspectWindowsConsole(pid uint32) (hwnd uintptr, conPTY bool, retErr error)
 		return 0, false, fmt.Errorf("attach candidate console: %w", err)
 	}
 	hwnd = getConsoleWindow()
-	if hwnd == 0 {
+	// A headless ConPTY conhost can return a non-null hidden window handle on
+	// some Windows builds; resolving it would freeze the activity clock and let
+	// idle-clear drop an active session (#501). Fail open for the zero handle
+	// and for any handle that is not a real, visible terminal window.
+	if shouldConsoleFailOpen(windowsConsoleWindow{
+		hwnd:    hwnd,
+		exists:  hwnd != 0 && windows.IsWindow(windows.HWND(hwnd)),
+		visible: hwnd != 0 && isWindowVisible(hwnd),
+	}) {
 		return 0, true, nil
 	}
 	return hwnd, false, nil
+}
+
+func isWindowVisible(hwnd uintptr) bool {
+	r1, _, _ := procIsWindowVisible.Call(hwnd)
+	return r1 != 0
 }
 
 func attachConsole(pid uint32) error {
