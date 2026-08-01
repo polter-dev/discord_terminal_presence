@@ -97,9 +97,15 @@ var waitNamedPipeW = windows.NewLazySystemDLL("kernel32.dll").NewProc("WaitNamed
 func discordIPCPipeExists(path string) bool {
 	pathPtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return true
+		// A path that cannot be encoded (e.g. contains an embedded NUL) can
+		// never name a real named pipe, so it is definitively not an
+		// endpoint rather than an indeterminate "treat as present" case.
+		return false
 	}
-	ok, _, callErr := waitNamedPipeW.Call(uintptr(unsafe.Pointer(pathPtr)), 0)
+	// nTimeOut=1 (not 0/NMPWAIT_USE_DEFAULT_WAIT) so this is a fast,
+	// effectively non-blocking probe rather than waiting up to Discord's
+	// server-configured default timeout on a momentarily busy pipe.
+	ok, _, callErr := waitNamedPipeW.Call(uintptr(unsafe.Pointer(pathPtr)), 1)
 	if ok != 0 {
 		return true
 	}
