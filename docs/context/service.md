@@ -96,8 +96,11 @@ checked first with a fast targeted headerless CSV query, whose command exit
 status distinguishes presence from absence. Full enumeration is reserved for
 failures where the targeted command did not exit normally; tolerant CSV parsing
 still accepts usable task rows when enumeration also exits nonzero. If `/Run`
-fails, verbose CSV's numeric Task Scheduler result `0x41301` identifies an
-already-running task; a presence query identifies a concurrently removed task.
+fails, the fixed "Last Run Result" column (index 6) of the verbose CSV is read
+for the numeric Task Scheduler result `0x41301` (`SCHED_S_TASK_RUNNING`) to
+identify an already-running task; only that column is checked, so a coincidental
+sentinel value in an unrelated numeric column cannot false-positive (issue #504).
+A presence query identifies a concurrently removed task.
 Synthetic Japanese and German CSV fixtures run on every OS. Separate realistic
 fixtures cover variable-width/error rows and a 30-column verbose row containing
 an embedded quoted executable command. The Windows integration test installs

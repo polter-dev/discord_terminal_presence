@@ -466,6 +466,15 @@ func (s windowsService) runTask() error {
 	return fmt.Errorf("schtasks run failed: %w: %s", err, strings.TrimSpace(string(out)))
 }
 
+// windowsLastRunResultColumn is the zero-based index of the "Last Run Result"
+// field in the verbose CSV that `schtasks /Query /FO CSV /V /NH` emits. The
+// column order is fixed and locale-independent (only the header names, which
+// `/NH` omits, are localized), so the running sentinel is read from this one
+// column positionally. Scanning every field instead lets a coincidental
+// SCHED_S_TASK_RUNNING value in an unrelated numeric column (e.g. a duration or
+// an embedded exit code) falsely report the task as running (issue #504).
+const windowsLastRunResultColumn = 6
+
 func windowsTaskCSVIsRunning(data []byte) bool {
 	// Verbose CSV column names and status text are localized. The numeric Last
 	// Run Result is not; SCHED_S_TASK_RUNNING is 0x41301 on every locale.
@@ -478,15 +487,16 @@ func windowsTaskCSVIsRunning(data []byte) bool {
 		return false
 	}
 	for _, record := range records {
-		for _, field := range record {
-			value := strings.TrimSpace(field)
-			base := 10
-			if strings.HasPrefix(strings.ToLower(value), "0x") {
-				base = 0
-			}
-			if result, err := strconv.ParseUint(value, base, 32); err == nil && result == schedSTaskRunning {
-				return true
-			}
+		if len(record) <= windowsLastRunResultColumn {
+			continue
+		}
+		value := strings.TrimSpace(record[windowsLastRunResultColumn])
+		base := 10
+		if strings.HasPrefix(strings.ToLower(value), "0x") {
+			base = 0
+		}
+		if result, err := strconv.ParseUint(value, base, 32); err == nil && result == schedSTaskRunning {
+			return true
 		}
 	}
 	return false
