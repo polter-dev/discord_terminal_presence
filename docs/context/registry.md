@@ -64,6 +64,18 @@ address it actually resolves to. `ValidateHTTPURL` is the *only* defence for thi
 URL field, so it must reject the same rune classes the text fields reject, not merely
 validate the URL's shape and length.
 
+`resolveIcon`'s `IconSourceSimpleIcons` branch `url.QueryEscape`s the (already-validated)
+icon slug before templating it into `simpleIconsURLTemplate`'s `url=` query value. Before
+this (#489) the raw slug was concatenated unescaped, so a slug such as
+`git&url=http://evil.example/x.png` injected a second `url` query parameter into the
+wsrv.nl proxy request — the proxy could honor the attacker's `url=` over the intended
+`cdn.simpleicons.org/...` one, serving an attacker-controlled image while the request
+still passed validation because the host stayed `wsrv.nl`. `ValidateCustomTool`
+deliberately does not restrict the slug's charset for this: rejecting it there would also
+reject previously-accepted configs on reload, so escaping at the templating boundary in
+`resolveIcon` was chosen instead — it neutralizes the injection non-breakingly, and a
+plain slug like `git` still resolves to the unchanged, working proxy URL.
+
 Do not replace identity matching with `gopsutil.Terminal()` filtering: it is not
 implemented on Darwin and would remove all macOS presence. Short exact catalog names
 such as `lf`, `mc`, `task`, `spt`, and `dust` remain product ambiguities.

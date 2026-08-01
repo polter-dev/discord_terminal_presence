@@ -2,6 +2,7 @@ package registry
 
 import (
 	"math"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -619,6 +620,49 @@ func TestCustomToolIconSlugResolves(t *testing.T) {
 	want := "https://wsrv.nl/?url=cdn.simpleicons.org/neovim&output=png&w=256&h=256"
 	if tool.ImageURL != want {
 		t.Fatalf("ImageURL = %q, want %q", tool.ImageURL, want)
+	}
+}
+
+// TestCustomToolIconSlugEscapesQueryInjection is the #489 regression test: a
+// slug containing "&url=" must not be able to smuggle a second "url" query
+// parameter into the wsrv.nl proxy request, which would let it fetch and
+// serve an attacker-controlled image instead of the intended Simple Icons
+// asset. DisplayName must be a valid (2+ char) value here, or
+// ValidateCustomTool rejects the tool before resolveIcon ever sees the slug.
+func TestCustomToolIconSlugEscapesQueryInjection(t *testing.T) {
+	const maliciousSlug = "git&url=http://evil.example/x.png"
+
+	reg, err := NewWithCustom(CustomTool{
+		ID:          "mine",
+		DisplayName: "Mine",
+		Match:       CustomMatch{Name: "mine"},
+		IconSlug:    maliciousSlug,
+		IconSource:  IconSourceSimpleIcons,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tool, ok := reg.Match("mine")
+	if !ok {
+		t.Fatal("expected custom tool to match")
+	}
+
+	want := "https://wsrv.nl/?url=cdn.simpleicons.org/git%26url%3Dhttp%3A%2F%2Fevil.example%2Fx.png&output=png&w=256&h=256"
+	if tool.ImageURL != want {
+		t.Fatalf("ImageURL = %q, want %q", tool.ImageURL, want)
+	}
+
+	parsed, err := url.Parse(tool.ImageURL)
+	if err != nil {
+		t.Fatalf("resolved ImageURL does not parse as a URL: %v", err)
+	}
+	values := parsed.Query()
+	if got := len(values["url"]); got != 1 {
+		t.Fatalf("query has %d \"url\" params, want exactly 1 (values=%v)", got, values["url"])
+	}
+	if got := values.Get("url"); got != "cdn.simpleicons.org/git&url=http://evil.example/x.png" {
+		t.Fatalf("url param = %q, want the slug embedded verbatim (undecoded) as one value", got)
 	}
 }
 

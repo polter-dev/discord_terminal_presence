@@ -612,7 +612,7 @@ func resolveIcon(tool *Tool) {
 
 	switch source {
 	case IconSourceSimpleIcons:
-		tool.ImageURL = fmt.Sprintf(simpleIconsURLTemplate, slug)
+		tool.ImageURL = fmt.Sprintf(simpleIconsURLTemplate, url.QueryEscape(slug))
 	case IconSourceLobeHub:
 		tool.ImageURL = fmt.Sprintf(lobehubURLTemplate, slug)
 	case IconSourceURL:
