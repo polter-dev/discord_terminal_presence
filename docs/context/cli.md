@@ -22,7 +22,26 @@ package-layout integration probes.
 
 **Invariants / gotchas:** Start treats the validated PID file as final arbiter, also
 recognizes a fresh same-user/same-executable `discord.json` publisher, and waits for
-bounded child readiness. New PID and Discord-state records capture the daemon's own
+bounded child readiness. `waitForDetachedStart` (`cmd/termp/spawn.go`) does not report
+success the instant it first observes the detached child owning the PID file: once
+confirmed, it keeps re-checking (in `detachedStartPollInterval` steps, via the new
+`confirmDetachedStartStability` helper) for a `detachedStartStabilityWindow` (400ms,
+bounded by whatever of the overall 2s `detachedStartTimeout` budget remains) that the
+child is still alive and still owns the PID file before returning nil. This closes issue
+#490: the PID file is written before `run()`'s own initialization
+(`newDetectionRuntime`, `detector.New`, `presence.NewWriter`, or a panic during setup),
+and `start()`'s deferred `removePIDIfOwned` removes that PID file the moment `run()`
+returns an error — so without the stability window, a child that died milliseconds after
+publishing its PID file was already invisible to the parent, which had already printed
+`termp started in the background (pid N)` and exited 0. `start` stays intentionally
+lightweight: it still does not wait for the presence loop, first detector scan, or
+steady state — only the short stability window, so a healthy start's added latency stays
+in the hundreds-of-milliseconds range. Verified by instrumenting a temporary build of
+`run()` to sleep 120ms past the PID write and then return an error: before the fix this
+printed the success line and exited 0 with the PID file gone a moment later; after the
+fix `termp start` exits non-zero, prints no "started" message, and the daemon log records
+the injected failure — the instrumentation was reverted before committing (issue #490).
+New PID and Discord-state records capture the daemon's own
 normalized executable path; process validation compares the live image against that
 recorded path alongside same-user ownership and start time. This preserves PID-reuse and
 foreign-process refusal after an upgrade moves the invoking binary. A new `start` from a
