@@ -594,6 +594,32 @@ func TestStopDaemonAndPublisherStopsOrphanNotNamedByPIDFile(t *testing.T) {
 	}
 }
 
+func TestStopDaemonAndPublisherSharesTimeoutAcrossTargets(t *testing.T) {
+	useFixtureProcessStartTime(t)
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 2222); err != nil {
+		t.Fatal(err)
+	}
+	const timeout = 100 * time.Millisecond
+	const firstExit = 80 * time.Millisecond
+	elapsed := time.Duration(0)
+	_, err := stopDaemonAndPublisher(path, daemonPIDRecord{PID: 1111, StartTime: fixtureProcessStartTime}, timeout, 10*time.Millisecond,
+		func(pid int) bool {
+			return pid == 2222 || elapsed < firstExit
+		},
+		func(int, string) bool { return true },
+		func(int, string) error { return nil },
+		func(delay time.Duration) { elapsed += delay },
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "timed out after 100ms waiting for daemon pid 2222 to exit") {
+		t.Fatalf("stopDaemonAndPublisher() error = %v, want shared-budget timeout for pid 2222", err)
+	}
+	if elapsed != timeout {
+		t.Fatalf("total simulated wait = %s, want %s", elapsed, timeout)
+	}
+}
+
 func TestStopDaemonAndPublisherAcceptsAutostartRelaunch(t *testing.T) {
 	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")

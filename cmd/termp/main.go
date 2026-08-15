@@ -2900,10 +2900,16 @@ func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pol
 			return 0, fmt.Errorf("refusing to signal pid %d: %w", target.PID, err)
 		}
 	}
+	remaining := timeout
 	for _, target := range targets {
-		if !waitForProcessExit(target, timeout, pollInterval, alive, looksLikeTermp, sleep) {
+		waited := time.Duration(0)
+		if !waitForProcessExit(target, remaining, pollInterval, alive, looksLikeTermp, func(delay time.Duration) {
+			sleep(delay)
+			waited += delay
+		}) {
 			return 0, fmt.Errorf("timed out after %s waiting for daemon pid %d to exit; PID file was not removed", timeout, target.PID)
 		}
+		remaining = max(remaining-waited, 0)
 	}
 	if readErr == nil {
 		result, err := removePIDIfOwnedResult(path, pid, info)
