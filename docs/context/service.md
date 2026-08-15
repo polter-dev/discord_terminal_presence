@@ -43,8 +43,26 @@ tests do not depend on a home directory and continue to run on Windows CI.
 Executable resolution and install validation errors name both the failed operation and
 the path being checked, so platform path errors retain actionable termp context.
 Forced install still makes the supplied path absolute, but deliberately bypasses
-symlink resolution and unstable-path rejection. Windows task installation fails with
-the canonicalization error instead of silently registering the unresolved executable.
+symlink resolution and unstable-path rejection.
+
+`ValidateInstallExecutable` resolves symlinks only to feed the unstable-path
+heuristic, so it separates that resolution's two failure modes (#472). A path
+that does not exist is still refused, but with a message that names the path and
+the next command to run, because on Windows the underlying error is a bare
+`syscall.Errno` that renders as `The system cannot find the path specified.` with
+no path in it at all. Any other resolution failure (an unreadable parent
+directory, an unfollowable reparse point, a flaky share) no longer aborts the
+install: validation falls back to judging the unresolved absolute path, which
+still catches temp-directory and source-tree installs. Turning a working install
+into a hard failure over a check that is only advisory was the actual defect.
+`cmd/termp` covers the wiring directly, so deleting the validation call from
+`install()` now fails the suite instead of passing it.
+
+Note that `termp setup` still resolves the executable without calling
+`ValidateInstallExecutable`, so it can register a path that `autostart install`
+would refuse. That divergence is deliberate and unresolved: adding the check to
+setup would introduce a new way for a working setup to fail, and dropping it from
+install would remove the temp-directory guard.
 
 Windows uses the stable scheduled-task name `\Terminal Presence\termp`. Keeping
 one well-known task preserves existing autostart registrations during upgrades

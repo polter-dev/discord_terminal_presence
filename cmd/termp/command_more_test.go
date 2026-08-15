@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -237,9 +238,13 @@ type fakeAutostartManager struct {
 	disableState   service.State
 	statusCalls    *int
 	uninstallCalls *int
+	installCalls   *int
 }
 
 func (m fakeAutostartManager) Install(string, bool) (service.State, error) {
+	if m.installCalls != nil {
+		(*m.installCalls)++
+	}
 	return service.State{}, nil
 }
 
@@ -262,6 +267,42 @@ func (m fakeAutostartManager) Status() service.State {
 		(*m.statusCalls)++
 	}
 	return m.statusState
+}
+
+// TestAutostartInstallValidatesExecutableBeforeRegistering pins the wiring that
+// issue #472 found untested: `autostart install` must run
+// service.ValidateInstallExecutable before it touches the service manager.
+// Deleting that call from install() made the whole cmd/termp suite pass, so the
+// only guard against silently registering an unstable path was code review.
+// The assertion that the manager was never reached is what kills that mutation.
+func TestAutostartInstallValidatesExecutableBeforeRegistering(t *testing.T) {
+	name := "termp"
+	if runtime.GOOS == "windows" {
+		name = "termp.exe"
+	}
+	// t.TempDir() lives under os.TempDir(), which is exactly what
+	// isUnstableExecutablePath refuses to install from.
+	exe := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldArgs := os.Args
+	os.Args = []string{exe, "autostart", "install"}
+	t.Cleanup(func() { os.Args = oldArgs })
+
+	installCalls := 0
+	withFakeAutostartManager(t, fakeAutostartManager{installCalls: &installCalls})
+
+	err := install(nil)
+	if err == nil {
+		t.Fatal("install() error = nil, want refusal to install from an unstable path")
+	}
+	if !strings.Contains(err.Error(), "unstable executable path") {
+		t.Fatalf("install() error = %v, want the unstable executable path refusal", err)
+	}
+	if installCalls != 0 {
+		t.Fatalf("autostart manager Install called %d times, want 0 before validation passes", installCalls)
+	}
 }
 
 func withFakeAutostartManager(t *testing.T, manager fakeAutostartManager) {
