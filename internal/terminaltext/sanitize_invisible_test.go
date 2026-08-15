@@ -18,8 +18,6 @@ func TestIsControlOrBidiRejectsInvisibleFormatting(t *testing.T) {
 		r    rune
 	}{
 		{"zero width space", '\u200b'},
-		{"zero width non-joiner", '\u200c'},
-		{"zero width joiner", '\u200d'},
 		{"word joiner", '\u2060'},
 		{"invisible times", '\u2062'},
 		{"invisible separator", '\u2063'},
@@ -58,7 +56,6 @@ func TestSanitizeStripsInvisibleFormatting(t *testing.T) {
 		want  string
 	}{
 		{name: "zero width space between words", input: "safe\u200bhidden", want: "safehidden"},
-		{name: "zero width joiner splices adjacent text", input: "a\u200db", want: "ab"},
 		{name: "byte order mark prefix", input: "\ufeffvalue", want: "value"},
 		{name: "soft hyphen mid word", input: "soft\u00adhyphen", want: "softhyphen"},
 		{name: "line separator", input: "line1\u2028line2", want: "line1line2"},
@@ -84,8 +81,8 @@ func TestSanitizeStripsInvisibleFormatting(t *testing.T) {
 
 // TestIsControlOrBidiAcceptsLegitimateMultibyteText proves the invisible-
 // formatting class added for #571 does not over-reject: ordinary combining
-// marks, astral-plane emoji (single codepoint, no ZWJ splice), and normal
-// multibyte script text must all still pass through untouched.
+// marks, astral-plane emoji, and normal multibyte script text must all
+// still pass through untouched.
 func TestIsControlOrBidiAcceptsLegitimateMultibyteText(t *testing.T) {
 	// A representative sample, not exhaustive: combining diacritics,
 	// non-Latin scripts, and standalone (non-ZWJ-joined) astral emoji.
@@ -99,5 +96,36 @@ func TestIsControlOrBidiAcceptsLegitimateMultibyteText(t *testing.T) {
 	}
 	if got := Sanitize(legit); got != legit {
 		t.Fatalf("Sanitize(%q) = %q, want unchanged", legit, got)
+	}
+}
+
+// TestIsControlOrBidiAcceptsZWJAndZWNJ pins the #571 review outcome
+// directly: ZERO WIDTH JOINER (U+200D) and ZERO WIDTH NON-JOINER (U+200C)
+// are Cf codepoints, like the rest of the rejected invisible-formatting
+// class, but are deliberately excluded because they do real rendering
+// work. ZWJ joins components of a multi-codepoint emoji sequence (a family
+// or a pride flag are not renderable as the intended glyph without it),
+// and ZWNJ is used in Persian and other Arabic-script orthographies to
+// keep two letters from visually joining. #422 already made this same
+// tradeoff for the bidi set; #571 must not silently reverse it.
+func TestIsControlOrBidiAcceptsZWJAndZWNJ(t *testing.T) {
+	if IsControlOrBidi('\u200c') {
+		t.Fatal("IsControlOrBidi(ZWNJ U+200C) = true, want false")
+	}
+	if IsControlOrBidi('\u200d') {
+		t.Fatal("IsControlOrBidi(ZWJ U+200D) = true, want false")
+	}
+
+	// Family emoji: four person emoji joined into one glyph by ZWJ.
+	family := "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466"
+	if got := Sanitize(family); got != family {
+		t.Fatalf("Sanitize(%q) = %q, want unchanged (ZWJ emoji sequence)", family, got)
+	}
+
+	// Persian phrase using ZWNJ to separate a prefix from its stem, the
+	// standard usage the #422 review protected.
+	persian := "\u0627\u0628\u0632\u0627\u0631\u200c\u0641\u0627\u0631\u0633\u06cc"
+	if got := Sanitize(persian); got != persian {
+		t.Fatalf("Sanitize(%q) = %q, want unchanged (Persian ZWNJ)", persian, got)
 	}
 }

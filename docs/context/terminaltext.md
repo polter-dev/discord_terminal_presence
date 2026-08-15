@@ -24,7 +24,7 @@ maintaining a second copy of the rule that can drift from this one.
 C0/C1 controls, DEL, and the named bidi formatting controls, so a class of codepoints that
 render as nothing (or as an innocuous-looking separator) while still being present in the
 string passed both `Sanitize` and `registry.firstDisallowedRune` (the same predicate)
-unrejected: ZWSP/ZWNJ/ZWJ (U+200B-U+200D), the word joiner and invisible math operators
+unrejected: ZWSP (U+200B), the word joiner and invisible math operators
 (U+2060-U+2064), the BOM reused as ZWNBSP (U+FEFF), soft hyphen (U+00AD), the Mongolian
 vowel separator (U+180E), the interlinear annotation controls (U+FFF9-U+FFFB), and the
 entire Unicode Tags block (U+E0000-U+E007F), a known text-smuggling channel, since an
@@ -39,14 +39,24 @@ and PARAGRAPH SEPARATOR (U+2028, U+2029, general category Zl/Zp, not Cf, but exa
 invisible in practice and confirmed reaching a URL unrejected) and three characters whose
 category is neither Cf nor Zl/Zp but that exist specifically to be invisible: U+034F
 COMBINING GRAPHEME JOINER (Mn), and the Hangul filler characters U+115F and U+3164 (Lo).
-The predicate now rejects Cf, Zl, Zp, and those three explicit codepoints.
+The predicate rejects Cf, Zl, Zp, and those three explicit codepoints, with one deliberate
+carve-out below.
 
-This does reject ZWJ (U+200D) and Persian ZWNJ (U+200C) in display names, which are
-legitimate in multi-codepoint emoji sequences (family/pride-flag emoji) and Persian
-orthography, a real, deliberate cost of closing the gap in one shared predicate rather
-than forking behavior per call site. Ordinary combining marks, astral-plane emoji (single
-codepoint, no ZWJ splice), and normal multibyte script text are unaffected; only the
-Cf/Zl/Zp categories and the three explicit exceptions are rejected.
+The boundary the predicate draws is invisible-with-no-rendering-role versus
+invisible-but-orthographically-meaningful. ZERO WIDTH JOINER (U+200D) and ZERO WIDTH
+NON-JOINER (U+200C) are Cf codepoints, like the rest of this class, but are explicitly
+excluded: ZWJ does real rendering work joining components of a multi-codepoint emoji
+sequence (family and pride-flag emoji are not renderable as the intended glyph without
+it), and ZWNJ is used in Persian and other Arabic-script orthographies to keep two letters
+from visually joining. `TestValidateCustomToolAllowsLegitimateUnicodeDisplayNames` in
+`internal/registry` already pinned this decision for the #422 review's bidi set; the #571
+lead review caught an initial version of this fix that rejected ZWJ/ZWNJ too (breaking
+that exact test) and required this carve-out, since #571 is LOW severity and neither
+codepoint can encode arbitrary ASCII the way the Tags block can, so extending the
+rejected class to cover them was a product trade a bug-fix PR should not make. Ordinary
+combining marks, astral-plane emoji (including ZWJ sequences), and normal multibyte
+script text (including Persian ZWNJ) are all unaffected; only the Cf/Zl/Zp categories
+(minus U+200C/U+200D) and the three explicit exceptions are rejected.
 
 **Separator coverage (exact):** `SanitizeSingleLine` normalizes CRLF, CR (`\r`), LF
 (`\n`), vertical tab (`\v`, 0x0B), form feed (`\f`, 0x0C), NUL (0x00), RS (0x1E, RECORD

@@ -26,14 +26,20 @@ func IsControlOrBidi(r rune) bool {
 
 // isInvisibleFormatting reports whether r is a codepoint that renders as
 // nothing, or as an innocuous-looking separator, while still being present
-// in the string (#571). The core of the class is Unicode's own Cf (Format)
-// general category: zero-width space/non-joiner/joiner (U+200B-U+200D), the
-// word joiner and invisible math operators (U+2060-U+2064), the byte-order
-// mark reused as ZWNBSP (U+FEFF), soft hyphen (U+00AD), the Mongolian vowel
-// separator (U+180E), the interlinear annotation controls (U+FFF9-U+FFFB),
-// and the entire Unicode Tags block (U+E0000-U+E007F) — a known
-// text-smuggling channel, since an entire ASCII string can be encoded in
-// Tags codepoints that render as nothing.
+// in the string (#571). The boundary this draws is invisible-with-no-
+// rendering-role versus invisible-but-orthographically-meaningful: the
+// former is rejected, the latter is not, even though both are invisible.
+//
+// The core of the rejected class is Unicode's own Cf (Format) general
+// category: zero-width space (U+200B), the word joiner and invisible math
+// operators (U+2060-U+2064), the byte-order mark reused as ZWNBSP (U+FEFF),
+// soft hyphen (U+00AD), the Mongolian vowel separator (U+180E), the
+// interlinear annotation controls (U+FFF9-U+FFFB), and the entire Unicode
+// Tags block (U+E0000-U+E007F). The Tags block is the actual point of
+// #571: it is a known text-smuggling channel, since an entire ASCII string
+// can be encoded in Tags codepoints that render as nothing. None of these
+// have any orthographic role; they exist purely as formatting/control
+// signals, so rejecting them costs nothing real.
 //
 // Two categories are added deliberately rather than folded into "format":
 // LINE SEPARATOR and PARAGRAPH SEPARATOR (U+2028, U+2029) are general
@@ -46,12 +52,27 @@ func IsControlOrBidi(r rune) bool {
 // HANGUL CHOSEONG FILLER and U+3164 HANGUL FILLER (category Lo), both
 // designed to occupy a Hangul syllable position while displaying nothing.
 //
+// ZERO WIDTH NON-JOINER (U+200C) and ZERO WIDTH JOINER (U+200D) are
+// deliberately excluded even though they are Cf and would otherwise match.
+// Unlike everything above, they do real rendering work: ZWJ joins
+// components into a single multi-codepoint emoji (family, pride flag, and
+// other ZWJ sequences), and ZWNJ is used in Persian and other Arabic-script
+// orthographies to keep two letters from visually joining. #422 already
+// weighed this tradeoff for the bidi set and chose to keep them; #571
+// extends that same decision to this invisible-formatting set rather than
+// re-litigating it. Neither can encode arbitrary ASCII the way the Tags
+// block can, so excluding them costs effectively nothing on the security
+// side. Do not re-add U+200C/U+200D here without a product decision, not
+// just a bug-fix PR.
+//
 // This is a narrow, deliberate boundary, not "reject anything unusual":
-// ordinary combining marks (accents, diacritics), astral-plane emoji, and
-// normal multibyte text are all outside the Cf/Zl/Zp categories and outside
-// the three explicit exceptions, so they are unaffected.
+// ordinary combining marks (accents, diacritics), astral-plane emoji
+// (including ZWJ sequences), and normal multibyte text (including Persian
+// ZWNJ) are all unaffected.
 func isInvisibleFormatting(r rune) bool {
 	switch r {
+	case 0x200c, 0x200d:
+		return false
 	case 0x034f, 0x115f, 0x3164:
 		return true
 	}
