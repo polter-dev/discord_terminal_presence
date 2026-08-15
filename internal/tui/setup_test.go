@@ -133,6 +133,9 @@ func TestApplySetupFailedInstallRestoresKnownAbsentService(t *testing.T) {
 	desired.StartAtLogin = true
 	persisted := original
 	uninstallCalls := 0
+	// The install writes its definition and then fails, so the compensating
+	// uninstall has something real to clean up.
+	definitionPresent := false
 
 	result := applySetup(
 		original,
@@ -141,13 +144,17 @@ func TestApplySetupFailedInstallRestoresKnownAbsentService(t *testing.T) {
 			persisted = next
 			return "/tmp/config.toml", nil
 		},
-		func(string) error { return errors.New("install failed") },
+		func(string) error {
+			definitionPresent = true
+			return errors.New("install failed")
+		},
 		func() error {
 			uninstallCalls++
+			definitionPresent = false
 			return nil
 		},
 		func() (string, error) { return "/usr/local/bin/termp", nil },
-		func() (bool, error) { return false, nil },
+		func() (bool, error) { return definitionPresent, nil },
 	)
 
 	if result.err == nil || !strings.Contains(result.err.Error(), "install failed") {
@@ -155,6 +162,56 @@ func TestApplySetupFailedInstallRestoresKnownAbsentService(t *testing.T) {
 	}
 	if uninstallCalls != 1 {
 		t.Fatalf("uninstall calls = %d, want service rollback", uninstallCalls)
+	}
+	if persisted.StartAtLogin {
+		t.Fatal("failed install did not restore original config")
+	}
+}
+
+// A refused install writes nothing, so there is nothing to compensate for. Setup used
+// to run the compensating uninstall anyway, watch it get refused for the same reason,
+// and print that refusal a second time as a failed restore of state it never changed.
+func TestApplySetupRefusedInstallSkipsCompensationAndReportsOnce(t *testing.T) {
+	const refusal = "launchd plist /Users/x/Library/LaunchAgents/sh.polter.termp.plist " +
+		"belongs to a different installation: targets \"/opt/other/termp\", running " +
+		"executable is \"/usr/local/bin/termp\"; re-run autostart install or uninstall " +
+		"with --force to take it over"
+	original := config.Default()
+	original.StartAtLogin = false
+	desired := original
+	desired.StartAtLogin = true
+	persisted := original
+	uninstallCalls := 0
+
+	result := applySetup(
+		original,
+		desired,
+		func(next config.Config) (string, error) {
+			persisted = next
+			return "/tmp/config.toml", nil
+		},
+		// A foreign definition is refused before anything is written, and Status
+		// reports it as not installed both before and after.
+		func(string) error { return errors.New(refusal) },
+		func() error {
+			uninstallCalls++
+			return errors.New(refusal)
+		},
+		func() (string, error) { return "/usr/local/bin/termp", nil },
+		func() (bool, error) { return false, nil },
+	)
+
+	if result.err == nil {
+		t.Fatal("applySetup() error = nil, want the install refusal")
+	}
+	if uninstallCalls != 0 {
+		t.Fatalf("uninstall calls = %d, want 0: nothing was written to clean up", uninstallCalls)
+	}
+	if strings.Contains(result.err.Error(), "restore previous autostart state") {
+		t.Fatalf("applySetup() error = %q, want no failed-restore claim", result.err)
+	}
+	if got := strings.Count(result.err.Error(), refusal); got != 1 {
+		t.Fatalf("refusal reported %d times, want 1:\n%v", got, result.err)
 	}
 	if persisted.StartAtLogin {
 		t.Fatal("failed install did not restore original config")
