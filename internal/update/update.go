@@ -1165,7 +1165,7 @@ func detectResolvedInstall(
 		goBins[filepath.Clean(filepath.Join(home, "go", "bin"))] = struct{}{}
 	}
 	for bin := range goBins {
-		if pathWithin(executable, bin, goos) {
+		if isDirectChildOf(executable, bin, goos) {
 			return InstallGo
 		}
 	}
@@ -1276,7 +1276,8 @@ func isHomebrewInstall(executable string, prefixes []string) bool {
 	return false
 }
 
-func pathWithin(path, dir, goos string) bool {
+// isDirectChildOf reports whether path is a direct child of dir.
+func isDirectChildOf(path, dir, goos string) bool {
 	parent := filepath.Clean(filepath.Dir(path))
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
