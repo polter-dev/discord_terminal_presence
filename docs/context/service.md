@@ -11,9 +11,15 @@ state, paths, and conflicts. Builders render launchd, systemd, and Windows task 
 systemd definitions. `windows.go` contains scheduled-task identity and XML. The
 Windows autostart companion launcher lives in `cmd/termpw` (`-H=windowsgui`).
 
-**Invariants / gotchas:** Platform status calls honor their context bound. Installed
-definitions are owned by their executable command; foreign definitions are not modified
-without force.
+**Invariants / gotchas:** Platform status calls honor their context bound.
+`ExecRunner.RunContext` sets `cmd.WaitDelay` (issue #558) so a service-manager command
+that leaves a grandchild process holding its inherited stdout/stderr pipe cannot keep
+`CombinedOutput` blocked past the context deadline the way it did before the fix (a 200ms
+context returned after a real 3s hang). A killed or failed command after the context is
+done now returns `ctx.Err()` instead of the child's `signal: killed`, so `StatusContext`
+callers, including the Windows ownership check, can tell a timeout from a genuine command
+failure. Installed definitions are owned by their executable command; foreign definitions,
+and definitions whose ownership cannot be verified, are not modified without force.
 
 Install snapshots the prior platform definition and activation state before replacing it.
 If post-write activation fails, macOS and Linux restore the prior file or remove a new one,
