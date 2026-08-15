@@ -1432,7 +1432,7 @@ func stop(args []string) error {
 	serviceState := service.NewManager().StatusContext(statusCtx)
 	cancelStatus()
 	remaining := max(time.Until(stopDeadline), 0)
-	pid, err := stopDaemonAndPublisher(pidPath, publisher, remaining, stopPollInterval, processAlive, processLooksLikeTermpAtPath, signalTermpProcessAtPath, time.Sleep, serviceWillRelaunch(serviceState))
+	pid, err := stopDaemonAndPublisher(pidPath, publisher, remaining, stopPollInterval, processAlive, processLooksLikeTermpAtPath, signalTermpProcessAtPath, time.Sleep, serviceMayRelaunch(serviceState))
 	if errors.Is(err, errUnreadablePIDFileRemoved) {
 		fmt.Println(errUnreadablePIDFileRemoved.Error())
 		return nil
@@ -1475,7 +1475,35 @@ func printStopSuccess(pid int, state service.State) {
 	fmt.Printf("stopped (pid %d)\n", pid)
 	if serviceWillRelaunch(state) {
 		fmt.Println("Autostart is on — run \"termp autostart disable\" to pause it (or \"termp autostart uninstall\" to remove autostart, not the binary).")
+		return
 	}
+	if serviceRelaunchUnknown(state) {
+		fmt.Println("Autostart is installed but its state could not be read, so the daemon may start again; run \"termp autostart disable\" to be sure it stays stopped.")
+	}
+}
+
+// serviceMayRelaunch reports whether autostart could bring the daemon back,
+// including the case where the bounded service-manager probe never returned a
+// definite answer. It is the tolerance used while stopping, so an indeterminate
+// probe does not turn an observed relaunch into a bookkeeping error.
+func serviceMayRelaunch(state service.State) bool {
+	return serviceWillRelaunch(state) || serviceRelaunchUnknown(state)
+}
+
+// serviceRelaunchUnknown reports whether the service manager left the autostart
+// state indeterminate. Every platform status uses the "unknown" sentinel for a
+// probe that failed or timed out, and a timeout became reachable once the probe
+// was bounded. An explicitly disabled or uninstalled service is still a definite
+// "will not relaunch", so only the installed, not-disabled case is uncertain.
+func serviceRelaunchUnknown(state service.State) bool {
+	if !state.Installed || serviceWillRelaunch(state) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(state.Enabled)) {
+	case "false", "disabled", "inactive":
+		return false
+	}
+	return strings.ToLower(strings.TrimSpace(state.Loaded)) == "unknown"
 }
 
 func serviceWillRelaunch(state service.State) bool {

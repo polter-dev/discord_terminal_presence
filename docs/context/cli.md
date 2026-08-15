@@ -62,7 +62,11 @@ service manager cannot postpone daemon signaling indefinitely or extend the comm
 its lifecycle budget. The shutdown wait shares its remaining budget across a distinct
 publisher and PID-file owner instead of granting each target a fresh timeout (#529). A
 prompt probe still drives relaunch-aware PID handling and the successful-stop autostart
-hint (#515).
+hint (#515). A probe that fails or times out leaves the platform "unknown" sentinel, which
+is neither "will relaunch" nor "will not": for an installed service that is not explicitly
+disabled, stop tolerates a relaunched PID-file owner instead of reporting the
+changed-ownership bookkeeping error, and then says so in one line rather than claiming a
+clean stop (#534). Known loaded and disabled states are unchanged.
 
 Connect never starts a daemon. It prefers the validated publisher, then the PID owner.
 Windows uses a current-user PID-addressed named pipe and verifies the server process.

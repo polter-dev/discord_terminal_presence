@@ -657,6 +657,88 @@ func TestStopDaemonAndPublisherAcceptsAutostartRelaunch(t *testing.T) {
 	}
 }
 
+func TestStopDaemonAndPublisherAcceptsRelaunchWhenAutostartStateUnknown(t *testing.T) {
+	useFixtureProcessStartTime(t)
+	path := filepath.Join(t.TempDir(), "termp.pid")
+	if err := writePID(path, 1234); err != nil {
+		t.Fatal(err)
+	}
+	// The bounded autostart probe timed out, so every platform reports the
+	// "unknown" sentinel for an installed service.
+	state := service.State{Installed: true, Loaded: "unknown", Enabled: "unknown"}
+	live := map[int]bool{1234: true, 5678: false}
+	pid, err := stopDaemonAndPublisher(path, daemonPIDRecord{}, time.Second, time.Millisecond,
+		func(pid int) bool { return live[pid] },
+		func(pid int, _ string) bool { return pid == 1234 || pid == 5678 },
+		func(pid int, _ string) error {
+			live[pid] = false
+			live[5678] = true
+			return writePID(path, 5678)
+		},
+		func(time.Duration) {},
+		serviceMayRelaunch(state),
+	)
+	if err != nil || pid != 1234 {
+		t.Fatalf("stopDaemonAndPublisher() = %d, %v; want 1234, nil", pid, err)
+	}
+
+	out, err := captureStdout(t, func() error {
+		printStopSuccess(pid, state)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "stopped (pid 1234)") {
+		t.Fatalf("stop output missing PID: %q", out)
+	}
+	if !strings.Contains(out, "state could not be read") || !strings.Contains(out, "termp autostart disable") {
+		t.Fatalf("stop output missing autostart uncertainty notice: %q", out)
+	}
+}
+
+func TestServiceRelaunchUnknown(t *testing.T) {
+	tests := []struct {
+		name  string
+		state service.State
+		want  bool
+	}{
+		{
+			name:  "installed with unknown probe",
+			state: service.State{Installed: true, Loaded: "unknown", Enabled: "unknown"},
+			want:  true,
+		},
+		{
+			name:  "not installed",
+			state: service.State{Installed: false, Loaded: "unknown", Enabled: "unknown"},
+		},
+		{
+			name:  "explicitly disabled",
+			state: service.State{Installed: true, Loaded: "unknown", Enabled: "false"},
+		},
+		{
+			name:  "definitely loaded",
+			state: service.State{Installed: true, Loaded: "active"},
+		},
+		{
+			name:  "definitely not loaded",
+			state: service.State{Installed: true, Loaded: "inactive"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := serviceRelaunchUnknown(tt.state); got != tt.want {
+				t.Fatalf("serviceRelaunchUnknown(%+v) = %t, want %t", tt.state, got, tt.want)
+			}
+			// The known states must keep answering exactly as before.
+			if got, want := serviceMayRelaunch(tt.state), serviceWillRelaunch(tt.state) || tt.want; got != want {
+				t.Fatalf("serviceMayRelaunch(%+v) = %t, want %t", tt.state, got, want)
+			}
+		})
+	}
+}
+
 func TestStopDaemonAndPublisherRejectsUnexpectedPIDFileTakeover(t *testing.T) {
 	useFixtureProcessStartTime(t)
 	path := filepath.Join(t.TempDir(), "termp.pid")
