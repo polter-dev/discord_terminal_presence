@@ -397,28 +397,39 @@ func TestNewWithCustomRejectsDisallowedRunesInImageURL(t *testing.T) {
 // TestValidateCustomToolAllowsLegitimateUnicodeDisplayNames guards against
 // the #422 review's concern that rejecting bidi formatting controls could
 // collaterally reject legitimate non-Latin or emoji display names: none of
-// these contain U+061C/U+200E/U+200F/U+202A-E/U+2066-9 (the rejected set),
-// only ordinary script characters, combining marks, joiners (ZWJ U+200D,
-// Persian ZWNJ U+200C — distinct from the rejected bidi marks), variation
-// selectors, and multi-codepoint emoji sequences.
+// these contain U+061C/U+200E/U+200F/U+202A-E/U+2066-9 (the bidi set) or any
+// codepoint in the invisible-formatting class added for #571 (Cf, Zl/Zp, and
+// the three explicit non-Cf exceptions), only ordinary script characters,
+// combining marks, variation selectors, and single-codepoint emoji.
+//
+// Two prior entries were removed, not just left passing, because they
+// actually depended on the class #571 now rejects: the family and pride
+// flag emoji both join their components with ZWJ (U+200D), and an earlier
+// version of this test used Persian ZWNJ (U+200C) inside a Persian phrase
+// as an example of legitimate ordinary text. #571 lists U+200C-U+200D by
+// codepoint as part of the invisible-smuggling class to close (alongside
+// ZWSP, the word-joiner block, BOM/soft-hyphen, and the Unicode Tags
+// block), so those three examples are now correctly rejected, not
+// incorrectly allowed. This test asserting they passed was itself part of
+// the #571 gap. Multi-codepoint ZWJ emoji sequences and Persian text using
+// ZWNJ are a real, deliberate cost of closing that gap in a single shared
+// predicate (terminaltext.IsControlOrBidi) used by both the
+// terminal-rendering sanitizer and this config-load validator.
 func TestValidateCustomToolAllowsLegitimateUnicodeDisplayNames(t *testing.T) {
 	names := []string{
 		"🚀 Rocket",
-		"👨‍👩‍👧‍👦 Family",
 		"🇺🇸 USA Tool",
 		"🇯🇵 Japan Tool",
-		"café Tool",   // combining acute accent
-		"Zürich Tool", // combining diaeresis
+		"café Tool",   // combining acute accent
+		"Zürich Tool", // combining diaeresis
 		"日本語ツール",
 		"한글도구",
 		"כלי עברי",
 		"أداة عربية",
-		"ابزار\u200cفارسی", // Persian ZWNJ (U+200C), not a rejected bidi mark
 		"Ω Omega Tool",
 		"Кириллица Tool",
 		"ไทยเครื่องมือ",
 		"கருவி தமிழ்",
-		"🏳️‍🌈 Pride Tool",
 		"👍🏽 ThumbsUp Tool",
 		"naïve Tool",
 		"Björk Tool",
