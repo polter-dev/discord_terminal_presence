@@ -61,8 +61,10 @@ func (s linuxService) install(exe string, launch, force bool) (State, error) {
 
 func (s linuxService) rollbackInstall(path string, previous definitionSnapshot, prior State, activationAttempted bool) error {
 	var rollbackErrs []error
+	stopped := true
 	if activationAttempted {
 		if out, err := s.runner.Run("systemctl", "--user", "disable", "--now", ServiceName); err != nil {
+			stopped = false
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("stop failed systemd service during rollback: %w: %s", err, strings.TrimSpace(string(out))))
 		}
 	}
@@ -77,15 +79,22 @@ func (s linuxService) rollbackInstall(path string, previous definitionSnapshot, 
 			restored = false
 		}
 	}
-	if previous.exists && (prior.Enabled == "unknown" || prior.Loaded == "unknown") {
+	if !activationAttempted || !previous.exists {
+		return errors.Join(rollbackErrs...)
+	}
+	// Enablement and activation are independent dimensions. An unknown reading of
+	// one of them is reported and left alone (fail closed), but it must not discard
+	// the other one when that one is positively known.
+	if prior.Enabled == "unknown" || prior.Loaded == "unknown" {
 		rollbackErrs = append(rollbackErrs, fmt.Errorf(
 			"the previous autostart activation state for %s could not be determined and may need checking; run `systemctl --user status %s` to check it",
 			ServiceName,
 			ServiceName,
 		))
-		return errors.Join(rollbackErrs...)
 	}
-	if !activationAttempted || !restored || !previous.exists {
+	// Do not restore prior activation while the failed replacement may still be
+	// running or while the previous definition is not back on disk.
+	if !restored || !stopped {
 		return errors.Join(rollbackErrs...)
 	}
 	if prior.Enabled == "enabled" {

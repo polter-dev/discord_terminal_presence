@@ -28,10 +28,21 @@ the install error names the affected service plus the native status command to c
 Only states known to have been active or enabled are restored during rollback, and
 reactivation failures are joined into the install error so incomplete rollback is visible
 (#527).
+Linux enablement and activation are two independent dimensions, so an unknown reading of
+one of them is reported and left alone without discarding the other one: a unit known to
+have been active is still restarted, and a unit known to have been enabled is still
+re-enabled. The unknown-state warning is raised only when rollback actually touched
+activation, so the `daemon-reload` failure path stays silent about it. macOS and Linux
+also skip reactivation when the failed replacement could not be stopped, matching the
+Windows guard, because the OS may still be running it. When macOS rollback cannot unload
+a replacement it installed over nothing, the definition is kept and the error says so,
+matching `Uninstall`, so the job can still be booted out on a retry (#539).
 Windows snapshot queries are best effort so an export or verbose-state query failure does
 not block an overwrite that Task Scheduler would accept. If activation then fails without
 a complete snapshot, the replacement definition is left in place; a pre-existing task is
-never deleted or otherwise rolled back when its prior definition could not be captured.
+never deleted or otherwise rolled back when its prior definition could not be captured;
+that outcome now returns a warning naming the task and the query that shows what is
+installed, instead of reporting a silent success (#539).
 When Windows rollback cannot end the replacement task, a valid verbose status showing the
 task is stopped makes the failure benign. A running or indeterminate result is joined into
 the install error, and prior activation is not restarted while the replacement process may
