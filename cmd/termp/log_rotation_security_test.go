@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -95,5 +96,29 @@ func TestRotatingLogWriterTightensExistingDirectoryMode(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o700 {
 		t.Fatalf("existing daemon log directory mode = %o, want 0700", got)
+	}
+}
+
+// TestRotatingLogWriterBoundsSingleOversizedWrite reproduces issue #563: one
+// write larger than maxBytes must not itself defeat the rotation cap.
+func TestRotatingLogWriterBoundsSingleOversizedWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "termp.log")
+	writer, err := newRotatingLogWriter(path, 32, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+
+	line := strings.Repeat("x", 127) + "\n"
+	if _, err := writer.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 32 {
+		t.Fatalf("daemon log size = %d bytes after one write, want at most 32", info.Size())
 	}
 }

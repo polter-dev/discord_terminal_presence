@@ -73,6 +73,12 @@ func (w *rotatingLogWriter) Write(line []byte) (int, error) {
 		if err != nil {
 			return err
 		}
+		// Cap the record itself first: without this, a single record larger
+		// than maxBytes goes straight into an empty file whole, and the same
+		// record fills the very generation rotation just created, defeating
+		// the size cap regardless of how aggressively rotation runs
+		// (issue #563).
+		line = boundLogRecord(line, w.maxBytes)
 		if info.Size() > 0 && info.Size()+int64(len(line)) > w.maxBytes {
 			if err := w.rotateLocked(); err != nil {
 				rotationErr = err
@@ -85,6 +91,24 @@ func (w *rotatingLogWriter) Write(line []byte) (int, error) {
 		return errors.Join(rotationErr, err)
 	})
 	return written, err
+}
+
+// boundLogRecord caps a single log write at maxBytes so one oversized record
+// (a large diagnostic line or a panic dump) can never itself exceed the
+// rotation cap, whether it lands in an empty file or one rotation just
+// created (issue #563). Records within the cap are returned unmodified. A
+// truncated record that originally ended in a newline keeps ending in one,
+// so it still reads as a complete (if cut short) line rather than blurring
+// into whatever gets appended next.
+func boundLogRecord(line []byte, maxBytes int64) []byte {
+	if maxBytes <= 0 || int64(len(line)) <= maxBytes {
+		return line
+	}
+	truncated := append([]byte(nil), line[:maxBytes]...)
+	if len(line) > 0 && line[len(line)-1] == '\n' && truncated[len(truncated)-1] != '\n' {
+		truncated[len(truncated)-1] = '\n'
+	}
+	return truncated
 }
 
 func (w *rotatingLogWriter) Close() error {
