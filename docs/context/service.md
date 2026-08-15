@@ -69,6 +69,18 @@ into a hard failure over a check that is only advisory was the actual defect.
 `cmd/termp` covers the wiring directly, so deleting the validation call from
 `install()` now fails the suite instead of passing it.
 
+`isUnstableExecutablePath` has two independent signals, and only one of them is
+portable. The source-tree marker (a `.git` entry beside a `go.mod` naming this
+module) is decided purely by file contents and behaves identically everywhere.
+The temp-root check does not: `pathWithin` compares the EvalSymlinks-resolved
+executable against the raw `os.TempDir()` string, so it silently misses whenever
+those two spell the same directory differently. Windows does exactly that, since
+`TMP` can hold an 8.3 short path (`C:\Users\RUNNER~1\...`) while EvalSymlinks
+returns the long form. Any test that needs a genuinely unstable fixture on every
+platform must therefore build a fake source tree, not a `t.TempDir()` path. The
+weakened Windows temp guard is recorded separately rather than tightened here,
+because making it fire would newly refuse installs that succeed today.
+
 Note that `termp setup` still resolves the executable without calling
 `ValidateInstallExecutable`, so it can register a path that `autostart install`
 would refuse. That divergence is deliberate and unresolved: adding the check to

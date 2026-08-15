@@ -280,9 +280,30 @@ func TestAutostartInstallValidatesExecutableBeforeRegistering(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		name = "termp.exe"
 	}
-	// t.TempDir() lives under os.TempDir(), which is exactly what
-	// isUnstableExecutablePath refuses to install from.
-	exe := filepath.Join(t.TempDir(), name)
+	// The fixture is a fake checked-out source tree, not a temp-directory path.
+	// Both are "unstable", but only the source-tree marker is decided purely by
+	// file contents, so it holds identically on every platform. The temp-root
+	// check compares the EvalSymlinks-resolved executable against the raw
+	// os.TempDir() string, and windows-latest spells those two differently
+	// (TMP is the 8.3 short form C:\Users\RUNNER~1\..., EvalSymlinks returns the
+	// long form C:\Users\runneradmin\...), so a t.TempDir() binary is judged
+	// stable there and this test failed on Windows only.
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "go.mod"),
+		[]byte("module github.com/polter-dev/discord_terminal_presence\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(binDir, name)
 	if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
