@@ -70,9 +70,18 @@ func canonicalProcessTimeEnvironment(environment []string) []string {
 	return append(filtered, "LC_ALL=C", "TZ=UTC")
 }
 
-func signalTermpProcessAtPath(pid int, expectedPath string) error {
+func signalTermpProcessAtPath(pid int, expectedPath string, expectedStartTime uint64, startTimeKnown bool) error {
 	if err := validateOtherProcess(pid, expectedPath); err != nil {
 		return err
+	}
+	if startTimeKnown {
+		actualStartTime, err := processStartTime(pid)
+		if err != nil {
+			return fmt.Errorf("cannot determine process start time: %w", err)
+		}
+		if actualStartTime != expectedStartTime {
+			return errors.New("process start time does not match recorded termp daemon")
+		}
 	}
 	return syscall.Kill(pid, syscall.SIGTERM)
 }

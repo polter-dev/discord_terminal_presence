@@ -115,7 +115,7 @@ func TestSignalTermpProcessFallsBackToTerminateWhenSetEventFails(t *testing.T) {
 		return nil
 	}
 
-	if err := signalTermpProcessAtPath(1234, ""); err != nil {
+	if err := signalTermpProcessAtPath(1234, "", 0, false); err != nil {
 		t.Fatalf("signalTermpProcessAtPath returned error: %v", err)
 	}
 	if !openedProcess || !terminated {

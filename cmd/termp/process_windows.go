@@ -66,7 +66,7 @@ func processStartTime(pid int) (uint64, error) {
 	return uint64(creation.HighDateTime)<<32 | uint64(creation.LowDateTime), nil
 }
 
-func signalTermpProcessAtPath(pid int, expectedPath string) error {
+func signalTermpProcessAtPath(pid int, expectedPath string, expectedStartTime uint64, startTimeKnown bool) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")
 	}
@@ -80,6 +80,13 @@ func signalTermpProcessAtPath(pid int, expectedPath string) error {
 	}
 	defer windowsCloseHandle(handle)
 	if err := validateWindowsProcessHandleForSignal(handle, expectedPath); err != nil {
+		return err
+	}
+	// Bind the recorded start time to this exact opened handle, not a fresh
+	// OpenProcess snapshot, so PID reuse between recording the identity and
+	// this signal cannot redirect termination to a different process that
+	// happens to share owner and path (issue #560).
+	if err := requireWindowsStartTimeMatches(handle, expectedStartTime, startTimeKnown); err != nil {
 		return err
 	}
 
@@ -143,6 +150,21 @@ func validateWindowsProcessHandle(handle windows.Handle, expectedPath string) er
 	}
 	if !windowsIdentityMatches(actualSID, currentSID, actualPath, expectedPath) {
 		return errors.New("process executable or owner SID does not match recorded termp daemon")
+	}
+	return nil
+}
+
+func requireWindowsStartTimeMatches(handle windows.Handle, expectedStartTime uint64, startTimeKnown bool) error {
+	if !startTimeKnown {
+		return nil
+	}
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(handle, &creation, &exit, &kernel, &user); err != nil {
+		return fmt.Errorf("cannot determine process start time: %w", err)
+	}
+	actual := uint64(creation.HighDateTime)<<32 | uint64(creation.LowDateTime)
+	if actual != expectedStartTime {
+		return errors.New("process start time does not match recorded termp daemon")
 	}
 	return nil
 }

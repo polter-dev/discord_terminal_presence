@@ -64,7 +64,7 @@ func processStartTime(pid int) (uint64, error) {
 	return uint64(kinfo.Proc.P_starttime.Sec)*1_000_000 + uint64(kinfo.Proc.P_starttime.Usec), nil
 }
 
-func signalTermpProcessAtPath(pid int, expectedPath string) error {
+func signalTermpProcessAtPath(pid int, expectedPath string, expectedStartTime uint64, startTimeKnown bool) error {
 	first, err := validatedDarwinIdentity(pid, expectedPath)
 	if err != nil {
 		return err
@@ -76,12 +76,21 @@ func signalTermpProcessAtPath(pid int, expectedPath string) error {
 	if !sameDarwinProcess(first, second) {
 		return errors.New("process identity changed before signaling")
 	}
-	// Darwin has no pidfd equivalent. The stable start time, owner, and full
-	// image path are re-read immediately before this PID-based signal.
+	// Darwin has no pidfd equivalent, so the signal itself is still by PID.
+	// Binding the record's expected start time to this last snapshot (taken
+	// immediately before the kill) is the closest available guard against a
+	// PID-reuse race changing the target underneath us (issue #560).
+	if startTimeKnown && darwinIdentityStartTime(second) != expectedStartTime {
+		return errors.New("process start time does not match recorded termp daemon")
+	}
 	if err := unix.Kill(pid, unix.SIGTERM); err != nil {
 		return fmt.Errorf("signal failed: %w", err)
 	}
 	return nil
+}
+
+func darwinIdentityStartTime(identity darwinProcessIdentity) uint64 {
+	return uint64(identity.startSec)*1_000_000 + uint64(identity.startUsec)
 }
 
 func validatedDarwinIdentity(pid int, expectedPath string) (darwinProcessIdentity, error) {
