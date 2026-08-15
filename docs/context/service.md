@@ -11,9 +11,15 @@ state, paths, and conflicts. Builders render launchd, systemd, and Windows task 
 systemd definitions. `windows.go` contains scheduled-task identity and XML. The
 Windows autostart companion launcher lives in `cmd/termpw` (`-H=windowsgui`).
 
-**Invariants / gotchas:** Platform status calls honor their context bound. Installed
-definitions are owned by their executable command; foreign definitions are not modified
-without force.
+**Invariants / gotchas:** Platform status calls honor their context bound.
+`ExecRunner.RunContext` sets `cmd.WaitDelay` (issue #558) so a service-manager command
+that leaves a grandchild process holding its inherited stdout/stderr pipe cannot keep
+`CombinedOutput` blocked past the context deadline the way it did before the fix (a 200ms
+context returned after a real 3s hang). A killed or failed command after the context is
+done now returns `ctx.Err()` instead of the child's `signal: killed`, so `StatusContext`
+callers, including the Windows ownership check, can tell a timeout from a genuine command
+failure. Installed definitions are owned by their executable command; foreign definitions,
+and definitions whose ownership cannot be verified, are not modified without force.
 
 Install snapshots the prior platform definition and activation state before replacing it.
 If post-write activation fails, macOS and Linux restore the prior file or remove a new one,
@@ -177,11 +183,26 @@ the systemd unit's `ExecStart` or the launchd plist's first `ProgramArguments`
 entry. Unix paths are cleaned and existing symlinks are resolved before
 comparison. Status surfaces a definition targeting a different absolute
 executable as foreign; non-forced mutations refuse it, while forced install and
-uninstall may take it over or remove it. Unparseable, dynamic, or non-absolute
-targets remain fail-open rather than risking a parser gap blocking legitimate
-users from reconciling termp's own definitions. A definition that cannot be read
-is different: its ownership cannot be verified, so non-forced mutations refuse it
-with an actionable `--force` message, while forced install and uninstall proceed.
+uninstall may take it over or remove it. An unparseable definition, a definition
+that cannot be read, or a running executable that could not itself be resolved
+(`ResolveExecutable` failing and `NewManager` storing `""`) are all the same
+case: ownership cannot be verified. Each sets `ForeignTask` with an actionable
+`--force` message, exactly like a definition proven foreign, so non-forced
+mutations refuse it while forced install and uninstall still proceed. Before
+issues #556/#557, unparseable definitions and an unresolved executable instead
+skipped the ownership check silently, leaving `Installed` true and `ForeignTask`
+false, which read as a healthy owned install and let `Uninstall`/`Enable`/
+`Disable`/unforced `Install` mutate a definition nobody had verified. Windows
+applies the identical rule to a failed `taskExists` query, a failed XML query, and
+invalid task XML, and to an empty `s.executable` guarding the ownership
+comparison; before the fix these Windows paths coerced `Installed = true` with
+`ForeignTask` left false instead. `Disable` and `Enable` gate on `ForeignTask`
+alone now, matching Uninstall/install and matching Unix, since a stray
+non-ownership `Message` no longer exists once every `Message`-setting branch also
+sets `ForeignTask`; the previous separate `status.Message != ""` check in
+`Disable`/`Enable` was the source of the asymmetry where indeterminate state
+blocked turning presence off while still permitting the task to be deleted or
+rewritten unforced.
 The macOS launch agent runs `start --foreground --internal-daemon-log` and sends
 launchd-managed stdout/stderr to `/dev/null`; the daemon opens and rotates
 `~/Library/Logs/termp.log` itself, preventing launchd from retaining a renamed inode.

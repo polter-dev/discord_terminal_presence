@@ -215,8 +215,29 @@ func (s linuxService) StatusContext(ctx context.Context) State {
 			)
 			return state
 		}
-		if target, parseErr := systemdUnitExecutable(definition); parseErr == nil &&
-			isForeignUnixExecutable(target, s.executable) {
+		target, parseErr := systemdUnitExecutable(definition)
+		switch {
+		case parseErr != nil:
+			state.Installed = false
+			state.Loaded = "false"
+			state.Enabled = "false"
+			state.ForeignTask = true
+			state.Message = fmt.Sprintf(
+				"systemd unit %s ownership could not be verified because it could not be parsed: %v",
+				path, parseErr,
+			)
+			return state
+		case s.executable == "":
+			state.Installed = false
+			state.Loaded = "false"
+			state.Enabled = "false"
+			state.ForeignTask = true
+			state.Message = fmt.Sprintf(
+				"systemd unit %s ownership could not be verified because the running termp executable could not be resolved",
+				path,
+			)
+			return state
+		case isForeignUnixExecutable(target, s.executable):
 			state.Installed = false
 			state.Loaded = "false"
 			state.Enabled = "false"

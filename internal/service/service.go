@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -19,6 +20,15 @@ const (
 	ServiceName = "termp.service"
 	TaskName    = `\Terminal Presence\termp`
 )
+
+// runContextWaitDelay bounds how long RunContext waits for a canceled or
+// exited command's stdout/stderr pipes to close before it forcibly closes
+// them and kills the process. Without it, a service-manager command that
+// leaves a grandchild process holding the inherited pipe can keep
+// CombinedOutput blocked long past the context deadline (issue #558).
+// internal/update sets the equivalent WaitDelay on every bounded probe it
+// runs; this follows that pattern.
+const runContextWaitDelay = 2 * time.Second
 
 // Runner executes service-manager commands. Tests replace it so launchctl and
 // systemctl are never invoked.
@@ -37,7 +47,16 @@ func (ExecRunner) Run(name string, args ...string) ([]byte, error) {
 }
 
 func (ExecRunner) RunContext(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = runContextWaitDelay
+	out, err := cmd.CombinedOutput()
+	if err != nil && ctx.Err() != nil {
+		// A killed or failed command after the context is done is a timeout,
+		// not a genuine command failure; let callers tell them apart instead
+		// of seeing the child's "signal: killed".
+		return out, ctx.Err()
+	}
+	return out, err
 }
 
 type Manager struct {

@@ -61,11 +61,18 @@ directories; nested descendants are generic so `go install` cannot update a diff
 file (#520). Candidate bin symlinks are resolved when possible, trailing separators are
 cleaned, and path equality is case-insensitive on Windows and macOS. Case sensitivity is
 a per-volume property rather than a platform one, so when two spellings differ only by
-case the two directories are stat'ed and compared by identity (`os.SameFile`); the
-case-insensitive spelling match is only the fallback for paths that do not exist on disk.
-Without that, a case-sensitive APFS or HFS+ volume holding both `gobin` and `GOBIN` would
-misclassify the binary in one as a Go install of the other and reintroduce #520 (#530).
-Other resolution uncertainty is generic.
+case the two directories are stat'ed and compared by identity (`os.SameFile`). `isDirectChildOf`
+treats an unstattable directory as **not** the same directory (issue #559): a
+configured-but-not-yet-created `GOBIN` or `$GOPATH/bin` whose spelling differs from the
+executable's real parent only by case is unknown, not a match, so it does not silently fall
+back to the case-insensitive spelling comparison the way it did before the fix (which
+returned "same directory" whenever either spelling could not be stat'ed, reopening the
+#520 shape: `go install` would write the configured directory while the running binary,
+sitting in the differently-cased directory that failed to stat, stayed unresolved as
+"same"). Without the `os.SameFile` identity check at all, a case-sensitive APFS or HFS+
+volume holding both `gobin` and `GOBIN` would misclassify the binary in one as a Go
+install of the other and reintroduce #520 (#530). Other resolution uncertainty is
+generic.
 
 Automatic attempt state shares the update cache and records time, target, error, and a
 distinct skipped flag. All cache read-modify-write transactions share a cross-process lock,

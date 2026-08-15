@@ -767,6 +767,15 @@ func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 
 func TestDarwinInstallRollsBackDefinitionWhenLoadFails(t *testing.T) {
 	requireGOOS(t, "darwin")
+	// Reinstalling from the same executable path is the realistic scenario
+	// that reaches the launchctl print probe: the prior plist must be owned
+	// (target the same exe passed to Install) or Status short-circuits as
+	// foreign before ever checking activation state.
+	newExecutable := "/new/termp"
+	priorPlist, err := BuildLaunchAgentPlist(newExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name            string
 		original        []byte
@@ -774,7 +783,7 @@ func TestDarwinInstallRollsBackDefinitionWhenLoadFails(t *testing.T) {
 		wantLoadCalls   int
 	}{
 		{name: "removes new definition", wantLoadCalls: 1},
-		{name: "restores loaded definition", original: []byte("old launch agent"), initiallyLoaded: true, wantLoadCalls: 2},
+		{name: "restores loaded definition", original: priorPlist, initiallyLoaded: true, wantLoadCalls: 2},
 	}
 
 	for _, tt := range tests {
@@ -811,7 +820,7 @@ func TestDarwinInstallRollsBackDefinitionWhenLoadFails(t *testing.T) {
 			}
 			runner := &sequenceRunner{results: results}
 
-			_, err := (Manager{GOOS: "darwin", Runner: runner}).Install("/new/termp", true)
+			_, err := (Manager{GOOS: "darwin", Runner: runner}).Install(newExecutable, true)
 			if err == nil || !strings.Contains(err.Error(), "launchctl load failed") {
 				t.Fatalf("Install() error = %v, want launchctl load failure", err)
 			}
@@ -922,7 +931,13 @@ func TestDarwinInstallLeavesRestoredDefinitionUnloadedWhenPriorActivationUnknown
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	original := []byte("old launch agent")
+	// The prior definition must target the same executable being installed so
+	// Status() recognizes it as owned rather than short-circuiting install as
+	// a foreign definition before reaching activation state.
+	original, err := BuildLaunchAgentPlist("/new/termp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -935,7 +950,7 @@ func TestDarwinInstallLeavesRestoredDefinitionUnloadedWhenPriorActivationUnknown
 		loadCall:      {{out: "Load failed: Operation not permitted\n", err: errors.New("exit status 5")}},
 	}}
 
-	_, err := (Manager{GOOS: "darwin", Runner: runner}).Install("/new/termp", false)
+	_, err = (Manager{GOOS: "darwin", Runner: runner}).Install("/new/termp", false)
 	warning := "the previous autostart activation state for " + Label + " could not be determined and may need checking; run `" + printCall + "` to check it"
 	if err == nil || !strings.Contains(err.Error(), "launchctl load failed") || !strings.Contains(err.Error(), warning) {
 		t.Fatalf("Install() error = %v, want activation failure and unknown-state warning %q", err, warning)
@@ -962,7 +977,10 @@ func TestDarwinInstallDoesNotOverwritePlistOnUnloadFailure(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	original := []byte("old launch agent")
+	original, err := BuildLaunchAgentPlist("/new/termp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1005,7 +1023,11 @@ func TestDarwinInstallReplacesPlistWhenAlreadyUnloaded(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("old launch agent"), 0o644); err != nil {
+	original, err := BuildLaunchAgentPlist("/new/termp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	bootout := "launchctl bootout gui/" + userID() + " " + path
@@ -1041,11 +1063,16 @@ func TestDarwinDisableAndEnableToggleLaunchAgentWithoutRemovingPlist(t *testing.
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+	owned := "/opt/termp"
+	plist, err := BuildLaunchAgentPlist(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, plist, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
-	manager := Manager{GOOS: "darwin", Runner: runner}
+	manager := Manager{GOOS: "darwin", Runner: runner, Executable: owned}
 
 	if _, err := manager.Disable(); err != nil {
 		t.Fatal(err)
@@ -1072,7 +1099,12 @@ func TestDarwinDisableAndEnableAreIdempotent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+	owned := "/opt/termp"
+	plist, err := BuildLaunchAgentPlist(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, plist, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1109,7 +1141,7 @@ func TestDarwinDisableAndEnableAreIdempotent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := &recordingRunner{fail: tt.fail, out: tt.out}
-			manager := Manager{GOOS: "darwin", Runner: runner}
+			manager := Manager{GOOS: "darwin", Runner: runner, Executable: owned}
 			if _, err := tt.run(manager); err != nil {
 				t.Fatal(err)
 			}
@@ -1151,7 +1183,12 @@ func TestDarwinStatusMapsLaunchctlErrors(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+	owned := "/opt/termp"
+	plist, err := BuildLaunchAgentPlist(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, plist, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	call := "launchctl print gui/" + userID() + "/" + Label
@@ -1179,7 +1216,7 @@ func TestDarwinStatusMapsLaunchctlErrors(t *testing.T) {
 				fail: map[string]error{call: errors.New("exit status 1")},
 				out:  map[string]string{call: tt.output},
 			}
-			state := (Manager{GOOS: "darwin", Runner: runner}).Status()
+			state := (Manager{GOOS: "darwin", Runner: runner, Executable: owned}).Status()
 			if !state.Installed || state.Loaded != tt.wantLoaded || state.Enabled != "n/a" {
 				t.Fatalf("Status() = %+v, want installed=true loaded=%q enabled=n/a", state, tt.wantLoaded)
 			}
@@ -1194,7 +1231,12 @@ func TestDarwinUninstallKeepsPlistOnUnloadFailure(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+	owned := "/opt/termp"
+	plist, err := BuildLaunchAgentPlist(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, plist, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	bootout := "launchctl bootout gui/" + userID() + " " + path
@@ -1210,7 +1252,7 @@ func TestDarwinUninstallKeepsPlistOnUnloadFailure(t *testing.T) {
 		},
 	}
 
-	state, err := (Manager{GOOS: "darwin", Runner: runner}).Uninstall(false)
+	state, err := (Manager{GOOS: "darwin", Runner: runner, Executable: owned}).Uninstall(false)
 	if err == nil || !strings.Contains(err.Error(), "Operation not permitted") {
 		t.Fatalf("Uninstall() error = %v, want permission failure", err)
 	}
@@ -1229,7 +1271,12 @@ func TestDarwinUninstallRemovesPlistWhenAlreadyUnloaded(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("plist"), 0o644); err != nil {
+	owned := "/opt/termp"
+	plist, err := BuildLaunchAgentPlist(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, plist, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	bootout := "launchctl bootout gui/" + userID() + " " + path
@@ -1238,7 +1285,7 @@ func TestDarwinUninstallRemovesPlistWhenAlreadyUnloaded(t *testing.T) {
 		out:  map[string]string{bootout: "Boot-out failed: 3: No such process\n"},
 	}
 
-	state, err := (Manager{GOOS: "darwin", Runner: runner}).Uninstall(false)
+	state, err := (Manager{GOOS: "darwin", Runner: runner, Executable: owned}).Uninstall(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1493,6 +1540,14 @@ func TestLinuxRollbackDoesNotWarnWhenActivationWasNeverAttempted(t *testing.T) {
 
 func TestLinuxInstallRestoresKnownActivationDimensionWhenPriorStateIsPartlyUnknown(t *testing.T) {
 	requireGOOS(t, "linux")
+	// The prior unit must target the same executable being installed so
+	// Status() recognizes it as owned rather than short-circuiting install as
+	// a foreign definition before reaching activation state.
+	newExecutable := "/new/termp"
+	priorUnit, err := BuildSystemdUnit(newExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name       string
 		enabledOut string
@@ -1521,8 +1576,7 @@ func TestLinuxInstallRestoresKnownActivationDimensionWhenPriorStateIsPartlyUnkno
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			original := []byte("old systemd unit")
-			if err := os.WriteFile(path, original, 0o644); err != nil {
+			if err := os.WriteFile(path, priorUnit, 0o644); err != nil {
 				t.Fatal(err)
 			}
 			enableNowCall := "systemctl --user enable --now " + ServiceName
@@ -1533,7 +1587,7 @@ func TestLinuxInstallRestoresKnownActivationDimensionWhenPriorStateIsPartlyUnkno
 				enableNowCall:                                {{out: "activation failed\n", err: errors.New("exit status 1")}},
 			}}
 
-			_, err := (Manager{GOOS: "linux", Runner: runner}).Install("/new/termp", false)
+			_, err := (Manager{GOOS: "linux", Runner: runner}).Install(newExecutable, false)
 			warning := linuxUnknownPriorStateWarning
 			if err == nil || !strings.Contains(err.Error(), "systemctl enable failed") || !strings.Contains(err.Error(), warning) {
 				t.Fatalf("Install() error = %v, want activation failure and unknown-state warning %q", err, warning)
@@ -1548,8 +1602,8 @@ func TestLinuxInstallRestoresKnownActivationDimensionWhenPriorStateIsPartlyUnkno
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			if string(got) != string(original) {
-				t.Fatalf("failed install left definition %q, want %q", got, original)
+			if string(got) != string(priorUnit) {
+				t.Fatalf("failed install left definition %q, want %q", got, priorUnit)
 			}
 		})
 	}
@@ -1742,7 +1796,14 @@ func TestUnixUnreadableDefinitionsRequireForce(t *testing.T) {
 	}
 }
 
-func TestUnixReadableOwnedAndUnparseableDefinitionsProceed(t *testing.T) {
+// Unparseable definitions used to fall through this same test's assertion
+// that the mutation proceeds unforced. That was the bug fixed by #556: an
+// unparseable definition's ownership cannot be verified, so it now requires
+// --force like an unreadable one already does. See
+// TestUnixUnparseableDefinitionsRequireForce in ownership_unknown_test.go for
+// that corrected assertion; this test now only covers the owned case, which
+// is unaffected.
+func TestUnixReadableOwnedDefinitionsProceed(t *testing.T) {
 	platforms := []struct {
 		name        string
 		goos        string
@@ -1776,12 +1837,6 @@ func TestUnixReadableOwnedAndUnparseableDefinitionsProceed(t *testing.T) {
 			name       string
 			definition func(string) ([]byte, error)
 		}{
-			{
-				name: "unparseable",
-				definition: func(string) ([]byte, error) {
-					return platform.unparseable, nil
-				},
-			},
 			{name: "owned", definition: platform.definition},
 		} {
 			t.Run(platform.name+"/"+fixture.name, func(t *testing.T) {
@@ -1946,7 +2001,12 @@ func TestLinuxDisableAndEnableToggleUserService(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("[Unit]\n"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runner := &recordingRunner{
@@ -1956,7 +2016,7 @@ func TestLinuxDisableAndEnableToggleUserService(t *testing.T) {
 			"systemctl --user is-active " + ServiceName:  "inactive\n",
 		},
 	}
-	manager := Manager{GOOS: "linux", Runner: runner}
+	manager := Manager{GOOS: "linux", Runner: runner, Executable: owned}
 
 	if _, err := manager.Disable(); err != nil {
 		t.Fatal(err)
@@ -2397,7 +2457,7 @@ func TestWindowsDisableAndEnableToggleTaskWithoutRealSchtasks(t *testing.T) {
 			"schtasks /Query /TN " + TaskName + " /XML": windowsEnabledTaskXML,
 		},
 	}
-	manager := Manager{GOOS: "windows", Runner: runner}
+	manager := Manager{GOOS: "windows", Runner: runner, Executable: `C:\termp.exe`}
 
 	if _, err := manager.Disable(); err != nil {
 		t.Fatal(err)
@@ -2428,7 +2488,7 @@ func TestWindowsUninstallDeletesTaskWithoutRealSchtasks(t *testing.T) {
 			"schtasks /Query /TN " + TaskName + " /XML": windowsEnabledTaskXML,
 		},
 	}
-	manager := Manager{GOOS: "windows", Runner: runner}
+	manager := Manager{GOOS: "windows", Runner: runner, Executable: `C:\termp.exe`}
 	state, err := manager.Uninstall(false)
 	if err != nil {
 		t.Fatal(err)
@@ -2465,7 +2525,7 @@ func TestWindowsDisableSurfacesEndFailure(t *testing.T) {
 		},
 	}
 
-	_, err := (Manager{GOOS: "windows", Runner: runner}).Disable()
+	_, err := (Manager{GOOS: "windows", Runner: runner, Executable: `C:\termp.exe`}).Disable()
 	if err == nil || !strings.Contains(err.Error(), "schtasks end failed") {
 		t.Fatalf("Disable() error = %v, want schtasks end failure", err)
 	}
@@ -2482,7 +2542,7 @@ func TestWindowsUninstallDoesNotDeleteAfterEndFailure(t *testing.T) {
 		},
 	}
 
-	_, err := (Manager{GOOS: "windows", Runner: runner}).Uninstall(false)
+	_, err := (Manager{GOOS: "windows", Runner: runner, Executable: `C:\termp.exe`}).Uninstall(false)
 	if err == nil || !strings.Contains(err.Error(), "schtasks end failed") {
 		t.Fatalf("Uninstall() error = %v, want schtasks end failure", err)
 	}
@@ -2724,14 +2784,19 @@ func TestWindowsTaskExistsTreatsTargetedCommandExitAsAbsent(t *testing.T) {
 	}
 }
 
-func TestWindowsStatusContextDoesNotTreatTimeoutAsAbsence(t *testing.T) {
+// A query timeout means ownership could not be verified, which is the same
+// fail-closed outcome as any other unverifiable definition (#556): it must
+// not read as an owned, installed task. This test previously asserted the
+// opposite (Installed=true, ForeignTask left false), which was exactly the
+// bug #556 fixed.
+func TestWindowsStatusContextTreatsTimeoutAsUnverifiedOwnership(t *testing.T) {
 	runner := &blockingContextRunner{}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
 	state := (Manager{GOOS: "windows", Runner: runner}).StatusContext(ctx)
-	if !state.Installed || state.Loaded != "unknown" || state.Enabled != "unknown" {
-		t.Fatalf("StatusContext() = %+v, want ambiguous installed state after timeout", state)
+	if state.Installed || !state.ForeignTask || state.Loaded != "false" || state.Enabled != "false" {
+		t.Fatalf("StatusContext() = %+v, want unverified ownership after timeout", state)
 	}
 	if !strings.Contains(state.Message, context.DeadlineExceeded.Error()) {
 		t.Fatalf("StatusContext().Message = %q, want deadline error", state.Message)
@@ -2767,7 +2832,7 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 		},
 		{
 			name:          "missing enabled field defaults true",
-			queryOut:      `<Task><Settings /></Task>`,
+			queryOut:      `<Task><Actions><Exec><Command>C:\termp.exe</Command></Exec></Actions><Settings /></Task>`,
 			wantInstalled: true,
 			wantLoaded:    "true",
 			wantEnabled:   "true",
@@ -2781,12 +2846,15 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 			wantEnabled:   "false",
 		},
 		{
+			// A query failure means ownership could not be verified, which is
+			// fail-closed like every other unverifiable definition (#556): it
+			// must not read as an installed, owned task.
 			name:          "query failure is not clean absence",
 			queryOut:      "ERROR: Access is denied.\n",
 			queryErr:      errors.New("exit status 1"),
-			wantInstalled: true,
-			wantLoaded:    "unknown",
-			wantEnabled:   "unknown",
+			wantInstalled: false,
+			wantLoaded:    "false",
+			wantEnabled:   "false",
 			wantMessage:   true,
 		},
 	}
@@ -2810,7 +2878,7 @@ func TestWindowsStatusParsesTaskState(t *testing.T) {
 				}
 			}
 
-			state := (Manager{GOOS: "windows", Runner: runner}).Status()
+			state := (Manager{GOOS: "windows", Runner: runner, Executable: `C:\termp.exe`}).Status()
 			if state.Installed != tt.wantInstalled || state.Loaded != tt.wantLoaded || state.Enabled != tt.wantEnabled {
 				t.Fatalf("Status() = %+v, want installed=%t loaded=%q enabled=%q", state, tt.wantInstalled, tt.wantLoaded, tt.wantEnabled)
 			}
@@ -2930,32 +2998,66 @@ func TestWindowsInstallReconcilesTaskForSameExecutable(t *testing.T) {
 	}
 }
 
-func TestWindowsUnrelatedStatusMessageDoesNotBlockMutations(t *testing.T) {
+// Invalid task XML means ownership could not be verified. This test used to
+// assert that such a message was "unrelated" to ownership and therefore did
+// not gate mutations; that was exactly the #556 bug (windows.go's invalid-XML
+// branch left ForeignTask false). Both mutations now require --force, the
+// same as any other unverifiable definition, and forced install/uninstall
+// still take it over.
+func TestWindowsInvalidTaskXMLRequiresForce(t *testing.T) {
 	query := "schtasks /Query /TN " + TaskName + " /XML"
 
-	t.Run("install", func(t *testing.T) {
+	t.Run("install without force", func(t *testing.T) {
 		runner := &recordingRunner{
 			fail: map[string]error{},
 			out:  map[string]string{query: "<not valid XML"},
 		}
-		if _, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false); err != nil {
-			t.Fatal(err)
+		_, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false)
+		if err == nil || !strings.Contains(err.Error(), "ownership could not be verified") || !strings.Contains(err.Error(), "--force") {
+			t.Fatalf("Install() error = %v, want actionable ownership refusal", err)
 		}
-		if !slicesContainsPrefix(runner.calls, "schtasks /Create /TN "+TaskName+" ") {
-			t.Fatalf("Install calls = %#v, want create despite unrelated status message", runner.calls)
+		if hasCall(runner.calls, "schtasks /Create /TN "+TaskName+" ") {
+			t.Fatalf("Install calls = %#v, want no create without --force", runner.calls)
 		}
 	})
 
-	t.Run("uninstall", func(t *testing.T) {
+	t.Run("install with force", func(t *testing.T) {
 		runner := &recordingRunner{
 			fail: map[string]error{},
 			out:  map[string]string{query: "<not valid XML"},
 		}
-		if _, err := (Manager{GOOS: "windows", Runner: runner}).Uninstall(false); err != nil {
+		if _, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, true); err != nil {
+			t.Fatal(err)
+		}
+		if !slicesContainsPrefix(runner.calls, "schtasks /Create /TN "+TaskName+" ") {
+			t.Fatalf("Install(force) calls = %#v, want create despite unverified ownership", runner.calls)
+		}
+	})
+
+	t.Run("uninstall without force", func(t *testing.T) {
+		runner := &recordingRunner{
+			fail: map[string]error{},
+			out:  map[string]string{query: "<not valid XML"},
+		}
+		_, err := (Manager{GOOS: "windows", Runner: runner}).Uninstall(false)
+		if err == nil || !strings.Contains(err.Error(), "ownership could not be verified") || !strings.Contains(err.Error(), "--force") {
+			t.Fatalf("Uninstall() error = %v, want actionable ownership refusal", err)
+		}
+		if hasCall(runner.calls, "schtasks /Delete /TN "+TaskName+" /F") {
+			t.Fatalf("Uninstall calls = %#v, want no delete without --force", runner.calls)
+		}
+	})
+
+	t.Run("uninstall with force", func(t *testing.T) {
+		runner := &recordingRunner{
+			fail: map[string]error{},
+			out:  map[string]string{query: "<not valid XML"},
+		}
+		if _, err := (Manager{GOOS: "windows", Runner: runner}).Uninstall(true); err != nil {
 			t.Fatal(err)
 		}
 		if !hasCall(runner.calls, "schtasks /Delete /TN "+TaskName+" /F") {
-			t.Fatalf("Uninstall calls = %#v, want delete despite unrelated status message", runner.calls)
+			t.Fatalf("Uninstall(force) calls = %#v, want delete despite unverified ownership", runner.calls)
 		}
 	})
 }
@@ -3096,11 +3198,14 @@ func TestWindowsDisableAndEnableReturnQueryFailures(t *testing.T) {
 				out: map[string]string{listQuery: "ERROR: Access is denied.\n"},
 			}
 			state, err := tt.run(Manager{GOOS: "windows", Runner: runner})
-			if err == nil || !strings.Contains(err.Error(), "Access is denied") {
-				t.Fatalf("%s() error = %v, want query failure", tt.name, err)
+			if err == nil || !strings.Contains(err.Error(), "Access is denied") || !strings.Contains(err.Error(), "--force") {
+				t.Fatalf("%s() error = %v, want actionable ownership refusal for a query failure", tt.name, err)
 			}
-			if state.Message == "" || state.Loaded != "unknown" || state.Enabled != "unknown" {
-				t.Fatalf("%s() state = %+v, want visible ambiguous query state", tt.name, state)
+			// A query failure means ownership could not be verified, which is
+			// fail-closed like any other unverifiable definition (#556): it
+			// must not read as installed or owned.
+			if state.Message == "" || !state.ForeignTask || state.Installed || state.Loaded != "false" || state.Enabled != "false" {
+				t.Fatalf("%s() state = %+v, want unverified-ownership state", tt.name, state)
 			}
 			if len(runner.calls) != 2 || runner.calls[0] != targetedQuery || runner.calls[1] != listQuery {
 				t.Fatalf("%s() calls = %#v, want targeted query then fallback listing", tt.name, runner.calls)
@@ -3169,11 +3274,16 @@ func TestLinuxUninstallIsIdempotent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
-	manager := Manager{GOOS: "linux", Runner: runner}
+	manager := Manager{GOOS: "linux", Runner: runner, Executable: owned}
 	for i := 0; i < 2; i++ {
 		state, err := manager.Uninstall(false)
 		if err != nil {
@@ -3195,7 +3305,12 @@ func TestLinuxUninstallKeepsUnitOnDisableFailure(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	disable := "systemctl --user disable --now " + ServiceName
@@ -3204,7 +3319,7 @@ func TestLinuxUninstallKeepsUnitOnDisableFailure(t *testing.T) {
 		out:  map[string]string{disable: "Failed to connect to bus: No such process\n"},
 	}
 
-	state, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall(false)
+	state, err := (Manager{GOOS: "linux", Runner: runner, Executable: owned}).Uninstall(false)
 	if err == nil || !strings.Contains(err.Error(), "Failed to connect to bus") {
 		t.Fatalf("Uninstall() error = %v, want bus failure", err)
 	}
@@ -3226,7 +3341,12 @@ func TestLinuxUninstallRemovesUnitWhenAlreadyDisabled(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	disable := "systemctl --user disable --now " + ServiceName
@@ -3235,7 +3355,7 @@ func TestLinuxUninstallRemovesUnitWhenAlreadyDisabled(t *testing.T) {
 		out:  map[string]string{disable: "Failed to disable unit: Unit file " + ServiceName + " does not exist.\n"},
 	}
 
-	state, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall(false)
+	state, err := (Manager{GOOS: "linux", Runner: runner, Executable: owned}).Uninstall(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3257,7 +3377,12 @@ func TestLinuxUninstallReportsDaemonReloadFailure(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	reload := "systemctl --user daemon-reload"
@@ -3266,7 +3391,7 @@ func TestLinuxUninstallReportsDaemonReloadFailure(t *testing.T) {
 		out:  map[string]string{reload: "Failed to connect to bus: Permission denied\n"},
 	}
 
-	_, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall(false)
+	_, err = (Manager{GOOS: "linux", Runner: runner, Executable: owned}).Uninstall(false)
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want daemon-reload failure")
 	}

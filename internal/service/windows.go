@@ -242,9 +242,6 @@ func (s windowsService) Disable() (State, error) {
 	if status.ForeignTask {
 		return status, foreignTaskError(status.Message)
 	}
-	if status.Message != "" {
-		return status, fmt.Errorf("%s", status.Message)
-	}
 	if !status.Installed {
 		return status, nil
 	}
@@ -261,9 +258,6 @@ func (s windowsService) Disable() (State, error) {
 	if status.ForeignTask {
 		return status, foreignTaskError(status.Message)
 	}
-	if status.Message != "" {
-		return status, fmt.Errorf("%s", status.Message)
-	}
 	return status, nil
 }
 
@@ -271,9 +265,6 @@ func (s windowsService) Enable() (State, error) {
 	status := s.Status()
 	if status.ForeignTask {
 		return status, foreignTaskError(status.Message)
-	}
-	if status.Message != "" {
-		return status, fmt.Errorf("%s", status.Message)
 	}
 	if !status.Installed {
 		return status, nil
@@ -291,9 +282,6 @@ func (s windowsService) Enable() (State, error) {
 	if status.ForeignTask {
 		return status, foreignTaskError(status.Message)
 	}
-	if status.Message != "" {
-		return status, fmt.Errorf("%s", status.Message)
-	}
 	return status, nil
 }
 
@@ -305,8 +293,14 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 	state := State{Supported: true, Path: TaskName, Loaded: "unknown", Enabled: "unknown"}
 	exists, err := s.taskExists(ctx)
 	if err != nil {
-		state.Installed = true
-		state.Message = fmt.Sprintf("schtasks query failed: %v", err)
+		state.Installed = false
+		state.Loaded = "false"
+		state.Enabled = "false"
+		state.ForeignTask = true
+		state.Message = fmt.Sprintf(
+			"scheduled task %s ownership could not be verified because the schtasks query failed: %v",
+			TaskName, err,
+		)
 		return state
 	}
 	if !exists {
@@ -316,8 +310,14 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 	}
 	out, err := runStatusCommand(ctx, s.runner, "schtasks", "/Query", "/TN", TaskName, "/XML")
 	if err != nil {
-		state.Installed = true
-		state.Message = fmt.Sprintf("schtasks query failed: %v: %s", err, strings.TrimSpace(string(out)))
+		state.Installed = false
+		state.Loaded = "false"
+		state.Enabled = "false"
+		state.ForeignTask = true
+		state.Message = fmt.Sprintf(
+			"scheduled task %s ownership could not be verified because the schtasks query failed: %v: %s",
+			TaskName, err, strings.TrimSpace(string(out)),
+		)
 		return state
 	}
 	state.Installed = true
@@ -333,10 +333,28 @@ func (s windowsService) StatusContext(ctx context.Context) State {
 		} `xml:"Settings"`
 	}
 	if err := unmarshalTaskXML(out, &task); err != nil {
-		state.Message = fmt.Sprintf("schtasks query returned invalid XML: %v", err)
+		state.Installed = false
+		state.Loaded = "false"
+		state.Enabled = "false"
+		state.ForeignTask = true
+		state.Message = fmt.Sprintf(
+			"scheduled task %s ownership could not be verified because schtasks returned invalid XML: %v",
+			TaskName, err,
+		)
 		return state
 	}
-	if s.executable != "" && !ownsWindowsTaskCommand(task.Actions.Exec.Command, s.executable) {
+	if s.executable == "" {
+		state.Installed = false
+		state.Loaded = "false"
+		state.Enabled = "false"
+		state.ForeignTask = true
+		state.Message = fmt.Sprintf(
+			"scheduled task %s ownership could not be verified because the running termp executable could not be resolved",
+			TaskName,
+		)
+		return state
+	}
+	if !ownsWindowsTaskCommand(task.Actions.Exec.Command, s.executable) {
 		state.Installed = false
 		state.Loaded = "false"
 		state.Enabled = "false"
