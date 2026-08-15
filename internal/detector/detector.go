@@ -759,7 +759,13 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection, persistEpisode
 		consumer.setEpisodeStore(episodes)
 	}
 	var saveEpisodes func(*EpisodeStore)
-	if persistEpisodes != nil {
+	// A non-nil load error means the file was present but corrupt, oversize,
+	// or otherwise unreadable (LoadEpisodeStore still returns an empty store
+	// in that case so the run can continue). Persisting from here on would
+	// silently overwrite that file with the empty in-memory store, destroying
+	// whatever real data was in it (#567). Missing-file (nil error) does not
+	// set this: there is nothing on disk to destroy.
+	if persistEpisodes != nil && err == nil {
 		saveEpisodes = func(store *EpisodeStore) {
 			if err := persistEpisodes(statePath, store); err != nil {
 				d.debugf("episode store save failed: %v", err)

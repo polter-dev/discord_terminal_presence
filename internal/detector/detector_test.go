@@ -1112,9 +1112,14 @@ func TestEpisodePersistenceRoundTripAndCorruptFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A corrupt file must report a non-nil error, not the same nil error as a
+	// missing one: a caller (e.g. the detector's run loop) uses that
+	// distinction to refuse to save the returned empty store back over the
+	// real file (#567). The returned store is still safe to keep using
+	// in-memory for the rest of this scan, which the assertions below cover.
 	corrupt, err := LoadEpisodeStore(path)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("LoadEpisodeStore() of a corrupt file returned a nil error, want an error distinguishing corrupt from absent (#567)")
 	}
 	if got, _ := corrupt.Observe(key, tty, base.Add(2*time.Minute), 20*time.Minute); !got.Equal(base.Add(2 * time.Minute)) {
 		t.Fatalf("corrupt state anchor = %s, want a safe new episode", got)

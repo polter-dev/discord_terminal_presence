@@ -314,6 +314,12 @@ func TestLoadSaveRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLoadMissingAndCorruptAreEmpty previously asserted a nil error for a
+// corrupt file, identical to a missing one. That was the #567 bug: a caller
+// cannot tell "nothing here yet" from "the real file is broken," so it would
+// happily save the returned empty store back over the corrupt file and
+// destroy whatever was recoverable in it. Missing must still report a nil
+// error (there is nothing to lose); corrupt must now report a non-nil one.
 func TestLoadMissingAndCorruptAreEmpty(t *testing.T) {
 	dir := t.TempDir()
 	missing, err := Load(filepath.Join(dir, "missing.json"))
@@ -329,8 +335,8 @@ func TestLoadMissingAndCorruptAreEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err := Load(corrupt)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("Load() of a corrupt file returned a nil error, want an error distinguishing corrupt from absent (#567)")
 	}
 	if len(loaded.Rank()) != 0 {
 		t.Fatalf("corrupt Rank() = %#v, want empty", loaded.Rank())
