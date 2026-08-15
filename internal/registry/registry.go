@@ -614,7 +614,13 @@ func resolveIcon(tool *Tool) {
 	case IconSourceSimpleIcons:
 		tool.ImageURL = fmt.Sprintf(simpleIconsURLTemplate, url.QueryEscape(slug))
 	case IconSourceLobeHub:
-		tool.ImageURL = fmt.Sprintf(lobehubURLTemplate, slug)
+		// url.PathEscape (not QueryEscape) matches how the slug is used here:
+		// it is templated into a URL path segment, not a query value. It
+		// escapes '/' as %2F, so a slug such as "../../../../@evil/pkg@1.0.0/payload"
+		// can no longer leave the intended package path, and it also
+		// neutralizes '?', '#', and raw spaces the same way #489 closed the
+		// equivalent hole in the Simple Icons branch above (#575).
+		tool.ImageURL = fmt.Sprintf(lobehubURLTemplate, url.PathEscape(slug))
 	case IconSourceURL:
 		tool.ImageURL = slug
 	case IconSourceKey:
