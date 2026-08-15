@@ -21,10 +21,21 @@ then restore the prior loaded/enabled state; Windows restores or deletes the sch
 and restarts it only when it was running before the attempt. Rollback failures are joined
 with the original activation error so a reported failure does not hide incomplete cleanup
 (#519).
+An activating macOS or Linux install still replaces an existing definition when its prior
+loaded or enabled state cannot be determined. If activation fails, rollback restores the
+previous definition but leaves it inactive when the prior activation state is unknown, and
+the install error names the affected service plus the native status command to check it.
+Only states known to have been active or enabled are restored during rollback, and
+reactivation failures are joined into the install error so incomplete rollback is visible
+(#527).
 Windows snapshot queries are best effort so an export or verbose-state query failure does
 not block an overwrite that Task Scheduler would accept. If activation then fails without
 a complete snapshot, the replacement definition is left in place; a pre-existing task is
 never deleted or otherwise rolled back when its prior definition could not be captured.
+When Windows rollback cannot end the replacement task, a valid verbose status showing the
+task is stopped makes the failure benign. A running or indeterminate result is joined into
+the install error, and prior activation is not restarted while the replacement process may
+still be running (#527).
 Filesystem-backed launchd and systemd tests run only on their native host OS because their
 temporary home isolation follows Unix home-directory semantics. Simulated Windows rollback
 tests do not depend on a home directory and continue to run on Windows CI.

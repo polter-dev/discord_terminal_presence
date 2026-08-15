@@ -77,6 +77,14 @@ func (s linuxService) rollbackInstall(path string, previous definitionSnapshot, 
 			restored = false
 		}
 	}
+	if previous.exists && (prior.Enabled == "unknown" || prior.Loaded == "unknown") {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf(
+			"the previous autostart activation state for %s could not be determined and may need checking; run `systemctl --user status %s` to check it",
+			ServiceName,
+			ServiceName,
+		))
+		return errors.Join(rollbackErrs...)
+	}
 	if !activationAttempted || !restored || !previous.exists {
 		return errors.Join(rollbackErrs...)
 	}
