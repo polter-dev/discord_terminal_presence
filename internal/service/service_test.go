@@ -680,38 +680,65 @@ func TestDarwinInstallRollsBackDefinitionWhenLoadFails(t *testing.T) {
 	}
 }
 
-func TestDarwinInstallRefusesUnknownPriorActivationState(t *testing.T) {
+func TestDarwinInstallReactivatesRestoredDefinitionWhenPriorActivationUnknown(t *testing.T) {
 	requireGOOS(t, "darwin")
-	home := fakeHome(t)
-	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name                  string
+		reactivationFails     bool
+		wantReactivationError bool
+	}{
+		{name: "reactivates restored definition"},
+		{name: "surfaces failed reactivation", reactivationFails: true, wantReactivationError: true},
 	}
-	original, err := BuildLaunchAgentPlist("/new/termp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	printCall := "launchctl print gui/" + userID() + "/" + Label
-	runner := &sequenceRunner{results: map[string][]scriptedRunnerResult{
-		printCall: {{out: "Operation not permitted\n", err: errors.New("exit status 1")}},
-	}}
 
-	_, err = (Manager{GOOS: "darwin", Runner: runner}).Install("/new/termp", false)
-	if err == nil || !strings.Contains(err.Error(), "cannot determine prior launch agent activation state") {
-		t.Fatalf("Install() error = %v, want unknown activation state refusal", err)
-	}
-	if hasCall(runner.calls, "launchctl bootout gui/"+userID()+" "+path) {
-		t.Fatalf("Install() calls = %#v, must not unload when prior activation is unknown", runner.calls)
-	}
-	got, readErr := os.ReadFile(path)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(got) != string(original) {
-		t.Fatalf("definition changed with unknown prior activation: got %q, want %q", got, original)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := fakeHome(t)
+			path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			original := []byte("old launch agent")
+			if err := os.WriteFile(path, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			printCall := "launchctl print gui/" + userID() + "/" + Label
+			bootstrapCall := "launchctl bootstrap gui/" + userID() + " " + path
+			loadCall := "launchctl load -w " + path
+			results := map[string][]scriptedRunnerResult{
+				printCall: {{out: "Could not find domain for gui/" + userID() + "\n", err: errors.New("exit status 1")}},
+				bootstrapCall: {
+					{out: "Bootstrap failed: Operation not permitted\n", err: errors.New("exit status 5")},
+					{},
+				},
+				loadCall: {
+					{out: "Load failed: Operation not permitted\n", err: errors.New("exit status 5")},
+				},
+			}
+			if tt.reactivationFails {
+				results[bootstrapCall][1] = scriptedRunnerResult{out: "Bootstrap failed again\n", err: errors.New("exit status 5")}
+				results[loadCall] = append(results[loadCall], scriptedRunnerResult{out: "Load failed again\n", err: errors.New("exit status 5")})
+			}
+			runner := &sequenceRunner{results: results}
+
+			_, err := (Manager{GOOS: "darwin", Runner: runner}).Install("/new/termp", false)
+			if err == nil || !strings.Contains(err.Error(), "launchctl load failed") {
+				t.Fatalf("Install() error = %v, want activation failure", err)
+			}
+			if got := strings.Contains(err.Error(), "restore previous launch agent activation"); got != tt.wantReactivationError {
+				t.Fatalf("Install() reactivation error = %t, want %t: %v", got, tt.wantReactivationError, err)
+			}
+			got, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != string(original) {
+				t.Fatalf("failed install left definition %q, want %q", got, original)
+			}
+			if got := countCall(runner.calls, bootstrapCall); got != 2 {
+				t.Fatalf("bootstrap calls = %d, want failed activation and rollback reactivation; calls: %#v", got, runner.calls)
+			}
+		})
 	}
 }
 
@@ -1123,15 +1150,27 @@ func TestLinuxInstallRollsBackDefinitionWhenActivationFails(t *testing.T) {
 	}
 }
 
-func TestLinuxInstallRefusesUnknownPriorActivationState(t *testing.T) {
+func TestLinuxInstallReactivatesRestoredDefinitionWhenPriorStateUnknown(t *testing.T) {
 	requireGOOS(t, "linux")
 	tests := []struct {
-		name       string
-		enabledOut string
-		activeOut  string
+		name                    string
+		enabledOut              string
+		activeOut               string
+		reactivationFailureCall string
+		wantReactivationError   string
 	}{
-		{name: "enablement unknown", activeOut: "active\n"},
-		{name: "activation unknown", enabledOut: "enabled\n"},
+		{
+			name:                    "enablement unknown",
+			activeOut:               "active\n",
+			reactivationFailureCall: "systemctl --user enable " + ServiceName,
+			wantReactivationError:   "restore previous systemd enablement",
+		},
+		{
+			name:                    "activation unknown",
+			enabledOut:              "enabled\n",
+			reactivationFailureCall: "systemctl --user start " + ServiceName,
+			wantReactivationError:   "restore previous systemd activation",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1141,34 +1180,37 @@ func TestLinuxInstallRefusesUnknownPriorActivationState(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			original, err := BuildSystemdUnit("/new/termp")
-			if err != nil {
-				t.Fatal(err)
-			}
+			original := []byte("old systemd unit")
 			if err := os.WriteFile(path, original, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			runner := &recordingRunner{
-				fail: map[string]error{},
-				out: map[string]string{
-					"systemctl --user is-enabled " + ServiceName: tt.enabledOut,
-					"systemctl --user is-active " + ServiceName:  tt.activeOut,
-				},
-			}
+			enableNowCall := "systemctl --user enable --now " + ServiceName
+			enableCall := "systemctl --user enable " + ServiceName
+			startCall := "systemctl --user start " + ServiceName
+			runner := &sequenceRunner{results: map[string][]scriptedRunnerResult{
+				"systemctl --user is-enabled " + ServiceName: {{out: tt.enabledOut}},
+				"systemctl --user is-active " + ServiceName:  {{out: tt.activeOut}},
+				"systemctl --user daemon-reload":             {{}, {}},
+				enableNowCall:                                {{out: "activation failed\n", err: errors.New("exit status 1")}},
+				tt.reactivationFailureCall:                   {{out: "restoration failed\n", err: errors.New("exit status 2")}},
+			}}
 
-			_, err = (Manager{GOOS: "linux", Runner: runner}).Install("/new/termp", false)
-			if err == nil || !strings.Contains(err.Error(), "cannot determine prior systemd service state") {
-				t.Fatalf("Install() error = %v, want unknown prior state refusal", err)
+			_, err := (Manager{GOOS: "linux", Runner: runner}).Install("/new/termp", false)
+			if err == nil || !strings.Contains(err.Error(), "systemctl enable failed") ||
+				!strings.Contains(err.Error(), tt.wantReactivationError) {
+				t.Fatalf("Install() error = %v, want activation and reactivation failures", err)
 			}
-			if hasCall(runner.calls, "systemctl --user daemon-reload") {
-				t.Fatalf("Install() calls = %#v, must not reload after unknown prior state", runner.calls)
+			for _, call := range []string{enableCall, startCall} {
+				if !hasCall(runner.calls, call) {
+					t.Fatalf("Install() calls = %#v, want rollback reactivation call %q", runner.calls, call)
+				}
 			}
 			got, readErr := os.ReadFile(path)
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
 			if string(got) != string(original) {
-				t.Fatalf("definition changed with unknown prior state: got %q, want %q", got, original)
+				t.Fatalf("failed install left definition %q, want %q", got, original)
 			}
 		})
 	}

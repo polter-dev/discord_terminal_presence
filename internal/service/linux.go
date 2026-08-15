@@ -23,9 +23,6 @@ func (s linuxService) install(exe string, launch, force bool) (State, error) {
 	if status.ForeignTask && !force {
 		return status, foreignTaskError(status.Message)
 	}
-	if launch && status.Installed && (status.Enabled == "unknown" || status.Loaded == "unknown") {
-		return status, fmt.Errorf("cannot determine prior systemd service state; refusing to replace its definition")
-	}
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true}, err
@@ -83,12 +80,12 @@ func (s linuxService) rollbackInstall(path string, previous definitionSnapshot, 
 	if !activationAttempted || !restored || !previous.exists {
 		return errors.Join(rollbackErrs...)
 	}
-	if prior.Enabled == "enabled" {
+	if prior.Enabled == "enabled" || prior.Enabled == "unknown" {
 		if out, err := s.runner.Run("systemctl", "--user", "enable", ServiceName); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous systemd enablement: %w: %s", err, strings.TrimSpace(string(out))))
 		}
 	}
-	if prior.Loaded == "active" {
+	if prior.Loaded == "active" || prior.Loaded == "unknown" {
 		if out, err := s.runner.Run("systemctl", "--user", "start", ServiceName); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous systemd activation: %w: %s", err, strings.TrimSpace(string(out))))
 		}

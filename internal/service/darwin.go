@@ -26,9 +26,6 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 	if status.ForeignTask && !force {
 		return status, foreignTaskError(status.Message)
 	}
-	if launch && status.Installed && status.Loaded == "unknown" {
-		return status, fmt.Errorf("cannot determine prior launch agent activation state; refusing to replace its definition")
-	}
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true}, err
@@ -57,14 +54,14 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 	}
 	if launch {
 		if err := s.load(path); err != nil {
-			rollbackErr := s.rollbackInstall(path, previous, status.Loaded == "true")
+			rollbackErr := s.rollbackInstall(path, previous, status.Loaded)
 			return State{Supported: true, Installed: previous.exists, Path: path}, errors.Join(err, rollbackErr)
 		}
 	}
 	return s.Status(), nil
 }
 
-func (s darwinService) rollbackInstall(path string, previous definitionSnapshot, wasLoaded bool) error {
+func (s darwinService) rollbackInstall(path string, previous definitionSnapshot, priorLoaded string) error {
 	var rollbackErrs []error
 	if err := s.unload(path); err != nil {
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("stop failed launch agent during rollback: %w", err))
@@ -74,7 +71,7 @@ func (s darwinService) rollbackInstall(path string, previous definitionSnapshot,
 		restored = false
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous launch agent definition: %w", err))
 	}
-	if restored && previous.exists && wasLoaded {
+	if restored && previous.exists && (priorLoaded == "true" || priorLoaded == "unknown") {
 		if err := s.load(path); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous launch agent activation: %w", err))
 		}

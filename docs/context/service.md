@@ -21,9 +21,10 @@ then restore the prior loaded/enabled state; Windows restores or deletes the sch
 and restarts it only when it was running before the attempt. Rollback failures are joined
 with the original activation error so a reported failure does not hide incomplete cleanup
 (#519).
-An activating macOS or Linux install refuses to change an existing definition when its
-prior loaded or enabled state cannot be determined. This preserves the existing service
-rather than guessing that an unknown state was stopped and risking an incomplete rollback
+An activating macOS or Linux install still replaces an existing definition when its prior
+loaded or enabled state cannot be determined. If activation fails, rollback restores the
+previous definition and treats each unknown state as active for best-effort reactivation.
+Reactivation failures are joined into the install error so incomplete rollback is visible
 (#527).
 Windows snapshot queries are best effort so an export or verbose-state query failure does
 not block an overwrite that Task Scheduler would accept. If activation then fails without
