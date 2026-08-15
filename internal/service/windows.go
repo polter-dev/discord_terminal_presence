@@ -125,21 +125,30 @@ func (s windowsService) rollbackInstall(previousTaskXML []byte, hadTask, snapsho
 	if hadTask && !snapshotAvailable {
 		return nil
 	}
-	_, _ = s.runner.Run("schtasks", "/End", "/TN", TaskName)
-	var rollbackErr error
+	var rollbackErrs []error
+	if out, err := s.runner.Run("schtasks", "/End", "/TN", TaskName); err != nil {
+		queryOut, queryErr := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/FO", "CSV", "/V", "/NH")
+		running, known := windowsTaskCSVRunningState(queryOut)
+		if queryErr != nil || !known || running {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("stop failed scheduled task during rollback: %w: %s", err, strings.TrimSpace(string(out))))
+		}
+	}
+	restored := true
 	if hadTask {
 		if err := s.createTask(previousTaskXML); err != nil {
-			rollbackErr = fmt.Errorf("restore previous scheduled task definition: %w", err)
+			restored = false
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous scheduled task definition: %w", err))
 		}
 	} else if out, err := s.runner.Run("schtasks", "/Delete", "/TN", TaskName, "/F"); err != nil {
-		rollbackErr = fmt.Errorf("remove new scheduled task definition: %w: %s", err, strings.TrimSpace(string(out)))
+		restored = false
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("remove new scheduled task definition: %w: %s", err, strings.TrimSpace(string(out))))
 	}
-	if rollbackErr == nil && hadTask && wasRunning {
+	if len(rollbackErrs) == 0 && restored && hadTask && wasRunning {
 		if err := s.runTask(); err != nil {
-			rollbackErr = fmt.Errorf("restore previous scheduled task activation: %w", err)
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous scheduled task activation: %w", err))
 		}
 	}
-	return rollbackErr
+	return errors.Join(rollbackErrs...)
 }
 
 // BuildWindowsTaskXML renders the logon task definition that runs command with
@@ -562,6 +571,11 @@ func (s windowsService) runTask() error {
 const windowsLastRunResultColumn = 6
 
 func windowsTaskCSVIsRunning(data []byte) bool {
+	running, _ := windowsTaskCSVRunningState(data)
+	return running
+}
+
+func windowsTaskCSVRunningState(data []byte) (running, known bool) {
 	// Verbose CSV column names and status text are localized. The numeric Last
 	// Run Result is not; SCHED_S_TASK_RUNNING is 0x41301 on every locale.
 	const schedSTaskRunning = uint64(0x00041301)
@@ -570,7 +584,7 @@ func windowsTaskCSVIsRunning(data []byte) bool {
 	reader.LazyQuotes = true
 	records, err := reader.ReadAll()
 	if err != nil {
-		return false
+		return false, false
 	}
 	for _, record := range records {
 		if len(record) <= windowsLastRunResultColumn {
@@ -581,9 +595,9 @@ func windowsTaskCSVIsRunning(data []byte) bool {
 		if strings.HasPrefix(strings.ToLower(value), "0x") {
 			base = 0
 		}
-		if result, err := strconv.ParseUint(value, base, 32); err == nil && result == schedSTaskRunning {
-			return true
+		if result, err := strconv.ParseUint(value, base, 32); err == nil {
+			return result == schedSTaskRunning, true
 		}
 	}
-	return false
+	return false, false
 }

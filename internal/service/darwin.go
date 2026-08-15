@@ -26,6 +26,9 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 	if status.ForeignTask && !force {
 		return status, foreignTaskError(status.Message)
 	}
+	if launch && status.Installed && status.Loaded == "unknown" {
+		return status, fmt.Errorf("cannot determine prior launch agent activation state; refusing to replace its definition")
+	}
 	path, err := launchAgentPath()
 	if err != nil {
 		return State{Supported: true}, err

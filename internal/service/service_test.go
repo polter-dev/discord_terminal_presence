@@ -57,8 +57,13 @@ type windowsRollbackRunner struct {
 	taskXML              []byte
 	running              bool
 	runFailures          int
+	runFailureStartsTask bool
+	endFailures          int
+	endOut               string
 	xmlQueries           int
 	failXMLQueryAt       int
+	verboseQueries       int
+	failVerboseQueryAt   int
 	verboseQueryFailures int
 }
 
@@ -112,6 +117,10 @@ func (r *windowsRollbackRunner) Run(name string, args ...string) ([]byte, error)
 			return append([]byte(nil), r.taskXML...), nil
 		}
 		if hasArg(args, "/V") {
+			r.verboseQueries++
+			if r.verboseQueries == r.failVerboseQueryAt {
+				return []byte("ERROR: Access is denied.\n"), simulatedExitError{code: 1}
+			}
 			if r.verboseQueryFailures > 0 {
 				r.verboseQueryFailures--
 				return []byte("ERROR: Access is denied.\n"), simulatedExitError{code: 1}
@@ -142,11 +151,18 @@ func (r *windowsRollbackRunner) Run(name string, args ...string) ([]byte, error)
 	case "/Run":
 		if r.runFailures > 0 {
 			r.runFailures--
+			if r.runFailureStartsTask {
+				r.running = true
+			}
 			return []byte("ERROR: The task could not be started.\n"), simulatedExitError{code: 1}
 		}
 		r.running = true
 		return nil, nil
 	case "/End":
+		if r.endFailures > 0 {
+			r.endFailures--
+			return []byte(r.endOut), simulatedExitError{code: 1}
+		}
 		r.running = false
 		return nil, nil
 	case "/Delete":
@@ -664,6 +680,41 @@ func TestDarwinInstallRollsBackDefinitionWhenLoadFails(t *testing.T) {
 	}
 }
 
+func TestDarwinInstallRefusesUnknownPriorActivationState(t *testing.T) {
+	requireGOOS(t, "darwin")
+	home := fakeHome(t)
+	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original, err := BuildLaunchAgentPlist("/new/termp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	printCall := "launchctl print gui/" + userID() + "/" + Label
+	runner := &sequenceRunner{results: map[string][]scriptedRunnerResult{
+		printCall: {{out: "Operation not permitted\n", err: errors.New("exit status 1")}},
+	}}
+
+	_, err = (Manager{GOOS: "darwin", Runner: runner}).Install("/new/termp", false)
+	if err == nil || !strings.Contains(err.Error(), "cannot determine prior launch agent activation state") {
+		t.Fatalf("Install() error = %v, want unknown activation state refusal", err)
+	}
+	if hasCall(runner.calls, "launchctl bootout gui/"+userID()+" "+path) {
+		t.Fatalf("Install() calls = %#v, must not unload when prior activation is unknown", runner.calls)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("definition changed with unknown prior activation: got %q, want %q", got, original)
+	}
+}
+
 func TestDarwinInstallDoesNotOverwritePlistOnUnloadFailure(t *testing.T) {
 	requireGOOS(t, "darwin")
 	home := fakeHome(t)
@@ -1067,6 +1118,57 @@ func TestLinuxInstallRollsBackDefinitionWhenActivationFails(t *testing.T) {
 			disableCall := "systemctl --user disable --now " + ServiceName
 			if got := hasCall(runner.calls, disableCall); got != tt.wantDisable {
 				t.Fatalf("disable rollback called = %t, want %t; calls: %#v", got, tt.wantDisable, runner.calls)
+			}
+		})
+	}
+}
+
+func TestLinuxInstallRefusesUnknownPriorActivationState(t *testing.T) {
+	requireGOOS(t, "linux")
+	tests := []struct {
+		name       string
+		enabledOut string
+		activeOut  string
+	}{
+		{name: "enablement unknown", activeOut: "active\n"},
+		{name: "activation unknown", enabledOut: "enabled\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := fakeHome(t)
+			path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			original, err := BuildSystemdUnit("/new/termp")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runner := &recordingRunner{
+				fail: map[string]error{},
+				out: map[string]string{
+					"systemctl --user is-enabled " + ServiceName: tt.enabledOut,
+					"systemctl --user is-active " + ServiceName:  tt.activeOut,
+				},
+			}
+
+			_, err = (Manager{GOOS: "linux", Runner: runner}).Install("/new/termp", false)
+			if err == nil || !strings.Contains(err.Error(), "cannot determine prior systemd service state") {
+				t.Fatalf("Install() error = %v, want unknown prior state refusal", err)
+			}
+			if hasCall(runner.calls, "systemctl --user daemon-reload") {
+				t.Fatalf("Install() calls = %#v, must not reload after unknown prior state", runner.calls)
+			}
+			got, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != string(original) {
+				t.Fatalf("definition changed with unknown prior state: got %q, want %q", got, original)
 			}
 		})
 	}
@@ -1689,6 +1791,48 @@ func TestWindowsInstallRollsBackTaskWhenRunFails(t *testing.T) {
 				t.Fatalf("run calls = %d, want %d; calls: %#v", got, tt.wantRunCalls, runner.calls)
 			}
 		})
+	}
+}
+
+func TestWindowsInstallRollbackSurfacesEndFailure(t *testing.T) {
+	original := []byte(windowsEnabledTaskXML)
+	runner := &windowsRollbackRunner{
+		taskXML:              append([]byte(nil), original...),
+		runFailures:          1,
+		runFailureStartsTask: true,
+		failVerboseQueryAt:   2,
+		endFailures:          1,
+		endOut:               "ERROR: The task could not be stopped.\n",
+	}
+
+	_, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false)
+	if err == nil || !strings.Contains(err.Error(), "schtasks run failed") ||
+		!strings.Contains(err.Error(), "stop failed scheduled task during rollback") {
+		t.Fatalf("Install() error = %v, want run and rollback termination failures", err)
+	}
+	if string(runner.taskXML) != string(original) {
+		t.Fatalf("task definition after failed install = %q, want %q", runner.taskXML, original)
+	}
+}
+
+func TestWindowsInstallRollbackTreatsEndFailureAsBenignWhenTaskIsStopped(t *testing.T) {
+	original := []byte(windowsEnabledTaskXML)
+	runner := &windowsRollbackRunner{
+		taskXML:     append([]byte(nil), original...),
+		runFailures: 1,
+		endFailures: 1,
+		endOut:      "FEHLER: Die Aufgabe wird nicht ausgefuehrt.\n",
+	}
+
+	_, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false)
+	if err == nil || !strings.Contains(err.Error(), "schtasks run failed") {
+		t.Fatalf("Install() error = %v, want schtasks run failure", err)
+	}
+	if strings.Contains(err.Error(), "stop failed scheduled task during rollback") {
+		t.Fatalf("Install() error = %v, want stopped task end failure treated as benign", err)
+	}
+	if runner.verboseQueries != 3 {
+		t.Fatalf("verbose status queries = %d, want rollback to verify the task is stopped", runner.verboseQueries)
 	}
 }
 

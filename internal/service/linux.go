@@ -23,6 +23,9 @@ func (s linuxService) install(exe string, launch, force bool) (State, error) {
 	if status.ForeignTask && !force {
 		return status, foreignTaskError(status.Message)
 	}
+	if launch && status.Installed && (status.Enabled == "unknown" || status.Loaded == "unknown") {
+		return status, fmt.Errorf("cannot determine prior systemd service state; refusing to replace its definition")
+	}
 	path, err := systemdUnitPath()
 	if err != nil {
 		return State{Supported: true}, err
