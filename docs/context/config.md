@@ -251,7 +251,10 @@ retains the blank accepted baseline, and routes the defaulted candidate through 
 `enabled`-loosening choke point. A completed explicit opt-out then applies immediately;
 a genuinely blank file restores defaults after the existing horizon. Normal non-empty
 configs whose `enabled` key is absent seed enabled defaults after one settle interval,
-and missing first-run files seed them immediately.
+and missing first-run files seed them immediately. Manager construction delegates its
+bounded settled read through an unexported snapshot/clock/sleep seam so the #549
+stable-blank regression establishes that ambiguous precondition and the armed guard with
+a virtual clock instead of racing asymmetric wall-clock sleeps.
 
 `Load`/`LoadPath` are safe by default for callers that may save the loaded whole document
 back over the user's file (#438). If an existing file is still empty or whitespace-only

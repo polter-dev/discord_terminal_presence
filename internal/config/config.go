@@ -808,17 +808,6 @@ func settledConfigSnapshotUntilWith(
 	return candidate, false
 }
 
-// settledConfigSnapshotForRead retries changing snapshots until it has a
-// settled result or the standalone bound expires. Unlike Manager.Reload, a
-// standalone read has no last-good state to retain, so after the bound it
-// returns the most recent snapshot and lets the read-only caller carry on.
-func settledConfigSnapshotForRead(path string) fileSnapshot {
-	snap, _ := boundedSettledConfigSnapshotWith(
-		path, snapshotConfigFile, time.Now, time.Sleep, fileSnapshot{},
-	)
-	return snap
-}
-
 // boundedSettledConfigSnapshotWith settles a snapshot within the standalone
 // bound. knownAccepted lets a caller that has already observed this file
 // exist during the current load thread that fact through to the settle
