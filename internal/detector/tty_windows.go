@@ -84,7 +84,12 @@ func realWindowsConsoleHWNDForPID(pid int32) (hwnd uintptr, conPTY bool, retErr 
 	}
 
 	consoleAttachMu.Lock()
-	executable, err := os.Executable()
+	imagePath, err := currentWindowsProcessImagePath()
+	if err != nil {
+		consoleAttachMu.Unlock()
+		return 0, false, fmt.Errorf("resolve console probe process image: %w", err)
+	}
+	executable, err := consoleProbeExecutablePath(imagePath)
 	if err != nil {
 		consoleAttachMu.Unlock()
 		return 0, false, fmt.Errorf("resolve console probe executable: %w", err)
@@ -118,6 +123,21 @@ func realWindowsConsoleHWNDForPID(pid int32) (hwnd uintptr, conPTY bool, retErr 
 		return 0, false, fmt.Errorf("parse console probe result: %w", err)
 	}
 	return hwnd, conPTY, nil
+}
+
+func currentWindowsProcessImagePath() (string, error) {
+	const maxSize = uint32(32768)
+	for size := uint32(260); ; size = min(size*2, maxSize) {
+		buffer := make([]uint16, size)
+		length := size
+		err := windows.QueryFullProcessImageName(windows.CurrentProcess(), 0, &buffer[0], &length)
+		if err == nil {
+			return windows.UTF16ToString(buffer[:length]), nil
+		}
+		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) || size == maxSize {
+			return "", err
+		}
+	}
 }
 
 func inspectWindowsConsole(pid uint32) (hwnd uintptr, conPTY bool, retErr error) {

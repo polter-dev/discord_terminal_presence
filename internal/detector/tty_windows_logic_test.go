@@ -2,10 +2,23 @@ package detector
 
 import (
 	"errors"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 )
+
+func TestConsoleProbeExecutablePathUsesAbsoluteTermpSibling(t *testing.T) {
+	image := filepath.Join(t.TempDir(), "scoop-shim-name.exe")
+	got, err := consoleProbeExecutablePath(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(filepath.Dir(image), "termp.exe")
+	if got != want || !filepath.IsAbs(got) {
+		t.Fatalf("consoleProbeExecutablePath(%q) = %q, want absolute %q", image, got, want)
+	}
+}
 
 func TestWindowsTTYAtimeOwnerBasedForegroundComparison(t *testing.T) {
 	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
