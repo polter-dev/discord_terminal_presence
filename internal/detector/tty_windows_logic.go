@@ -95,15 +95,6 @@ func shouldConsoleFailOpen(w windowsConsoleWindow) bool {
 	return !w.visible
 }
 
-func selectConsolePeer(pids []uint32, ownPID uint32) (uint32, bool) {
-	for _, pid := range pids {
-		if pid != 0 && pid != ownPID {
-			return pid, true
-		}
-	}
-	return 0, false
-}
-
 func (r windowsTTYResolver) Resolve(pid int32) (TTYResolution, error) {
 	if r.consoleHWNDForPID == nil {
 		return TTYResolution{}, errors.New("windows console resolver unavailable")

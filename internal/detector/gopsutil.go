@@ -4,9 +4,38 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	psprocess "github.com/shirou/gopsutil/v4/process"
 )
+
+// maxIdentityFieldBytes bounds Name, Argv0, and Cmdline before they reach the
+// registry matcher. Catalog matching (registry.processMatchIdentity) only
+// ever inspects process identity plus the immediate subcommand argument, so
+// a few KiB is far more than any real tool invocation needs, while an
+// unbounded flattened Cmdline is attacker-controlled: any process can set an
+// arbitrarily long argv, and matching costs about 360ns/byte, so a handful of
+// multi-MiB command lines can push one scan past the default scan interval
+// (#565). The structured Argv slice is left intact for the entrypoint/
+// subcommand checks that only ever look at its first couple of elements.
+const maxIdentityFieldBytes = 4096
+
+// boundIdentityField truncates s to at most maxIdentityFieldBytes bytes
+// without splitting a multi-byte UTF-8 rune.
+func boundIdentityField(s string) string {
+	if len(s) <= maxIdentityFieldBytes {
+		return s
+	}
+	b := s[:maxIdentityFieldBytes]
+	for len(b) > 0 {
+		r, size := utf8.DecodeLastRuneInString(b)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		b = b[:len(b)-1]
+	}
+	return b
+}
 
 // GopsutilLister reads processes through gopsutil.
 type GopsutilLister struct {
@@ -67,7 +96,7 @@ func (*GopsutilLister) Enrich(process Process) Process {
 	if err != nil {
 		return process
 	}
-	return enrichProcess(proc, process)
+	return enrichVerifyingInstance(proc, process)
 }
 
 // NewScanProcessEnricher shares tty and tmux snapshots across matched processes.
@@ -102,25 +131,49 @@ func (l *GopsutilLister) ttyAtimeSource() TTYAtimeSource {
 
 func processIdentity(proc *psprocess.Process) Process {
 	process := Process{Pid: proc.Pid}
+	// CreateTime is captured here, at identity time, so later independent
+	// lookups of the same pid (enrichment, ownership) can be cross-checked
+	// against it and reject a recycled pid rather than silently mixing
+	// fields from two different OS process instances (#569).
+	if millis, err := proc.CreateTime(); err == nil && millis > 0 {
+		process.CreateTime = time.UnixMilli(millis)
+	}
 	if resolved, err := proc.Name(); err == nil {
-		process.Name = resolved
+		process.Name = boundIdentityField(resolved)
 	}
 	if resolved, err := proc.Exe(); err == nil {
 		process.Exe = resolved
 	}
 	if args, err := proc.CmdlineSlice(); err == nil {
 		if len(args) > 0 {
-			process.Argv0 = args[0]
+			process.Argv0 = boundIdentityField(args[0])
 			process.Argv = append([]string(nil), args...)
-			process.Cmdline = strings.Join(args, " ")
+			process.Cmdline = boundIdentityField(strings.Join(args, " "))
 		}
 	}
 	if process.Cmdline == "" {
 		if resolved, err := proc.Cmdline(); err == nil {
-			process.Cmdline = resolved
+			process.Cmdline = boundIdentityField(resolved)
 		}
 	}
 	return process
+}
+
+// enrichVerifyingInstance enriches process from a freshly opened handle for
+// the same pid, but only accepts the result when the handle's creation time
+// still matches the creation time captured at identity time. A mismatch
+// means the pid was recycled between ListIdentities and this enrichment
+// (#569): a foreign process could otherwise have exited and been replaced by
+// one of the user's, publishing a foreign tool identity (matched from the
+// exited process's name/argv) alongside the new process's cwd. When
+// process.CreateTime is unknown (zero), the check is skipped rather than
+// discarding enrichment, since there is nothing to compare against.
+func enrichVerifyingInstance(proc *psprocess.Process, process Process) Process {
+	enriched := enrichProcess(proc, process)
+	if !process.CreateTime.IsZero() && !enriched.CreateTime.Equal(process.CreateTime) {
+		return process
+	}
+	return enriched
 }
 
 func enrichProcess(proc *psprocess.Process, process Process) Process {

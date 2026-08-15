@@ -5,8 +5,13 @@ terminal presence, and selects a featured tool plus other present tools.
 
 **Public surface:** `Process`, `ProcessLister`, identity/enrichment interfaces, `Config`,
 `Detector`, `Selector`, `FeaturedTool`, and `Detection` form the scan/selection boundary.
-`NewGopsutilLister` is production process input. `ActiveDetection*` provide snapshots.
-`EpisodeStore` and its load/save helpers persist elapsed-session anchors.
+`NewGopsutilLister` is production process input. `ActiveDetectionWithPresence` provides a
+one-shot snapshot with real presence eligibility and episode anchors; the plain
+`ActiveDetection` free function and `(*Detector).ActiveDetection` method were deleted
+(#568): both called `Select` with a nil enricher, so `Process.Owned` was never set from a
+real scan and both always returned `Detection{None: true}` against real process data (0 of
+1074 real processes came back `Owned=true`). Nothing outside tests referenced either
+helper. `EpisodeStore` and its load/save helpers persist elapsed-session anchors.
 
 **Key files:** `internal/detector/detector.go` owns scan/debounce/selection and debug
 reporting. `gopsutil.go` preserves structured argv and enriches selected identities.
@@ -45,6 +50,30 @@ done is a direct unit-level demonstration that pre-fix `SelectWithEnricher` acce
 even featured a `Process{Owned: false}` candidate over an owned one (see
 `TestSelectorExcludesForeignOwnedProcess` / `TestSelectorExcludesProcessWhenOwnerLookupFails`,
 confirmed failing against the pre-fix selector before the gate was added).
+
+Ownership is resolved unconditionally in `enrich` (never skipped, never reordered after
+TTY), but once it is known to be `false` the enricher now returns immediately (#566):
+before this, TTY resolution, the tmux query, and the atime stat always ran for every
+candidate even though the ownership gate discards the result. On Unix that meant stat-ing
+another user's TTY device per foreign candidate per scan; on Windows
+`windowsTTYResolver.Resolve` spawns a child `termp.exe` per foreign matched PID per scan.
+`process.Name`, `Argv0`, and the flattened `Cmdline` are bounded to `maxIdentityFieldBytes`
+(4 KiB, rune-safe) in `processIdentity` before they ever reach `registry.MatchProcess`
+(#565): matching only ever inspects identity plus the immediate subcommand, so an
+attacker-controlled multi-MiB `argv` (measured at ~360ns/byte in the matcher) can no longer
+push a scan past the interval. The structured `Argv` slice is left unbounded since matching
+only reads its first couple of elements.
+
+PID reuse between identity capture (`ListIdentities`), enrichment (`Enrich`), and ownership
+(`OwnerResolver.Owned`) is mitigated, not eliminated (#569, plausible-not-confirmed): each
+is an independent `psprocess.NewProcess(pid)` lookup, so a foreign process that exits and
+whose pid is immediately recycled to one of the user's own tools could otherwise mix a
+foreign identity (name/argv) with the new process's cwd and ownership. `processIdentity`
+now also captures `CreateTime`; `OwnerResolver.Owned(pid, createTime)` takes that captured
+value and fails closed on a mismatch, and `gopsutil.go`'s `enrichVerifyingInstance` discards
+freshly read enrichment fields (keeping the original identity) rather than merging in data
+read from a different process instance. A zero `createTime` skips the check rather than
+failing (used when identity capture itself couldn't read it).
 
 Presence and featured eligibility differ on Windows. Losing foreground starts
 the terminal idle clock; the window's last foreground time is retained across
@@ -97,6 +126,19 @@ detector continues with its in-memory store, preserving scan and elapsed-timer s
 `RunReadOnly` loads and consumes the episode store without incremental or shutdown saves;
 live CLI watch uses it so only the daemon persists `presence.json`.
 
+`LoadEpisodeStore` bounds the file the same way `internal/usage.Load` does (#567):
+`maxEpisodeStateFileSize` (1 MiB, `io.LimitReader`) and `maxEpisodeEntries` (1024, dropping
+the least recently active episodes first by `LastAtime`/`PresentSince` on load only, since
+runtime `Observe` growth is already bounded by the real running-process count). A missing
+file returns an empty store with a nil error; a corrupt, oversize, or otherwise unreadable
+file also returns an empty store but with a non-nil error now (previously nil, identical to
+absent) so a caller can tell "nothing here yet" from "the real file is broken." `run()`
+uses that distinction: a non-nil load error disables `saveEpisodes` for the entire run so
+the empty in-memory store is never saved back over a corrupt file. `internal/usage.Load`
+got the matching fix: a JSON-corrupt file now returns its unmarshal error instead of a nil
+error, and `cmd/termp/main.go`'s daemon startup (`usagepkg.Load` call site, `saveUsage`)
+disables `usage.Save` for the run when the load failed.
+
 **Depends on / used by:** Depends on `internal/registry` and gopsutil; produces snapshots
 for the daemon, status, presence mapping, watch, and usage recording.
 
@@ -128,3 +170,11 @@ active tab with generic Win32 APIs, so resolution deliberately fails open there.
 generic selector tests remain skipped on Windows because their TTY-atime/tmux fixtures
 model Unix semantics, not because Windows presence is unimplemented; neither #275 nor
 #304 tracks a residual detector gap.
+
+`selectConsolePeer` (`tty_windows_logic.go`) was deleted (#570): it had no production
+caller, only its own `_test.go`, and staticcheck's `unused` check counts test usage as a
+live reference, so the orphaned helper was never flagged despite the "selection helpers
+must have live callers" rule above. Its apparent intent (picking a console-sharing peer
+PID) could not be confidently established or safely wired into `inspectWindowsConsole`
+without Windows hardware to verify against, so it was removed along with its test rather
+than guessed into production.

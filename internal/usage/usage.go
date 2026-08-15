@@ -139,7 +139,11 @@ func New() *Store {
 	return &Store{Tools: make(map[string]Entry)}
 }
 
-// Load reads a usage store from path. Missing or corrupt files return an empty store.
+// Load reads a usage store from path. A missing file returns an empty store
+// with a nil error. A corrupt, oversize, or otherwise unreadable file also
+// returns an empty store, but with the underlying error: absent and corrupt
+// are not the same outcome, and a caller must not treat a non-nil error as
+// license to save the returned empty store back over the real file (#567).
 func Load(path string) (*Store, error) {
 	data, err := readFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -150,7 +154,7 @@ func Load(path string) (*Store, error) {
 	}
 	var disk diskStore
 	if err := json.Unmarshal(data, &disk); err != nil {
-		return New(), nil
+		return New(), fmt.Errorf("usage state file is corrupt: %w", err)
 	}
 	store := New()
 	for id, entry := range disk.Tools {

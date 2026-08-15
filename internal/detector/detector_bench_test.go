@@ -104,7 +104,7 @@ func BenchmarkActiveDetection(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		detection := ActiveDetection(reg, processes)
+		detection := testActiveDetection(reg, processes)
 		if detection.None {
 			b.Fatal("expected active detection")
 		}

@@ -594,13 +594,3 @@ func TestShouldConsoleFailOpen(t *testing.T) {
 		})
 	}
 }
-
-func TestSelectConsolePeerExcludesCurrentProcess(t *testing.T) {
-	pid, ok := selectConsolePeer([]uint32{0, 42, 99}, 42)
-	if !ok || pid != 99 {
-		t.Fatalf("peer = (%d, %t), want (99, true)", pid, ok)
-	}
-	if pid, ok := selectConsolePeer([]uint32{0, 42}, 42); ok || pid != 0 {
-		t.Fatalf("peer = (%d, %t), want (0, false)", pid, ok)
-	}
-}

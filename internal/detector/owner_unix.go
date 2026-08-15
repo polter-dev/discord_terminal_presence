@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"time"
 
 	psprocess "github.com/shirou/gopsutil/v4/process"
 )
@@ -24,11 +25,22 @@ func newSystemOwnerResolver() OwnerResolver {
 // Owned reports whether pid's effective UID matches the daemon's effective
 // UID. Any lookup failure (permission denied, pid exited mid-scan) is
 // returned as an error so the caller fails closed rather than assuming
-// ownership.
-func (r *unixOwnerResolver) Owned(pid int32) (bool, error) {
+// ownership. When createTime is non-zero, it must match pid's current
+// creation time or Owned fails closed: a mismatch means pid was recycled
+// since identity capture and no longer names the same process (#569).
+func (r *unixOwnerResolver) Owned(pid int32, createTime time.Time) (bool, error) {
 	proc, err := psprocess.NewProcess(pid)
 	if err != nil {
 		return false, err
+	}
+	if !createTime.IsZero() {
+		millis, err := proc.CreateTime()
+		if err != nil {
+			return false, err
+		}
+		if millis <= 0 || !time.UnixMilli(millis).Equal(createTime) {
+			return false, errors.New("process identity changed since it was first observed (pid reused)")
+		}
 	}
 	uids, err := proc.Uids()
 	if err != nil {

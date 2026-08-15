@@ -1211,6 +1211,12 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	detections := det.Run(ctx)
 	usagePath := usagepkg.StatePath()
 	usageStore, err := usagepkg.Load(usagePath)
+	// A non-nil error here means the file was present but corrupt, oversize,
+	// or otherwise unreadable (usagepkg.Load still returns an empty store so
+	// the daemon can continue). usageLoadFailed keeps saveUsage from ever
+	// writing that empty store back over the real file (#567); a missing
+	// file (nil error) does not set it, since there is nothing to destroy.
+	usageLoadFailed := err != nil
 	if err != nil {
 		debugf("usage load skipped: %v", err)
 	}
@@ -1219,7 +1225,7 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	}
 	lastUsageSave := time.Time{}
 	saveUsage := func(force bool) {
-		if usageStore == nil {
+		if usageStore == nil || usageLoadFailed {
 			return
 		}
 		now := time.Now()

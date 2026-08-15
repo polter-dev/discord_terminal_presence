@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,14 @@ const (
 	episodeStateFile       = "presence.json"
 	episodeAtimeSavePeriod = time.Minute
 	episodeTempMaxAge      = time.Hour
+
+	// maxEpisodeEntries and maxEpisodeStateFileSize mirror the sibling
+	// internal/usage bounds (#567): a 55 MB presence.json loaded fine before
+	// this and cost 202 MiB of heap. Episode count is naturally bounded by
+	// the number of currently running owned+matched processes during normal
+	// operation, so capping only applies to what a load pulls in from disk.
+	maxEpisodeEntries       = 1024
+	maxEpisodeStateFileSize = 1 << 20
 )
 
 type episodePathResolver struct {
@@ -220,8 +230,14 @@ func (s *EpisodeStore) EndAbsent(eligible map[string]struct{}) bool {
 	return changed
 }
 
+// LoadEpisodeStore reads the persisted episode store from path. A missing
+// file returns an empty store with a nil error. A corrupt, oversize, or
+// otherwise unreadable file also returns an empty store, but with the
+// underlying error: absent and corrupt are not the same outcome, and a
+// caller must not treat a non-nil error as license to save the returned
+// empty store back over the real file (#567).
 func LoadEpisodeStore(path string) (*EpisodeStore, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedEpisodeFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return NewEpisodeStore(), nil
 	}
@@ -230,14 +246,61 @@ func LoadEpisodeStore(path string) (*EpisodeStore, error) {
 	}
 	var disk diskEpisodes
 	if err := json.Unmarshal(data, &disk); err != nil {
-		return NewEpisodeStore(), nil
+		return NewEpisodeStore(), fmt.Errorf("presence state file is corrupt: %w", err)
 	}
 	store := NewEpisodeStore()
 	for key, episode := range disk.Episodes {
 		store.Episodes[key] = episode
 		store.persisted[key] = episode
 	}
+	store.enforceCap()
 	return store, nil
+}
+
+func readBoundedEpisodeFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxEpisodeStateFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxEpisodeStateFileSize {
+		return nil, fmt.Errorf("presence state file exceeds %d bytes", maxEpisodeStateFileSize)
+	}
+	return data, nil
+}
+
+// enforceCap keeps at most maxEpisodeEntries, dropping the least recently
+// active episodes first (by LastAtime, falling back to PresentSince for
+// episodes with no known terminal activity yet).
+func (s *EpisodeStore) enforceCap() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.Episodes) <= maxEpisodeEntries {
+		return
+	}
+	keys := make([]string, 0, len(s.Episodes))
+	for key := range s.Episodes {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return episodeRecency(s.Episodes[keys[i]]).Before(episodeRecency(s.Episodes[keys[j]]))
+	})
+	for _, key := range keys[:len(keys)-maxEpisodeEntries] {
+		delete(s.Episodes, key)
+		delete(s.observed, key)
+		delete(s.persisted, key)
+	}
+}
+
+func episodeRecency(e Episode) time.Time {
+	if !e.LastAtime.IsZero() {
+		return e.LastAtime
+	}
+	return e.PresentSince
 }
 
 func SaveEpisodeStore(path string, store *EpisodeStore) error {

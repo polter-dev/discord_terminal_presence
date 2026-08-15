@@ -224,16 +224,6 @@ func (d *Detector) RunReadOnly(ctx context.Context) <-chan Detection {
 	return out
 }
 
-// ActiveDetection returns the current best detection from a process snapshot.
-func (d *Detector) ActiveDetection(processes []Process) Detection {
-	return NewSelector(d.registry, d.config, systemClock{}).Select(processes)
-}
-
-// ActiveDetection returns the best detection from a process snapshot.
-func ActiveDetection(reg *registry.Registry, processes []Process) Detection {
-	return NewSelector(reg, Config{ActivitySwitching: true}, systemClock{}).Select(processes)
-}
-
 // ActiveDetectionWithPresence scans once with the same presence eligibility and
 // episode anchors as the daemon. The loaded episode store is never saved.
 func ActiveDetectionWithPresence(reg *registry.Registry, lister ProcessLister, config Config) (Detection, error) {
@@ -769,7 +759,13 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection, persistEpisode
 		consumer.setEpisodeStore(episodes)
 	}
 	var saveEpisodes func(*EpisodeStore)
-	if persistEpisodes != nil {
+	// A non-nil load error means the file was present but corrupt, oversize,
+	// or otherwise unreadable (LoadEpisodeStore still returns an empty store
+	// in that case so the run can continue). Persisting from here on would
+	// silently overwrite that file with the empty in-memory store, destroying
+	// whatever real data was in it (#567). Missing-file (nil error) does not
+	// set this: there is nothing on disk to destroy.
+	if persistEpisodes != nil && err == nil {
 		saveEpisodes = func(store *EpisodeStore) {
 			if err := persistEpisodes(statePath, store); err != nil {
 				d.debugf("episode store save failed: %v", err)

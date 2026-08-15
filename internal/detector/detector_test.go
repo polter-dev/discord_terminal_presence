@@ -366,7 +366,7 @@ type fakeOwnerResolver struct {
 	errs  map[int32]error
 }
 
-func (f fakeOwnerResolver) Owned(pid int32) (bool, error) {
+func (f fakeOwnerResolver) Owned(pid int32, createTime time.Time) (bool, error) {
 	if err, ok := f.errs[pid]; ok {
 		return false, err
 	}
@@ -390,7 +390,7 @@ func (f *fakeClock) Advance(d time.Duration) {
 
 func TestActiveDetectionPicksMostRecentlyStarted(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true, Name: "claude", CreateTime: base, Cwd: "/old"},
 		{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/new"},
 	})
@@ -554,6 +554,12 @@ func TestSelectorStillSelectsCurrentUserProcess(t *testing.T) {
 // not just a hand-set Process.Owned literal: a TTY-resolvable process whose
 // ownership lookup errors (permission denied, process exited mid-scan) must
 // still fail closed and be excluded, exactly like a confirmed-foreign one.
+//
+// It also asserts the #566 short-circuit: once ownership is known to be
+// false, enrich() must not go on to resolve TTY for a process the selector's
+// ownership gate is going to discard anyway. Ownership itself must still be
+// resolved unconditionally (never skipped, never reordered after TTY) --
+// that invariant is the process.Owned assertion below, not the TTY state.
 func TestSelectorExcludesProcessWhenOwnerLookupFails(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
@@ -568,8 +574,8 @@ func TestSelectorExcludesProcessWhenOwnerLookupFails(t *testing.T) {
 	if process.Owned {
 		t.Fatalf("enriched process.Owned = true, want false after a failed ownership lookup")
 	}
-	if process.TTY.State != TTYResolved {
-		t.Fatalf("TTY state = %v, want resolved (ownership must gate independently of TTY)", process.TTY.State)
+	if process.TTY.State != TTYUnknown {
+		t.Fatalf("TTY state = %v, want unknown: TTY resolution must be skipped once ownership fails (#566)", process.TTY.State)
 	}
 
 	detection := selector.Select([]Process{process})
@@ -1106,9 +1112,14 @@ func TestEpisodePersistenceRoundTripAndCorruptFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A corrupt file must report a non-nil error, not the same nil error as a
+	// missing one: a caller (e.g. the detector's run loop) uses that
+	// distinction to refuse to save the returned empty store back over the
+	// real file (#567). The returned store is still safe to keep using
+	// in-memory for the rest of this scan, which the assertions below cover.
 	corrupt, err := LoadEpisodeStore(path)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("LoadEpisodeStore() of a corrupt file returned a nil error, want an error distinguishing corrupt from absent (#567)")
 	}
 	if got, _ := corrupt.Observe(key, tty, base.Add(2*time.Minute), 20*time.Minute); !got.Equal(base.Add(2 * time.Minute)) {
 		t.Fatalf("corrupt state anchor = %s, want a safe new episode", got)
@@ -1296,7 +1307,7 @@ func TestSelectorOrdersOthersByActivityThenPriority(t *testing.T) {
 
 func TestActiveDetectionUsesPriorityOnCreateTimeTie(t *testing.T) {
 	started := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true, Name: "tie-low", CreateTime: started},
 		{Owned: true, Name: "tie-high", CreateTime: started},
 	})
@@ -1308,7 +1319,7 @@ func TestActiveDetectionUsesPriorityOnCreateTimeTie(t *testing.T) {
 
 func TestActiveDetectionDedupesToolInstances(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true, Pid: 1, Name: "claude", CreateTime: base, Cwd: "/old"},
 		{Owned: true, Pid: 2, Name: "claude", CreateTime: base.Add(time.Minute), Cwd: "/new"},
 		{Owned: true, Name: "htop", CreateTime: base.Add(-time.Minute)},
@@ -1393,7 +1404,7 @@ func TestSelectorSameToolInstanceUsesRecentTTYActivity(t *testing.T) {
 
 func TestActiveDetectionMatchesClaudeVersionBinaryAndDedupes(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true,
 			Pid:        1,
 			Name:       "2.1.201",
@@ -1500,7 +1511,7 @@ func TestSelectWithEnricherMatchesFullSnapshotResults(t *testing.T) {
 }
 
 func TestActiveDetectionReturnsNoneWhenNothingMatches(t *testing.T) {
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true, Name: "bash", CreateTime: time.Now()},
 	})
 
