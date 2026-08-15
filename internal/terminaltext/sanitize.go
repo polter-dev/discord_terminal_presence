@@ -4,13 +4,15 @@ package terminaltext
 import (
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 )
 
-// IsControlOrBidi reports whether r is a C0/C1 control character, DEL, or a
-// Unicode bidirectional formatting control. This is the exact rune class
+// IsControlOrBidi reports whether r is a C0/C1 control character, DEL, a
+// Unicode bidirectional formatting control, or an invisible formatting
+// codepoint (see isInvisibleFormatting). This is the exact rune class
 // Sanitize strips; it is exported so other packages (e.g. registry, which
 // rejects these at config load rather than silently stripping them) can
 // classify a rune the same way without duplicating or drifting from this
@@ -18,7 +20,63 @@ import (
 func IsControlOrBidi(r rune) bool {
 	return r <= 0x1f || r == 0x7f || r >= 0x80 && r <= 0x9f ||
 		r == 0x061c || r == 0x200e || r == 0x200f ||
-		r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069
+		r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 ||
+		isInvisibleFormatting(r)
+}
+
+// isInvisibleFormatting reports whether r is a codepoint that renders as
+// nothing, or as an innocuous-looking separator, while still being present
+// in the string (#571). The boundary this draws is invisible-with-no-
+// rendering-role versus invisible-but-orthographically-meaningful: the
+// former is rejected, the latter is not, even though both are invisible.
+//
+// The core of the rejected class is Unicode's own Cf (Format) general
+// category: zero-width space (U+200B), the word joiner and invisible math
+// operators (U+2060-U+2064), the byte-order mark reused as ZWNBSP (U+FEFF),
+// soft hyphen (U+00AD), the Mongolian vowel separator (U+180E), the
+// interlinear annotation controls (U+FFF9-U+FFFB), and the entire Unicode
+// Tags block (U+E0000-U+E007F). The Tags block is the actual point of
+// #571: it is a known text-smuggling channel, since an entire ASCII string
+// can be encoded in Tags codepoints that render as nothing. None of these
+// have any orthographic role; they exist purely as formatting/control
+// signals, so rejecting them costs nothing real.
+//
+// Two categories are added deliberately rather than folded into "format":
+// LINE SEPARATOR and PARAGRAPH SEPARATOR (U+2028, U+2029) are general
+// category Zl/Zp, not Cf, but are exactly as invisible in practice and were
+// confirmed to reach a Discord-facing URL unrejected. And three characters
+// are listed by codepoint because their general category is neither Cf nor
+// Zl/Zp yet they exist specifically to be invisible: U+034F COMBINING
+// GRAPHEME JOINER (category Mn, a combining mark by classification but with
+// no visible glyph of its own), and the Hangul filler characters U+115F
+// HANGUL CHOSEONG FILLER and U+3164 HANGUL FILLER (category Lo), both
+// designed to occupy a Hangul syllable position while displaying nothing.
+//
+// ZERO WIDTH NON-JOINER (U+200C) and ZERO WIDTH JOINER (U+200D) are
+// deliberately excluded even though they are Cf and would otherwise match.
+// Unlike everything above, they do real rendering work: ZWJ joins
+// components into a single multi-codepoint emoji (family, pride flag, and
+// other ZWJ sequences), and ZWNJ is used in Persian and other Arabic-script
+// orthographies to keep two letters from visually joining. #422 already
+// weighed this tradeoff for the bidi set and chose to keep them; #571
+// extends that same decision to this invisible-formatting set rather than
+// re-litigating it. Neither can encode arbitrary ASCII the way the Tags
+// block can, so excluding them costs effectively nothing on the security
+// side. Do not re-add U+200C/U+200D here without a product decision, not
+// just a bug-fix PR.
+//
+// This is a narrow, deliberate boundary, not "reject anything unusual":
+// ordinary combining marks (accents, diacritics), astral-plane emoji
+// (including ZWJ sequences), and normal multibyte text (including Persian
+// ZWNJ) are all unaffected.
+func isInvisibleFormatting(r rune) bool {
+	switch r {
+	case 0x200c, 0x200d:
+		return false
+	case 0x034f, 0x115f, 0x3164:
+		return true
+	}
+	return unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
 }
 
 // Sanitize removes terminal escape sequences, control characters, and Unicode

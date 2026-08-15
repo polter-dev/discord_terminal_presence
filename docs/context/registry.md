@@ -76,6 +76,30 @@ reject previously-accepted configs on reload, so escaping at the templating boun
 `resolveIcon` was chosen instead — it neutralizes the injection non-breakingly, and a
 plain slug like `git` still resolves to the unchanged, working proxy URL.
 
+The sibling `IconSourceLobeHub` branch had the same class of hole until #575: it
+concatenated the slug raw into `lobehubURLTemplate`'s path segment instead of escaping it.
+`ValidateHTTPURL` only checks scheme, host, and the control/bidi/invisible-formatting rune
+class (#571), so the fixed `unpkg.com` host stayed intact while the slug could still leave
+the intended package path with `../`, inject a query or fragment, or contain a raw space.
+Fixed with `url.PathEscape` (not `url.QueryEscape`, since the value is templated into a
+path segment, not a query value): it escapes `/` as `%2F`, so `../../../../@evil/pkg@1.0.0/payload`
+can no longer leave the template's fixed path prefix, and a plain slug like `git` still
+resolves unchanged.
+
+Match and exclude regexes on custom tools are compiled through the single shared
+`compileUserRegex` helper (used by both `ValidateCustomTool` at config load and
+`newFromTools` at registry construction, so the wrapping logic cannot drift between the
+two) rather than calling `regexp.Compile` directly. Before #577, a user-supplied regex had
+no length bound: RE2 rules out catastrophic backtracking, but match cost is still
+`O(len(input) x len(program))`, and a compiled program's size scales with pattern length,
+so a 240-byte value could expand into a roughly 4000-state program costing about 44ms per
+process per scan. `MaxCustomRegexLength` (200 runes, well above the largest built-in
+catalog regex) bounds that indirectly by bounding the source. `compileUserRegex` also
+compiles the raw value standalone before wrapping it in `"(?i:" + value + ")"`: a value
+that is not a valid regex on its own, such as `a)|(.*`, could otherwise compile
+successfully by closing the wrapper group early. Harmless today, but rejected so the raw
+string stays safe to reuse in a different context later.
+
 Do not replace identity matching with `gopsutil.Terminal()` filtering: it is not
 implemented on Darwin and would remove all macOS presence. Short exact catalog names
 such as `lf`, `mc`, `task`, `spt`, and `dust` remain product ambiguities.

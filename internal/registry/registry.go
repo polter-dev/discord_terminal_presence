@@ -24,6 +24,17 @@ const (
 	MaxDisplayNameLength = 128
 	MaxImageValueLength  = 256
 
+	// MaxCustomRegexLength bounds a user-supplied match/exclude regex's raw
+	// length before it is compiled. RE2 rules out catastrophic backtracking
+	// (checked, not assumed, for #577), but match cost is still
+	// O(len(input) x len(program)), and the compiled program's size scales
+	// with pattern length: #577 measured a 240-byte value expanding to a
+	// roughly 4000-state program, costing about 44ms per process, per scan,
+	// against a long process identity string. This cap keeps the compiled
+	// program small enough that one user regex cannot dominate a scan. The
+	// largest built-in catalog regex is well under 150 characters.
+	MaxCustomRegexLength = 200
+
 	// IconSourceSimpleIcons resolves a Simple Icons slug to a raster PNG. Discord activity
 	// images must be raster (PNG/JPG); Simple Icons ships SVG, so it is rendered to PNG
 	// on the fly through the free wsrv.nl image proxy (brand-colored by default).
@@ -201,6 +212,39 @@ func NewWithCustom(custom ...CustomTool) (*Registry, error) {
 // stripper terminal rendering uses; controlCharacterError names the actual
 // codepoint so a legitimate RTL display name isn't told it contains a
 // "control character" when what it actually contains is a bidi mark.
+
+// compileUserRegex compiles a user-supplied match/exclude regex value the
+// same way registry matching wraps it for case-insensitive matching
+// ("(?i:" + value + ")"), and is the single place that does so: config-load
+// validation (ValidateCustomTool) and registry construction (newFromTools)
+// both call it instead of keeping their own copy of the wrapping logic.
+//
+// It rejects two things beyond what compiling the wrapped value alone would
+// catch (#577):
+//
+//   - An overlong pattern. RE2 rules out catastrophic backtracking, but
+//     match cost is still O(len(input) x len(program)), and the compiled
+//     program's size scales with pattern length, so an unbounded regex value
+//     can still make every process-scan match expensive. MaxCustomRegexLength
+//     bounds the compiled program's size indirectly by bounding the source.
+//   - A value that is not a valid regex on its own but happens to close the
+//     wrapper group early, such as "a)|(.*" compiling successfully only
+//     because it closes the "(?i:" wrapper's own paren. Compiling the raw
+//     value standalone first catches that before it is ever wrapped, so the
+//     raw string stays safe to reuse in a different context later.
+func compileUserRegex(field, value string) (*regexp.Regexp, error) {
+	if utf8.RuneCountInString(value) > MaxCustomRegexLength {
+		return nil, fmt.Errorf("%s must be at most %d characters", field, MaxCustomRegexLength)
+	}
+	if _, err := regexp.Compile(value); err != nil {
+		return nil, fmt.Errorf("%s: %w", field, err)
+	}
+	re, err := regexp.Compile("(?i:" + value + ")")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", field, err)
+	}
+	return re, nil
+}
 func firstDisallowedRune(value string) (position int, r rune, found bool) {
 	for _, candidate := range value {
 		if terminaltext.IsControlOrBidi(candidate) {
@@ -260,13 +304,13 @@ func ValidateCustomTool(tool CustomTool) error {
 		return controlCharacterError("display_name", r, position)
 	}
 	if tool.Match.Regex != "" {
-		if _, err := regexp.Compile("(?i:" + tool.Match.Regex + ")"); err != nil {
-			return fmt.Errorf("match.regex: %w", err)
+		if _, err := compileUserRegex("match.regex", tool.Match.Regex); err != nil {
+			return err
 		}
 	}
 	if tool.Exclude != "" {
-		if _, err := regexp.Compile("(?i:" + tool.Exclude + ")"); err != nil {
-			return fmt.Errorf("exclude: %w", err)
+		if _, err := compileUserRegex("exclude", tool.Exclude); err != nil {
+			return err
 		}
 	}
 	resolved := Tool{
@@ -375,14 +419,14 @@ func newFromTools(tools []Tool) (*Registry, error) {
 		compiled[i].Buttons = append([]Button(nil), compiled[i].Buttons...)
 		resolveIcon(&compiled[i])
 		if compiled[i].Match.Regex != "" {
-			re, err := regexp.Compile("(?i:" + compiled[i].Match.Regex + ")")
+			re, err := compileUserRegex("match.regex", compiled[i].Match.Regex)
 			if err != nil {
 				return nil, err
 			}
 			compiled[i].Match.compiled = re
 		}
 		if compiled[i].Exclude != "" {
-			re, err := regexp.Compile("(?i:" + compiled[i].Exclude + ")")
+			re, err := compileUserRegex("exclude", compiled[i].Exclude)
 			if err != nil {
 				return nil, err
 			}
@@ -614,7 +658,13 @@ func resolveIcon(tool *Tool) {
 	case IconSourceSimpleIcons:
 		tool.ImageURL = fmt.Sprintf(simpleIconsURLTemplate, url.QueryEscape(slug))
 	case IconSourceLobeHub:
-		tool.ImageURL = fmt.Sprintf(lobehubURLTemplate, slug)
+		// url.PathEscape (not QueryEscape) matches how the slug is used here:
+		// it is templated into a URL path segment, not a query value. It
+		// escapes '/' as %2F, so a slug such as "../../../../@evil/pkg@1.0.0/payload"
+		// can no longer leave the intended package path, and it also
+		// neutralizes '?', '#', and raw spaces the same way #489 closed the
+		// equivalent hole in the Simple Icons branch above (#575).
+		tool.ImageURL = fmt.Sprintf(lobehubURLTemplate, url.PathEscape(slug))
 	case IconSourceURL:
 		tool.ImageURL = slug
 	case IconSourceKey:

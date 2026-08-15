@@ -150,6 +150,19 @@ known Snap/Flatpak locations, then a deduplicated one-level glob. Candidates mus
 directory, ownership, socket-type, replacement, and peer-credential checks. Windows
 validates the named-pipe peer.
 
+`validatePipePeerWithLookups` (`peer_credentials_windows.go`) opens the named-pipe server
+process exactly once and passes that single handle to both the SID check and the
+image-name check. Before #572, each check called `openNamedPipeServerProcess` (which
+itself calls `GetNamedPipeServerProcessId` then `OpenProcess`) independently, so the two
+checks could resolve to different processes if the server exited and Windows reused its
+PID between the two opens: the image-name check could then validate a process the SID
+check never approved. The SID check remains the actual trust boundary and the image-name
+check remains deliberately fail-open on lookup failure (`peer_image_logic.go`,
+`verifyDiscordServerImage`, pinned by `TestVerifyDiscordServerImage`); the fix only changes
+handle lifetime, not either check's semantics, and halves the syscalls as a side effect.
+Windows-only file; verified with `GOOS=windows go build`/`go vet` only, unverified on real
+Windows hardware.
+
 `DISCORD_IPC_PATH` is authoritative, on both Unix and Windows: when set, only its own
 candidates are tried. A relative override is a hard error (`ErrDiscordIPCOverrideInvalid`),
 and a set-but-unconnectable override returns `ErrDiscordIPCNotFound`/`ErrDiscordIPCUnreachable`
