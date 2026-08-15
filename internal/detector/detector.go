@@ -338,7 +338,6 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	collectionInstances := make(map[string][]toolCandidate)
 	cpuTotals := make(map[string]float64)
 	cpuActivity := make(map[string]float64)
-	cpuAvailable := make(map[string]bool)
 	now := s.clock.Now()
 	eligibleEpisodes := make(map[string]struct{})
 	observedProcesses := make(map[string]struct{})
@@ -403,14 +402,9 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		if !featuredEligible {
 			continue
 		}
-		if _, ok := cpuAvailable[tool.ID]; !ok {
-			cpuAvailable[tool.ID] = true
-		}
 		if proc.CPUTimeKnown {
 			cpuTotals[tool.ID] += proc.CPUTime
 			cpuActivity[tool.ID] += processActivity
-		} else {
-			cpuAvailable[tool.ID] = false
 		}
 		candidateInstances[tool.ID] = append(candidateInstances[tool.ID], candidate)
 	}
@@ -443,9 +437,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 
 	for id, candidate := range candidates {
 		activity := cpuActivity[id]
-		if !cpuAvailable[id] {
-			activity = 0
-		} else if s.previousFeatured == "" {
+		if s.previousFeatured == "" {
 			activity = cpuTotals[id]
 		}
 		candidate.Activity = activity
