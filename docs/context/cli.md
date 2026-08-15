@@ -61,6 +61,12 @@ command is not yet supported on the platform.
 Status trusts a fresh connected publisher instead of probing Discord and exposes
 concurrent PID/publisher faults. Internal command errors are phrased to compose after the
 CLI adds its user-facing prefix while retaining proper-noun capitalization.
+The live watch preview uses the same validated publisher fallback as status and daemon
+lifecycle, including when the PID file is unavailable (#509). This matters on Windows:
+probing Discord directly while the active-tool daemon already owns IPC can fail and used
+to make settings-driven preview rerenders claim Discord was not running even though the
+fresh daemon publisher reported an existing connection. A disconnected or stale publisher
+still falls back to a direct probe, so an old positive is never cached indefinitely.
 `formatDiscordStatus`'s unmatched-error fallback reports `unknown (<err>)` rather than
 asserting the specific "Discord is running but unreachable" diagnosis it has not
 established; only the sentinel errors that actually mean that (`ErrDiscordIPCUnreachable`)

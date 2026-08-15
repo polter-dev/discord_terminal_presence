@@ -4,7 +4,7 @@ Start here, then read the module entry before opening source.
 
 | Module | Context | Source | Purpose |
 | --- | --- | --- | --- |
-| CLI | [`cli.md`](cli.md) | `cmd/termp`, `install.sh`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/workflows/verify-release-secrets.yml`, `.goreleaser.yaml` | Owns commands, daemon lifecycle and bounded status/config reads, record-bound daemon executable identity across binary moves with duplicate-start refusal and working cross-path status/stop recovery (#476), self-healing removal of an unparseable
+| CLI | [`cli.md`](cli.md) | `cmd/termp`, `install.sh`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/workflows/verify-release-secrets.yml`, `.goreleaser.yaml` | Owns commands, daemon lifecycle and bounded status/config reads, record-bound daemon executable identity across binary moves with duplicate-start refusal and working cross-path status/stop recovery (#476), live-watch reuse of a fresh validated Discord publisher when the PID file is unavailable so Windows does not misreport a daemon-owned connection as undetected (#509), self-healing removal of an unparseable
 PID file on stop instead of surfacing a raw parser error (#491), a fail-closed (not
 fail-open) generic-install writability preflight before any unattended automatic update so
 a non-EACCES-unwritable destination such as a read-only mount cannot reach `install.sh`'s

@@ -1430,6 +1430,70 @@ func TestDiscordConnectedFromStateOrProbeUsesFreshDaemonConnection(t *testing.T)
 	}
 }
 
+func TestWatchDiscordConnectedUsesFreshPublisherWhenPIDFileIsUnavailable(t *testing.T) {
+	useFixtureProcessStartTime(t)
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	statePath := writeDaemonDiscordStateFixture(t, daemonDiscordState{
+		Connected:      true,
+		UpdatedAt:      now,
+		PID:            42,
+		StartTime:      fixtureProcessStartTime,
+		ExecutablePath: "recorded-termp",
+	})
+	probeCalls := 0
+
+	connected := watchDiscordConnectedWith(
+		now,
+		filepath.Join(t.TempDir(), "missing-termp.pid"),
+		statePath,
+		func(pid int) bool { return pid == 42 },
+		func(pid int, path string) bool { return pid == 42 && path == "recorded-termp" },
+		func() error {
+			probeCalls++
+			return presence.ErrDiscordIPCNotFound
+		},
+	)
+
+	if !connected {
+		t.Fatal("fresh connected publisher was reported disconnected when the PID file was unavailable")
+	}
+	if probeCalls != 0 {
+		t.Fatalf("direct Discord probe calls = %d, want 0 while the daemon already owns IPC", probeCalls)
+	}
+}
+
+func TestWatchDiscordConnectedDoesNotTrustStalePublisher(t *testing.T) {
+	useFixtureProcessStartTime(t)
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	statePath := writeDaemonDiscordStateFixture(t, daemonDiscordState{
+		Connected:      true,
+		UpdatedAt:      now.Add(-daemonDiscordStateStaleAfter - time.Nanosecond),
+		PID:            42,
+		StartTime:      fixtureProcessStartTime,
+		ExecutablePath: "recorded-termp",
+	})
+	probeCalls := 0
+
+	connected := watchDiscordConnectedWith(
+		now,
+		filepath.Join(t.TempDir(), "missing-termp.pid"),
+		statePath,
+		func(pid int) bool { return pid == 42 },
+		func(pid int, path string) bool { return pid == 42 && path == "recorded-termp" },
+		func() error {
+			probeCalls++
+			return presence.ErrDiscordIPCNotFound
+		},
+	)
+
+	if connected {
+		t.Fatal("stale connected publisher bypassed the direct Discord probe")
+	}
+	if probeCalls != 1 {
+		t.Fatalf("direct Discord probe calls = %d, want 1 for stale publisher state", probeCalls)
+	}
+}
+
 func TestWriteDaemonDiscordStateUses0600(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "discord.json")
 	state := daemonDiscordState{
