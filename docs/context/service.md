@@ -25,6 +25,9 @@ Windows snapshot queries are best effort so an export or verbose-state query fai
 not block an overwrite that Task Scheduler would accept. If activation then fails without
 a complete snapshot, the replacement definition is left in place; a pre-existing task is
 never deleted or otherwise rolled back when its prior definition could not be captured.
+Filesystem-backed launchd and systemd tests run only on their native host OS because their
+temporary home isolation follows Unix home-directory semantics. Simulated Windows rollback
+tests do not depend on a home directory and continue to run on Windows CI.
 
 Executable resolution and install validation errors name both the failed operation and
 the path being checked, so platform path errors retain actionable termp context.

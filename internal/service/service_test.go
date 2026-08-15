@@ -595,6 +595,7 @@ func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 }
 
 func TestDarwinInstallRollsBackDefinitionWhenLoadFails(t *testing.T) {
+	requireGOOS(t, "darwin")
 	tests := []struct {
 		name            string
 		original        []byte
@@ -962,6 +963,7 @@ func TestDarwinUninstallRemovesPlistWhenAlreadyUnloaded(t *testing.T) {
 }
 
 func TestDarwinUninstallAbsentIsNoOp(t *testing.T) {
+	requireGOOS(t, "darwin")
 	fakeHome(t)
 	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
 
@@ -1007,6 +1009,7 @@ func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 }
 
 func TestLinuxInstallRollsBackDefinitionWhenActivationFails(t *testing.T) {
+	requireGOOS(t, "linux")
 	tests := []struct {
 		name           string
 		original       []byte

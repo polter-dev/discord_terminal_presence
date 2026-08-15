@@ -22,10 +22,10 @@ start rather than a false "started in the background" success (#490), Windows de
 | Update | [`update.md`](update.md) | `internal/update` | Checks releases (memoized per process for CLI runs, or repeatable via `Refresh` for the long-lived daemon), persists automatic-update outcomes and exposes the last known latest version and semver equality the CLI uses to retire them, exposes the `NO_UPDATE_CHECK` opt-out (`DisabledByEnv`) for callers with non-lookup work to skip, detects generic/Homebrew/Scoop/Go/system-package ownership with Go ownership limited to direct children of recognized bin directories (#520), and selects safe, real-TTY-gated, network-bounded update guidance or execution. |
 | Usage | [`usage.md`](usage.md) | `internal/usage` | Stores bounded local tool-usage history for settings ranking. |
 
-Platform-specific test contracts live with their module entries: launchd/systemd and
-Linux mount semantics run only on their native OS. Windows terminal presence is covered
-by dedicated Windows tests; five Unix-specific TTY-atime/tmux fixture tests remain
-skipped on Windows.
+Platform-specific test contracts live with their module entries: filesystem-backed
+launchd/systemd and Linux mount semantics run only on their native OS. Windows terminal
+presence is covered by dedicated Windows tests; five Unix-specific TTY-atime/tmux fixture
+tests remain skipped on Windows.
 
 Package-manager setup guidance, including Homebrew's pre-install caveat ordering and
 the non-TTY rendering safety contract, lives in the CLI module entry.
