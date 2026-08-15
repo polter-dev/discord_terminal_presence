@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,10 @@ func (s linuxService) install(exe string, launch, force bool) (State, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return State{Supported: true, Path: path}, err
 	}
+	previous, err := snapshotDefinition(path)
+	if err != nil {
+		return State{Supported: true, Path: path}, fmt.Errorf("snapshot systemd unit definition: %w", err)
+	}
 	unit, err := BuildSystemdUnit(exe)
 	if err != nil {
 		return State{Supported: true, Path: path}, err
@@ -37,7 +42,9 @@ func (s linuxService) install(exe string, launch, force bool) (State, error) {
 		return State{Supported: true, Path: path}, err
 	}
 	if out, err := s.runner.Run("systemctl", "--user", "daemon-reload"); err != nil {
-		return State{Supported: true, Installed: true, Path: path}, fmt.Errorf("systemctl daemon-reload failed: %w: %s", err, strings.TrimSpace(string(out)))
+		activationErr := fmt.Errorf("systemctl daemon-reload failed: %w: %s", err, strings.TrimSpace(string(out)))
+		rollbackErr := s.rollbackInstall(path, previous, status, false)
+		return State{Supported: true, Installed: previous.exists, Path: path}, errors.Join(activationErr, rollbackErr)
 	}
 	enableArgs := []string{"--user", "enable"}
 	if launch {
@@ -45,9 +52,45 @@ func (s linuxService) install(exe string, launch, force bool) (State, error) {
 	}
 	enableArgs = append(enableArgs, ServiceName)
 	if out, err := s.runner.Run("systemctl", enableArgs...); err != nil {
-		return State{Supported: true, Installed: true, Path: path}, fmt.Errorf("systemctl enable failed: %w: %s", err, strings.TrimSpace(string(out)))
+		activationErr := fmt.Errorf("systemctl enable failed: %w: %s", err, strings.TrimSpace(string(out)))
+		rollbackErr := s.rollbackInstall(path, previous, status, true)
+		return State{Supported: true, Installed: previous.exists, Path: path}, errors.Join(activationErr, rollbackErr)
 	}
 	return s.Status(), nil
+}
+
+func (s linuxService) rollbackInstall(path string, previous definitionSnapshot, prior State, activationAttempted bool) error {
+	var rollbackErrs []error
+	if activationAttempted {
+		if out, err := s.runner.Run("systemctl", "--user", "disable", "--now", ServiceName); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("stop failed systemd service during rollback: %w: %s", err, strings.TrimSpace(string(out))))
+		}
+	}
+	restored := true
+	if err := restoreDefinition(path, previous); err != nil {
+		restored = false
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous systemd unit definition: %w", err))
+	}
+	if restored {
+		if out, err := s.runner.Run("systemctl", "--user", "daemon-reload"); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("reload restored systemd unit: %w: %s", err, strings.TrimSpace(string(out))))
+			restored = false
+		}
+	}
+	if !activationAttempted || !restored || !previous.exists {
+		return errors.Join(rollbackErrs...)
+	}
+	if prior.Enabled == "enabled" {
+		if out, err := s.runner.Run("systemctl", "--user", "enable", ServiceName); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous systemd enablement: %w: %s", err, strings.TrimSpace(string(out))))
+		}
+	}
+	if prior.Loaded == "active" {
+		if out, err := s.runner.Run("systemctl", "--user", "start", ServiceName); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous systemd activation: %w: %s", err, strings.TrimSpace(string(out))))
+		}
+	}
+	return errors.Join(rollbackErrs...)
 }
 
 func (s linuxService) Uninstall(force bool) (State, error) {

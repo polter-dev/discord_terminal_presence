@@ -15,6 +15,20 @@ Windows autostart companion launcher lives in `cmd/termpw` (`-H=windowsgui`).
 definitions are owned by their executable command; foreign definitions are not modified
 without force.
 
+Install snapshots the prior platform definition and activation state before replacing it.
+If post-write activation fails, macOS and Linux restore the prior file or remove a new one,
+then restore the prior loaded/enabled state; Windows restores or deletes the scheduled task
+and restarts it only when it was running before the attempt. Rollback failures are joined
+with the original activation error so a reported failure does not hide incomplete cleanup
+(#519).
+Windows snapshot queries are best effort so an export or verbose-state query failure does
+not block an overwrite that Task Scheduler would accept. If activation then fails without
+a complete snapshot, the replacement definition is left in place; a pre-existing task is
+never deleted or otherwise rolled back when its prior definition could not be captured.
+Filesystem-backed launchd and systemd tests run only on their native host OS because their
+temporary home isolation follows Unix home-directory semantics. Simulated Windows rollback
+tests do not depend on a home directory and continue to run on Windows CI.
+
 Executable resolution and install validation errors name both the failed operation and
 the path being checked, so platform path errors retain actionable termp context.
 Forced install still makes the supplied path absolute, but deliberately bypasses

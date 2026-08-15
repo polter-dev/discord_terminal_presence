@@ -451,14 +451,21 @@ func applySetup(original, desired config.Config, save SetupSaveFunc, install Set
 		return setupApplyResultMsg{cfg: desired, path: path, autostart: autostart}
 	}
 
+	var autostartRollbackErr error
+	if installRequired && stateKnown && !isInstalled && uninstall != nil {
+		if err := uninstall(); err != nil {
+			autostartRollbackErr = fmt.Errorf("restore previous autostart state: %w", err)
+		}
+	}
+
 	if save == nil {
-		return setupApplyResultMsg{err: reconcileErr}
+		return setupApplyResultMsg{err: errors.Join(reconcileErr, autostartRollbackErr)}
 	}
 	_, rollbackErr := save(original)
 	if rollbackErr != nil {
-		return setupApplyResultMsg{err: errors.Join(reconcileErr, fmt.Errorf("restore previous config: %w", rollbackErr))}
+		return setupApplyResultMsg{err: errors.Join(reconcileErr, autostartRollbackErr, fmt.Errorf("restore previous config: %w", rollbackErr))}
 	}
-	return setupApplyResultMsg{err: reconcileErr}
+	return setupApplyResultMsg{err: errors.Join(reconcileErr, autostartRollbackErr)}
 }
 
 func (m SetupModel) summary() string {

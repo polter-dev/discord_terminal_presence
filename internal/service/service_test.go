@@ -47,6 +47,21 @@ type scriptedRunner struct {
 	results map[string]scriptedRunnerResult
 }
 
+type sequenceRunner struct {
+	calls   []string
+	results map[string][]scriptedRunnerResult
+}
+
+type windowsRollbackRunner struct {
+	calls                []string
+	taskXML              []byte
+	running              bool
+	runFailures          int
+	xmlQueries           int
+	failXMLQueryAt       int
+	verboseQueryFailures int
+}
+
 type simulatedExitError struct {
 	code int
 }
@@ -64,6 +79,82 @@ func (r *scriptedRunner) Run(name string, args ...string) ([]byte, error) {
 	r.calls = append(r.calls, call)
 	result := r.results[call]
 	return []byte(result.out), result.err
+}
+
+func (r *sequenceRunner) Run(name string, args ...string) ([]byte, error) {
+	call := name + " " + strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	results := r.results[call]
+	if len(results) == 0 {
+		return nil, nil
+	}
+	result := results[0]
+	r.results[call] = results[1:]
+	return []byte(result.out), result.err
+}
+
+func (r *windowsRollbackRunner) Run(name string, args ...string) ([]byte, error) {
+	call := name + " " + strings.Join(args, " ")
+	r.calls = append(r.calls, call)
+	if name != "schtasks" || len(args) == 0 {
+		return nil, nil
+	}
+	switch args[0] {
+	case "/Query":
+		if hasArg(args, "/XML") {
+			r.xmlQueries++
+			if r.xmlQueries == r.failXMLQueryAt {
+				return []byte("ERROR: Access is denied.\n"), simulatedExitError{code: 1}
+			}
+			if r.taskXML == nil {
+				return []byte("ERROR: The specified task name does not exist.\n"), simulatedExitError{code: 1}
+			}
+			return append([]byte(nil), r.taskXML...), nil
+		}
+		if hasArg(args, "/V") {
+			if r.verboseQueryFailures > 0 {
+				r.verboseQueryFailures--
+				return []byte("ERROR: Access is denied.\n"), simulatedExitError{code: 1}
+			}
+			result := "1"
+			if r.running {
+				result = "0x41301"
+			}
+			return []byte(`"COMPUTER","` + TaskName + `","N/A","Ready","Interactive","N/A","` + result + `"` + "\r\n"), nil
+		}
+		if r.taskXML == nil {
+			return nil, simulatedExitError{code: 1}
+		}
+		return []byte(`"` + TaskName + `","N/A","Ready"` + "\r\n"), nil
+	case "/Create":
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] != "/XML" {
+				continue
+			}
+			data, err := os.ReadFile(args[i+1])
+			if err != nil {
+				return nil, err
+			}
+			r.taskXML = append([]byte(nil), data...)
+			r.running = false
+			return nil, nil
+		}
+	case "/Run":
+		if r.runFailures > 0 {
+			r.runFailures--
+			return []byte("ERROR: The task could not be started.\n"), simulatedExitError{code: 1}
+		}
+		r.running = true
+		return nil, nil
+	case "/End":
+		r.running = false
+		return nil, nil
+	case "/Delete":
+		r.taskXML = nil
+		r.running = false
+		return nil, nil
+	}
+	return nil, nil
 }
 
 func (*blockingContextRunner) Run(string, ...string) ([]byte, error) {
@@ -141,15 +232,17 @@ func (r *windowsInstallRunner) Run(name string, args ...string) ([]byte, error) 
 }
 
 func (r *foreignThenInstalledRunner) Run(name string, args ...string) ([]byte, error) {
-	if name == "schtasks" && hasArg(args, "/FO") && r.firstQuery == "" && !r.created {
+	if name == "schtasks" && len(args) > 0 && args[0] == "/Query" && hasArg(args, "/FO") && !r.created {
 		call := append([]string{name}, args...)
 		r.calls = append(r.calls, call)
 		return []byte(`"` + TaskName + `","N/A","Ready"` + "\n"), nil
 	}
-	if name == "schtasks" && hasArg(args, "/XML") && r.firstQuery == "" {
+	if name == "schtasks" && len(args) > 0 && args[0] == "/Query" && hasArg(args, "/XML") && !r.created {
 		call := append([]string{name}, args...)
 		r.calls = append(r.calls, call)
-		r.firstQuery = strings.Join(call, " ")
+		if r.firstQuery == "" {
+			r.firstQuery = strings.Join(call, " ")
+		}
 		return []byte(r.foreignXML), nil
 	}
 	return r.windowsInstallRunner.Run(name, args...)
@@ -501,6 +594,76 @@ func TestDarwinInstallWritesPlistWithoutRealLaunchctl(t *testing.T) {
 	}
 }
 
+func TestDarwinInstallRollsBackDefinitionWhenLoadFails(t *testing.T) {
+	requireGOOS(t, "darwin")
+	tests := []struct {
+		name            string
+		original        []byte
+		initiallyLoaded bool
+		wantLoadCalls   int
+	}{
+		{name: "removes new definition", wantLoadCalls: 1},
+		{name: "restores loaded definition", original: []byte("old launch agent"), initiallyLoaded: true, wantLoadCalls: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := fakeHome(t)
+			path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+			if tt.original != nil {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, tt.original, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			printCall := "launchctl print gui/" + userID() + "/" + Label
+			bootoutCall := "launchctl bootout gui/" + userID() + " " + path
+			bootstrapCall := "launchctl bootstrap gui/" + userID() + " " + path
+			loadCall := "launchctl load -w " + path
+			results := map[string][]scriptedRunnerResult{
+				bootoutCall: {
+					{},
+					{},
+				},
+				bootstrapCall: {
+					{out: "Bootstrap failed: Operation not permitted\n", err: errors.New("exit status 5")},
+				},
+				loadCall: {
+					{out: "Load failed: Operation not permitted\n", err: errors.New("exit status 5")},
+				},
+			}
+			if tt.initiallyLoaded {
+				results[printCall] = []scriptedRunnerResult{{out: "service data\n"}}
+				results[bootstrapCall] = append(results[bootstrapCall], scriptedRunnerResult{})
+			}
+			runner := &sequenceRunner{results: results}
+
+			_, err := (Manager{GOOS: "darwin", Runner: runner}).Install("/new/termp", true)
+			if err == nil || !strings.Contains(err.Error(), "launchctl load failed") {
+				t.Fatalf("Install() error = %v, want launchctl load failure", err)
+			}
+			got, readErr := os.ReadFile(path)
+			if tt.original == nil {
+				if !errors.Is(readErr, os.ErrNotExist) {
+					t.Fatalf("failed install left launch agent definition: %v", readErr)
+				}
+			} else {
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if string(got) != string(tt.original) {
+					t.Fatalf("failed install left definition %q, want %q", got, tt.original)
+				}
+			}
+			if got := countCall(runner.calls, bootstrapCall); got != tt.wantLoadCalls {
+				t.Fatalf("bootstrap calls = %d, want %d; calls: %#v", got, tt.wantLoadCalls, runner.calls)
+			}
+		})
+	}
+}
+
 func TestDarwinInstallDoesNotOverwritePlistOnUnloadFailure(t *testing.T) {
 	requireGOOS(t, "darwin")
 	home := fakeHome(t)
@@ -800,6 +963,7 @@ func TestDarwinUninstallRemovesPlistWhenAlreadyUnloaded(t *testing.T) {
 }
 
 func TestDarwinUninstallAbsentIsNoOp(t *testing.T) {
+	requireGOOS(t, "darwin")
 	fakeHome(t)
 	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
 
@@ -841,6 +1005,70 @@ func TestLinuxInstallWritesUnitWithoutRealSystemctl(t *testing.T) {
 	text := string(data)
 	if !strings.Contains(text, "ExecStart=/bin/termp start --foreground") || !strings.Contains(text, "Restart=on-failure") {
 		t.Fatalf("unit missing executable/restart:\n%s", text)
+	}
+}
+
+func TestLinuxInstallRollsBackDefinitionWhenActivationFails(t *testing.T) {
+	requireGOOS(t, "linux")
+	tests := []struct {
+		name           string
+		original       []byte
+		activationCall string
+		wantDisable    bool
+	}{
+		{name: "removes new definition after reload failure", activationCall: "systemctl --user daemon-reload"},
+		{name: "restores disabled definition after enable failure", original: []byte("old systemd unit"), activationCall: "systemctl --user enable --now " + ServiceName, wantDisable: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := fakeHome(t)
+			path := filepath.Join(home, ".config", "systemd", "user", ServiceName)
+			if tt.original != nil {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, tt.original, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reloadCall := "systemctl --user daemon-reload"
+			results := map[string][]scriptedRunnerResult{
+				"systemctl --user is-enabled " + ServiceName: {{out: "disabled\n"}},
+				"systemctl --user is-active " + ServiceName:  {{out: "inactive\n"}},
+				reloadCall:        {{}, {}},
+				tt.activationCall: {{out: "activation failed\n", err: errors.New("exit status 1")}},
+			}
+			if tt.activationCall == reloadCall {
+				results[reloadCall] = []scriptedRunnerResult{
+					{out: "reload failed\n", err: errors.New("exit status 1")},
+					{},
+				}
+			}
+			runner := &sequenceRunner{results: results}
+
+			_, err := (Manager{GOOS: "linux", Runner: runner}).Install("/new/termp", true)
+			if err == nil {
+				t.Fatal("Install() error = nil, want activation failure")
+			}
+			got, readErr := os.ReadFile(path)
+			if tt.original == nil {
+				if !errors.Is(readErr, os.ErrNotExist) {
+					t.Fatalf("failed install left systemd unit: %v", readErr)
+				}
+			} else {
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if string(got) != string(tt.original) {
+					t.Fatalf("failed install left definition %q, want %q", got, tt.original)
+				}
+			}
+			disableCall := "systemctl --user disable --now " + ServiceName
+			if got := hasCall(runner.calls, disableCall); got != tt.wantDisable {
+				t.Fatalf("disable rollback called = %t, want %t; calls: %#v", got, tt.wantDisable, runner.calls)
+			}
+		})
 	}
 }
 
@@ -1419,6 +1647,107 @@ func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) 
 	}
 	if !hasArgCall(runner.calls, "schtasks", "/Run", "/TN", TaskName) {
 		t.Fatalf("Install calls = %#v, want immediate schtasks run", runner.calls)
+	}
+}
+
+func TestWindowsInstallRollsBackTaskWhenRunFails(t *testing.T) {
+	tests := []struct {
+		name             string
+		original         []byte
+		initiallyRunning bool
+		wantRunCalls     int
+	}{
+		{name: "removes new task", wantRunCalls: 1},
+		{
+			name:             "restores running task",
+			original:         []byte(windowsEnabledTaskXML),
+			initiallyRunning: true,
+			wantRunCalls:     2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &windowsRollbackRunner{
+				taskXML:     append([]byte(nil), tt.original...),
+				running:     tt.initiallyRunning,
+				runFailures: 1,
+			}
+
+			_, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false)
+			if err == nil || !strings.Contains(err.Error(), "schtasks run failed") {
+				t.Fatalf("Install() error = %v, want schtasks run failure", err)
+			}
+			if string(runner.taskXML) != string(tt.original) {
+				t.Fatalf("task definition after failed install = %q, want %q", runner.taskXML, tt.original)
+			}
+			if runner.running != tt.initiallyRunning {
+				t.Fatalf("task running after failed install = %t, want %t", runner.running, tt.initiallyRunning)
+			}
+			runCall := "schtasks /Run /TN " + TaskName
+			if got := countCall(runner.calls, runCall); got != tt.wantRunCalls {
+				t.Fatalf("run calls = %d, want %d; calls: %#v", got, tt.wantRunCalls, runner.calls)
+			}
+		})
+	}
+}
+
+func TestWindowsInstallContinuesWhenTaskSnapshotQueryFails(t *testing.T) {
+	tests := []struct {
+		name                 string
+		failXMLQueryAt       int
+		verboseQueryFailures int
+	}{
+		{name: "definition query fails", failXMLQueryAt: 2},
+		{name: "activation query fails", verboseQueryFailures: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := []byte(windowsEnabledTaskXML)
+			runner := &windowsRollbackRunner{
+				taskXML:              append([]byte(nil), original...),
+				failXMLQueryAt:       tt.failXMLQueryAt,
+				verboseQueryFailures: tt.verboseQueryFailures,
+			}
+
+			state, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false)
+			if err != nil {
+				t.Fatalf("Install() error = %v, want snapshot failure ignored", err)
+			}
+			if !state.Installed || !runner.running {
+				t.Fatalf("Install() state = %+v, running = %t; want installed and running", state, runner.running)
+			}
+			if string(runner.taskXML) == string(original) {
+				t.Fatal("Install() did not replace the existing task definition")
+			}
+			if !slicesContainsPrefix(runner.calls, "schtasks /Create /TN "+TaskName+" /XML ") {
+				t.Fatalf("Install() calls = %#v, want task creation", runner.calls)
+			}
+		})
+	}
+}
+
+func TestWindowsInstallNeverDeletesPreexistingTaskWithoutSnapshot(t *testing.T) {
+	original := []byte(windowsEnabledTaskXML)
+	runner := &windowsRollbackRunner{
+		taskXML:        append([]byte(nil), original...),
+		runFailures:    1,
+		failXMLQueryAt: 2,
+	}
+
+	_, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false)
+	if err == nil || !strings.Contains(err.Error(), "schtasks run failed") {
+		t.Fatalf("Install() error = %v, want schtasks run failure", err)
+	}
+	if runner.taskXML == nil || string(runner.taskXML) == string(original) {
+		t.Fatal("failed install did not leave the replacement task definition in place")
+	}
+	if hasCall(runner.calls, "schtasks /Delete /TN "+TaskName+" /F") {
+		t.Fatalf("Install() calls = %#v, must not delete a preexisting task without a snapshot", runner.calls)
+	}
+	if hasCall(runner.calls, "schtasks /End /TN "+TaskName) {
+		t.Fatalf("Install() calls = %#v, must not alter a preexisting task without a snapshot", runner.calls)
 	}
 }
 
@@ -2435,6 +2764,16 @@ func hasCall(calls []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func countCall(calls []string, want string) int {
+	count := 0
+	for _, call := range calls {
+		if call == want {
+			count++
+		}
+	}
+	return count
 }
 
 func slicesContainsPrefix(calls []string, prefix string) bool {

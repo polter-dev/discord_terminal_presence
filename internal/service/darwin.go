@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,6 +33,13 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return State{Supported: true, Path: path}, err
 	}
+	previous := definitionSnapshot{}
+	if launch {
+		previous, err = snapshotDefinition(path)
+		if err != nil {
+			return State{Supported: true, Path: path}, fmt.Errorf("snapshot launch agent definition: %w", err)
+		}
+	}
 	if launch {
 		if err := s.unload(path); err != nil {
 			return State{Supported: true, Path: path}, fmt.Errorf("cannot replace launch agent before unloading the existing job: %w", err)
@@ -46,10 +54,29 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 	}
 	if launch {
 		if err := s.load(path); err != nil {
-			return State{Supported: true, Installed: true, Path: path}, err
+			rollbackErr := s.rollbackInstall(path, previous, status.Loaded == "true")
+			return State{Supported: true, Installed: previous.exists, Path: path}, errors.Join(err, rollbackErr)
 		}
 	}
 	return s.Status(), nil
+}
+
+func (s darwinService) rollbackInstall(path string, previous definitionSnapshot, wasLoaded bool) error {
+	var rollbackErrs []error
+	if err := s.unload(path); err != nil {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("stop failed launch agent during rollback: %w", err))
+	}
+	restored := true
+	if err := restoreDefinition(path, previous); err != nil {
+		restored = false
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous launch agent definition: %w", err))
+	}
+	if restored && previous.exists && wasLoaded {
+		if err := s.load(path); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous launch agent activation: %w", err))
+		}
+	}
+	return errors.Join(rollbackErrs...)
 }
 
 func (s darwinService) Uninstall(force bool) (State, error) {
