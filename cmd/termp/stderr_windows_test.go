@@ -42,7 +42,7 @@ func TestRedirectStderrClosesPreviousFile(t *testing.T) {
 	if os.Stderr != newFile {
 		t.Fatalf("os.Stderr = %p, want %p", os.Stderr, newFile)
 	}
-	if _, err := oldFile.Stat(); !errors.Is(err, os.ErrClosed) {
-		t.Fatalf("old stderr Stat() error = %v, want os.ErrClosed", err)
+	if err := oldFile.Close(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("second old stderr Close() error = %v, want os.ErrClosed", err)
 	}
 }

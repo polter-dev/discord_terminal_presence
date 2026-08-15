@@ -587,7 +587,9 @@ and bounds normal verbose/crash-loop growth.
 On Windows, stderr rebinding closes the previous owning `*os.File` after replacing both
 the process standard handle and `os.Stderr`, unless the old handle is invalid or identical
 to the replacement. This prevents the old file finalizer from double-closing a reused
-numeric handle (#514).
+numeric handle. Windows coverage verifies the `*os.File` close state through a second
+`Close` returning `os.ErrClosed`, which distinguishes an owning close from raw handle
+closure underneath a still-open `*os.File` (#514).
 The banner, startup error, and reload error render through `SanitizeSingleLine`, matching
 every other single-line render boundary in the CLI.
 
