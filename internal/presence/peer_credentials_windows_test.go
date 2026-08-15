@@ -41,14 +41,14 @@ func TestValidatePipePeerInspectionFailureFailsClosed(t *testing.T) {
 	tests := []struct {
 		name        string
 		currentUser func() (*windows.SID, error)
-		serverUser  func(net.Conn) (*windows.SID, error)
+		serverUser  func(windows.Handle) (*windows.SID, error)
 	}{
 		{
 			name: "current process token",
 			currentUser: func() (*windows.SID, error) {
 				return nil, inspectionErr
 			},
-			serverUser: func(net.Conn) (*windows.SID, error) {
+			serverUser: func(windows.Handle) (*windows.SID, error) {
 				return owner, nil
 			},
 		},
@@ -57,7 +57,7 @@ func TestValidatePipePeerInspectionFailureFailsClosed(t *testing.T) {
 			currentUser: func() (*windows.SID, error) {
 				return owner, nil
 			},
-			serverUser: func(net.Conn) (*windows.SID, error) {
+			serverUser: func(windows.Handle) (*windows.SID, error) {
 				return nil, inspectionErr
 			},
 		},
@@ -68,14 +68,87 @@ func TestValidatePipePeerInspectionFailureFailsClosed(t *testing.T) {
 			err := validatePipePeerWithLookups(
 				conn,
 				tt.currentUser,
+				func(net.Conn) (windows.Handle, error) { return 1, nil },
 				tt.serverUser,
-				func(net.Conn) (string, error) { return "Discord.exe", nil },
+				func(windows.Handle) (string, error) { return "Discord.exe", nil },
 				false,
 			)
 			if !errors.Is(err, inspectionErr) {
 				t.Fatalf("error = %v, want wrapped inspection error", err)
 			}
 		})
+	}
+}
+
+// TestValidatePipePeerWithLookupsOpensServerProcessOnce proves the SID check
+// and the image-name check receive the exact same process handle instead of
+// each resolving the server PID independently (#572): with two independent
+// opens, a server exit plus PID reuse between them could let the image check
+// validate a different process than the SID check approved.
+func TestValidatePipePeerWithLookupsOpensServerProcessOnce(t *testing.T) {
+	owner := mustSID(t, "S-1-5-21-1-2-3-1001")
+	conn := &fakeWindowsConn{}
+	const wantHandle = windows.Handle(42)
+
+	opens := 0
+	openServerProcess := func(net.Conn) (windows.Handle, error) {
+		opens++
+		return wantHandle, nil
+	}
+
+	var sidHandle, imageHandle windows.Handle
+	serverUser := func(process windows.Handle) (*windows.SID, error) {
+		sidHandle = process
+		return owner, nil
+	}
+	serverImageName := func(process windows.Handle) (string, error) {
+		imageHandle = process
+		return "Discord.exe", nil
+	}
+
+	err := validatePipePeerWithLookups(
+		conn,
+		func() (*windows.SID, error) { return owner, nil },
+		openServerProcess,
+		serverUser,
+		serverImageName,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("validatePipePeerWithLookups returned error: %v", err)
+	}
+	if opens != 1 {
+		t.Fatalf("openServerProcess called %d times, want exactly 1", opens)
+	}
+	if sidHandle != wantHandle || imageHandle != wantHandle {
+		t.Fatalf("sidHandle=%v imageHandle=%v, want both %v", sidHandle, imageHandle, wantHandle)
+	}
+}
+
+// TestValidatePipePeerWithLookupsSkipsImageCheckOnOpenFailure proves a
+// failure to open the server process fails closed before either check runs,
+// and that neither lookup is ever called without a handle.
+func TestValidatePipePeerWithLookupsFailsClosedWhenOpenFails(t *testing.T) {
+	owner := mustSID(t, "S-1-5-21-1-2-3-1001")
+	conn := &fakeWindowsConn{}
+	openErr := errors.New("process exited before open")
+
+	err := validatePipePeerWithLookups(
+		conn,
+		func() (*windows.SID, error) { return owner, nil },
+		func(net.Conn) (windows.Handle, error) { return 0, openErr },
+		func(windows.Handle) (*windows.SID, error) {
+			t.Fatal("server SID lookup should not run when the process open fails")
+			return nil, nil
+		},
+		func(windows.Handle) (string, error) {
+			t.Fatal("server image lookup should not run when the process open fails")
+			return "", nil
+		},
+		false,
+	)
+	if !errors.Is(err, openErr) {
+		t.Fatalf("error = %v, want wrapped open error", err)
 	}
 }
 
@@ -88,20 +161,20 @@ func TestValidatePipePeerWithLookupsVerifiesServerImageName(t *testing.T) {
 	tests := []struct {
 		name            string
 		serverSID       *windows.SID
-		serverImageName func(net.Conn) (string, error)
+		serverImageName func(windows.Handle) (string, error)
 		wantErr         bool
 	}{
 		{
 			name:      "sid match discord name",
 			serverSID: owner,
-			serverImageName: func(net.Conn) (string, error) {
+			serverImageName: func(windows.Handle) (string, error) {
 				return "Discord.exe", nil
 			},
 		},
 		{
 			name:      "sid match non discord name",
 			serverSID: owner,
-			serverImageName: func(net.Conn) (string, error) {
+			serverImageName: func(windows.Handle) (string, error) {
 				return "evil.exe", nil
 			},
 			wantErr: true,
@@ -109,14 +182,14 @@ func TestValidatePipePeerWithLookupsVerifiesServerImageName(t *testing.T) {
 		{
 			name:      "sid match image lookup error",
 			serverSID: owner,
-			serverImageName: func(net.Conn) (string, error) {
+			serverImageName: func(windows.Handle) (string, error) {
 				return "", inspectionErr
 			},
 		},
 		{
 			name:      "sid mismatch rejected before image name",
 			serverSID: attacker,
-			serverImageName: func(net.Conn) (string, error) {
+			serverImageName: func(windows.Handle) (string, error) {
 				return "Discord.exe", nil
 			},
 			wantErr: true,
@@ -128,7 +201,8 @@ func TestValidatePipePeerWithLookupsVerifiesServerImageName(t *testing.T) {
 			err := validatePipePeerWithLookups(
 				conn,
 				func() (*windows.SID, error) { return owner, nil },
-				func(net.Conn) (*windows.SID, error) { return tt.serverSID, nil },
+				func(net.Conn) (windows.Handle, error) { return 1, nil },
+				func(windows.Handle) (*windows.SID, error) { return tt.serverSID, nil },
 				tt.serverImageName,
 				false,
 			)
@@ -149,8 +223,9 @@ func TestValidatePipePeerWithLookupsSkipsServerImageNameWithOverride(t *testing.
 	err := validatePipePeerWithLookups(
 		conn,
 		func() (*windows.SID, error) { return owner, nil },
-		func(net.Conn) (*windows.SID, error) { return owner, nil },
-		func(net.Conn) (string, error) {
+		func(net.Conn) (windows.Handle, error) { return 1, nil },
+		func(windows.Handle) (*windows.SID, error) { return owner, nil },
+		func(windows.Handle) (string, error) {
 			t.Fatal("server image name lookup should be skipped when DISCORD_IPC_PATH is set")
 			return "", nil
 		},

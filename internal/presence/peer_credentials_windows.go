@@ -19,6 +19,7 @@ func validatePipePeer(conn net.Conn) error {
 	return validatePipePeerWithLookups(
 		conn,
 		currentProcessUserSID,
+		openNamedPipeServerProcess,
 		namedPipeServerUserSID,
 		namedPipeServerImageName,
 		discordIPCPathOverrideSet(os.Getenv("DISCORD_IPC_PATH")),
@@ -29,18 +30,35 @@ func discordIPCPathOverrideSet(path string) bool {
 	return filepath.IsAbs(path)
 }
 
+// validatePipePeerWithLookups opens the named-pipe server process exactly
+// once and passes the resulting handle to both the SID check and the image
+// name check. Opening it twice (one call per check) let the two checks
+// resolve the server PID independently: if the server process exited
+// between the two opens and Windows reused the PID, the image-name check
+// could validate a different process than the SID check approved (#572).
+// A single handle removes that desync and halves the syscalls. The SID
+// check remains the actual trust boundary and the image check remains
+// deliberately fail-open on lookup failure (verifyDiscordServerImage);
+// this only changes handle lifetime, not either check's semantics.
 func validatePipePeerWithLookups(
 	conn net.Conn,
 	currentUser func() (*windows.SID, error),
-	serverUser func(net.Conn) (*windows.SID, error),
-	serverImageName func(net.Conn) (string, error),
+	openServerProcess func(net.Conn) (windows.Handle, error),
+	serverUser func(windows.Handle) (*windows.SID, error),
+	serverImageName func(windows.Handle) (string, error),
 	overrideSet bool,
 ) error {
 	want, err := currentUser()
 	if err != nil {
 		return fmt.Errorf("presence: inspect current process user: %w", err)
 	}
-	got, err := serverUser(conn)
+	process, err := openServerProcess(conn)
+	if err != nil {
+		return fmt.Errorf("presence: open named-pipe server process: %w", err)
+	}
+	defer windows.CloseHandle(process) //nolint:errcheck -- best-effort cleanup after inspection
+
+	got, err := serverUser(process)
 	if err != nil {
 		return fmt.Errorf("presence: inspect named-pipe server user: %w", err)
 	}
@@ -50,7 +68,7 @@ func validatePipePeerWithLookups(
 	if overrideSet {
 		return nil
 	}
-	imageName, imageErr := serverImageName(conn)
+	imageName, imageErr := serverImageName(process)
 	return verifyDiscordServerImage(imageName, false, imageErr)
 }
 
@@ -72,13 +90,7 @@ func currentProcessUserSID() (*windows.SID, error) {
 	return user.User.Sid, nil
 }
 
-func namedPipeServerUserSID(conn net.Conn) (*windows.SID, error) {
-	process, err := openNamedPipeServerProcess(conn)
-	if err != nil {
-		return nil, err
-	}
-	defer windows.CloseHandle(process) //nolint:errcheck -- best-effort cleanup after inspection
-
+func namedPipeServerUserSID(process windows.Handle) (*windows.SID, error) {
 	var token windows.Token
 	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); err != nil {
 		return nil, fmt.Errorf("open named-pipe server process token: %w", err)
@@ -92,13 +104,7 @@ func namedPipeServerUserSID(conn net.Conn) (*windows.SID, error) {
 	return user.User.Sid, nil
 }
 
-func namedPipeServerImageName(conn net.Conn) (string, error) {
-	process, err := openNamedPipeServerProcess(conn)
-	if err != nil {
-		return "", err
-	}
-	defer windows.CloseHandle(process) //nolint:errcheck -- best-effort cleanup after inspection
-
+func namedPipeServerImageName(process windows.Handle) (string, error) {
 	buf := make([]uint16, windows.MAX_LONG_PATH)
 	size := uint32(len(buf))
 	if err := windows.QueryFullProcessImageName(process, 0, &buf[0], &size); err != nil {
