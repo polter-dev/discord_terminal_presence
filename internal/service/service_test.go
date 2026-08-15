@@ -418,7 +418,11 @@ func TestValidateInstallExecutableResolvesNestedSymlinkAndHonorsForce(t *testing
 	if _, err := ValidateInstallExecutable(link2, false); err == nil {
 		t.Fatal("ValidateInstallExecutable() error = nil for unstable resolved path")
 	} else {
-		for _, want := range []string{"unstable executable path", "~/.local/bin", "/usr/local/bin", "--force"} {
+		wantStableLocation := "~/.local/bin"
+		if runtime.GOOS == "windows" {
+			wantStableLocation = `%LOCALAPPDATA%\Programs\termp`
+		}
+		for _, want := range []string{"unstable executable path", wantStableLocation, "--force"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Fatalf("ValidateInstallExecutable() error missing %q: %v", want, err)
 			}
@@ -523,6 +527,98 @@ func TestValidateInstallExecutableUnresolvableButPresentPathDoesNotAbort(t *test
 	}
 	if !strings.Contains(err.Error(), exe) {
 		t.Fatalf("ValidateInstallExecutable() error = %v, want it to name the unresolved path %q", err, exe)
+	}
+}
+
+// TestValidateInstallExecutableRefusesTempRootSpelledDifferently is the
+// regression test for issue #542. The temp-root half of the unstable-path
+// guard compared the EvalSymlinks-resolved executable against the raw
+// os.TempDir() string, so it silently never fired whenever those two spell the
+// same directory differently. windows-latest reaches that state on its own,
+// because TMP holds an 8.3 short path (C:\Users\RUNNER~1\...) while
+// EvalSymlinks returns the long form. This test reproduces the same mismatch
+// on every platform by pointing the temp root at a symlink, which is how the
+// Windows-only failure was confirmed without Windows hardware.
+func TestValidateInstallExecutableRefusesTempRootSpelledDifferently(t *testing.T) {
+	requireSymlink(t)
+
+	base := t.TempDir()
+	if runtime.GOOS != "windows" {
+		// On Unix t.TempDir() lives under /tmp or /var/folders, and both are
+		// literal roots in the list, so a fixture there would be refused with
+		// or without the fix and would prove nothing. /var/tmp is writable on
+		// macOS and Linux and is in none of those literals.
+		unixBase, err := os.MkdirTemp("/var/tmp", "termp-temproot-")
+		if err != nil {
+			t.Skipf("cannot create a fixture outside the literal temp roots: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(unixBase) })
+		base = unixBase
+	}
+
+	realDir := filepath.Join(base, "real")
+	binDir := filepath.Join(realDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("directory symlinks unavailable on this account: %v", err)
+	}
+	name := "termp"
+	if runtime.GOOS == "windows" {
+		name = "termp.exe"
+	}
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(linkDir, "bin", name)
+
+	t.Setenv("TMPDIR", linkDir)
+	t.Setenv("TMP", linkDir)
+	t.Setenv("TEMP", linkDir)
+	if os.TempDir() != linkDir {
+		t.Skipf("os.TempDir() = %q, want the symlinked %q; the temp root is not environment-driven here", os.TempDir(), linkDir)
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathWithin(resolved, os.TempDir()) {
+		t.Skipf("%q already sits within the raw temp root %q; the #542 mismatch does not exist here", resolved, os.TempDir())
+	}
+
+	_, err = ValidateInstallExecutable(exe, false)
+	if err == nil {
+		t.Fatalf("ValidateInstallExecutable(%q) error = nil; a binary inside the temp root %q was judged stable because the root is spelled differently (#542)", exe, os.TempDir())
+	}
+	if !strings.Contains(err.Error(), "unstable executable path") {
+		t.Fatalf("ValidateInstallExecutable() error = %v, want the unstable-path refusal", err)
+	}
+	// The refusal has to be actionable, because this guard now fires where it
+	// never used to: it must name the offending path and both ways forward.
+	// Match the %q rendering rather than the raw path, since %q escapes the
+	// backslashes of a Windows path and a raw-path assertion would pass
+	// everywhere except windows-latest.
+	if !strings.Contains(err.Error(), fmt.Sprintf("%q", resolved)) {
+		t.Fatalf("ValidateInstallExecutable() error = %v, want it to name the path %q", err, resolved)
+	}
+	wantStableLocation := "~/.local/bin"
+	if runtime.GOOS == "windows" {
+		wantStableLocation = `%LOCALAPPDATA%\Programs\termp`
+	}
+	for _, want := range []string{"move the binary to a stable location", wantStableLocation, "--force"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("ValidateInstallExecutable() error missing %q: %v", want, err)
+		}
+	}
+
+	forced, err := ValidateInstallExecutable(exe, true)
+	if err != nil {
+		t.Fatalf("ValidateInstallExecutable(force) error = %v, want the bypass to still work", err)
+	}
+	if forced != exe {
+		t.Fatalf("ValidateInstallExecutable(force) = %q, want the invocation path %q", forced, exe)
 	}
 }
 

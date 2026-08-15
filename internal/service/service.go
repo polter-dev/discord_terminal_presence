@@ -118,14 +118,21 @@ func ValidateInstallExecutable(exe string, force bool) (string, error) {
 	if !isUnstableExecutablePath(candidate) {
 		return invocationPath, nil
 	}
+	// The temp-root half of this guard only started firing on Windows with
+	// issue #542, so the suggested destination has to be one a Windows user can
+	// actually use rather than a pair of Unix bin directories.
+	stableLocation := "~/.local/bin or /usr/local/bin"
+	if runtime.GOOS == "windows" {
+		stableLocation = `%LOCALAPPDATA%\Programs\termp`
+	}
 	return "", fmt.Errorf(
-		"refusing to install autostart from unstable executable path %q; move the binary to a stable location such as ~/.local/bin or /usr/local/bin, then re-run `termp install` (or use --force to install this path anyway)",
-		candidate,
+		"refusing to install autostart from unstable executable path %q; move the binary to a stable location such as %s, then re-run `termp install` (or use --force to install this path anyway)",
+		candidate, stableLocation,
 	)
 }
 
 func isUnstableExecutablePath(exe string) bool {
-	for _, root := range []string{os.TempDir(), "/tmp", "/private/tmp", "/private/var/folders"} {
+	for _, root := range unstableExecutableRoots() {
 		if pathWithin(exe, root) {
 			return true
 		}
@@ -140,6 +147,28 @@ func isUnstableExecutablePath(exe string) bool {
 			return false
 		}
 	}
+}
+
+// unstableExecutableRoots lists the directories a binary should not be
+// installed from. The temp root is compared in both spellings on purpose
+// (issue #542). os.TempDir() returns the TMPDIR/TMP value verbatim, while the
+// path being judged has usually been through filepath.EvalSymlinks, and those
+// two can name the same directory differently: a symlinked TMPDIR on Unix, or
+// on Windows a TMP holding an 8.3 short path (C:\Users\RUNNER~1\...) where
+// EvalSymlinks returns the long form (C:\Users\runneradmin\...). Comparing only
+// the raw string made filepath.Rel walk out of the root, so the guard silently
+// never fired on such a machine and a temp-directory binary was judged stable.
+// Resolving the root can itself fail (the directory may be gone or unreadable);
+// that is not worth failing an install over, so the raw string alone is checked
+// in that case, which is exactly the behavior that shipped before this fix. The
+// remaining roots are Unix-only literals and are matched as written.
+func unstableExecutableRoots() []string {
+	tempDir := os.TempDir()
+	roots := []string{tempDir, "/tmp", "/private/tmp", "/private/var/folders"}
+	if resolvedTempDir, err := filepath.EvalSymlinks(tempDir); err == nil && resolvedTempDir != tempDir {
+		roots = append(roots, resolvedTempDir)
+	}
+	return roots
 }
 
 func isTermpSourceTree(dir string) bool {
