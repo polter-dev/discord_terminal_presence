@@ -71,7 +71,15 @@ func (s darwinService) rollbackInstall(path string, previous definitionSnapshot,
 		restored = false
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous launch agent definition: %w", err))
 	}
-	if restored && previous.exists && (priorLoaded == "true" || priorLoaded == "unknown") {
+	if previous.exists && priorLoaded == "unknown" {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf(
+			"the previous autostart activation state for %s could not be determined and may need checking; run `launchctl print gui/%s/%s` to check it",
+			Label,
+			currentUID(),
+			Label,
+		))
+	}
+	if restored && previous.exists && priorLoaded == "true" {
 		if err := s.load(path); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous launch agent activation: %w", err))
 		}

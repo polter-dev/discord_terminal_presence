@@ -77,15 +77,23 @@ func (s linuxService) rollbackInstall(path string, previous definitionSnapshot, 
 			restored = false
 		}
 	}
+	if previous.exists && (prior.Enabled == "unknown" || prior.Loaded == "unknown") {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf(
+			"the previous autostart activation state for %s could not be determined and may need checking; run `systemctl --user status %s` to check it",
+			ServiceName,
+			ServiceName,
+		))
+		return errors.Join(rollbackErrs...)
+	}
 	if !activationAttempted || !restored || !previous.exists {
 		return errors.Join(rollbackErrs...)
 	}
-	if prior.Enabled == "enabled" || prior.Enabled == "unknown" {
+	if prior.Enabled == "enabled" {
 		if out, err := s.runner.Run("systemctl", "--user", "enable", ServiceName); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous systemd enablement: %w: %s", err, strings.TrimSpace(string(out))))
 		}
 	}
-	if prior.Loaded == "active" || prior.Loaded == "unknown" {
+	if prior.Loaded == "active" {
 		if out, err := s.runner.Run("systemctl", "--user", "start", ServiceName); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous systemd activation: %w: %s", err, strings.TrimSpace(string(out))))
 		}

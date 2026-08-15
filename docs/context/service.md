@@ -23,8 +23,10 @@ with the original activation error so a reported failure does not hide incomplet
 (#519).
 An activating macOS or Linux install still replaces an existing definition when its prior
 loaded or enabled state cannot be determined. If activation fails, rollback restores the
-previous definition and treats each unknown state as active for best-effort reactivation.
-Reactivation failures are joined into the install error so incomplete rollback is visible
+previous definition but leaves it inactive when the prior activation state is unknown, and
+the install error names the affected service plus the native status command to check it.
+Only states known to have been active or enabled are restored during rollback, and
+reactivation failures are joined into the install error so incomplete rollback is visible
 (#527).
 Windows snapshot queries are best effort so an export or verbose-state query failure does
 not block an overwrite that Task Scheduler would accept. If activation then fails without
