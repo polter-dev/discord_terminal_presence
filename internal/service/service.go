@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,7 +71,7 @@ func ResolveExecutable() (string, error) {
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("locate the running termp executable: %w", err)
 	}
 	absolutePath, err := filepath.Abs(exe)
 	if err != nil {
@@ -87,16 +88,39 @@ func ValidateInstallExecutable(exe string, force bool) (string, error) {
 	if force {
 		return invocationPath, nil
 	}
+	// EvalSymlinks only feeds the unstable-path heuristic below. Treat its two
+	// failure modes differently (issue #472):
+	//
+	//   - The path is genuinely absent. That is worth failing on, because the
+	//     scheduled task or launch agent would point at nothing, but the raw
+	//     error is useless to a user: on Windows a missing directory component
+	//     surfaces as a bare syscall.Errno rendered as "The system cannot find
+	//     the path specified." with no path attached at all. Name the path and
+	//     the next command instead.
+	//   - Resolution failed for any other reason (an unreadable parent
+	//     directory, a reparse point that cannot be followed, a flaky network
+	//     share). Those say nothing about whether the path is stable, so fall
+	//     back to judging the unresolved absolute path rather than aborting an
+	//     install that would otherwise have worked. /tmp and source-tree
+	//     installs are still caught, because both are visible without
+	//     resolution.
+	candidate := invocationPath
 	resolved, err := filepath.EvalSymlinks(invocationPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve executable symlinks for %q: %w", invocationPath, err)
+	switch {
+	case err == nil:
+		candidate = resolved
+	case errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf(
+			"cannot install autostart from %q: %w; that file, or one of its parent directories, does not exist. Run `where termp` on Windows (`which termp` elsewhere) to see the path your shell actually resolves, re-run `termp autostart install` from that path, or pass --force to register this path unchecked",
+			invocationPath, err,
+		)
 	}
-	if !isUnstableExecutablePath(resolved) {
+	if !isUnstableExecutablePath(candidate) {
 		return invocationPath, nil
 	}
 	return "", fmt.Errorf(
 		"refusing to install autostart from unstable executable path %q; move the binary to a stable location such as ~/.local/bin or /usr/local/bin, then re-run `termp install` (or use --force to install this path anyway)",
-		resolved,
+		candidate,
 	)
 }
 

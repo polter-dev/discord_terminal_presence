@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -449,8 +450,17 @@ func TestValidateInstallExecutableMissingPathErrorAndForceBypass(t *testing.T) {
 	} else {
 		// Windows can render the path in 8.3 short form (e.g. RUNNER~1), so
 		// assert on the actionable wrapper text and the target leaf rather than
-		// the full long-form absolute path.
-		for _, want := range []string{"resolve executable symlinks", "termp"} {
+		// the full long-form absolute path. The message must name the failing
+		// path and the next command, because on Windows the wrapped errno
+		// renders as a bare "The system cannot find the path specified."
+		// (issue #472).
+		for _, want := range []string{
+			"cannot install autostart from",
+			"termp",
+			"does not exist",
+			"where termp",
+			"--force",
+		} {
 			if !strings.Contains(err.Error(), want) {
 				t.Fatalf("ValidateInstallExecutable() error missing %q: %v", want, err)
 			}
@@ -464,6 +474,55 @@ func TestValidateInstallExecutableMissingPathErrorAndForceBypass(t *testing.T) {
 	}
 	if got != absolutePath {
 		t.Fatalf("ValidateInstallExecutable(force) = %q, want %q", got, absolutePath)
+	}
+}
+
+// TestValidateInstallExecutableUnresolvableButPresentPathDoesNotAbort covers
+// the second half of issue #472: when EvalSymlinks fails for a reason other
+// than the file being absent, validation must fall back to judging the
+// unresolved absolute path instead of turning a working install into a hard
+// failure. Proof is the error text: reaching the unstable-path verdict is only
+// possible if resolution failure did not return early.
+func TestValidateInstallExecutableUnresolvableButPresentPathDoesNotAbort(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions do not block traversal on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses unreadable directories")
+	}
+
+	dir := t.TempDir()
+	sealed := filepath.Join(dir, "sealed")
+	if err := os.MkdirAll(sealed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(sealed, "termp")
+	if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sealed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sealed, 0o755) })
+
+	if _, err := filepath.EvalSymlinks(exe); err == nil {
+		t.Skip("this filesystem still resolves through an unreadable directory")
+	} else if errors.Is(err, fs.ErrNotExist) {
+		t.Skipf("EvalSymlinks reported the path as absent, not unresolvable: %v", err)
+	}
+
+	_, err := ValidateInstallExecutable(exe, false)
+	if err == nil {
+		t.Fatal("ValidateInstallExecutable() error = nil, want the unstable-path verdict")
+	}
+	if strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("unresolvable path reported as missing: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unstable executable path") {
+		t.Fatalf("ValidateInstallExecutable() error = %v, want the unstable-path verdict reached via the unresolved path", err)
+	}
+	if !strings.Contains(err.Error(), exe) {
+		t.Fatalf("ValidateInstallExecutable() error = %v, want it to name the unresolved path %q", err, exe)
 	}
 }
 

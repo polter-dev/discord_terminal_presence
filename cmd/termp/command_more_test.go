@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -237,9 +238,13 @@ type fakeAutostartManager struct {
 	disableState   service.State
 	statusCalls    *int
 	uninstallCalls *int
+	installCalls   *int
 }
 
 func (m fakeAutostartManager) Install(string, bool) (service.State, error) {
+	if m.installCalls != nil {
+		(*m.installCalls)++
+	}
 	return service.State{}, nil
 }
 
@@ -262,6 +267,63 @@ func (m fakeAutostartManager) Status() service.State {
 		(*m.statusCalls)++
 	}
 	return m.statusState
+}
+
+// TestAutostartInstallValidatesExecutableBeforeRegistering pins the wiring that
+// issue #472 found untested: `autostart install` must run
+// service.ValidateInstallExecutable before it touches the service manager.
+// Deleting that call from install() made the whole cmd/termp suite pass, so the
+// only guard against silently registering an unstable path was code review.
+// The assertion that the manager was never reached is what kills that mutation.
+func TestAutostartInstallValidatesExecutableBeforeRegistering(t *testing.T) {
+	name := "termp"
+	if runtime.GOOS == "windows" {
+		name = "termp.exe"
+	}
+	// The fixture is a fake checked-out source tree, not a temp-directory path.
+	// Both are "unstable", but only the source-tree marker is decided purely by
+	// file contents, so it holds identically on every platform. The temp-root
+	// check compares the EvalSymlinks-resolved executable against the raw
+	// os.TempDir() string, and windows-latest spells those two differently
+	// (TMP is the 8.3 short form C:\Users\RUNNER~1\..., EvalSymlinks returns the
+	// long form C:\Users\runneradmin\...), so a t.TempDir() binary is judged
+	// stable there and this test failed on Windows only.
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "go.mod"),
+		[]byte("module github.com/polter-dev/discord_terminal_presence\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(binDir, name)
+	if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldArgs := os.Args
+	os.Args = []string{exe, "autostart", "install"}
+	t.Cleanup(func() { os.Args = oldArgs })
+
+	installCalls := 0
+	withFakeAutostartManager(t, fakeAutostartManager{installCalls: &installCalls})
+
+	err := install(nil)
+	if err == nil {
+		t.Fatal("install() error = nil, want refusal to install from an unstable path")
+	}
+	if !strings.Contains(err.Error(), "unstable executable path") {
+		t.Fatalf("install() error = %v, want the unstable executable path refusal", err)
+	}
+	if installCalls != 0 {
+		t.Fatalf("autostart manager Install called %d times, want 0 before validation passes", installCalls)
+	}
 }
 
 func withFakeAutostartManager(t *testing.T, manager fakeAutostartManager) {
