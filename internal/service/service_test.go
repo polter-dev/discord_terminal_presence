@@ -1540,6 +1540,14 @@ func TestLinuxRollbackDoesNotWarnWhenActivationWasNeverAttempted(t *testing.T) {
 
 func TestLinuxInstallRestoresKnownActivationDimensionWhenPriorStateIsPartlyUnknown(t *testing.T) {
 	requireGOOS(t, "linux")
+	// The prior unit must target the same executable being installed so
+	// Status() recognizes it as owned rather than short-circuiting install as
+	// a foreign definition before reaching activation state.
+	newExecutable := "/new/termp"
+	priorUnit, err := BuildSystemdUnit(newExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name       string
 		enabledOut string
@@ -1568,8 +1576,7 @@ func TestLinuxInstallRestoresKnownActivationDimensionWhenPriorStateIsPartlyUnkno
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			original := []byte("old systemd unit")
-			if err := os.WriteFile(path, original, 0o644); err != nil {
+			if err := os.WriteFile(path, priorUnit, 0o644); err != nil {
 				t.Fatal(err)
 			}
 			enableNowCall := "systemctl --user enable --now " + ServiceName
@@ -1580,7 +1587,7 @@ func TestLinuxInstallRestoresKnownActivationDimensionWhenPriorStateIsPartlyUnkno
 				enableNowCall:                                {{out: "activation failed\n", err: errors.New("exit status 1")}},
 			}}
 
-			_, err := (Manager{GOOS: "linux", Runner: runner}).Install("/new/termp", false)
+			_, err := (Manager{GOOS: "linux", Runner: runner}).Install(newExecutable, false)
 			warning := linuxUnknownPriorStateWarning
 			if err == nil || !strings.Contains(err.Error(), "systemctl enable failed") || !strings.Contains(err.Error(), warning) {
 				t.Fatalf("Install() error = %v, want activation failure and unknown-state warning %q", err, warning)
@@ -1595,8 +1602,8 @@ func TestLinuxInstallRestoresKnownActivationDimensionWhenPriorStateIsPartlyUnkno
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			if string(got) != string(original) {
-				t.Fatalf("failed install left definition %q, want %q", got, original)
+			if string(got) != string(priorUnit) {
+				t.Fatalf("failed install left definition %q, want %q", got, priorUnit)
 			}
 		})
 	}
@@ -1994,7 +2001,12 @@ func TestLinuxDisableAndEnableToggleUserService(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("[Unit]\n"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runner := &recordingRunner{
@@ -2004,7 +2016,7 @@ func TestLinuxDisableAndEnableToggleUserService(t *testing.T) {
 			"systemctl --user is-active " + ServiceName:  "inactive\n",
 		},
 	}
-	manager := Manager{GOOS: "linux", Runner: runner}
+	manager := Manager{GOOS: "linux", Runner: runner, Executable: owned}
 
 	if _, err := manager.Disable(); err != nil {
 		t.Fatal(err)
@@ -3262,11 +3274,16 @@ func TestLinuxUninstallIsIdempotent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{}}
-	manager := Manager{GOOS: "linux", Runner: runner}
+	manager := Manager{GOOS: "linux", Runner: runner, Executable: owned}
 	for i := 0; i < 2; i++ {
 		state, err := manager.Uninstall(false)
 		if err != nil {
@@ -3288,7 +3305,12 @@ func TestLinuxUninstallKeepsUnitOnDisableFailure(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	disable := "systemctl --user disable --now " + ServiceName
@@ -3297,7 +3319,7 @@ func TestLinuxUninstallKeepsUnitOnDisableFailure(t *testing.T) {
 		out:  map[string]string{disable: "Failed to connect to bus: No such process\n"},
 	}
 
-	state, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall(false)
+	state, err := (Manager{GOOS: "linux", Runner: runner, Executable: owned}).Uninstall(false)
 	if err == nil || !strings.Contains(err.Error(), "Failed to connect to bus") {
 		t.Fatalf("Uninstall() error = %v, want bus failure", err)
 	}
@@ -3319,7 +3341,12 @@ func TestLinuxUninstallRemovesUnitWhenAlreadyDisabled(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	disable := "systemctl --user disable --now " + ServiceName
@@ -3328,7 +3355,7 @@ func TestLinuxUninstallRemovesUnitWhenAlreadyDisabled(t *testing.T) {
 		out:  map[string]string{disable: "Failed to disable unit: Unit file " + ServiceName + " does not exist.\n"},
 	}
 
-	state, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall(false)
+	state, err := (Manager{GOOS: "linux", Runner: runner, Executable: owned}).Uninstall(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3350,7 +3377,12 @@ func TestLinuxUninstallReportsDaemonReloadFailure(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("unit"), 0o644); err != nil {
+	owned := "/opt/termp"
+	unit, err := BuildSystemdUnit(owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, unit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	reload := "systemctl --user daemon-reload"
@@ -3359,7 +3391,7 @@ func TestLinuxUninstallReportsDaemonReloadFailure(t *testing.T) {
 		out:  map[string]string{reload: "Failed to connect to bus: Permission denied\n"},
 	}
 
-	_, err := (Manager{GOOS: "linux", Runner: runner}).Uninstall(false)
+	_, err = (Manager{GOOS: "linux", Runner: runner, Executable: owned}).Uninstall(false)
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want daemon-reload failure")
 	}
