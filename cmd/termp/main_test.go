@@ -2774,9 +2774,9 @@ func TestAutostartSubcommandMatchesLegacyDispatch(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			var calls [][]string
 			handlers := map[string]autostartActionHandler{
-				action: func(args []string) error {
+				action: func(args []string) (bool, error) {
 					calls = append(calls, append([]string(nil), args...))
-					return nil
+					return false, nil
 				},
 			}
 			wantArgs := []string{"--sentinel"}

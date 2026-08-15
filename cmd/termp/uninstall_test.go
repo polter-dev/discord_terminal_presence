@@ -189,11 +189,11 @@ func TestUninstallAllCancellationDoesNotStopOrDelete(t *testing.T) {
 
 func TestTopLevelUninstallPointsToFullRemoval(t *testing.T) {
 	handlers := map[string]autostartActionHandler{
-		"uninstall": func(args []string) error {
+		"uninstall": func(args []string) (bool, error) {
 			if len(args) != 0 {
 				t.Fatalf("uninstall args = %#v, want none", args)
 			}
-			return nil
+			return false, nil
 		},
 	}
 	output, err := captureStdout(t, func() error {
@@ -204,6 +204,34 @@ func TestTopLevelUninstallPointsToFullRemoval(t *testing.T) {
 	}
 	if !strings.Contains(output, "To remove everything, run: termp uninstall --all") {
 		t.Fatalf("top-level uninstall output missing full-removal guidance:\n%s", output)
+	}
+}
+
+func TestTopLevelUninstallUsesParsedAllFlag(t *testing.T) {
+	for _, spelling := range []string{"-all", "-all=true", "--all=TRUE", "--all=1"} {
+		t.Run(spelling, func(t *testing.T) {
+			handlers := map[string]autostartActionHandler{
+				"uninstall": func(args []string) (bool, error) {
+					options, err := parseUninstallOptions(args)
+					if err != nil {
+						return false, err
+					}
+					if !options.all {
+						t.Fatal("flag parser did not set all")
+					}
+					return options.all, nil
+				},
+			}
+			output, err := captureStdout(t, func() error {
+				return dispatchCommandWithAutostartHandlers("uninstall", []string{spelling}, handlers)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(output, "To remove everything") {
+				t.Fatalf("top-level uninstall output contains full-removal guidance after %s:\n%s", spelling, output)
+			}
+		})
 	}
 }
 
