@@ -64,9 +64,11 @@ trustworthy atime (including Linux devpts mounted with the usual `relatime`),
 recent per-process CPU activity is used as the idle signal. CPU observations
 carry sampling availability separately from the sampled total; failed samples
 fail open instead of treating a silent zero as inactivity. Aggregate recent
-activity includes only available per-process deltas (#517); recovery establishes
-a fresh per-process baseline. Process observations are keyed by PID and creation
-time, so starts, exits, and PID reuse cannot mix unrelated cumulative CPU totals.
+activity includes available per-process deltas and skips unavailable siblings
+(#517, #526); when every sample is unavailable, aggregate activity is zero.
+Recovery establishes a fresh per-process baseline. Process observations are keyed
+by PID and creation time, so starts, exits, and PID reuse cannot mix unrelated
+cumulative CPU totals.
 
 When one tool has multiple eligible processes, the selector keeps the current
 representative unless the same challenger has a clear per-process CPU or recent

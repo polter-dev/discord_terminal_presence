@@ -670,6 +670,37 @@ func TestSelectorUnavailableCPUDoesNotFabricateChallengerActivity(t *testing.T) 
 	}
 }
 
+func TestSelectorUnavailableCPUSiblingKeepsAvailableActivity(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	reg := testRegistry(t)
+	selector := NewSelector(reg, Config{
+		Pin:                  "claude-code",
+		HeadlinerIdleTimeout: 30 * time.Second,
+		ActivitySwitching:    true,
+	}, clock)
+	claude := Process{Owned: true, Pid: 1, Name: "claude", CreateTime: base, CPUTime: 100, CPUTimeKnown: true}
+	activeCodex := Process{Owned: true, Pid: 2, Name: "codex", CreateTime: base.Add(-time.Minute), CPUTime: 100, CPUTimeKnown: true}
+	unavailableCodex := Process{Owned: true, Pid: 3, Name: "codex", CreateTime: base.Add(-2 * time.Minute), CPUTime: 100, CPUTimeKnown: true}
+	processes := []Process{claude, activeCodex, unavailableCodex}
+
+	if detection := selector.Select(processes); detection.Tool.ID != "claude-code" {
+		t.Fatalf("initial tool = %q, want claude-code", detection.Tool.ID)
+	}
+	selector.Reconfigure(reg, Config{HeadlinerIdleTimeout: 30 * time.Second, ActivitySwitching: true})
+	clock.Advance(time.Second)
+	if detection := selector.Select(processes); detection.Tool.ID != "claude-code" {
+		t.Fatalf("tool before timeout = %q, want claude-code", detection.Tool.ID)
+	}
+
+	clock.Advance(31 * time.Second)
+	activeCodex.CPUTime += 50
+	unavailableCodex.CPUTimeKnown = false
+	if detection := selector.Select([]Process{claude, activeCodex, unavailableCodex}); detection.Tool.ID != "codex-cli" {
+		t.Fatalf("tool with active codex and unavailable sibling = %q, want codex-cli", detection.Tool.ID)
+	}
+}
+
 func TestSelectorCPUAggregateRebaselinesAfterProcessIdentityChanges(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	oldCodex := Process{Owned: true, Pid: 2, Name: "codex", CreateTime: base.Add(-time.Hour), CPUTime: 100, CPUTimeKnown: true}
