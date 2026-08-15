@@ -3112,13 +3112,20 @@ func TestNewWatchedConfigManagerReloadsWriteCompletedBeforeWatchInstall(t *testi
 	}
 }
 
-func TestNewWatchedConfigManagerFirstRunStaysFastAndEnabled(t *testing.T) {
+// TestNewWatchedConfigManagerFirstRunStaysFastAndReachesEnabledDefaults keeps
+// the first-run startup path fast: a missing config must never make daemon
+// startup block. Since #548 it no longer starts with presence already on,
+// because a missing file is also what an unlink/recreate window mid-save looks
+// like, and construction has no way to tell the two apart. The enabled
+// first-run default must still arrive on its own, through the loosening guard,
+// without any further filesystem event.
+func TestNewWatchedConfigManagerFirstRunStaysFastAndReachesEnabledDefaults(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.toml")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	start := time.Now()
-	_, cfg, err := newWatchedConfigManager(configPath, func(manager *config.Manager) {
+	manager, cfg, err := newWatchedConfigManager(configPath, func(manager *config.Manager) {
 		if watchErr := manager.Watch(ctx); watchErr != nil {
 			t.Fatalf("Watch() error = %v", watchErr)
 		}
@@ -3128,11 +3135,20 @@ func TestNewWatchedConfigManagerFirstRunStaysFastAndEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first-run config error = %v", err)
 	}
-	if !cfg.Enabled {
-		t.Fatal("missing first-run config disabled presence")
+	if cfg.Enabled {
+		t.Fatal("missing first-run config started with presence on, want fail-closed until the loosening horizon")
 	}
 	if elapsed >= 100*time.Millisecond {
 		t.Fatalf("missing first-run startup took %v, want under 100ms", elapsed)
+	}
+
+	select {
+	case result := <-manager.Reloads():
+		if result.Err != nil || !result.Config.Enabled {
+			t.Fatalf("first-run reload = %#v, want enabled defaults", result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the missing first-run config to reach enabled defaults")
 	}
 }
 
