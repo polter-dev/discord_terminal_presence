@@ -182,8 +182,29 @@ func (s darwinService) StatusContext(ctx context.Context) State {
 			)
 			return state
 		}
-		if target, parseErr := launchAgentExecutable(definition); parseErr == nil &&
-			isForeignUnixExecutable(target, s.executable) {
+		target, parseErr := launchAgentExecutable(definition)
+		switch {
+		case parseErr != nil:
+			state.Installed = false
+			state.Loaded = "false"
+			state.Enabled = "false"
+			state.ForeignTask = true
+			state.Message = fmt.Sprintf(
+				"launchd plist %s ownership could not be verified because it could not be parsed: %v",
+				path, parseErr,
+			)
+			return state
+		case s.executable == "":
+			state.Installed = false
+			state.Loaded = "false"
+			state.Enabled = "false"
+			state.ForeignTask = true
+			state.Message = fmt.Sprintf(
+				"launchd plist %s ownership could not be verified because the running termp executable could not be resolved",
+				path,
+			)
+			return state
+		case isForeignUnixExecutable(target, s.executable):
 			state.Installed = false
 			state.Loaded = "false"
 			state.Enabled = "false"
