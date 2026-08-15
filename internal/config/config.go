@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1148,17 +1149,26 @@ func postureFor(r ResolvedTool) privacyPosture {
 // must fall under at least one previous entry. An empty allowlist authorizes
 // every path.
 func allowlistCoverageLoosened(prev, next []string) bool {
+	if slices.Equal(prev, next) {
+		return false
+	}
 	if len(prev) == 0 {
 		return false
 	}
 	if len(next) == 0 {
 		return true
 	}
-	for _, nextEntry := range next {
-		nextPath := canonicalPrivacyPath(expandHome(nextEntry))
+	prevPaths := make([]string, len(prev))
+	for i, entry := range prev {
+		prevPaths[i] = canonicalPrivacyPath(expandHome(entry))
+	}
+	nextPaths := make([]string, len(next))
+	for i, entry := range next {
+		nextPaths[i] = canonicalPrivacyPath(expandHome(entry))
+	}
+	for _, nextPath := range nextPaths {
 		covered := false
-		for _, prevEntry := range prev {
-			prevPath := canonicalPrivacyPath(expandHome(prevEntry))
+		for _, prevPath := range prevPaths {
 			if pathHasPrefix(nextPath, prevPath) {
 				covered = true
 				break
