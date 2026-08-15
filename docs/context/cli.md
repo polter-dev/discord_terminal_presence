@@ -613,6 +613,79 @@ closure underneath a still-open `*os.File` (#514).
 The banner, startup error, and reload error render through `SanitizeSingleLine`, matching
 every other single-line render boundary in the CLI.
 
+**Security hardening (2026-08-15 hunt, #560-#563).** Four related fixes to daemon
+signaling and the daemon log, from the same hunt cycle as the config/detector/presence
+fixes in the same window:
+
+- **#560 (PID record start time bound to the signaled object).** The last
+  start-time comparison used to happen inside `pidRecordIdentityMatches`, then the
+  platform signal callback (`signalTermpProcessAtPath`) received only the PID and
+  executable path, so it re-validated owner and image path against a fresh snapshot but
+  never against the record's recorded start time, leaving a PID-reuse race window
+  between that comparison and the actual signal. `stopDaemon`/`stopDaemonAndPublisher`'s
+  `signal` parameter now carries `(pid, expectedPath, expectedStartTime,
+  startTimeKnown)`, and every platform binds the check to the object it actually opens:
+  Linux rereads `/proc/<pid>/stat` immediately after `pidfd_open` (the pidfd itself stays
+  bound to the original task even if the PID number is later reused, but the identity
+  re-check still goes by PID number, so this catches a reused PID before signaling);
+  Windows calls `GetProcessTimes` on the exact handle `PROCESS_TERMINATE` will use, not a
+  fresh `OpenProcess`; Darwin re-snapshots via `kern.proc.pid` immediately before `kill`
+  (no pidfd equivalent exists); the `!linux && !darwin && !windows` fallback shells out to
+  `ps -o lstart=` the same way `processStartTime` does. A record with
+  `StartTimeUnavailable` (legacy records, or a platform where the lookup is not
+  available) passes `startTimeKnown = false` and the platform functions skip the check,
+  preserving the existing liveness+owner+path fallback.
+  The separate question of `processIdentityMatches` returning `true` when
+  `lookupProcessStartTime` itself errors was investigated and left as the existing
+  deliberate fallback, not tightened to fail closed: `lookupProcessStartTime` is only
+  ever called after `alive(pid)` already observed the process running, so its dominant
+  real failure mode is the process exiting in that gap, an ordinary race during a stop
+  poll loop rather than a rare condition; failing closed there would make `termp stop`
+  spuriously refuse a daemon that happened to be exiting right as the check ran. The
+  residual protection when the fallback triggers is unchanged: `looksLikeTermp` still
+  requires same-user ownership and a matching executable path, so a wrongly authorized
+  victim is bounded to another termp process at the recorded path. This reasoning is now
+  a code comment on `processIdentityMatches` itself (`cmd/termp/main.go`).
+- **#561 (daemon log symlink/permission hardening).** The daemon log and the detached
+  parent's panic log now open through a shared `openLogFile(path, perm)`
+  (`cmd/termp/log_rotation.go`, `log_rotation_unix.go`, `log_rotation_windows.go`) instead
+  of a raw `os.OpenFile`. Unix opens with `syscall.O_NOFOLLOW` so a symlink planted at the
+  log path is refused outright rather than transparently written through, then verifies
+  the opened file is a regular file owned by the current user (reusing
+  `requireCurrentUserOwner` from `pidfile_unix.go`) and `Chmod`s it to 0600 regardless of
+  whatever mode it already had, since the creation-mode argument to `OpenFile` only
+  applies when the file is newly created. Windows opens with
+  `FILE_FLAG_OPEN_REPARSE_POINT` (mirroring the PID file's `openWindowsPIDFile`) so a
+  reparse point is opened as itself rather than followed, and `FILE_APPEND_DATA` for the
+  same atomic append-at-EOF semantics `os.O_APPEND` gives on the other platforms; it then
+  rejects a reparse point and checks SID ownership by reusing the PID file's
+  `pidFileAttributesSafe`/`windowsHandleOwnerSID`/`currentTokenOwnerSIDs` helpers, since
+  Windows has no POSIX mode bits to tighten. `newRotatingLogWriter` also `Chmod`s the log
+  directory to 0700 after `MkdirAll`, since `MkdirAll` no-ops (and does not tighten the
+  mode) on an already-existing directory.
+- **#562 (full uninstall no longer recursively deletes unknown files).** Full
+  uninstall's directory targets (config, state, presence-state, update-cache) are termp's
+  own namespace directories, but `removeUninstallTarget` used to hand each one whole to
+  `os.RemoveAll`, deleting anything the user had placed there too (a hand-kept note, a
+  backup config copy) while the completion message claimed only termp-created data was
+  removed. `removeKnownFilesFromDirectory` (`cmd/termp/uninstall.go`) now removes only the
+  basenames `isKnownUninstallFile` recognizes (`config.toml`, `usage.json`,
+  `presence.json`, `update-check.json`, the daemon log and its lock/rotated generations
+  (included because on Linux the update-cache directory and the detached log directory are
+  the same XDG cache directory), plus each name's `.tmp-<random>` atomic-write prefix) and
+  removes the directory itself only once nothing else remains in it. A directory holding
+  only recognized files still ends up fully gone, preserving the "everything termp
+  created is gone" promise; anything else, and therefore the directory around it,
+  survives.
+- **#563 (single oversized log record bounded).** `rotatingLogWriter.Write` used to
+  rotate only when the *existing* file was nonempty and the new record would push it over
+  `maxBytes`, so one write larger than the cap went straight into an empty file whole,
+  and the same record then filled the fresh file rotation just created, unboundedly. A
+  new `boundLogRecord(line, maxBytes)` truncates any single record to at most `maxBytes`
+  bytes (preserving a trailing newline if the original had one) before the existing
+  rotate-then-write logic runs, so no single write can defeat the cap regardless of
+  whether it lands in an empty or freshly rotated file.
+
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.
 
