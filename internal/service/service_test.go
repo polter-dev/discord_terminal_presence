@@ -53,10 +53,13 @@ type sequenceRunner struct {
 }
 
 type windowsRollbackRunner struct {
-	calls       []string
-	taskXML     []byte
-	running     bool
-	runFailures int
+	calls                []string
+	taskXML              []byte
+	running              bool
+	runFailures          int
+	xmlQueries           int
+	failXMLQueryAt       int
+	verboseQueryFailures int
 }
 
 type simulatedExitError struct {
@@ -99,12 +102,20 @@ func (r *windowsRollbackRunner) Run(name string, args ...string) ([]byte, error)
 	switch args[0] {
 	case "/Query":
 		if hasArg(args, "/XML") {
+			r.xmlQueries++
+			if r.xmlQueries == r.failXMLQueryAt {
+				return []byte("ERROR: Access is denied.\n"), simulatedExitError{code: 1}
+			}
 			if r.taskXML == nil {
 				return []byte("ERROR: The specified task name does not exist.\n"), simulatedExitError{code: 1}
 			}
 			return append([]byte(nil), r.taskXML...), nil
 		}
 		if hasArg(args, "/V") {
+			if r.verboseQueryFailures > 0 {
+				r.verboseQueryFailures--
+				return []byte("ERROR: Access is denied.\n"), simulatedExitError{code: 1}
+			}
 			result := "1"
 			if r.running {
 				result = "0x41301"
@@ -1675,6 +1686,65 @@ func TestWindowsInstallRollsBackTaskWhenRunFails(t *testing.T) {
 				t.Fatalf("run calls = %d, want %d; calls: %#v", got, tt.wantRunCalls, runner.calls)
 			}
 		})
+	}
+}
+
+func TestWindowsInstallContinuesWhenTaskSnapshotQueryFails(t *testing.T) {
+	tests := []struct {
+		name                 string
+		failXMLQueryAt       int
+		verboseQueryFailures int
+	}{
+		{name: "definition query fails", failXMLQueryAt: 2},
+		{name: "activation query fails", verboseQueryFailures: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := []byte(windowsEnabledTaskXML)
+			runner := &windowsRollbackRunner{
+				taskXML:              append([]byte(nil), original...),
+				failXMLQueryAt:       tt.failXMLQueryAt,
+				verboseQueryFailures: tt.verboseQueryFailures,
+			}
+
+			state, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false)
+			if err != nil {
+				t.Fatalf("Install() error = %v, want snapshot failure ignored", err)
+			}
+			if !state.Installed || !runner.running {
+				t.Fatalf("Install() state = %+v, running = %t; want installed and running", state, runner.running)
+			}
+			if string(runner.taskXML) == string(original) {
+				t.Fatal("Install() did not replace the existing task definition")
+			}
+			if !slicesContainsPrefix(runner.calls, "schtasks /Create /TN "+TaskName+" /XML ") {
+				t.Fatalf("Install() calls = %#v, want task creation", runner.calls)
+			}
+		})
+	}
+}
+
+func TestWindowsInstallNeverDeletesPreexistingTaskWithoutSnapshot(t *testing.T) {
+	original := []byte(windowsEnabledTaskXML)
+	runner := &windowsRollbackRunner{
+		taskXML:        append([]byte(nil), original...),
+		runFailures:    1,
+		failXMLQueryAt: 2,
+	}
+
+	_, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false)
+	if err == nil || !strings.Contains(err.Error(), "schtasks run failed") {
+		t.Fatalf("Install() error = %v, want schtasks run failure", err)
+	}
+	if runner.taskXML == nil || string(runner.taskXML) == string(original) {
+		t.Fatal("failed install did not leave the replacement task definition in place")
+	}
+	if hasCall(runner.calls, "schtasks /Delete /TN "+TaskName+" /F") {
+		t.Fatalf("Install() calls = %#v, must not delete a preexisting task without a snapshot", runner.calls)
+	}
+	if hasCall(runner.calls, "schtasks /End /TN "+TaskName) {
+		t.Fatalf("Install() calls = %#v, must not alter a preexisting task without a snapshot", runner.calls)
 	}
 }
 

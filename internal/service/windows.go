@@ -34,17 +34,17 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 	hadTask := status.Installed || status.ForeignTask
 	var previousTaskXML []byte
 	previousRunning := false
+	snapshotAvailable := false
 	if launch && hadTask {
-		var err error
-		previousTaskXML, err = s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/XML")
-		if err != nil {
-			return State{Supported: true, Installed: true, Path: TaskName}, fmt.Errorf("snapshot scheduled task definition: %w: %s", err, strings.TrimSpace(string(previousTaskXML)))
+		snapshotXML, snapshotErr := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/XML")
+		if snapshotErr == nil {
+			out, activationErr := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/FO", "CSV", "/V", "/NH")
+			if activationErr == nil {
+				previousTaskXML = snapshotXML
+				previousRunning = windowsTaskCSVIsRunning(out)
+				snapshotAvailable = true
+			}
 		}
-		out, err := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/FO", "CSV", "/V", "/NH")
-		if err != nil {
-			return State{Supported: true, Installed: true, Path: TaskName}, fmt.Errorf("snapshot scheduled task activation: %w: %s", err, strings.TrimSpace(string(out)))
-		}
-		previousRunning = windowsTaskCSVIsRunning(out)
 	}
 	// Persist the stable invocation path exactly as it was resolved for install
 	// (a Scoop `current` junction or shim, a Homebrew/hand-placed path, etc.).
@@ -83,7 +83,7 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 	}
 	if launch {
 		if err := s.runTask(); err != nil {
-			rollbackErr := s.rollbackInstall(previousTaskXML, hadTask, previousRunning)
+			rollbackErr := s.rollbackInstall(previousTaskXML, hadTask, snapshotAvailable, previousRunning)
 			return State{Supported: true, Installed: hadTask, Path: TaskName}, errors.Join(err, rollbackErr)
 		}
 	}
@@ -121,7 +121,10 @@ func (s windowsService) createTask(taskXML []byte) error {
 	return nil
 }
 
-func (s windowsService) rollbackInstall(previousTaskXML []byte, hadTask, wasRunning bool) error {
+func (s windowsService) rollbackInstall(previousTaskXML []byte, hadTask, snapshotAvailable, wasRunning bool) error {
+	if hadTask && !snapshotAvailable {
+		return nil
+	}
 	_, _ = s.runner.Run("schtasks", "/End", "/TN", TaskName)
 	var rollbackErr error
 	if hadTask {
