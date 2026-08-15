@@ -10,7 +10,8 @@ since #552, so a caller can tell the saved config from a best guess), explicitly
 unprotected
 `LoadUnsettled`/`LoadPathUnsettled`, and `Save` resolve and persist it.
 `AnnotatedSample` and `InitFile(path, force)` support `termp config init`. `Manager`
-watches a path and publishes validated changes. `ValidateFeedbackURL` and
+watches a path and publishes validated changes, with `Manager.Close` ending its lifecycle
+by stopping the pending loosening retry without resolving it (#553). `ValidateFeedbackURL` and
 `ValidateDurationField(field, value)` expose individual field validators so callers
 (the settings TUI) can reject a bad value at the point of entry using the exact rules
 `Load`/`Save` enforce, rather than re-implementing parsing.
@@ -235,10 +236,53 @@ work, and other comparisons expand and canonicalize every entry once before appl
 same coverage predicate. This avoids repeated Windows symlink evaluation without changing
 which path transitions count as loosening.
 
-`Manager` currently has no lifecycle/`Close` method. Its `time.AfterFunc` retry retains
-the manager until it fires and may read the config path after the daemon has otherwise
-shut down or an isolated path has been removed. Reload tolerates a missing file, so this
-is harmless today; any future manager lifecycle must stop the pending retry.
+`Manager.Close` is the manager's lifecycle end (#553), and it resolves the note that used
+to live here warning that any future manager lifecycle must stop the pending retry. Before
+it existed, the `time.AfterFunc` retry retained the manager until it fired and could read
+the config path after the daemon had otherwise shut down or an isolated path had been
+removed. That was harmless while only the daemon and `watch` built managers and both lived
+for the process's lifetime, but #551 armed the retry on every construction that cannot
+certify `enabled` (first run included), so the constraint became far broader than the one
+rare ambiguous-blank path it started on.
+
+`Close` is idempotent and safe from any goroutine. Two properties are deliberate:
+
+- **It does not race the retry it stops.** `time.Timer.Stop` returning false means the
+  retry may already be running, so stopping the timer alone is not enough. `Close` first
+  marks the manager closed under the same `mu` write lock every commit takes, then stops
+  the timer, then waits on a `sync.WaitGroup` that tracks armed retries. `reload` checks
+  the closed flag once before reading the file and again under the write lock before
+  committing, so a retry that fired before `Close` but reaches the commit after it returns
+  without touching state. Ownership of the WaitGroup entry follows `Stop`'s own contract:
+  the clearing call releases the entry only when `Stop` reports true (the func provably
+  never runs), otherwise the func's deferred `Done` covers it, including when the clearing
+  call is on the retry's own stack.
+- **It never resolves a pending loosening decision.** A manager closed mid-horizon simply
+  stops. It does not commit the pending candidate, does not revert an accepted config, and
+  does not publish a `ReloadResult`. Presence therefore cannot turn on, or off, as a side
+  effect of shutdown. `acceptReloadLocked` also refuses to arm a new retry on a closed
+  manager, so a closed manager cannot re-arm what `Close` just stopped.
+
+The daemon and `watch` entry points both `defer manager.Close()`. Neither behaves
+differently today, because both still exit with the process; the point is that the next
+lifecycle change (a manager per command, a test building many managers, teardown and
+rebuild of config state without exiting) no longer inherits a timer nobody can stop.
+
+Fixed alongside `Close`, because the lifecycle tests are what exposed it: construction now
+holds `mu` while it calls `acceptReloadLocked`. That call stores the timer it has just
+armed, and the timer's func reads the same field through `reload`, so the constructor was
+already sharing the manager with another goroutine when it performed an unsynchronized
+write. The three-second horizon made the window unreachable in practice, which is why it
+survived #551, but `-race` reports it immediately once a caller shortens the horizon.
+
+Construction takes the horizon through `newManagerPathWithHorizon`, a seam beside the
+existing snapshot/clock/sleep seam, so the lifecycle tests in
+`internal/config/manager_close_test.go` can arm and wait out a real retry in milliseconds
+instead of a three-second wall-clock wait. Every production path passes
+`enabledLooseningHorizon`. The stop test carries its own positive control: the same
+first-run manager left open must flip presence on by itself within the wait budget, so a
+closed manager staying off is evidence the timer stopped rather than a test that cannot
+fail.
 
 The guard is deliberately time-bounded, not an absolute guarantee. A writer that stalls
 longer than the three-second horizon while the file is a valid partial omitting
