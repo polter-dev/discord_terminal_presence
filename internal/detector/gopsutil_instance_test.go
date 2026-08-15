@@ -2,6 +2,7 @@ package detector
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -61,7 +62,9 @@ func TestEnrichVerifyingInstanceAcceptsMatchingCreateTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Cwd != wd {
+	// gopsutil reports the working directory with a trailing separator on
+	// Windows while os.Getwd does not, so compare cleaned paths.
+	if filepath.Clean(got.Cwd) != filepath.Clean(wd) {
 		t.Fatalf("Cwd = %q, want %q: enrichment must still apply when CreateTime matches", got.Cwd, wd)
 	}
 }
