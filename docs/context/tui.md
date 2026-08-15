@@ -25,7 +25,15 @@ controls from config, paths, metadata, or errors must not reach the terminal.
 
 Setup persists config before reconciling autostart and rolls config back if autostart
 fails. When its preflight proved autostart was previously absent, a failed install also
-invokes uninstall as a compensating cleanup before restoring config (#519). Completion
+invokes uninstall as a compensating cleanup before restoring config (#519). That cleanup
+covers the one gap the service-layer rollback leaves open, a definition write that fails
+partway and leaves debris behind, so it must only run when a definition actually appeared.
+It re-reads installed state after the failure and stays out when nothing was written:
+an install refused before it touches the disk, such as a definition owned by another
+installation, would otherwise be refused again by the compensating uninstall and print
+the same refusal a second time as a failed restore of state termp never changed (#540).
+Unknown state after a failure still cleans up, because uninstall over an absent
+definition is a no-op on every platform. Completion
 installation runs afterward as an optional outcome. If only completion installation fails,
 setup is still applied: config and autostart remain in effect, the model adopts the
 persisted config, and the summary reports completion failure as partial success.

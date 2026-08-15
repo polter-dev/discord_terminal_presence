@@ -452,7 +452,7 @@ func applySetup(original, desired config.Config, save SetupSaveFunc, install Set
 	}
 
 	var autostartRollbackErr error
-	if installRequired && stateKnown && !isInstalled && uninstall != nil {
+	if installRequired && stateKnown && !isInstalled && uninstall != nil && autostartWasMutated(installed) {
 		if err := uninstall(); err != nil {
 			autostartRollbackErr = fmt.Errorf("restore previous autostart state: %w", err)
 		}
@@ -466,6 +466,25 @@ func applySetup(original, desired config.Config, save SetupSaveFunc, install Set
 		return setupApplyResultMsg{err: errors.Join(reconcileErr, autostartRollbackErr, fmt.Errorf("restore previous config: %w", rollbackErr))}
 	}
 	return setupApplyResultMsg{err: errors.Join(reconcileErr, autostartRollbackErr)}
+}
+
+// autostartWasMutated reports whether a failed install left an autostart definition
+// behind, given that the preflight proved there was none. It is what makes the
+// compensating uninstall a cleanup rather than a second attempt at an operation the
+// service layer already refused: an install that is turned down before it writes
+// anything (a definition owned by another installation, for example) leaves the state
+// exactly as it started, so uninstalling would fail for the same reason and report a
+// restore that was never needed (#540). Unreadable state falls back to cleaning up,
+// because an uninstall over an absent definition is a no-op on every platform.
+func autostartWasMutated(installed SetupInstalledFunc) bool {
+	if installed == nil {
+		return true
+	}
+	current, err := installed()
+	if err != nil {
+		return true
+	}
+	return current
 }
 
 func (m SetupModel) summary() string {
