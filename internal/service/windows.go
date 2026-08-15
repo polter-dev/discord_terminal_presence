@@ -123,7 +123,13 @@ func (s windowsService) createTask(taskXML []byte) error {
 
 func (s windowsService) rollbackInstall(previousTaskXML []byte, hadTask, snapshotAvailable, wasRunning bool) error {
 	if hadTask && !snapshotAvailable {
-		return nil
+		// The pre-existing task was already overwritten and is deliberately not
+		// deleted, so all rollback can do is say the replacement is still there.
+		return fmt.Errorf(
+			"the previous autostart task definition for %s could not be captured before it was replaced and may need checking; run `schtasks /Query /TN \"%s\" /XML` to check it",
+			TaskName,
+			TaskName,
+		)
 	}
 	var rollbackErrs []error
 	if out, err := s.runner.Run("schtasks", "/End", "/TN", TaskName); err != nil {

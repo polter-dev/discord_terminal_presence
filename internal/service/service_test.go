@@ -680,6 +680,86 @@ func TestDarwinInstallRollsBackDefinitionWhenLoadFails(t *testing.T) {
 	}
 }
 
+// Rollback must not reload the previous job while the failed replacement may
+// still be running, mirroring the Windows guard added in #533.
+func TestDarwinRollbackSkipsReactivationWhenUnloadFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, Label+".plist")
+	original := []byte("old launch agent")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := snapshotDefinition(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("new launch agent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootoutCall := "launchctl bootout gui/" + userID() + " " + path
+	unloadCall := "launchctl unload -w " + path
+	bootstrapCall := "launchctl bootstrap gui/" + userID() + " " + path
+	loadCall := "launchctl load -w " + path
+	runner := &sequenceRunner{results: map[string][]scriptedRunnerResult{
+		bootoutCall: {{out: "Boot-out failed: Operation not permitted\n", err: errors.New("exit status 5")}},
+		unloadCall:  {{out: "Unload failed: Operation not permitted\n", err: errors.New("exit status 5")}},
+	}}
+
+	err = darwinService{runner: runner}.rollbackInstall(path, previous, "true")
+	if err == nil || !strings.Contains(err.Error(), "stop failed launch agent during rollback") {
+		t.Fatalf("rollbackInstall() error = %v, want stop failure", err)
+	}
+	for _, call := range []string{bootstrapCall, loadCall} {
+		if hasCall(runner.calls, call) {
+			t.Fatalf("rollbackInstall() calls = %#v, must not reactivate %q after a failed stop", runner.calls, call)
+		}
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("rollback left definition %q, want %q", got, original)
+	}
+}
+
+// Uninstall keeps the plist when unload fails so the job can still be booted
+// out on a retry. Rollback must do the same instead of deleting it.
+func TestDarwinRollbackKeepsDefinitionWhenUnloadFailsWithoutPrevious(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, Label+".plist")
+	previous, err := snapshotDefinition(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previous.exists {
+		t.Fatalf("snapshotDefinition(%q) reported an existing definition", path)
+	}
+	replacement := []byte("new launch agent")
+	if err := os.WriteFile(path, replacement, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootoutCall := "launchctl bootout gui/" + userID() + " " + path
+	unloadCall := "launchctl unload -w " + path
+	runner := &sequenceRunner{results: map[string][]scriptedRunnerResult{
+		bootoutCall: {{out: "Boot-out failed: Operation not permitted\n", err: errors.New("exit status 5")}},
+		unloadCall:  {{out: "Unload failed: Operation not permitted\n", err: errors.New("exit status 5")}},
+	}}
+
+	err = darwinService{runner: runner}.rollbackInstall(path, previous, "false")
+	kept := "service definition kept at " + path + " so uninstall can be retried"
+	if err == nil || !strings.Contains(err.Error(), kept) {
+		t.Fatalf("rollbackInstall() error = %v, want retry affordance %q", err, kept)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("rollback removed the definition it could not unload: %v", readErr)
+	}
+	if string(got) != string(replacement) {
+		t.Fatalf("rollback left definition %q, want %q", got, replacement)
+	}
+}
+
 func TestDarwinInstallLeavesRestoredDefinitionUnloadedWhenPriorActivationUnknown(t *testing.T) {
 	requireGOOS(t, "darwin")
 	home := fakeHome(t)
@@ -1128,20 +1208,154 @@ func TestLinuxInstallRollsBackDefinitionWhenActivationFails(t *testing.T) {
 	}
 }
 
-func TestLinuxInstallLeavesRestoredDefinitionInactiveWhenPriorStateUnknown(t *testing.T) {
+const linuxUnknownPriorStateWarning = "the previous autostart activation state for " + ServiceName +
+	" could not be determined and may need checking; run `systemctl --user status " + ServiceName + "` to check it"
+
+// systemctl is-enabled returns states such as enabled-runtime, indirect and
+// generated that read as unknown here, while is-active still reports cleanly.
+// An unknown reading of one dimension must not discard the other one.
+func TestLinuxRollbackRestoresKnownDimensionWhenOtherIsUnknown(t *testing.T) {
+	enableCall := "systemctl --user enable " + ServiceName
+	startCall := "systemctl --user start " + ServiceName
+	tests := []struct {
+		name     string
+		prior    State
+		wantCall string
+		skipCall string
+	}{
+		{
+			name:     "enablement unknown, unit known active",
+			prior:    State{Enabled: "unknown", Loaded: "active"},
+			wantCall: startCall,
+			skipCall: enableCall,
+		},
+		{
+			name:     "activation unknown, unit known enabled",
+			prior:    State{Enabled: "enabled", Loaded: "unknown"},
+			wantCall: enableCall,
+			skipCall: startCall,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, ServiceName)
+			original := []byte("old systemd unit")
+			if err := os.WriteFile(path, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			previous, err := snapshotDefinition(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("new systemd unit"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runner := &sequenceRunner{results: map[string][]scriptedRunnerResult{}}
+
+			err = linuxService{runner: runner}.rollbackInstall(path, previous, tt.prior, true)
+			if err == nil || !strings.Contains(err.Error(), linuxUnknownPriorStateWarning) {
+				t.Fatalf("rollbackInstall() error = %v, want unknown-state warning %q", err, linuxUnknownPriorStateWarning)
+			}
+			if !hasCall(runner.calls, tt.wantCall) {
+				t.Fatalf("rollbackInstall() calls = %#v, want known dimension restored with %q", runner.calls, tt.wantCall)
+			}
+			if hasCall(runner.calls, tt.skipCall) {
+				t.Fatalf("rollbackInstall() calls = %#v, must not restore the unknown dimension with %q", runner.calls, tt.skipCall)
+			}
+			got, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != string(original) {
+				t.Fatalf("rollback left definition %q, want %q", got, original)
+			}
+		})
+	}
+}
+
+// Rollback must not re-enable or restart the previous unit while the failed
+// replacement may still be running, mirroring the Windows guard from #533.
+func TestLinuxRollbackSkipsReactivationWhenStopFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ServiceName)
+	original := []byte("old systemd unit")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := snapshotDefinition(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("new systemd unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	disableCall := "systemctl --user disable --now " + ServiceName
+	enableCall := "systemctl --user enable " + ServiceName
+	startCall := "systemctl --user start " + ServiceName
+	runner := &sequenceRunner{results: map[string][]scriptedRunnerResult{
+		disableCall: {{out: "Failed to disable unit\n", err: errors.New("exit status 1")}},
+	}}
+
+	err = linuxService{runner: runner}.rollbackInstall(path, previous, State{Enabled: "enabled", Loaded: "active"}, true)
+	if err == nil || !strings.Contains(err.Error(), "stop failed systemd service during rollback") {
+		t.Fatalf("rollbackInstall() error = %v, want stop failure", err)
+	}
+	for _, call := range []string{enableCall, startCall} {
+		if hasCall(runner.calls, call) {
+			t.Fatalf("rollbackInstall() calls = %#v, must not reactivate %q after a failed stop", runner.calls, call)
+		}
+	}
+}
+
+// The daemon-reload failure path never touches activation, so it must not tell
+// the user their activation state may need checking.
+func TestLinuxRollbackDoesNotWarnWhenActivationWasNeverAttempted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ServiceName)
+	original := []byte("old systemd unit")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := snapshotDefinition(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("new systemd unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRunner{results: map[string][]scriptedRunnerResult{}}
+
+	err = linuxService{runner: runner}.rollbackInstall(path, previous, State{Enabled: "unknown", Loaded: "unknown"}, false)
+	if err != nil {
+		t.Fatalf("rollbackInstall() error = %v, want no error when activation was never attempted", err)
+	}
+	if hasCall(runner.calls, "systemctl --user disable --now "+ServiceName) {
+		t.Fatalf("rollbackInstall() calls = %#v, must not stop a unit it never activated", runner.calls)
+	}
+}
+
+func TestLinuxInstallRestoresKnownActivationDimensionWhenPriorStateIsPartlyUnknown(t *testing.T) {
 	requireGOOS(t, "linux")
 	tests := []struct {
 		name       string
 		enabledOut string
 		activeOut  string
+		wantCall   string
+		skipCall   string
 	}{
 		{
 			name:      "enablement unknown",
 			activeOut: "active\n",
+			wantCall:  "systemctl --user start " + ServiceName,
+			skipCall:  "systemctl --user enable " + ServiceName,
 		},
 		{
 			name:       "activation unknown",
 			enabledOut: "enabled\n",
+			wantCall:   "systemctl --user enable " + ServiceName,
+			skipCall:   "systemctl --user start " + ServiceName,
 		},
 	}
 
@@ -1157,8 +1371,6 @@ func TestLinuxInstallLeavesRestoredDefinitionInactiveWhenPriorStateUnknown(t *te
 				t.Fatal(err)
 			}
 			enableNowCall := "systemctl --user enable --now " + ServiceName
-			enableCall := "systemctl --user enable " + ServiceName
-			startCall := "systemctl --user start " + ServiceName
 			runner := &sequenceRunner{results: map[string][]scriptedRunnerResult{
 				"systemctl --user is-enabled " + ServiceName: {{out: tt.enabledOut}},
 				"systemctl --user is-active " + ServiceName:  {{out: tt.activeOut}},
@@ -1167,14 +1379,15 @@ func TestLinuxInstallLeavesRestoredDefinitionInactiveWhenPriorStateUnknown(t *te
 			}}
 
 			_, err := (Manager{GOOS: "linux", Runner: runner}).Install("/new/termp", false)
-			warning := "the previous autostart activation state for " + ServiceName + " could not be determined and may need checking; run `systemctl --user status " + ServiceName + "` to check it"
+			warning := linuxUnknownPriorStateWarning
 			if err == nil || !strings.Contains(err.Error(), "systemctl enable failed") || !strings.Contains(err.Error(), warning) {
 				t.Fatalf("Install() error = %v, want activation failure and unknown-state warning %q", err, warning)
 			}
-			for _, call := range []string{enableCall, startCall} {
-				if hasCall(runner.calls, call) {
-					t.Fatalf("Install() calls = %#v, must not make rollback reactivation call %q", runner.calls, call)
-				}
+			if !hasCall(runner.calls, tt.wantCall) {
+				t.Fatalf("Install() calls = %#v, want known dimension restored with %q", runner.calls, tt.wantCall)
+			}
+			if hasCall(runner.calls, tt.skipCall) {
+				t.Fatalf("Install() calls = %#v, must not restore the unknown dimension with %q", runner.calls, tt.skipCall)
 			}
 			got, readErr := os.ReadFile(path)
 			if readErr != nil {
@@ -1882,6 +2095,24 @@ func TestWindowsInstallContinuesWhenTaskSnapshotQueryFails(t *testing.T) {
 				t.Fatalf("Install() calls = %#v, want task creation", runner.calls)
 			}
 		})
+	}
+}
+
+// The pre-existing task is deliberately not deleted when it could not be
+// snapshotted, but it has already been overwritten, so rollback must say so.
+func TestWindowsInstallWarnsWhenUnsnapshottedTaskWasReplaced(t *testing.T) {
+	original := []byte(windowsEnabledTaskXML)
+	runner := &windowsRollbackRunner{
+		taskXML:        append([]byte(nil), original...),
+		runFailures:    1,
+		failXMLQueryAt: 2,
+	}
+
+	_, err := (Manager{GOOS: "windows", Runner: runner}).Install(`C:\termp.exe`, false)
+	warning := "the previous autostart task definition for " + TaskName +
+		" could not be captured before it was replaced and may need checking; run `schtasks /Query /TN \"" + TaskName + "\" /XML` to check it"
+	if err == nil || !strings.Contains(err.Error(), "schtasks run failed") || !strings.Contains(err.Error(), warning) {
+		t.Fatalf("Install() error = %v, want run failure and replaced-task warning %q", err, warning)
 	}
 }
 
