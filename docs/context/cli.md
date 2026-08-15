@@ -41,6 +41,11 @@ in the hundreds-of-milliseconds range. Verified by instrumenting a temporary bui
 printed the success line and exited 0 with the PID file gone a moment later; after the
 fix `termp start` exits non-zero, prints no "started" message, and the daemon log records
 the injected failure — the instrumentation was reverted before committing (issue #490).
+On Windows the detached child is launched from the absolute `termp.exe` path beside the
+running process image, never from the invocation path or a Scoop shim, and combines
+`CREATE_NO_WINDOW` with the existing new-process-group and detached flags (#508, #510).
+The window suppression matters at both layers: a hidden Scoop shim can otherwise launch
+its own console-subsystem child without preserving the flag.
 New PID and Discord-state records capture the daemon's own
 normalized executable path; process validation compares the live image against that
 recorded path alongside same-user ownership and start time. This preserves PID-reuse and

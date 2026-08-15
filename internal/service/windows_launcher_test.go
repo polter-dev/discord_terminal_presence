@@ -23,7 +23,10 @@ func TestWindowsTaskExecPrefersLauncherWhenPresent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	command, arguments := windowsTaskExec(daemon)
+	command, arguments, err := windowsTaskExec(daemon)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if command != launcher {
 		t.Fatalf("command = %q, want launcher %q", command, launcher)
 	}
@@ -38,12 +41,73 @@ func TestWindowsTaskExecFallsBackToDaemonWhenLauncherMissing(t *testing.T) {
 	if err := os.WriteFile(daemon, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command, arguments := windowsTaskExec(daemon)
+	command, arguments, err := windowsTaskExec(daemon)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if command != daemon {
 		t.Fatalf("command = %q, want daemon %q", command, daemon)
 	}
 	if arguments != "start --foreground" {
 		t.Fatalf("arguments = %q, want \"start --foreground\"", arguments)
+	}
+}
+
+func TestWindowsTaskExecBypassesScoopLauncherShim(t *testing.T) {
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shims")
+	currentDir := filepath.Join(root, "apps", "termp", "current")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shimDaemon := filepath.Join(shimDir, "termp.exe")
+	shimLauncher := filepath.Join(shimDir, "termpw.exe")
+	realLauncher := filepath.Join(currentDir, "termpw.exe")
+	for _, path := range []string{shimDaemon, shimLauncher, realLauncher} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	command, arguments, err := windowsTaskExec(shimDaemon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command != realLauncher {
+		t.Fatalf("command = %q, want real launcher %q (not Scoop shim %q)", command, realLauncher, shimLauncher)
+	}
+	if arguments != "" {
+		t.Fatalf("arguments = %q, want empty (launcher takes none)", arguments)
+	}
+}
+
+func TestWindowsTaskExecDoesNotFallBackToScoopConsoleShim(t *testing.T) {
+	shimDir := filepath.Join(t.TempDir(), "shims")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shimDaemon := filepath.Join(shimDir, "termp.exe")
+	shimLauncher := filepath.Join(shimDir, "termpw.exe")
+	for _, path := range []string{shimDaemon, shimLauncher} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	command, arguments, err := windowsTaskExec(shimDaemon)
+	if err == nil {
+		t.Fatalf("windowsTaskExec(%q) = (%q, %q, nil), want missing real-launcher error", shimDaemon, command, arguments)
+	}
+}
+
+func TestOwnsWindowsTaskCommandAcceptsRealScoopLauncher(t *testing.T) {
+	executable := `C:\Users\me\scoop\shims\termp.exe`
+	realLauncher := `C:\Users\me\scoop\apps\termp\current\termpw.exe`
+	if !ownsWindowsTaskCommand(realLauncher, executable) {
+		t.Fatalf("real Scoop launcher %q not owned by invocation %q", realLauncher, executable)
 	}
 }
 
