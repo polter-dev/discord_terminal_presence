@@ -2113,7 +2113,7 @@ func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) 
 		"InteractiveToken",
 		"LeastPrivilege",
 		`<Command>C:\Program Files &amp; Tools\&lt;termp&gt;\termp.exe</Command>`,
-		"<Arguments>start --foreground</Arguments>",
+		"<Arguments>start --foreground --internal-autostart</Arguments>",
 	} {
 		if !strings.Contains(xmlText, want) {
 			t.Fatalf("task XML missing %q:\n%s", want, xmlText)
@@ -2130,6 +2130,11 @@ func TestWindowsInstallCreatesAndRunsLogonTaskWithoutRealSchtasks(t *testing.T) 
 	}
 	if !hasArgCall(runner.calls, "schtasks", "/Run", "/TN", TaskName) {
 		t.Fatalf("Install calls = %#v, want immediate schtasks run", runner.calls)
+	}
+	for _, want := range []string{"termpw.exe was not found", "console window will briefly appear at every logon", "closing it before it hides stops Discord presence", `go build -ldflags="-H=windowsgui" ./cmd/termpw`} {
+		if !strings.Contains(state.Message, want) {
+			t.Fatalf("Install state warning = %q, want %q", state.Message, want)
+		}
 	}
 }
 

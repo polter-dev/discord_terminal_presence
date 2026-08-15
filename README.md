@@ -84,11 +84,26 @@ an archive install, download and replace it with the new release archive.
 
 ```sh
 go install github.com/polter-dev/discord_terminal_presence/cmd/termp@latest
+# Windows also needs the companion launcher beside termp.exe:
+go install -ldflags="-H=windowsgui" github.com/polter-dev/discord_terminal_presence/cmd/termpw@latest
 ```
 
 This builds `termp` and puts it in your Go bin directory. If your shell cannot
 find the command, make sure that directory is on your `PATH`. This source
 install works on Windows, macOS, and Linux.
+
+On Windows, keep `termpw.exe` beside `termp.exe`. The companion launcher lets
+Task Scheduler start the daemon without a persistent console window. For a
+hand-assembled build from a checkout, build both commands separately, then copy
+both executables to the same stable installation directory:
+
+```powershell
+go build ./cmd/termp
+go build -ldflags="-H=windowsgui" ./cmd/termpw
+$installDir = Join-Path $env:LOCALAPPDATA "Programs\termp"
+New-Item -ItemType Directory -Force $installDir
+Copy-Item termp.exe, termpw.exe $installDir
+```
 
 ## Everyday commands
 

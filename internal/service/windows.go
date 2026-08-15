@@ -70,7 +70,7 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 		return State{Supported: true, Path: TaskName}, fmt.Errorf("cannot resolve current user for scheduled task")
 	}
 
-	command, arguments, err := windowsTaskExec(exe)
+	command, arguments, fallback, err := windowsTaskExec(exe)
 	if err != nil {
 		return State{Supported: true, Path: TaskName}, err
 	}
@@ -87,7 +87,16 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 			return State{Supported: true, Installed: hadTask, Path: TaskName}, errors.Join(err, rollbackErr)
 		}
 	}
-	return s.Status(), nil
+	state := s.Status()
+	if fallback {
+		warning := windowsFallbackWarning(exe)
+		if state.Message != "" {
+			state.Message += "; " + warning
+		} else {
+			state.Message = warning
+		}
+	}
+	return state, nil
 }
 
 func (s windowsService) createTask(taskXML []byte) error {
@@ -160,7 +169,7 @@ func (s windowsService) rollbackInstall(previousTaskXML []byte, hadTask, snapsho
 // BuildWindowsTaskXML renders the logon task definition that runs command with
 // arguments. command is normally the companion launcher (termpw.exe), which
 // takes no arguments; when the launcher is unavailable it falls back to the
-// daemon itself with "start --foreground".
+// daemon itself with the foreground autostart marker.
 func BuildWindowsTaskXML(command, arguments, username string) ([]byte, error) {
 	const description = "Terminal Presence autostart"
 	esc := func(s string) string {
@@ -359,21 +368,32 @@ func foreignTaskError(message string) error {
 // beside termp.exe in every Windows archive.
 const windowsLauncherName = "termpw.exe"
 
+const windowsFallbackArguments = "start --foreground --internal-autostart"
+
 // windowsTaskExec selects what the logon task runs. When the companion launcher
 // sits beside the daemon (the normal shipped layout) the task runs it with no
 // arguments, so no console window is ever created (issue #473). When the
-// launcher is absent from a non-Scoop install — e.g. a hand-assembled install
-// — it falls back to the daemon's own foreground path so autostart still works,
-// at the cost of the window this fix removes. Scoop instead fails closed rather
+// launcher is absent from a non-Scoop install, for example a hand-assembled
+// install, it falls back to the daemon's own foreground path so autostart works.
+// The internal marker lets the daemon explain and release its console after
+// startup. Scoop instead fails closed rather
 // than registering one of its console shims.
-func windowsTaskExec(exe string) (command, arguments string, err error) {
+func windowsTaskExec(exe string) (command, arguments string, fallback bool, err error) {
 	if launcher := existingWindowsLauncher(exe); launcher != "" {
-		return launcher, "", nil
+		return launcher, "", false, nil
 	}
 	if isScoopShimExecutable(exe) {
-		return "", "", fmt.Errorf("cannot find the real Scoop autostart launcher at %s", filepath.Join(filepath.Dir(filepath.Dir(exe)), "apps", "termp", "current", windowsLauncherName))
+		return "", "", false, fmt.Errorf("cannot find the real Scoop autostart launcher at %s", filepath.Join(filepath.Dir(filepath.Dir(exe)), "apps", "termp", "current", windowsLauncherName))
 	}
-	return exe, "start --foreground", nil
+	return exe, windowsFallbackArguments, true, nil
+}
+
+func windowsFallbackWarning(exe string) string {
+	launcher := filepath.Join(filepath.Dir(exe), windowsLauncherName)
+	return fmt.Sprintf(
+		"termpw.exe was not found at \"%s\", so autostart was installed with the termp.exe fallback. A console window will briefly appear at every logon; closing it before it hides stops Discord presence. Place termpw.exe beside termp.exe, then run `termp autostart install` again. For source installs, run `go build -ldflags=\"-H=windowsgui\" ./cmd/termpw` and copy termpw.exe beside termp.exe",
+		launcher,
+	)
 }
 
 func isScoopShimExecutable(exe string) bool {

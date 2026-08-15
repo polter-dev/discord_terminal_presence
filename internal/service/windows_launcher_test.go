@@ -23,7 +23,7 @@ func TestWindowsTaskExecPrefersLauncherWhenPresent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	command, arguments, err := windowsTaskExec(daemon)
+	command, arguments, fallback, err := windowsTaskExec(daemon)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +33,9 @@ func TestWindowsTaskExecPrefersLauncherWhenPresent(t *testing.T) {
 	if arguments != "" {
 		t.Fatalf("arguments = %q, want empty (launcher takes none)", arguments)
 	}
+	if fallback {
+		t.Fatal("fallback = true, want launcher path")
+	}
 }
 
 func TestWindowsTaskExecFallsBackToDaemonWhenLauncherMissing(t *testing.T) {
@@ -41,15 +44,26 @@ func TestWindowsTaskExecFallsBackToDaemonWhenLauncherMissing(t *testing.T) {
 	if err := os.WriteFile(daemon, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command, arguments, err := windowsTaskExec(daemon)
+	command, arguments, fallback, err := windowsTaskExec(daemon)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if command != daemon {
 		t.Fatalf("command = %q, want daemon %q", command, daemon)
 	}
-	if arguments != "start --foreground" {
-		t.Fatalf("arguments = %q, want \"start --foreground\"", arguments)
+	if arguments != windowsFallbackArguments {
+		t.Fatalf("arguments = %q, want %q", arguments, windowsFallbackArguments)
+	}
+	if !fallback {
+		t.Fatal("fallback = false, want missing-launcher fallback")
+	}
+	launcher := filepath.Join(dir, windowsLauncherName)
+	warning := windowsFallbackWarning(daemon)
+	readableLauncher := `at "` + launcher + `", so autostart was installed`
+	for _, want := range []string{readableLauncher, "console window will briefly appear at every logon", "closing it before it hides stops Discord presence", `go build -ldflags="-H=windowsgui" ./cmd/termpw`, "termp autostart install"} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("fallback warning = %q, want %q", warning, want)
+		}
 	}
 }
 
@@ -72,7 +86,7 @@ func TestWindowsTaskExecBypassesScoopLauncherShim(t *testing.T) {
 		}
 	}
 
-	command, arguments, err := windowsTaskExec(shimDaemon)
+	command, arguments, fallback, err := windowsTaskExec(shimDaemon)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +95,9 @@ func TestWindowsTaskExecBypassesScoopLauncherShim(t *testing.T) {
 	}
 	if arguments != "" {
 		t.Fatalf("arguments = %q, want empty (launcher takes none)", arguments)
+	}
+	if fallback {
+		t.Fatal("fallback = true, want real Scoop launcher")
 	}
 }
 
@@ -97,9 +114,9 @@ func TestWindowsTaskExecDoesNotFallBackToScoopConsoleShim(t *testing.T) {
 		}
 	}
 
-	command, arguments, err := windowsTaskExec(shimDaemon)
+	command, arguments, fallback, err := windowsTaskExec(shimDaemon)
 	if err == nil {
-		t.Fatalf("windowsTaskExec(%q) = (%q, %q, nil), want missing real-launcher error", shimDaemon, command, arguments)
+		t.Fatalf("windowsTaskExec(%q) = (%q, %q, %t, nil), want missing real-launcher error", shimDaemon, command, arguments, fallback)
 	}
 }
 

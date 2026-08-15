@@ -118,8 +118,13 @@ func buildWindowsIntegrationHelper(t *testing.T) string {
 		t.Fatalf("write helper source: %v", err)
 	}
 	exe := filepath.Join(dir, "termp-integration-helper.exe")
-	if output, err := exec.Command("go", "build", "-o", exe, source).CombinedOutput(); err != nil {
-		t.Fatalf("build helper executable: %v\n%s", err, output)
+	// These fixtures cover path identity through junction, short-name, and
+	// substituted-drive aliases. Supply the normal sibling launcher so they do
+	// not incidentally exercise the separately tested missing-launcher fallback.
+	for _, outputPath := range []string{exe, filepath.Join(dir, windowsLauncherName)} {
+		if output, err := exec.Command("go", "build", "-o", outputPath, source).CombinedOutput(); err != nil {
+			t.Fatalf("build helper executable %s: %v\n%s", outputPath, err, output)
+		}
 	}
 	return exe
 }

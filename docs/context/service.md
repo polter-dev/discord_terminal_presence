@@ -110,9 +110,9 @@ The logon task runs the Windows-only companion launcher `termpw.exe`
 (`cmd/termpw`, linked `-H=windowsgui`) rather than `termp.exe start
 --foreground` (issue #473). The old console-subsystem daemon kept a console
 window open for the daemon's whole life under `InteractiveToken`; the launcher
-has no console of its own, spawns `termp.exe start --foreground` with
-`CREATE_NO_WINDOW`, waits for the daemon's lifetime so Task Scheduler still owns
-the process (`RestartOnFailure` and `schtasks /End` keep working), and
+has no console of its own, spawns `termp.exe start --foreground
+--internal-daemon-log` with `CREATE_NO_WINDOW`, waits for the daemon's lifetime so Task
+Scheduler still owns the process (`RestartOnFailure` and `schtasks /End` keep working), and
 propagates the daemon's exit status so a real crash still triggers restart.
 `windowsTaskExec` selects the launcher when it sits beside the daemon (the
 shipped layout: goreleaser ships `termpw.exe` in the Windows `.zip` and Scoop
@@ -122,9 +122,23 @@ and targets the real GUI launcher at `apps\termp\current\termpw.exe` (#510). It 
 accepting the old shim launcher as owned so reinstall can reconcile it in place. The
 launcher lookup fails closed when a Scoop shim has no real companion rather than
 registering either console shim. Non-Scoop installs still fall back to `termp.exe start
---foreground` when the launcher is absent (a hand-assembled install), trading the fix for
-a working autostart. `BuildWindowsTaskXML` takes an explicit command and
-arguments and omits `<Arguments>` when empty (the launcher takes none).
+--foreground --internal-autostart` when the launcher is absent (a hand-assembled install),
+preserving a working autostart. The install succeeds but returns an actionable warning
+that a console briefly appears at every logon, closing it before it hides stops presence,
+and building or placing `termpw.exe` beside the daemon removes the fallback. The expected
+launcher path is delimited with literal double quotes and rendered without Go escaping, so
+Windows users see the same single backslashes they would type or see in Explorer. The real
+Task Scheduler integration fixtures include a sibling launcher stub so their empty-message
+assertion remains focused on junction, 8.3 short-path, and substituted-drive ownership; the
+dedicated missing-launcher test owns the fallback warning contract. The internal
+marker is written only by this fallback task action. It makes the daemon set the console
+title, print a one-line explanation, open the rotating daemon log, and call `FreeConsole`
+so the Windows Terminal or console window does not persist. This is still the same
+task-owned daemon process, so `RestartOnFailure` and `schtasks /End` ownership are
+unchanged. The normal launcher path now passes the existing daemon-log marker too,
+without the fallback-only console marker, so shipped and hand-assembled autostart layouts
+both record lifecycle events (#545, #546). `BuildWindowsTaskXML` takes an explicit command
+and arguments and omits `<Arguments>` when empty (the launcher takes none).
 
 The task definition's executable command is its ownership check. Because the
 task now points at `termpw.exe` while the running binary is `termp.exe`,

@@ -835,7 +835,11 @@ func start(args []string) error {
 		return err
 	}
 	verbose = options.verbose
-	ownsDaemonLog := options.detachedChild || options.daemonLog
+	var autostartConsoleErr error
+	if options.autostartFallback {
+		autostartConsoleErr = releaseAutostartConsole(os.Stdout)
+	}
+	ownsDaemonLog := daemonOwnsLog(options)
 	if ownsDaemonLog {
 		logPath, err := detachedLogPath()
 		if err != nil {
@@ -850,6 +854,9 @@ func start(args []string) error {
 			return err
 		}
 		log.SetOutput(logWriter)
+		if autostartConsoleErr != nil {
+			log.Printf("autostart console release failed: %v", autostartConsoleErr)
+		}
 	}
 	if !ownsDaemonLog {
 		maybePrintFirstRunCTA(os.Stdout, config.DefaultPath(), isTerminal(os.Stdout))
@@ -908,6 +915,11 @@ func start(args []string) error {
 		log.Print(startupConfigError(cfg.Path, loadErr))
 	}
 	logConfigWarnings(cfg.Warnings)
+	daemonPath, pathErr := currentProcessExecutablePath()
+	if pathErr != nil {
+		daemonPath = fmt.Sprintf("unavailable (%v)", pathErr)
+	}
+	log.Print(daemonStartMessage(version, daemonPath, daemonStartTrigger(options)))
 
 	// Refreshing the update-check cache (and, if auto_update is on, installing)
 	// is best-effort and asynchronous: it is triggered before the run loop, but
@@ -917,7 +929,9 @@ func start(args []string) error {
 	// per refresh through the manager, so an opt-out applies from the next tick.
 	go runPeriodicAutomaticUpdate(ctx, manager.Current, version, releaseChecker, updatepkg.ExecRunner{Interactive: false}, daemonUpdateRefreshInterval)
 
-	return run(ctx, manager, control)
+	runErr := run(ctx, manager, control)
+	log.Print(daemonExitMessage(runErr, ctx.Err() != nil))
+	return runErr
 }
 
 // newWatchedConfigManager centralizes the safe startup ordering shared by the
@@ -1053,11 +1067,12 @@ func logConfigWatchFailure(err error) {
 }
 
 type startOptions struct {
-	detach        bool
-	detachedChild bool
-	daemonLog     bool
-	foreground    bool
-	verbose       bool
+	detach            bool
+	detachedChild     bool
+	daemonLog         bool
+	autostartFallback bool
+	foreground        bool
+	verbose           bool
 }
 
 func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (startOptions, error) {
@@ -1068,6 +1083,7 @@ func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (st
 	fs.BoolVar(&options.detach, "d", false, "start the daemon in the background")
 	fs.BoolVar(&options.detachedChild, detachedChildFlag, false, "internal detached child marker")
 	fs.BoolVar(&options.daemonLog, daemonLogFlag, false, "internal daemon log marker")
+	fs.BoolVar(&options.autostartFallback, autostartFallbackFlag, false, "internal autostart fallback marker")
 	fs.BoolVar(&options.foreground, "foreground", false, "keep the daemon attached to the terminal")
 	fs.BoolVar(&options.foreground, "f", false, "keep the daemon attached to the terminal")
 	fs.BoolVar(&options.verbose, "verbose", defaultVerbose, "enable verbose logging")
@@ -1088,6 +1104,42 @@ func parseStartOptions(args []string, defaultVerbose bool, output io.Writer) (st
 		return startOptions{}, err
 	}
 	return options, nil
+}
+
+func daemonOwnsLog(options startOptions) bool {
+	return options.detachedChild || options.daemonLog || options.autostartFallback
+}
+
+func daemonStartTrigger(options startOptions) string {
+	switch {
+	case options.autostartFallback:
+		return "Windows Task Scheduler fallback"
+	case options.detachedChild:
+		return "background start"
+	case options.daemonLog:
+		return "login service"
+	default:
+		return "foreground start"
+	}
+}
+
+func daemonStartMessage(currentVersion, executablePath, trigger string) string {
+	return terminaltext.SanitizeSingleLine(fmt.Sprintf(
+		"daemon started: version=%s path=\"%s\" trigger=%q",
+		currentVersion,
+		executablePath,
+		trigger,
+	))
+}
+
+func daemonExitMessage(runErr error, shutdownRequested bool) string {
+	reason := "run loop completed"
+	if runErr != nil {
+		reason = "error: " + runErr.Error()
+	} else if shutdownRequested {
+		reason = "shutdown requested"
+	}
+	return terminaltext.SanitizeSingleLine("daemon exiting: reason=" + reason)
 }
 
 func run(ctx context.Context, manager *config.Manager, control *daemonControl) error {

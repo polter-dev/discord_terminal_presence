@@ -10,8 +10,14 @@ import (
 )
 
 const (
-	detachedChildFlag = "internal-detached-child"
-	daemonLogFlag     = "internal-daemon-log"
+	detachedChildFlag     = "internal-detached-child"
+	daemonLogFlag         = "internal-daemon-log"
+	autostartFallbackFlag = "internal-autostart"
+)
+
+const (
+	autostartConsoleTitle  = "Terminal Presence daemon"
+	autostartConsoleBanner = "termp daemon: closing this window stops Discord presence; run `termp stop` to exit cleanly"
 )
 
 const (
