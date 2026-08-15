@@ -727,13 +727,42 @@ func TestManagerStartupTruncatedPastSettleBudgetFailClosesAndKeepsGuardArmed(t *
 	path := withConfigHome(t)
 	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
 
-	writer := newNonAtomicWriter(t)
-	writer.write(path, "scan_interval = \"5s\"\n", reloadSettleInterval*time.Duration(reloadSettleAttempts+5))
-	<-writer.truncated
+	settleStarted := time.Unix(0, 0)
+	settleNow := settleStarted
+	snapshot := func(string) fileSnapshot {
+		return fileSnapshot{exists: true}
+	}
+	manager := newManagerPathWith(
+		path,
+		snapshot,
+		func() time.Time { return settleNow },
+		func(delay time.Duration) { settleNow = settleNow.Add(delay) },
+	)
 
-	manager := NewManagerPath(path)
-	assertManagerEnabledFalse(t, manager, "after construction from ambiguous blank")
-	writer.wait(t)
+	manager.mu.RLock()
+	accepted := manager.accepted
+	pendingSnapshot := manager.pendingLoosening.snapshot
+	pendingFirstSeen := manager.pendingLoosening.firstSeen
+	pendingRetryArmed := manager.pendingLoosening.retry != nil
+	manager.mu.RUnlock()
+	if !ambiguousBlankConfigSnapshot(accepted) {
+		t.Fatalf("precondition not established: constructor accepted snapshot = %#v, want ambiguous blank", accepted)
+	}
+	if elapsed := settleNow.Sub(settleStarted); elapsed < reloadSettleInterval*time.Duration(reloadSettleAttempts) {
+		t.Fatalf("precondition not established: blank snapshot was stable for %v, want at least the %v settle budget", elapsed, reloadSettleInterval*time.Duration(reloadSettleAttempts))
+	}
+	if pendingFirstSeen.IsZero() || !pendingRetryArmed || !snapshotsEqual(pendingSnapshot, accepted) {
+		t.Fatalf("precondition not established: constructor loosening guard = {snapshot: %#v, firstSeen: %v, retryArmed: %t}, want guard armed for accepted ambiguous blank %#v", pendingSnapshot, pendingFirstSeen, pendingRetryArmed, accepted)
+	}
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() after constructor accepted ambiguous blank = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatalf("Current().Enabled = true after constructor accepted snapshot %#v; want false while the ambiguous-blank guard is pending", accepted)
+	}
+
+	writeConfig(t, path, "scan_interval = \"5s\"\n")
 
 	start := time.Now()
 	if err := manager.Reload(); err != nil {

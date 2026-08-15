@@ -50,7 +50,16 @@ func NewManager() *Manager {
 
 // NewManagerPath loads the config at path.
 func NewManagerPath(path string) *Manager {
-	snap := settledConfigSnapshotForRead(path)
+	return newManagerPathWith(path, snapshotConfigFile, time.Now, time.Sleep)
+}
+
+func newManagerPathWith(
+	path string,
+	snapshot func(string) fileSnapshot,
+	now func() time.Time,
+	sleep func(time.Duration),
+) *Manager {
+	snap, _ := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep, fileSnapshot{})
 	cfg, err := loadSnapshot(path, snap)
 	accepted := fileSnapshot{}
 	if err == nil {
