@@ -34,8 +34,15 @@ type TTYAtimeSource interface {
 // denied, process exited mid-scan, platform unsupported); callers must treat
 // that identically to "not owned" rather than defaulting to include the
 // process. See Process.Owned.
+//
+// createTime, when non-zero, is the process creation time captured at
+// identity time (ListIdentities). Implementations that can cheaply verify it
+// against the pid's current creation time must do so and fail (return an
+// error) on a mismatch: a mismatch means the pid was recycled between
+// identity capture and this ownership check (#569), so pid alone no longer
+// names the same OS process instance. A zero createTime skips that check.
 type OwnerResolver interface {
-	Owned(pid int32) (bool, error)
+	Owned(pid int32, createTime time.Time) (bool, error)
 }
 
 type episodeTTYAtimeSource interface {
@@ -77,7 +84,7 @@ func (e *presenceProcessEnricher) enrich(process Process, toolID string) Process
 	// early (no resolver, no TTY, unresolved path).
 	process.Owned = false
 	if e.owner != nil {
-		if owned, err := e.owner.Owned(process.Pid); err == nil {
+		if owned, err := e.owner.Owned(process.Pid, process.CreateTime); err == nil {
 			process.Owned = owned
 		}
 	}

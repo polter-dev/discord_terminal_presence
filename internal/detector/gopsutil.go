@@ -96,7 +96,7 @@ func (*GopsutilLister) Enrich(process Process) Process {
 	if err != nil {
 		return process
 	}
-	return enrichProcess(proc, process)
+	return enrichVerifyingInstance(proc, process)
 }
 
 // NewScanProcessEnricher shares tty and tmux snapshots across matched processes.
@@ -131,6 +131,13 @@ func (l *GopsutilLister) ttyAtimeSource() TTYAtimeSource {
 
 func processIdentity(proc *psprocess.Process) Process {
 	process := Process{Pid: proc.Pid}
+	// CreateTime is captured here, at identity time, so later independent
+	// lookups of the same pid (enrichment, ownership) can be cross-checked
+	// against it and reject a recycled pid rather than silently mixing
+	// fields from two different OS process instances (#569).
+	if millis, err := proc.CreateTime(); err == nil && millis > 0 {
+		process.CreateTime = time.UnixMilli(millis)
+	}
 	if resolved, err := proc.Name(); err == nil {
 		process.Name = boundIdentityField(resolved)
 	}
@@ -150,6 +157,23 @@ func processIdentity(proc *psprocess.Process) Process {
 		}
 	}
 	return process
+}
+
+// enrichVerifyingInstance enriches process from a freshly opened handle for
+// the same pid, but only accepts the result when the handle's creation time
+// still matches the creation time captured at identity time. A mismatch
+// means the pid was recycled between ListIdentities and this enrichment
+// (#569): a foreign process could otherwise have exited and been replaced by
+// one of the user's, publishing a foreign tool identity (matched from the
+// exited process's name/argv) alongside the new process's cwd. When
+// process.CreateTime is unknown (zero), the check is skipped rather than
+// discarding enrichment, since there is nothing to compare against.
+func enrichVerifyingInstance(proc *psprocess.Process, process Process) Process {
+	enriched := enrichProcess(proc, process)
+	if !process.CreateTime.IsZero() && !enriched.CreateTime.Equal(process.CreateTime) {
+		return process
+	}
+	return enriched
 }
 
 func enrichProcess(proc *psprocess.Process, process Process) Process {

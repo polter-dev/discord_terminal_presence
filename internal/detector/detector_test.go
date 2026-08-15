@@ -366,7 +366,7 @@ type fakeOwnerResolver struct {
 	errs  map[int32]error
 }
 
-func (f fakeOwnerResolver) Owned(pid int32) (bool, error) {
+func (f fakeOwnerResolver) Owned(pid int32, createTime time.Time) (bool, error) {
 	if err, ok := f.errs[pid]; ok {
 		return false, err
 	}

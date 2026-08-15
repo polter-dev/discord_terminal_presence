@@ -5,7 +5,9 @@ package detector
 import (
 	"errors"
 	"sync"
+	"time"
 
+	psprocess "github.com/shirou/gopsutil/v4/process"
 	"golang.org/x/sys/windows"
 )
 
@@ -26,13 +28,29 @@ func newSystemOwnerResolver() OwnerResolver {
 // Owned reports whether pid's process token owner SID matches the daemon's
 // own token owner SID. Any lookup failure (access denied, pid exited
 // mid-scan, token query failure) is returned as an error so the caller
-// fails closed rather than assuming ownership.
-func (r *windowsOwnerResolver) Owned(pid int32) (bool, error) {
+// fails closed rather than assuming ownership. When createTime is non-zero,
+// it must match pid's current creation time or Owned fails closed: a
+// mismatch means pid was recycled since identity capture and no longer
+// names the same process (#569).
+func (r *windowsOwnerResolver) Owned(pid int32, createTime time.Time) (bool, error) {
 	r.once.Do(func() {
 		r.currentSID, r.currentErr = tokenOwnerSID(windows.GetCurrentProcessToken())
 	})
 	if r.currentErr != nil {
 		return false, r.currentErr
+	}
+	if !createTime.IsZero() {
+		proc, err := psprocess.NewProcess(pid)
+		if err != nil {
+			return false, err
+		}
+		millis, err := proc.CreateTime()
+		if err != nil {
+			return false, err
+		}
+		if millis <= 0 || !time.UnixMilli(millis).Equal(createTime) {
+			return false, errors.New("process identity changed since it was first observed (pid reused)")
+		}
 	}
 	sid, err := processOwnerSID(uint32(pid))
 	if err != nil {
