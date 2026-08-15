@@ -59,8 +59,10 @@ disable/uninstall stop the tracked daemon and report partial failure if it survi
 The top-level stop command bounds autostart state discovery with `StatusContext` and
 charges that probe plus daemon shutdown against the same five-second deadline, so a hung
 service manager cannot postpone daemon signaling indefinitely or extend the command past
-its lifecycle budget. A prompt probe still drives relaunch-aware PID handling and the
-successful-stop autostart hint (#515).
+its lifecycle budget. The shutdown wait shares its remaining budget across a distinct
+publisher and PID-file owner instead of granting each target a fresh timeout (#529). A
+prompt probe still drives relaunch-aware PID handling and the successful-stop autostart
+hint (#515).
 
 Connect never starts a daemon. It prefers the validated publisher, then the PID owner.
 Windows uses a current-user PID-addressed named pipe and verifies the server process.
