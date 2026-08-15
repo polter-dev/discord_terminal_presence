@@ -42,7 +42,7 @@ func TestHuntFourQuoteMultilineBypassesNestingGuard(t *testing.T) {
 }
 
 // TestHuntFourQuoteMultilineLiteralBypassesNestingGuard is the same bypass
-// via stateMultilineLiteral (`'''...''''`), named suspect in #574 alongside
+// via stateMultilineLiteral (`”'...””`), named suspect in #574 alongside
 // the multiline-basic case but not separately reproduced there.
 func TestHuntFourQuoteMultilineLiteralBypassesNestingGuard(t *testing.T) {
 	deep := buildNestedInlineTOML(maxTOMLNestingDepth + 50)

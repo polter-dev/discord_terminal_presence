@@ -1,3 +1,9 @@
+//go:build !windows
+
+// FIFO and symlink behavior is exercised on Unix only: syscall.Mkfifo does
+// not exist on Windows, and creating a symlink there needs elevation the CI
+// runner does not have.
+
 package config
 
 import (
