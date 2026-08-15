@@ -13,8 +13,12 @@ retry-bounded `MoveFileEx` replacement; `replace_other.go` uses rename.
 
 **Invariants / gotchas:** The store holds at most 1,024 entries, keeping the most recent
 then most-used entries when capped. Loads reject files over 1 MiB. `Record` saturates
-`Count` at `math.MaxInt` instead of overflowing. Missing files load empty; malformed JSON
-is tolerated as empty, while I/O and oversize errors are returned with an empty store.
+`Count` at `math.MaxInt` instead of overflowing. A missing file loads empty with a nil
+error. A corrupt, oversize, or otherwise unreadable file also loads an empty store, but
+`Load` now returns the underlying error instead of nil (#567): absent and corrupt are not
+the same outcome, and a caller must not treat a non-nil error as license to save the
+returned empty store back over the real file. `cmd/termp/main.go`'s daemon startup does
+exactly that: a load error disables `usage.Save` for the rest of the run.
 
 `Prune` removes an ID only when it is absent from the complete built-in-plus-custom
 registry and its `LastSeen` is older than 90 days. Process-scan absence is never a pruning
