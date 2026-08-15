@@ -206,16 +206,85 @@ func removeUninstallTarget(target uninstallRemovalTarget, removeFile, removeAll 
 	if err := validateUninstallTarget(target); err != nil {
 		return err
 	}
-	var err error
 	if target.directory {
-		err = removeAll(target.path)
-	} else {
-		err = removeFile(target.path)
+		return removeKnownFilesFromDirectory(target, removeFile, removeAll)
 	}
+	err := removeFile(target.path)
 	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	return fmt.Errorf("remove %s %s: %w", target.label, target.path, err)
+}
+
+// knownUninstallFiles lists the exact basenames full uninstall may remove
+// from a termp-owned directory target, plus the atomic-write temp-file
+// prefix config/usage/episode/update all share (`<name>.tmp-<random>`,
+// cleaned up before the final rename). A directory target's log-owned files
+// are also included here because on Linux the update-cache directory and the
+// detached daemon log directory are the same XDG cache directory. Anything
+// else in one of these directories is left alone: it is the user's, not
+// termp's (issue #562).
+var knownUninstallFiles = []string{
+	"config.toml",
+	"usage.json",
+	"presence.json",
+	"update-check.json",
+	"termp.log",
+	"termp.log.lock",
+	"termp.log.1",
+	"termp.log.2",
+	"termp.log.3",
+}
+
+func isKnownUninstallFile(name string) bool {
+	for _, known := range knownUninstallFiles {
+		if name == known || strings.HasPrefix(name, known+".tmp-") {
+			return true
+		}
+	}
+	return false
+}
+
+// removeKnownFilesFromDirectory removes only the termp-owned files it
+// recognizes inside target's directory, then removes the directory itself
+// only once nothing else is left in it. Full uninstall's directory targets
+// are termp's own namespace directories (~/.config/termp and similar), but
+// os.RemoveAll used to delete everything inside them regardless of whether
+// termp created it, including a user's own file placed there (issue #562).
+// A directory holding only recognized files still ends up fully removed, so
+// this preserves the "everything termp created is gone" promise without the
+// blast radius of a full recursive delete.
+func removeKnownFilesFromDirectory(target uninstallRemovalTarget, removeFile, removeAll func(string) error) error {
+	entries, err := os.ReadDir(target.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read %s directory %s: %w", target.label, target.path, err)
+	}
+	var removalErrors []error
+	unknownRemains := false
+	for _, entry := range entries {
+		name := entry.Name()
+		if !isKnownUninstallFile(name) {
+			unknownRemains = true
+			continue
+		}
+		full := filepath.Join(target.path, name)
+		if err := removeFile(full); err != nil && !errors.Is(err, os.ErrNotExist) {
+			removalErrors = append(removalErrors, fmt.Errorf("remove %s file %s: %w", target.label, full, err))
+		}
+	}
+	if err := errors.Join(removalErrors...); err != nil {
+		return err
+	}
+	if unknownRemains {
+		return nil
+	}
+	if err := removeAll(target.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s %s: %w", target.label, target.path, err)
+	}
+	return nil
 }
 
 func validateUninstallTarget(target uninstallRemovalTarget) error {

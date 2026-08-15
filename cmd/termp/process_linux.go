@@ -66,7 +66,7 @@ func processStartTime(pid int) (uint64, error) {
 	return startTime, nil
 }
 
-func signalTermpProcessAtPath(pid int, expectedPath string) error {
+func signalTermpProcessAtPath(pid int, expectedPath string, expectedStartTime uint64, startTimeKnown bool) error {
 	if pid <= 0 {
 		return errors.New("invalid PID")
 	}
@@ -84,9 +84,16 @@ func signalTermpProcessAtPath(pid int, expectedPath string) error {
 		if !pidfdInfoMatchesPID(fdinfo, pid) {
 			return errors.New("process identity changed during validation")
 		}
+		// The pidfd is bound to the exact task that owned pid at open time,
+		// but rereading start time still goes through the pid number: if pid
+		// was reused for an unrelated process in the gap before pidfd_open,
+		// this recorded-start-time check catches it (issue #560).
+		if err := requireLinuxStartTimeMatches(pid, expectedStartTime, startTimeKnown); err != nil {
+			return err
+		}
 		if err := unix.PidfdSendSignal(pidfd, unix.SIGTERM, nil, 0); err != nil {
 			if pidfdUnavailable(err) {
-				return signalLinuxByPID(pid, expectedPath)
+				return signalLinuxByPID(pid, expectedPath, expectedStartTime, startTimeKnown)
 			}
 			return fmt.Errorf("pidfd signal failed: %w", err)
 		}
@@ -98,15 +105,32 @@ func signalTermpProcessAtPath(pid int, expectedPath string) error {
 
 	// Older kernels and restricted runtimes cannot create pidfds. Re-check the
 	// full identity immediately before the PID-based signal.
-	return signalLinuxByPID(pid, expectedPath)
+	return signalLinuxByPID(pid, expectedPath, expectedStartTime, startTimeKnown)
 }
 
-func signalLinuxByPID(pid int, expectedPath string) error {
+func signalLinuxByPID(pid int, expectedPath string, expectedStartTime uint64, startTimeKnown bool) error {
 	if err := validateLinuxProcess(pid, expectedPath); err != nil {
+		return err
+	}
+	if err := requireLinuxStartTimeMatches(pid, expectedStartTime, startTimeKnown); err != nil {
 		return err
 	}
 	if err := unix.Kill(pid, unix.SIGTERM); err != nil {
 		return fmt.Errorf("signal failed: %w", err)
+	}
+	return nil
+}
+
+func requireLinuxStartTimeMatches(pid int, expectedStartTime uint64, startTimeKnown bool) error {
+	if !startTimeKnown {
+		return nil
+	}
+	actualStartTime, err := processStartTime(pid)
+	if err != nil {
+		return fmt.Errorf("cannot determine process start time: %w", err)
+	}
+	if actualStartTime != expectedStartTime {
+		return errors.New("process start time does not match recorded termp daemon")
 	}
 	return nil
 }

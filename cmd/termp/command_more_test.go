@@ -1139,7 +1139,7 @@ func TestStopDaemonRejectsMismatchedStartTime(t *testing.T) {
 	_, err = stopDaemon(path, time.Second, time.Millisecond,
 		func(int) bool { return true },
 		func(int, string) bool { return true },
-		func(int, string) error {
+		func(int, string, uint64, bool) error {
 			signaled = true
 			return nil
 		},

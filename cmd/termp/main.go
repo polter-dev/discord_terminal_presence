@@ -2058,6 +2058,22 @@ func daemonAlreadyRunningError(record daemonPIDRecord, currentPath string) error
 
 var lookupProcessStartTime = processStartTime
 
+// processIdentityMatches falls back to liveness plus looksLikeTermp (owner
+// and executable path) when the start-time lookup itself errors, rather than
+// failing closed. This is deliberate, not an oversight: lookupProcessStartTime
+// reads live process state (kern.proc.pid on Darwin, /proc/<pid>/stat on
+// Linux, a fresh handle's GetProcessTimes on Windows, `ps -o lstart=`
+// elsewhere) strictly after alive(pid) already observed the process running,
+// so the dominant real failure mode is the process exiting in the gap
+// between those two checks -- an ordinary, non-adversarial race, not a rare
+// edge case, especially while polling a daemon that is in the middle of
+// shutting down. Failing closed here would make `termp stop` and friends
+// spuriously refuse to signal a daemon whenever it happened to exit (or a
+// permission-restricted procfs/ps briefly errored) right as this check ran.
+// The residual protection when the fallback triggers is looksLikeTermp,
+// which still requires same-user ownership and an executable image path
+// matching the record, so a wrongly authorized victim is bounded to another
+// termp process at the recorded path, not an arbitrary process (issue #560).
 func processIdentityMatches(pid int, expectedStartTime uint64, expectedPath string, alive func(int) bool, looksLikeTermp func(int, string) bool) bool {
 	if pid <= 0 || !alive(pid) || !looksLikeTermp(pid, expectedPath) {
 		return false
@@ -2954,7 +2970,7 @@ func removeUnreadablePIDFile(path string) error {
 	return nil
 }
 
-func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int) bool, looksLikeTermp func(int, string) bool, signal func(int, string) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
+func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int) bool, looksLikeTermp func(int, string) bool, signal func(pid int, expectedPath string, expectedStartTime uint64, startTimeKnown bool) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
 	record, info, err := readPIDIdentity(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2982,7 +2998,7 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int
 	if !pidRecordIdentityMatches(record, alive, looksLikeTermp) {
 		return 0, fmt.Errorf("refusing to signal pid %d: process identity changed before signaling", pid)
 	}
-	if err := signal(pid, record.ExecutablePath); err != nil {
+	if err := signal(pid, record.ExecutablePath, record.StartTime, !record.StartTimeUnavailable); err != nil {
 		return 0, fmt.Errorf("refusing to signal pid %d: %w", pid, err)
 	}
 	if !waitForProcessExit(record, timeout, pollInterval, alive, looksLikeTermp, sleep) {
@@ -3001,7 +3017,7 @@ func stopDaemon(path string, timeout, pollInterval time.Duration, alive func(int
 	return pid, nil
 }
 
-func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pollInterval time.Duration, alive func(int) bool, looksLikeTermp func(int, string) bool, signal func(int, string) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
+func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pollInterval time.Duration, alive func(int) bool, looksLikeTermp func(int, string) bool, signal func(pid int, expectedPath string, expectedStartTime uint64, startTimeKnown bool) error, sleep func(time.Duration), autostartWillRelaunch bool) (int, error) {
 	record, info, readErr := readPIDIdentity(path)
 	unreadable := errors.Is(readErr, errPIDRecordUnparseable)
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) && !unreadable {
@@ -3041,7 +3057,7 @@ func stopDaemonAndPublisher(path string, publisher daemonPIDRecord, timeout, pol
 		if !pidRecordIdentityMatches(target, alive, looksLikeTermp) {
 			return 0, fmt.Errorf("refusing to signal pid %d: process identity changed before signaling", target.PID)
 		}
-		if err := signal(target.PID, target.ExecutablePath); err != nil {
+		if err := signal(target.PID, target.ExecutablePath, target.StartTime, !target.StartTimeUnavailable); err != nil {
 			return 0, fmt.Errorf("refusing to signal pid %d: %w", target.PID, err)
 		}
 	}
