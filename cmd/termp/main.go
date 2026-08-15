@@ -2402,9 +2402,27 @@ func bridgeWatchConnection(ctx context.Context, program *tea.Program, interval t
 }
 
 func watchDiscordConnected(now time.Time, probe func() error) bool {
-	record, _, err := readPIDIdentity(pidFilePath())
-	if err == nil && pidRecordIdentityMatches(record, processAlive, processLooksLikeTermpAtPath) {
-		state, ok := readFreshDaemonDiscordState(daemonDiscordStatePath(), now, daemonDiscordStateStaleAfter)
+	return watchDiscordConnectedWith(
+		now,
+		pidFilePath(),
+		daemonDiscordStatePath(),
+		processAlive,
+		processLooksLikeTermpAtPath,
+		probe,
+	)
+}
+
+func watchDiscordConnectedWith(
+	now time.Time,
+	pidPath string,
+	discordStatePath string,
+	alive func(int) bool,
+	looksLikeTermp func(int, string) bool,
+	probe func() error,
+) bool {
+	record := knownDaemonRecord(pidPath, discordStatePath, alive, looksLikeTermp)
+	if record.PID > 0 {
+		state, ok := readFreshDaemonDiscordState(discordStatePath, now, daemonDiscordStateStaleAfter)
 		return discordConnectedFromStateOrProbe(record.PID, state, ok, probe)
 	}
 	return probe() == nil
