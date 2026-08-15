@@ -48,7 +48,10 @@ func TestValidateCustomToolRejectsOverlongRegex(t *testing.T) {
 // is exactly such a value: it fails to compile standalone (unexpected ")")
 // but compiles fine once concatenated inside the wrapper.
 func TestCompileUserRegexRejectsWrapperGroupClosingValue(t *testing.T) {
-	const sneaky = "a)|(.*"
+	// Built at runtime rather than written as a literal: staticcheck SA1000
+	// flags an invalid constant regexp pattern, and here the invalidity is the
+	// entire point of the test.
+	sneaky := "a)" + "|(.*"
 
 	// Confirm the premise: the raw value is invalid on its own, but the
 	// wrapped form compiles fine, which is exactly what makes this worth
