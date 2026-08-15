@@ -515,6 +515,15 @@ decoding the newest snapshot and the destructive path producing
 `ErrConfigBeingWritten`. Command-level coverage asserts setup and settings leave the
 file byte-identical when they receive that error.
 
+Until #576, `snapshotConfigFile` (the unexported primitive every settled-read path funnels
+through, including `Manager.Reload` on the fsnotify goroutine while holding `reloadMu`)
+called `os.Open` on the config path with no `O_NONBLOCK` and no mode check, so a named pipe
+with no writer at that path blocked the open forever, and every other config read (and the
+watcher) stopped along with it. It now `Lstat`s the path first and refuses to open any
+non-regular destination, an `errors.New`-free `fmt.Errorf` the same shape `InitFile` already
+uses on the write side. Unix only in practice; a FIFO needs a non-regular file at the config
+path, which a user would have to create themselves.
+
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically
 renames it. New files are created `0600`; forced replacement of an existing regular file

@@ -556,7 +556,25 @@ type fileSnapshot struct {
 
 // snapshotConfigFile reads path once, applying the same existence and size
 // rules as LoadPath. It never runs TOML decoding.
+//
+// It Lstats path before opening it and refuses every non-regular
+// destination, the same guard InitFile already applies on the write side
+// (#386). Without this, a named pipe with no writer at the config path
+// blocks os.Open forever: every settled-read path funnels through this one
+// primitive, and Manager.Reload holds reloadMu on the fsnotify goroutine, so
+// a FIFO at the config path stops the watcher along with every other config
+// read (#576).
 func snapshotConfigFile(path string) fileSnapshot {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileSnapshot{exists: false}
+	}
+	if err != nil {
+		return fileSnapshot{exists: true, err: err}
+	}
+	if !info.Mode().IsRegular() {
+		return fileSnapshot{exists: true, err: fmt.Errorf("refuse to read non-regular config file %s", path)}
+	}
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return fileSnapshot{exists: false}
@@ -565,7 +583,7 @@ func snapshotConfigFile(path string) fileSnapshot {
 		return fileSnapshot{exists: true, err: err}
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	info, err = file.Stat()
 	if err != nil {
 		return fileSnapshot{exists: true, err: err}
 	}
