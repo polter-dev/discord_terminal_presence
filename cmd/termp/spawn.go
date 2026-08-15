@@ -65,7 +65,7 @@ func spawnDetachedStart(enableVerbose bool) (int, string, error) {
 		return 0, "", fmt.Errorf("open null input: %w", err)
 	}
 	defer nullFile.Close()
-	panicLog, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	panicLog, err := openLogFile(logPath, 0o600)
 	if err != nil {
 		return 0, "", fmt.Errorf("open detached daemon panic log: %w", err)
 	}

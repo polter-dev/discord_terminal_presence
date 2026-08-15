@@ -30,8 +30,15 @@ func newRotatingLogWriter(path string, maxBytes int64, retained int) (*rotatingL
 	if retained < 1 {
 		return nil, fmt.Errorf("invalid retained daemon log count %d", retained)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create daemon log directory: %w", err)
+	}
+	// MkdirAll is a no-op on an already-existing directory, so it never
+	// tightens a directory that was created earlier under a looser umask or
+	// by an older version (issue #561).
+	if err := tightenLogDirectoryPermissions(dir); err != nil {
+		return nil, fmt.Errorf("tighten daemon log directory permissions: %w", err)
 	}
 	lockFile, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -134,7 +141,7 @@ func (w *rotatingLogWriter) openCurrentLocked() error {
 		_ = w.file.Close()
 		w.file = nil
 	}
-	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := openLogFile(w.path, 0o600)
 	if err != nil {
 		return fmt.Errorf("open daemon log: %w", err)
 	}
