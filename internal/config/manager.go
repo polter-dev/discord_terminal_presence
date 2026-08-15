@@ -152,9 +152,9 @@ func (m *Manager) reload() error {
 // point makes it impossible for a new reload path to bypass the rule
 // accidentally, and applying it to ANY privacy-loosening transition (not just
 // the global enabled flag) is what #447 requires: a truncating writer that
-// drops a directory allowlist, a show_directory/basename override, or a
-// per-tool opt-out is exactly as dangerous as one that drops enabled, and
-// used to have no protection at all.
+// drops or widens a directory allowlist, drops a show_directory/basename
+// override, or drops a per-tool opt-out is exactly as dangerous as one that
+// drops enabled, and used to have no protection at all.
 func (m *Manager) acceptReloadLocked(cfg Config, snap fileSnapshot, enabledDefined bool) {
 	ambiguousEnabledLoosening := !m.current.Enabled && cfg.Enabled && !enabledDefined
 	globalEnabledChanged := m.current.Enabled != cfg.Enabled
