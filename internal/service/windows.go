@@ -391,7 +391,7 @@ func windowsTaskExec(exe string) (command, arguments string, fallback bool, err 
 func windowsFallbackWarning(exe string) string {
 	launcher := filepath.Join(filepath.Dir(exe), windowsLauncherName)
 	return fmt.Sprintf(
-		"termpw.exe was not found at %q, so autostart was installed with the termp.exe fallback. A console window will briefly appear at every logon; closing it before it hides stops Discord presence. Place termpw.exe beside termp.exe, then run `termp autostart install` again. For source installs, run `go build -ldflags=\"-H=windowsgui\" ./cmd/termpw` and copy termpw.exe beside termp.exe",
+		"termpw.exe was not found at \"%s\", so autostart was installed with the termp.exe fallback. A console window will briefly appear at every logon; closing it before it hides stops Discord presence. Place termpw.exe beside termp.exe, then run `termp autostart install` again. For source installs, run `go build -ldflags=\"-H=windowsgui\" ./cmd/termpw` and copy termpw.exe beside termp.exe",
 		launcher,
 	)
 }

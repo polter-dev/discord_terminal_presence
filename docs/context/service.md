@@ -125,7 +125,12 @@ registering either console shim. Non-Scoop installs still fall back to `termp.ex
 --foreground --internal-autostart` when the launcher is absent (a hand-assembled install),
 preserving a working autostart. The install succeeds but returns an actionable warning
 that a console briefly appears at every logon, closing it before it hides stops presence,
-and building or placing `termpw.exe` beside the daemon removes the fallback. The internal
+and building or placing `termpw.exe` beside the daemon removes the fallback. The expected
+launcher path is delimited with literal double quotes and rendered without Go escaping, so
+Windows users see the same single backslashes they would type or see in Explorer. The real
+Task Scheduler integration fixtures include a sibling launcher stub so their empty-message
+assertion remains focused on junction, 8.3 short-path, and substituted-drive ownership; the
+dedicated missing-launcher test owns the fallback warning contract. The internal
 marker is written only by this fallback task action. It makes the daemon set the console
 title, print a one-line explanation, open the rotating daemon log, and call `FreeConsole`
 so the Windows Terminal or console window does not persist. This is still the same

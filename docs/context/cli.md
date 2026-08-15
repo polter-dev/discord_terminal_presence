@@ -600,6 +600,8 @@ trigger, then records exit with its error, shutdown request, or completed-loop
 reason. `termpw.exe` now passes the existing daemon-log marker, while the no-launcher
 fallback marker also sets the Windows console title, prints the one-line
 closing warning, and releases the console before daemon initialization (#545, #546).
+Lifecycle records wrap the executable path in literal double quotes without Go-escaping
+Windows backslashes, keeping the logged path readable while clearly delimiting its end.
 Manual foreground starts do not open the file log; their lifecycle records go to the
 attached terminal. Linux autostart continues to use journald.
 On Windows, stderr rebinding closes the previous owning `*os.File` after replacing both

@@ -630,10 +630,9 @@ func TestReleaseAutostartConsoleLabelsExplainsAndReleases(t *testing.T) {
 
 func TestDaemonLifecycleMessagesAreDefaultLevelAndSanitized(t *testing.T) {
 	startLine := daemonStartMessage("v1.2.3", `C:\Program Files\termp\termp.exe`, "Windows Task Scheduler fallback")
-	for _, want := range []string{"daemon started", "version=v1.2.3", `path="C:\\Program Files\\termp\\termp.exe"`, `trigger="Windows Task Scheduler fallback"`} {
-		if !strings.Contains(startLine, want) {
-			t.Fatalf("start message = %q, want %q", startLine, want)
-		}
+	wantStartLine := `daemon started: version=v1.2.3 path="C:\Program Files\termp\termp.exe" trigger="Windows Task Scheduler fallback"`
+	if startLine != wantStartLine {
+		t.Fatalf("start message = %q, want %q", startLine, wantStartLine)
 	}
 	if got := daemonExitMessage(nil, true); got != "daemon exiting: reason=shutdown requested" {
 		t.Fatalf("shutdown exit message = %q", got)

@@ -59,7 +59,8 @@ func TestWindowsTaskExecFallsBackToDaemonWhenLauncherMissing(t *testing.T) {
 	}
 	launcher := filepath.Join(dir, windowsLauncherName)
 	warning := windowsFallbackWarning(daemon)
-	for _, want := range []string{launcher, "console window will briefly appear at every logon", "closing it before it hides stops Discord presence", `go build -ldflags="-H=windowsgui" ./cmd/termpw`, "termp autostart install"} {
+	readableLauncher := `at "` + launcher + `", so autostart was installed`
+	for _, want := range []string{readableLauncher, "console window will briefly appear at every logon", "closing it before it hides stops Discord presence", `go build -ldflags="-H=windowsgui" ./cmd/termpw`, "termp autostart install"} {
 		if !strings.Contains(warning, want) {
 			t.Fatalf("fallback warning = %q, want %q", warning, want)
 		}

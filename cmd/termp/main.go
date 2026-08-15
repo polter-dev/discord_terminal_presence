@@ -1125,7 +1125,7 @@ func daemonStartTrigger(options startOptions) string {
 
 func daemonStartMessage(currentVersion, executablePath, trigger string) string {
 	return terminaltext.SanitizeSingleLine(fmt.Sprintf(
-		"daemon started: version=%s path=%q trigger=%q",
+		"daemon started: version=%s path=\"%s\" trigger=%q",
 		currentVersion,
 		executablePath,
 		trigger,
