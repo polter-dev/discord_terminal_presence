@@ -9,7 +9,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -25,9 +24,6 @@ import (
 // Unix only: Windows named pipes are a different object entirely and are
 // not reachable through a filesystem path the same way.
 func TestHuntFifoConfigPathDoesNotHang(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("FIFOs are a Unix filesystem concept; not reproducible on Windows")
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
@@ -59,9 +55,6 @@ func TestHuntFifoConfigPathDoesNotHang(t *testing.T) {
 // construction counterpart: NewManagerPath must not hang either, since a
 // stuck construction call also means a stuck daemon startup.
 func TestHuntFifoConfigPathDoesNotHangManagerConstruction(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("FIFOs are a Unix filesystem concept; not reproducible on Windows")
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
@@ -92,9 +85,6 @@ func TestHuntFifoConfigPathDoesNotHangManagerConstruction(t *testing.T) {
 // against, and snapshotConfigFile now uses os.Stat (which follows the link)
 // instead.
 func TestSymlinkedConfigPathStillReadable(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation needs elevated privileges on Windows by default")
-	}
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real-config.toml")
 	writeConfig(t, real, "enabled = true\n")
@@ -122,9 +112,6 @@ func TestSymlinkedConfigPathStillReadable(t *testing.T) {
 // file, must still be refused. os.Stat follows the link and reports the
 // FIFO's mode, so this is caught the same way a direct FIFO is.
 func TestSymlinkToFifoConfigPathDoesNotHang(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("FIFOs are a Unix filesystem concept; not reproducible on Windows")
-	}
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "real-fifo")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
