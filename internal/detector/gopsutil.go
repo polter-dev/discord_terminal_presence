@@ -4,9 +4,38 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	psprocess "github.com/shirou/gopsutil/v4/process"
 )
+
+// maxIdentityFieldBytes bounds Name, Argv0, and Cmdline before they reach the
+// registry matcher. Catalog matching (registry.processMatchIdentity) only
+// ever inspects process identity plus the immediate subcommand argument, so
+// a few KiB is far more than any real tool invocation needs, while an
+// unbounded flattened Cmdline is attacker-controlled: any process can set an
+// arbitrarily long argv, and matching costs about 360ns/byte, so a handful of
+// multi-MiB command lines can push one scan past the default scan interval
+// (#565). The structured Argv slice is left intact for the entrypoint/
+// subcommand checks that only ever look at its first couple of elements.
+const maxIdentityFieldBytes = 4096
+
+// boundIdentityField truncates s to at most maxIdentityFieldBytes bytes
+// without splitting a multi-byte UTF-8 rune.
+func boundIdentityField(s string) string {
+	if len(s) <= maxIdentityFieldBytes {
+		return s
+	}
+	b := s[:maxIdentityFieldBytes]
+	for len(b) > 0 {
+		r, size := utf8.DecodeLastRuneInString(b)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		b = b[:len(b)-1]
+	}
+	return b
+}
 
 // GopsutilLister reads processes through gopsutil.
 type GopsutilLister struct {
@@ -103,21 +132,21 @@ func (l *GopsutilLister) ttyAtimeSource() TTYAtimeSource {
 func processIdentity(proc *psprocess.Process) Process {
 	process := Process{Pid: proc.Pid}
 	if resolved, err := proc.Name(); err == nil {
-		process.Name = resolved
+		process.Name = boundIdentityField(resolved)
 	}
 	if resolved, err := proc.Exe(); err == nil {
 		process.Exe = resolved
 	}
 	if args, err := proc.CmdlineSlice(); err == nil {
 		if len(args) > 0 {
-			process.Argv0 = args[0]
+			process.Argv0 = boundIdentityField(args[0])
 			process.Argv = append([]string(nil), args...)
-			process.Cmdline = strings.Join(args, " ")
+			process.Cmdline = boundIdentityField(strings.Join(args, " "))
 		}
 	}
 	if process.Cmdline == "" {
 		if resolved, err := proc.Cmdline(); err == nil {
-			process.Cmdline = resolved
+			process.Cmdline = boundIdentityField(resolved)
 		}
 	}
 	return process
