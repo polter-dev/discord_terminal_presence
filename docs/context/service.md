@@ -15,6 +15,13 @@ Windows autostart companion launcher lives in `cmd/termpw` (`-H=windowsgui`).
 definitions are owned by their executable command; foreign definitions are not modified
 without force.
 
+Install snapshots the prior platform definition and activation state before replacing it.
+If post-write activation fails, macOS and Linux restore the prior file or remove a new one,
+then restore the prior loaded/enabled state; Windows restores or deletes the scheduled task
+and restarts it only when it was running before the attempt. Rollback failures are joined
+with the original activation error so a reported failure does not hide incomplete cleanup
+(#519).
+
 Executable resolution and install validation errors name both the failed operation and
 the path being checked, so platform path errors retain actionable termp context.
 Forced install still makes the supplied path absolute, but deliberately bypasses

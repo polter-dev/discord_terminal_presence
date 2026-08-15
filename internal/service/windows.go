@@ -31,6 +31,21 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 	if status.ForeignTask && !force {
 		return status, foreignTaskError(status.Message)
 	}
+	hadTask := status.Installed || status.ForeignTask
+	var previousTaskXML []byte
+	previousRunning := false
+	if launch && hadTask {
+		var err error
+		previousTaskXML, err = s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/XML")
+		if err != nil {
+			return State{Supported: true, Installed: true, Path: TaskName}, fmt.Errorf("snapshot scheduled task definition: %w: %s", err, strings.TrimSpace(string(previousTaskXML)))
+		}
+		out, err := s.runner.Run("schtasks", "/Query", "/TN", TaskName, "/FO", "CSV", "/V", "/NH")
+		if err != nil {
+			return State{Supported: true, Installed: true, Path: TaskName}, fmt.Errorf("snapshot scheduled task activation: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		previousRunning = windowsTaskCSVIsRunning(out)
+	}
 	// Persist the stable invocation path exactly as it was resolved for install
 	// (a Scoop `current` junction or shim, a Homebrew/hand-placed path, etc.).
 	// Deliberately do NOT junction-follow here: canonicalizing through Scoop's
@@ -63,22 +78,35 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 	if err != nil {
 		return State{Supported: true, Path: TaskName}, err
 	}
+	if err := s.createTask(taskXML); err != nil {
+		return State{Supported: true, Path: TaskName}, err
+	}
+	if launch {
+		if err := s.runTask(); err != nil {
+			rollbackErr := s.rollbackInstall(previousTaskXML, hadTask, previousRunning)
+			return State{Supported: true, Installed: hadTask, Path: TaskName}, errors.Join(err, rollbackErr)
+		}
+	}
+	return s.Status(), nil
+}
+
+func (s windowsService) createTask(taskXML []byte) error {
 	xmlFile, err := os.CreateTemp("", "termp-autostart-*.xml")
 	if err != nil {
-		return State{Supported: true, Path: TaskName}, fmt.Errorf("create scheduled task XML temp file: %w", err)
+		return fmt.Errorf("create scheduled task XML temp file: %w", err)
 	}
 	xmlPath := xmlFile.Name()
 	defer os.Remove(xmlPath)
 	if err := xmlFile.Chmod(0o600); err != nil {
 		_ = xmlFile.Close()
-		return State{Supported: true, Path: TaskName}, fmt.Errorf("restrict scheduled task XML temp file: %w", err)
+		return fmt.Errorf("restrict scheduled task XML temp file: %w", err)
 	}
 	if _, err := xmlFile.Write(taskXML); err != nil {
 		_ = xmlFile.Close()
-		return State{Supported: true, Path: TaskName}, fmt.Errorf("write scheduled task XML temp file: %w", err)
+		return fmt.Errorf("write scheduled task XML temp file: %w", err)
 	}
 	if err := xmlFile.Close(); err != nil {
-		return State{Supported: true, Path: TaskName}, fmt.Errorf("close scheduled task XML temp file: %w", err)
+		return fmt.Errorf("close scheduled task XML temp file: %w", err)
 	}
 
 	if out, err := s.runner.Run(
@@ -88,14 +116,27 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 		"/XML", xmlPath,
 		"/F",
 	); err != nil {
-		return State{Supported: true, Path: TaskName}, fmt.Errorf("schtasks create failed: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("schtasks create failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if launch {
+	return nil
+}
+
+func (s windowsService) rollbackInstall(previousTaskXML []byte, hadTask, wasRunning bool) error {
+	_, _ = s.runner.Run("schtasks", "/End", "/TN", TaskName)
+	var rollbackErr error
+	if hadTask {
+		if err := s.createTask(previousTaskXML); err != nil {
+			rollbackErr = fmt.Errorf("restore previous scheduled task definition: %w", err)
+		}
+	} else if out, err := s.runner.Run("schtasks", "/Delete", "/TN", TaskName, "/F"); err != nil {
+		rollbackErr = fmt.Errorf("remove new scheduled task definition: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if rollbackErr == nil && hadTask && wasRunning {
 		if err := s.runTask(); err != nil {
-			return State{Supported: true, Installed: true, Path: TaskName}, err
+			rollbackErr = fmt.Errorf("restore previous scheduled task activation: %w", err)
 		}
 	}
-	return s.Status(), nil
+	return rollbackErr
 }
 
 // BuildWindowsTaskXML renders the logon task definition that runs command with

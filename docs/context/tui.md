@@ -24,10 +24,11 @@ strings use the shared render helper. ANSI escapes, C0/C1 controls, and bidirect
 controls from config, paths, metadata, or errors must not reach the terminal.
 
 Setup persists config before reconciling autostart and rolls config back if autostart
-fails. Completion installation runs afterward as an optional outcome. If only completion
-installation fails, setup is still applied: config and autostart remain in effect, the
-model adopts the persisted config, and the summary reports completion failure as partial
-success.
+fails. When its preflight proved autostart was previously absent, a failed install also
+invokes uninstall as a compensating cleanup before restoring config (#519). Completion
+installation runs afterward as an optional outcome. If only completion installation fails,
+setup is still applied: config and autostart remain in effect, the model adopts the
+persisted config, and the summary reports completion failure as partial success.
 
 The settings view clips the whole output to terminal width, drops leftmost columns when
 necessary, never wraps/truncates mid-glyph, and keeps focused ancestry when it fits.

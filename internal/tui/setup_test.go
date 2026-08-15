@@ -126,6 +126,41 @@ func TestApplySetupNilStatusInstallsDesiredEnabledService(t *testing.T) {
 	}
 }
 
+func TestApplySetupFailedInstallRestoresKnownAbsentService(t *testing.T) {
+	original := config.Default()
+	original.StartAtLogin = false
+	desired := original
+	desired.StartAtLogin = true
+	persisted := original
+	uninstallCalls := 0
+
+	result := applySetup(
+		original,
+		desired,
+		func(next config.Config) (string, error) {
+			persisted = next
+			return "/tmp/config.toml", nil
+		},
+		func(string) error { return errors.New("install failed") },
+		func() error {
+			uninstallCalls++
+			return nil
+		},
+		func() (string, error) { return "/usr/local/bin/termp", nil },
+		func() (bool, error) { return false, nil },
+	)
+
+	if result.err == nil || !strings.Contains(result.err.Error(), "install failed") {
+		t.Fatalf("applySetup() error = %v, want install failure", result.err)
+	}
+	if uninstallCalls != 1 {
+		t.Fatalf("uninstall calls = %d, want service rollback", uninstallCalls)
+	}
+	if persisted.StartAtLogin {
+		t.Fatal("failed install did not restore original config")
+	}
+}
+
 func TestSetupCompletionChoiceIsExplicitDefaultOffAndInstallsOnConfirm(t *testing.T) {
 	const completionPath = "/tmp/home/.config/fish/completions/termp.fish"
 	installCalls := 0
