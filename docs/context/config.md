@@ -84,6 +84,21 @@ other invalid config does (consistent with #462's fail-closed handling), without
 scan itself ever taking more than linear time regardless of how deep the (rejected) nesting
 claims to be.
 
+Until #574, the two multiline-string exits assumed the closing delimiter was always the
+literal three bytes at the position of the first `"` or `'` found, advancing the scan by
+exactly two bytes on a match. TOML 1.0 allows up to two extra quote characters as literal
+content immediately before the closing delimiter (`"""x""""` is the valid string `x"`), so
+a four- or five-quote run left the scan pointing at a leftover quote back in the default
+state, which opened a phantom basic or literal string that swallowed the rest of the
+document. Every bracket after that point went uncounted and the guard returned false,
+restoring the #497 quadratic decode with a thirteen-byte prefix. Both exits now find the
+full run of consecutive quote characters at the closing position; a run of three or more
+closes the string on its last three quotes (any leading quotes in the run are literal
+content, matching the spec), and a run of fewer than three cannot close and is skipped as
+content. `FuzzTomlNestingTooDeep` (`internal/config/toml_nesting_quote_test.go`) checks
+`tomlNestingTooDeep` against an independently written reference scanner; a 30s run found
+no divergence beyond the known bypass the fix and its regression tests already cover.
+
 If a provisional candidate changes during that budget, `Manager.Reload` leaves last-good
 and `LastError` untouched and relies on the save's completion to fire another fsnotify
 event. Standalone loads and manager construction have no last-good value to retain, so
@@ -500,11 +515,53 @@ decoding the newest snapshot and the destructive path producing
 `ErrConfigBeingWritten`. Command-level coverage asserts setup and settings leave the
 file byte-identical when they receive that error.
 
+Until #576, `snapshotConfigFile` (the unexported primitive every settled-read path funnels
+through, including `Manager.Reload` on the fsnotify goroutine while holding `reloadMu`)
+called `os.Open` on the config path with no `O_NONBLOCK` and no mode check, so a named pipe
+with no writer at that path blocked the open forever, and every other config read (and the
+watcher) stopped along with it. It now `Stat`s the path first and refuses to open any
+destination whose target is not a regular file, an `errors.New`-free `fmt.Errorf` the same
+shape `InitFile` already uses on the write side. Unix only in practice; a FIFO needs a
+non-regular file at the config path, which a user would have to create themselves.
+
+This deliberately uses `Stat`, not `Lstat`: the first cut of the fix used `Lstat` by direct
+analogy to `InitFile` and broke every symlinked config, a common dotfiles-repo setup
+(lead review caught it with a live-verified repro before merge). The analogy does not hold.
+`InitFile`'s `Lstat` is write-side: following a symlink there would let an attacker-chosen
+target receive the write, a genuinely new capability the refusal closes. On the read side,
+reading through a symlink is equivalent to reading whatever the user could already open by
+that path directly, so refusing it defends nothing and only breaks the legitimate setup.
+`Stat` follows the link and reports the target's mode, so a FIFO is still refused whether
+reached directly or through a symlink, while a symlink to a regular file keeps working. The
+post-open `file.Stat()` result is also checked for `IsRegular`, closing the `Stat`-then-`Open`
+TOCTOU window the initial existence check cannot. `TestSymlinkedConfigPathStillReadable` and
+`TestSymlinkToFifoConfigPathDoesNotHang` (`internal/config/fifo_read_test.go`) cover both
+directions.
+
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically
 renames it. New files are created `0600`; forced replacement of an existing regular file
 preserves that file's permission bits. Migration copies also preserve the source mode.
 Without `force`, an existing regular file is not replaced.
+
+Until #573, `privacyPosture` covered only `enabled`, `show_directory`,
+`directory_basename_only`, and the directory allowlist. `display.collection` and
+`display.small_image` both publish a second running tool's name and icon
+(`internal/presence/activity.go`), so both are privacy-relevant, but `Collection` never
+reached `ResolvedTool` at all and `SmallImage` reached `ResolvedTool` without ever
+reaching `postureFor`. A non-atomic writer that truncated a config to a prefix omitting
+the `[display]` lines resolved both permissively (their defaults are `true`), and the
+guard saw an identical posture and committed inside the ordinary settle budget instead of
+paying the three-second horizon, exactly the "enumeration of one" defect this bug family
+keeps regenerating. `ResolvedTool` now carries `Collection` (set from
+`Config.Display.Collection`; there is no per-tool override for it), and `privacyPosture`/
+`postureFor`/`postureLoosened` cover both fields (`false -> true` is the loosening
+direction for each, since privacy means the setting is off). `TestPrivacyPostureCoversToolOverridePrivacyFields`
+had misclassified `SmallImage` as "display-only ... does not affect what is disclosed";
+that assertion was itself part of the bug and now lists `SmallImage` as privacy-relevant.
+A new `TestPrivacyPostureCoversDisplayPrivacyFields` (`posture_display_test.go`) is the
+`Display` counterpart to the existing `Privacy`/`ToolOverride` reflection tests, so a
+future `Display` field cannot silently join neither list.
 
 **Depends on / used by:** Uses BurntSushi TOML and the standard library. The CLI,
 detector, presence mapping, TUI, registry construction, and update policy consume it.

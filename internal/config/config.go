@@ -174,6 +174,7 @@ type ResolvedTool struct {
 	ToolName              bool
 	ElapsedTimer          bool
 	SmallImage            bool
+	Collection            bool
 	ButtonsEnabled        bool
 	ShowDirectory         bool
 	DirectoryAllowlist    []string
@@ -555,7 +556,35 @@ type fileSnapshot struct {
 
 // snapshotConfigFile reads path once, applying the same existence and size
 // rules as LoadPath. It never runs TOML decoding.
+//
+// It Stats path before opening it and refuses every destination whose
+// target is not a regular file. Stat follows symlinks, so a symlinked
+// config (a common dotfiles-repo setup) still reads normally, while a FIFO
+// is refused whether it sits directly at path or is reached through a
+// symlink. This is deliberately unlike InitFile's write-side Lstat: on the
+// write side, following a symlink would let an attacker-chosen target
+// receive the write, which is a new capability; on the read side, reading
+// through a symlink is equivalent to reading whatever the user could
+// already open by that path directly, so refusing it would only break
+// legitimate setups without closing anything. Without this check at all, a
+// named pipe with no writer at the config path blocked os.Open forever:
+// every settled-read path funnels through this one primitive, and
+// Manager.Reload holds reloadMu on the fsnotify goroutine, so a FIFO at the
+// config path stopped the watcher along with every other config read
+// (#576). The post-open fstat below re-checks the same property on the
+// file descriptor actually opened, closing the Stat-then-Open TOCTOU
+// window.
 func snapshotConfigFile(path string) fileSnapshot {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileSnapshot{exists: false}
+	}
+	if err != nil {
+		return fileSnapshot{exists: true, err: err}
+	}
+	if !info.Mode().IsRegular() {
+		return fileSnapshot{exists: true, err: fmt.Errorf("refuse to read non-regular config file %s", path)}
+	}
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return fileSnapshot{exists: false}
@@ -564,9 +593,12 @@ func snapshotConfigFile(path string) fileSnapshot {
 		return fileSnapshot{exists: true, err: err}
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	info, err = file.Stat()
 	if err != nil {
 		return fileSnapshot{exists: true, err: err}
+	}
+	if !info.Mode().IsRegular() {
+		return fileSnapshot{exists: true, err: fmt.Errorf("refuse to read non-regular config file %s", path)}
 	}
 	if info.Size() > maxConfigFileSize {
 		return fileSnapshot{exists: true, err: fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)}
@@ -749,14 +781,40 @@ func tomlNestingTooDeep(data []byte) bool {
 			switch {
 			case c == '\\':
 				i++
-			case c == '"' && i+2 < n && data[i+1] == '"' && data[i+2] == '"':
-				state = stateDefault
-				i += 2
+			case c == '"':
+				// TOML 1.0 allows up to two extra quotes as literal content
+				// immediately before the closing delimiter (so `x""""` inside
+				// a multi-line basic string is the content `x"` followed by
+				// the closing `"""`). A run of fewer than three quotes can
+				// never be a closing delimiter and must stay literal content;
+				// a run of three or more closes on its LAST three quotes,
+				// with any leading quotes in the run counted as content.
+				// Advancing i by only 2 on the naive three-quote check landed
+				// back in stateDefault on a leftover quote, which then opened
+				// a phantom stateBasicString that swallowed the rest of the
+				// document and let every subsequent bracket bypass the depth
+				// count entirely (#574).
+				j := i
+				for j < n && data[j] == '"' {
+					j++
+				}
+				if j-i >= 3 {
+					state = stateDefault
+				}
+				i = j - 1
 			}
 		case stateMultilineLiteral:
-			if c == '\'' && i+2 < n && data[i+1] == '\'' && data[i+2] == '\'' {
-				state = stateDefault
-				i += 2
+			if c == '\'' {
+				// Same quote-run handling as stateMultilineBasic, for the
+				// literal-string delimiter instead of the basic-string one.
+				j := i
+				for j < n && data[j] == '\'' {
+					j++
+				}
+				if j-i >= 3 {
+					state = stateDefault
+				}
+				i = j - 1
 			}
 		}
 	}
@@ -1067,6 +1125,7 @@ func (c Config) Resolve(tool registry.Tool) ResolvedTool {
 		ToolName:              c.Display.ToolName,
 		ElapsedTimer:          c.Display.ElapsedTimer,
 		SmallImage:            c.Display.SmallImage,
+		Collection:            c.Display.Collection,
 		ButtonsEnabled:        c.Display.Buttons,
 		ShowDirectory:         c.Privacy.ShowDirectory,
 		DirectoryAllowlist:    append([]string(nil), c.Privacy.DirectoryAllowlist...),
@@ -1133,18 +1192,25 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 // privacyPosture is a summary of everything that affects what a
 // resolved tool may disclose, computed from the SAME Config.Resolve path
 // presence mapping uses. It deliberately does not enumerate Config fields by
-// name beyond this one place: TestPrivacyPostureCoversAllPrivacyFields and
-// TestPrivacyPostureCoversToolOverridePrivacyFields (config_test.go) use
-// reflection to fail the build the day a new field is added to Privacy or
-// ToolOverride without a conscious decision about whether postureFor below
-// needs to grow with it. That is the actual defect this bug family (#410 ->
-// #425 -> #434 -> #435 -> #438 -> #440 -> #447 -> #518) keeps regenerating: a rule
-// bound to an enumeration of one.
+// name beyond this one place: TestPrivacyPostureCoversAllPrivacyFields,
+// TestPrivacyPostureCoversToolOverridePrivacyFields, and
+// TestPrivacyPostureCoversDisplayPrivacyFields (config_test.go and
+// posture_display_test.go) use reflection to fail the build the day a new
+// field is added to Privacy, ToolOverride, or Display without a conscious
+// decision about whether postureFor below needs to grow with it. That is the
+// actual defect this bug family (#410 -> #425 -> #434 -> #435 -> #438 ->
+// #440 -> #447 -> #518 -> #573) keeps regenerating: a rule bound to an
+// enumeration of one. #573 was display.collection and display.small_image:
+// both publish another running tool's name and icon
+// (internal/presence/activity.go), so both are privacy-relevant even though
+// they live on Display, not Privacy.
 type privacyPosture struct {
 	enabled               bool
 	showDirectory         bool
 	directoryBasenameOnly bool // true is MORE private: basename only
 	directoryAllowlist    []string
+	smallImage            bool // discloses another tool's name/icon
+	collection            bool // discloses other tools' names in details/state
 }
 
 func postureFor(r ResolvedTool) privacyPosture {
@@ -1153,6 +1219,8 @@ func postureFor(r ResolvedTool) privacyPosture {
 		showDirectory:         r.ShowDirectory,
 		directoryBasenameOnly: r.DirectoryBasenameOnly,
 		directoryAllowlist:    r.DirectoryAllowlist,
+		smallImage:            r.SmallImage,
+		collection:            r.Collection,
 	}
 }
 
@@ -1206,6 +1274,12 @@ func postureLoosened(prev, next privacyPosture) bool {
 		return true
 	}
 	if allowlistCoverageLoosened(prev.directoryAllowlist, next.directoryAllowlist) {
+		return true
+	}
+	if !prev.smallImage && next.smallImage {
+		return true
+	}
+	if !prev.collection && next.collection {
 		return true
 	}
 	return false

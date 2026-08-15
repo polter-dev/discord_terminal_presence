@@ -2859,15 +2859,23 @@ func TestPrivacyPostureCoversAllPrivacyFields(t *testing.T) {
 
 // TestPrivacyPostureCoversToolOverridePrivacyFields is the ToolOverride
 // counterpart. ToolOverride mixes privacy fields (Enabled, ShowDirectory,
-// DirectoryAllowlist, DirectoryBasenameOnly) with display-only fields
-// (ToolName, ElapsedTimer, SmallImage, Buttons) that do not affect what is
+// DirectoryAllowlist, DirectoryBasenameOnly, SmallImage) with display-only
+// fields (ToolName, ElapsedTimer, Buttons) that do not affect what is
 // disclosed. A new exported field must be explicitly classified into one of
 // the two lists below, so it cannot silently join neither.
+//
+// SmallImage was misclassified as display-only until #573: when on, it
+// publishes another running tool's DisplayName and icon
+// (internal/presence/activity.go:354), which is disclosure of a second
+// tool's identity by any reading, not merely a display preference for the
+// current tool's own presence. #573 also found it absent from postureFor,
+// so a truncated config that dropped an explicit `small_image = false`
+// silently reverted to the permissive default. It is now covered by
+// postureFor/Config.Resolve (see privacyPosture in config.go).
 func TestPrivacyPostureCoversToolOverridePrivacyFields(t *testing.T) {
 	displayOnly := map[string]bool{
 		"ToolName":     true,
 		"ElapsedTimer": true,
-		"SmallImage":   true,
 		"Buttons":      true,
 	}
 	privacyRelevant := map[string]bool{
@@ -2875,6 +2883,7 @@ func TestPrivacyPostureCoversToolOverridePrivacyFields(t *testing.T) {
 		"ShowDirectory":         true,
 		"DirectoryAllowlist":    true,
 		"DirectoryBasenameOnly": true,
+		"SmallImage":            true,
 	}
 	typ := reflect.TypeOf(ToolOverride{})
 	for i := 0; i < typ.NumField(); i++ {
