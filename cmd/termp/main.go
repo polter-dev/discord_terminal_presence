@@ -928,14 +928,16 @@ func start(args []string) error {
 	manager, cfg, loadErr := newWatchedConfigManager(configPath, func(manager *config.Manager) {
 		startConfigWatchWithRetry(ctx, manager, configPath)
 	})
-	// The daemon owns this manager for the whole process, so Close is about
-	// leaving no armed loosening retry behind rather than about a bug visible
-	// today (#553). It never resolves a pending decision, so shutdown cannot
-	// change presence in either direction.
-	defer manager.Close()
 	if loadErr != nil {
 		log.Print(startupConfigError(cfg.Path, loadErr))
 	}
+	// A load error still yields a usable fail-closed manager, so Close is
+	// deferred after that check rather than instead of it. The daemon owns
+	// this manager for the whole process, so Close is about leaving no armed
+	// loosening retry behind rather than about a bug visible today (#553). It
+	// never resolves a pending decision, so shutdown cannot change presence in
+	// either direction.
+	defer manager.Close()
 	logConfigWarnings(cfg.Warnings)
 	daemonPath, pathErr := currentProcessExecutablePath()
 	if pathErr != nil {
@@ -2370,6 +2372,13 @@ func watch(args []string) error {
 			log.Printf("config watch disabled: %v", err)
 		}
 	})
+	// A load error still yields a usable fail-closed manager. The warning is
+	// resolved here so it is checked before the deferred Close, and shown once
+	// the model exists below.
+	loadWarning := ""
+	if loadErr != nil {
+		loadWarning = configLoadFallbackWarning(loadErr)
+	}
 	// Watch teardown stops the manager's pending loosening retry (#553).
 	defer manager.Close()
 	logConfigWarnings(cfg.Warnings)
@@ -2384,8 +2393,8 @@ func watch(args []string) error {
 	}
 
 	model := tui.NewWatchModelWithConfig(cfg, time.Now)
-	if loadErr != nil {
-		model.SetWarning(configLoadFallbackWarning(loadErr))
+	if loadWarning != "" {
+		model.SetWarning(loadWarning)
 	}
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	detections := det.RunReadOnly(ctx)
