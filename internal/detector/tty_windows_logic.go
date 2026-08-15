@@ -3,6 +3,7 @@ package detector
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,13 @@ func newWindowsTTYResolver(probe func(int32) (uintptr, bool, error)) windowsTTYR
 
 func consoleProbeRequested(args []string, envPresent bool) bool {
 	return envPresent && len(args) == 2 && args[1] == consoleProbeArg
+}
+
+func consoleProbeExecutablePath(imagePath string) (string, error) {
+	// The probe must run the real binary directly. A Scoop shim can create a
+	// visible console for the child it launches even when the shim itself was
+	// started with CREATE_NO_WINDOW (#508).
+	return filepath.Abs(filepath.Join(filepath.Dir(imagePath), "termp.exe"))
 }
 
 // windowsConsoleWindow describes what GetConsoleWindow returned for a probed

@@ -43,7 +43,7 @@ func detachedChildArgs(enableVerbose bool) []string {
 }
 
 func spawnDetachedStart(enableVerbose bool) (int, string, error) {
-	executable, err := os.Executable()
+	executable, err := detachedExecutable()
 	if err != nil {
 		return 0, "", fmt.Errorf("resolve termp executable: %w", err)
 	}

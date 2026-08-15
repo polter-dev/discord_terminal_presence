@@ -55,7 +55,10 @@ func (s windowsService) install(exe string, launch, force bool) (State, error) {
 		return State{Supported: true, Path: TaskName}, fmt.Errorf("cannot resolve current user for scheduled task")
 	}
 
-	command, arguments := windowsTaskExec(exe)
+	command, arguments, err := windowsTaskExec(exe)
+	if err != nil {
+		return State{Supported: true, Path: TaskName}, err
+	}
 	taskXML, err := BuildWindowsTaskXML(command, arguments, username)
 	if err != nil {
 		return State{Supported: true, Path: TaskName}, err
@@ -300,20 +303,37 @@ const windowsLauncherName = "termpw.exe"
 // windowsTaskExec selects what the logon task runs. When the companion launcher
 // sits beside the daemon (the normal shipped layout) the task runs it with no
 // arguments, so no console window is ever created (issue #473). When the
-// launcher is absent — e.g. a hand-assembled install — it falls back to the
-// daemon's own foreground path so autostart still works, at the cost of the
-// window this fix removes.
-func windowsTaskExec(exe string) (command, arguments string) {
+// launcher is absent from a non-Scoop install — e.g. a hand-assembled install
+// — it falls back to the daemon's own foreground path so autostart still works,
+// at the cost of the window this fix removes. Scoop instead fails closed rather
+// than registering one of its console shims.
+func windowsTaskExec(exe string) (command, arguments string, err error) {
 	if launcher := existingWindowsLauncher(exe); launcher != "" {
-		return launcher, ""
+		return launcher, "", nil
 	}
-	return exe, "start --foreground"
+	if isScoopShimExecutable(exe) {
+		return "", "", fmt.Errorf("cannot find the real Scoop autostart launcher at %s", filepath.Join(filepath.Dir(filepath.Dir(exe)), "apps", "termp", "current", windowsLauncherName))
+	}
+	return exe, "start --foreground", nil
 }
 
-// existingWindowsLauncher returns the sibling launcher path when it exists on
+func isScoopShimExecutable(exe string) bool {
+	return strings.EqualFold(filepath.Base(exe), "termp.exe") &&
+		strings.EqualFold(filepath.Base(filepath.Dir(exe)), "shims")
+}
+
+// existingWindowsLauncher returns the real launcher path when it exists on
 // disk, using host-native path handling so the on-disk probe is correct on real
-// Windows. It returns "" when no launcher file is present.
+// Windows. A Scoop shim invocation is mapped to apps\termp\current first: the
+// shims-directory sibling is another console shim, not the GUI launcher (#510).
 func existingWindowsLauncher(exe string) string {
+	if isScoopShimExecutable(exe) {
+		launcher := filepath.Join(filepath.Dir(filepath.Dir(exe)), "apps", "termp", "current", windowsLauncherName)
+		if info, err := os.Stat(launcher); err == nil && !info.IsDir() {
+			return launcher
+		}
+		return ""
+	}
 	launcher := filepath.Join(filepath.Dir(exe), windowsLauncherName)
 	if info, err := os.Stat(launcher); err == nil && !info.IsDir() {
 		return launcher
@@ -331,10 +351,32 @@ func ownsWindowsTaskCommand(taskCommand, executable string) bool {
 	if sameWindowsExecutable(taskCommand, executable) {
 		return true
 	}
-	if launcher := windowsLauncherSibling(executable); launcher != "" {
-		return sameWindowsExecutable(taskCommand, launcher)
+	for _, launcher := range windowsLauncherCandidates(executable) {
+		if sameWindowsExecutable(taskCommand, launcher) {
+			return true
+		}
 	}
 	return false
+}
+
+// windowsLauncherCandidates returns the launcher identities owned by an
+// invocation path. New Scoop tasks target the real launcher under the stable
+// current junction; the shim sibling remains accepted so older tasks can be
+// reconciled in place.
+func windowsLauncherCandidates(executable string) []string {
+	sibling := windowsLauncherSibling(executable)
+	normalized := normalizeResolvedWindowsPath(executable)
+	separator := strings.LastIndex(normalized, `\`)
+	if separator < 0 || !strings.EqualFold(normalized[separator+1:], "termp.exe") {
+		return []string{sibling}
+	}
+	dir := normalized[:separator]
+	dirSeparator := strings.LastIndex(dir, `\`)
+	if dirSeparator < 0 || !strings.EqualFold(dir[dirSeparator+1:], "shims") {
+		return []string{sibling}
+	}
+	root := dir[:dirSeparator]
+	return []string{root + `\apps\termp\current\` + windowsLauncherName, sibling}
 }
 
 // windowsLauncherSibling derives the launcher path that sits beside executable,

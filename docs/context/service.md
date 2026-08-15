@@ -35,18 +35,24 @@ the process (`RestartOnFailure` and `schtasks /End` keep working), and
 propagates the daemon's exit status so a real crash still triggers restart.
 `windowsTaskExec` selects the launcher when it sits beside the daemon (the
 shipped layout: goreleaser ships `termpw.exe` in the Windows `.zip` and Scoop
-archives next to `termp.exe`) and falls back to `termp.exe start --foreground`
-when the launcher is absent (a hand-assembled install), trading the fix for a
-working autostart. `BuildWindowsTaskXML` takes an explicit command and
+archives next to `termp.exe`). A Scoop invocation path under `shims` is special:
+the sibling `shims\termpw.exe` is itself a console shim, so task generation bypasses it
+and targets the real GUI launcher at `apps\termp\current\termpw.exe` (#510). It keeps
+accepting the old shim launcher as owned so reinstall can reconcile it in place. The
+launcher lookup fails closed when a Scoop shim has no real companion rather than
+registering either console shim. Non-Scoop installs still fall back to `termp.exe start
+--foreground` when the launcher is absent (a hand-assembled install), trading the fix for
+a working autostart. `BuildWindowsTaskXML` takes an explicit command and
 arguments and omits `<Arguments>` when empty (the launcher takes none).
 
 The task definition's executable command is its ownership check. Because the
 task now points at `termpw.exe` while the running binary is `termp.exe`,
 `ownsWindowsTaskCommand` treats a task command as owned when it is either the
 running executable itself (tasks written before the launcher existed, and the
-fallback path — so upgrades reconcile in place rather than orphan/duplicate) or
-the sibling `termpw.exe` in the same install directory. A `termpw.exe` in any
-other directory is still foreign. Without this the Status ownership check would
+fallback path — so upgrades reconcile in place rather than orphan/duplicate),
+the sibling `termpw.exe` in the same install directory, or the mapped Scoop
+`apps\termp\current\termpw.exe` launcher. A `termpw.exe` in any unrelated directory
+is still foreign. Without this the Status ownership check would
 report our own launcher task as foreign and lock install/uninstall/enable/
 disable behind `--force`. Windows expands
 percent-style environment variables and normalizes quotes, separators, dot
@@ -62,8 +68,8 @@ hand-placed path); the write path deliberately does **not** junction-follow,
 because canonicalizing through Scoop's `apps\termp\current` junction would bake a
 versioned `apps\termp\<version>` directory into the task that `scoop update`
 later deletes, silently killing autostart (issue #502). The companion-launcher
-probe (`windowsTaskExec`) likewise resolves `termpw.exe` beside the stable
-invocation path, so the launcher command stays on `current` too. If the stable task targets another
+probe (`windowsTaskExec`) likewise keeps the launcher command on the stable
+`current` path. If the stable task targets another
 executable, status reports that conflict explicitly and install, uninstall,
 enable, and disable refuse to modify it by default.
 `autostart install --force` deliberately replaces a foreign task, while

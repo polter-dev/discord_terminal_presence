@@ -659,7 +659,8 @@ var errConfigNestingTooDeep = errors.New("config nesting too deep")
 //
 // Brackets inside TOML strings and comments do not count: the scan tracks
 // basic ("...", including escapes), literal ('...'), multiline-basic
-// ("""...""") and multiline-literal ('''...''') string states, and a '#'
+// ("""...""") and multiline-literal (delimited by three apostrophes) string
+// states, and a '#'
 // comment running to end of line, all while outside any string.
 func tomlNestingTooDeep(data []byte) bool {
 	const (

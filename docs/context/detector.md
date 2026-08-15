@@ -95,6 +95,13 @@ live CLI watch uses it so only the daemon persists `presence.json`.
 **Depends on / used by:** Depends on `internal/registry` and gopsutil; produces snapshots
 for the daemon, status, presence mapping, watch, and usage recording.
 
+Windows classic-console inspection runs `AttachConsole` in a short-lived child so it
+cannot disturb the daemon's console handlers. That probe uses `CREATE_NO_WINDOW` and the
+absolute `termp.exe` sibling of the running process image; it must never invoke a Scoop
+shim, because the shim can allocate a visible console for the real probe it launches
+(#508). Config and state-file writes do not themselves spawn a child; their activity can
+cause a rescan, which is why the probe window appeared correlated with saves.
+
 Windows ConPTY fail-open covers hidden console windows too (#501). `inspectWindowsConsole`
 (`tty_windows.go`) resolves a classic terminal only when `GetConsoleWindow` returns a real,
 *visible* top-level window; the decision is factored into the pure, host-testable
