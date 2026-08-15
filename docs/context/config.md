@@ -519,10 +519,24 @@ Until #576, `snapshotConfigFile` (the unexported primitive every settled-read pa
 through, including `Manager.Reload` on the fsnotify goroutine while holding `reloadMu`)
 called `os.Open` on the config path with no `O_NONBLOCK` and no mode check, so a named pipe
 with no writer at that path blocked the open forever, and every other config read (and the
-watcher) stopped along with it. It now `Lstat`s the path first and refuses to open any
-non-regular destination, an `errors.New`-free `fmt.Errorf` the same shape `InitFile` already
-uses on the write side. Unix only in practice; a FIFO needs a non-regular file at the config
-path, which a user would have to create themselves.
+watcher) stopped along with it. It now `Stat`s the path first and refuses to open any
+destination whose target is not a regular file, an `errors.New`-free `fmt.Errorf` the same
+shape `InitFile` already uses on the write side. Unix only in practice; a FIFO needs a
+non-regular file at the config path, which a user would have to create themselves.
+
+This deliberately uses `Stat`, not `Lstat`: the first cut of the fix used `Lstat` by direct
+analogy to `InitFile` and broke every symlinked config, a common dotfiles-repo setup
+(lead review caught it with a live-verified repro before merge). The analogy does not hold.
+`InitFile`'s `Lstat` is write-side: following a symlink there would let an attacker-chosen
+target receive the write, a genuinely new capability the refusal closes. On the read side,
+reading through a symlink is equivalent to reading whatever the user could already open by
+that path directly, so refusing it defends nothing and only breaks the legitimate setup.
+`Stat` follows the link and reports the target's mode, so a FIFO is still refused whether
+reached directly or through a symlink, while a symlink to a regular file keeps working. The
+post-open `file.Stat()` result is also checked for `IsRegular`, closing the `Stat`-then-`Open`
+TOCTOU window the initial existence check cannot. `TestSymlinkedConfigPathStillReadable` and
+`TestSymlinkToFifoConfigPathDoesNotHang` (`internal/config/fifo_read_test.go`) cover both
+directions.
 
 `InitFile` uses `Lstat` and refuses symlinks and every other non-regular destination even
 with `force`. It writes a temporary file in the destination directory and atomically

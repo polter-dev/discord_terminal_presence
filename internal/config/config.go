@@ -557,15 +557,25 @@ type fileSnapshot struct {
 // snapshotConfigFile reads path once, applying the same existence and size
 // rules as LoadPath. It never runs TOML decoding.
 //
-// It Lstats path before opening it and refuses every non-regular
-// destination, the same guard InitFile already applies on the write side
-// (#386). Without this, a named pipe with no writer at the config path
-// blocks os.Open forever: every settled-read path funnels through this one
-// primitive, and Manager.Reload holds reloadMu on the fsnotify goroutine, so
-// a FIFO at the config path stops the watcher along with every other config
-// read (#576).
+// It Stats path before opening it and refuses every destination whose
+// target is not a regular file. Stat follows symlinks, so a symlinked
+// config (a common dotfiles-repo setup) still reads normally, while a FIFO
+// is refused whether it sits directly at path or is reached through a
+// symlink. This is deliberately unlike InitFile's write-side Lstat: on the
+// write side, following a symlink would let an attacker-chosen target
+// receive the write, which is a new capability; on the read side, reading
+// through a symlink is equivalent to reading whatever the user could
+// already open by that path directly, so refusing it would only break
+// legitimate setups without closing anything. Without this check at all, a
+// named pipe with no writer at the config path blocked os.Open forever:
+// every settled-read path funnels through this one primitive, and
+// Manager.Reload holds reloadMu on the fsnotify goroutine, so a FIFO at the
+// config path stopped the watcher along with every other config read
+// (#576). The post-open fstat below re-checks the same property on the
+// file descriptor actually opened, closing the Stat-then-Open TOCTOU
+// window.
 func snapshotConfigFile(path string) fileSnapshot {
-	info, err := os.Lstat(path)
+	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return fileSnapshot{exists: false}
 	}
@@ -586,6 +596,9 @@ func snapshotConfigFile(path string) fileSnapshot {
 	info, err = file.Stat()
 	if err != nil {
 		return fileSnapshot{exists: true, err: err}
+	}
+	if !info.Mode().IsRegular() {
+		return fileSnapshot{exists: true, err: fmt.Errorf("refuse to read non-regular config file %s", path)}
 	}
 	if info.Size() > maxConfigFileSize {
 		return fileSnapshot{exists: true, err: fmt.Errorf("config file exceeds maximum size of %d bytes", maxConfigFileSize)}
