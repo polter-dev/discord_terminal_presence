@@ -390,7 +390,7 @@ func (f *fakeClock) Advance(d time.Duration) {
 
 func TestActiveDetectionPicksMostRecentlyStarted(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true, Name: "claude", CreateTime: base, Cwd: "/old"},
 		{Owned: true, Name: "codex", CreateTime: base.Add(time.Minute), Cwd: "/new"},
 	})
@@ -1302,7 +1302,7 @@ func TestSelectorOrdersOthersByActivityThenPriority(t *testing.T) {
 
 func TestActiveDetectionUsesPriorityOnCreateTimeTie(t *testing.T) {
 	started := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true, Name: "tie-low", CreateTime: started},
 		{Owned: true, Name: "tie-high", CreateTime: started},
 	})
@@ -1314,7 +1314,7 @@ func TestActiveDetectionUsesPriorityOnCreateTimeTie(t *testing.T) {
 
 func TestActiveDetectionDedupesToolInstances(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true, Pid: 1, Name: "claude", CreateTime: base, Cwd: "/old"},
 		{Owned: true, Pid: 2, Name: "claude", CreateTime: base.Add(time.Minute), Cwd: "/new"},
 		{Owned: true, Name: "htop", CreateTime: base.Add(-time.Minute)},
@@ -1399,7 +1399,7 @@ func TestSelectorSameToolInstanceUsesRecentTTYActivity(t *testing.T) {
 
 func TestActiveDetectionMatchesClaudeVersionBinaryAndDedupes(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true,
 			Pid:        1,
 			Name:       "2.1.201",
@@ -1506,7 +1506,7 @@ func TestSelectWithEnricherMatchesFullSnapshotResults(t *testing.T) {
 }
 
 func TestActiveDetectionReturnsNoneWhenNothingMatches(t *testing.T) {
-	detection := ActiveDetection(testRegistry(t), []Process{
+	detection := testActiveDetection(testRegistry(t), []Process{
 		{Owned: true, Name: "bash", CreateTime: time.Now()},
 	})
 

@@ -224,16 +224,6 @@ func (d *Detector) RunReadOnly(ctx context.Context) <-chan Detection {
 	return out
 }
 
-// ActiveDetection returns the current best detection from a process snapshot.
-func (d *Detector) ActiveDetection(processes []Process) Detection {
-	return NewSelector(d.registry, d.config, systemClock{}).Select(processes)
-}
-
-// ActiveDetection returns the best detection from a process snapshot.
-func ActiveDetection(reg *registry.Registry, processes []Process) Detection {
-	return NewSelector(reg, Config{ActivitySwitching: true}, systemClock{}).Select(processes)
-}
-
 // ActiveDetectionWithPresence scans once with the same presence eligibility and
 // episode anchors as the daemon. The loaded episode store is never saved.
 func ActiveDetectionWithPresence(reg *registry.Registry, lister ProcessLister, config Config) (Detection, error) {
