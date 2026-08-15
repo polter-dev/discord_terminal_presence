@@ -435,8 +435,11 @@ func Load() (Config, error) {
 }
 
 // LoadReadOnly reads a settled snapshot of the default config path without
-// extending an ambiguous blank through the update horizon.
-func LoadReadOnly() (Config, error) {
+// extending an ambiguous blank through the update horizon. The second result
+// is the settle verdict described on LoadPathReadOnly: false means the
+// returned Config is the newest readable snapshot rather than the user's
+// saved configuration.
+func LoadReadOnly() (Config, bool, error) {
 	return LoadPathReadOnly(DefaultPath())
 }
 
@@ -501,7 +504,26 @@ func loadPathWith(
 // LoadPathReadOnly reads a settled TOML config without extending an ambiguous
 // blank through the update horizon. It is for callers that cannot write the
 // loaded document back over path.
-func LoadPathReadOnly(path string) (Config, error) {
+//
+// The second result is the bounded settle's own verdict, returned rather than
+// discarded (#552). true means the bytes behind the returned Config held still
+// long enough to be certified: this is the user's saved configuration. false
+// means the file was still changing when the standalone bound expired, so the
+// Config is only the newest readable snapshot, which may describe a
+// configuration the user never saved.
+//
+// The answer here deliberately differs from manager construction, which fails
+// closed on this same flag (#548), and the difference is a property of the
+// call site rather than of the flag. Construction decides whether to publish
+// presence, so uncertified bytes that say enabled = true are a privacy harm
+// and the safe answer is to refuse them. A read-only load publishes nothing;
+// its only consumers report state back to the user, so refusing outright would
+// replace an unlabeled report with no report at all. The safe answer there is
+// to return the snapshot and require the caller to label it. Callers must not
+// present an uncertified Config as the saved configuration, and must not use
+// one to decide anything the user could have opted out of in the bytes that
+// failed to settle.
+func LoadPathReadOnly(path string) (Config, bool, error) {
 	return loadPathReadOnlyWith(path, snapshotConfigFile, time.Now, time.Sleep)
 }
 
@@ -510,9 +532,10 @@ func loadPathReadOnlyWith(
 	snapshot func(string) fileSnapshot,
 	now func() time.Time,
 	sleep func(time.Duration),
-) (Config, error) {
-	snap, _ := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep, fileSnapshot{})
-	return loadSnapshot(path, snap)
+) (Config, bool, error) {
+	snap, settled := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep, fileSnapshot{})
+	cfg, err := loadSnapshot(path, snap)
+	return cfg, settled, err
 }
 
 // LoadPathUnsettled reads a TOML config from path once without settle

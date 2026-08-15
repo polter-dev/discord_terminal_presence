@@ -588,10 +588,15 @@ func TestLoadPathBlankAndNonBlankLatencyPolicy(t *testing.T) {
 		writeConfig(t, path, "")
 
 		start := time.Now()
-		cfg, err := LoadPathReadOnly(path)
+		cfg, settled, err := LoadPathReadOnly(path)
 		elapsed := time.Since(start)
 		if err != nil {
 			t.Fatalf("LoadPathReadOnly() blank = %v", err)
+		}
+		// A file that simply sits there blank is a settled observation, not
+		// an uncertified guess (#552).
+		if !settled {
+			t.Fatal("LoadPathReadOnly() reported a stable blank file as unsettled")
 		}
 		if !cfg.Enabled {
 			t.Fatalf("LoadPathReadOnly() blank = %#v, want defaults", cfg)
@@ -610,7 +615,15 @@ func TestLoadPathNeverSettlingWriterIsBounded(t *testing.T) {
 	}{
 		{
 			name: "read-only returns latest snapshot",
-			load: loadPathReadOnlyWith,
+			// This table is about the standalone bound, which is shared with
+			// the whole-document loader, so it adapts the read-only
+			// signature. The settle verdict for exactly this scenario is
+			// asserted in TestLoadPathReadOnlyReportsUnsettledSnapshot
+			// (#552).
+			load: func(path string, snapshot func(string) fileSnapshot, now func() time.Time, sleep func(time.Duration)) (Config, error) {
+				cfg, _, err := loadPathReadOnlyWith(path, snapshot, now, sleep)
+				return cfg, err
+			},
 		},
 		{
 			name: "whole-document returns busy error",

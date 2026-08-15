@@ -26,8 +26,43 @@ func maybePrintCommandUpdateAlert(command string, args []string, stderrTerminal 
 	if commandsLoadConfigForOwnAlert[command] || !eligibleForUpdateAlert(command, args, stderrTerminal) {
 		return
 	}
-	cfg, loadErr := loadConfigWithNotice(readOnlyConfigLoader, stderr)
+	cfg, settled, loadErr := loadReadOnlyConfigWithNotice(readOnlyConfigLoader, stderr)
+	if !settled {
+		// The alert is gated on update_check and auto_update, both of which
+		// the user may have turned off in the bytes that failed to settle.
+		// The same rule printCommandUpdateAlert already applies to an
+		// unreadable config applies here: do not act on an opt-out we cannot
+		// read, and say why nothing was checked (#552).
+		printUnsettledConfigNotice(stderr)
+		return
+	}
 	printCommandUpdateAlert(command, args, stderrTerminal, cfg, loadErr, stderr)
+}
+
+// unsettledConfigNotice explains a read-only config load that the settle
+// primitive declined to certify. Read-only callers keep working from the
+// newest snapshot, so the user has to be told that what follows may not be
+// what they saved, and what to do about it (#552).
+const unsettledConfigNotice = "termp: your config file was being written while termp read it, so termp could not confirm it. " +
+	"Anything reported here from your config reflects the newest partial copy of the file and may not match what you saved, " +
+	"and the update check was skipped. Re-run this command once the save has finished."
+
+func printUnsettledConfigNotice(w io.Writer) {
+	fmt.Fprintln(w, unsettledConfigNotice)
+}
+
+// loadReadOnlyConfigWithNotice is loadConfigWithNotice for the read-only
+// loader, which also reports whether the settle certified the bytes it
+// decoded. The flag is captured inside the wrapped load, so it is published
+// by the same channel send loadConfigWithNoticeAfter already synchronises on.
+func loadReadOnlyConfigWithNotice(load func() (config.Config, bool, error), stderr io.Writer) (config.Config, bool, error) {
+	settled := false
+	cfg, err := loadConfigWithNotice(func() (config.Config, error) {
+		loaded, ok, loadErr := load()
+		settled = ok
+		return loaded, loadErr
+	}, stderr)
+	return cfg, settled, err
 }
 
 // checkingConfigNoticeDelay bounds how long a config load may run silently

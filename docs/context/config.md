@@ -5,7 +5,9 @@ serialization, and hot-reload manager.
 
 **Public surface:** `Config` and its nested UI/display/privacy/CTA/tool types are the
 runtime schema. `Default`, `DefaultPath`, horizon-protected settled `Load`/`LoadPath`,
-settled `LoadReadOnly`/`LoadPathReadOnly`, explicitly unprotected
+settled `LoadReadOnly`/`LoadPathReadOnly` (which return `(Config, settled bool, error)`
+since #552, so a caller can tell the saved config from a best guess), explicitly
+unprotected
 `LoadUnsettled`/`LoadPathUnsettled`, and `Save` resolve and persist it.
 `AnnotatedSample` and `InitFile(path, force)` support `termp config init`. `Manager`
 watches a path and publishes validated changes. `ValidateFeedbackURL` and
@@ -85,8 +87,9 @@ If a provisional candidate changes during that budget, `Manager.Reload` leaves l
 and `LastError` untouched and relies on the save's completion to fire another fsnotify
 event. Standalone loads and manager construction have no last-good value to retain, so
 they retry only within a named 500ms standalone settle bound. At the bound,
-`LoadReadOnly`/`LoadPathReadOnly` and manager construction carry on with the newest
-snapshot, while destructive `Load`/`LoadPath` return the distinguishable
+`LoadReadOnly`/`LoadPathReadOnly` carry on with the newest snapshot and say so through
+their `settled` result (#552), manager construction carries on but fails closed on the
+same verdict (#548), while destructive `Load`/`LoadPath` return the distinguishable
 `ErrConfigBeingWritten` ("config is being written right now; try again") so a
 whole-document editor cannot overwrite the file from an unsettled guess. A deliberate
 deletion, blanking, or trailing-line deletion still loads after remaining stable for the
@@ -310,6 +313,35 @@ propagate that error before installing any save callback or entering their TUI, 
 the on-disk bytes untouched. Explicitly read-only CLI paths use
 `LoadReadOnly`/`LoadPathReadOnly`, so they inherit the normal settle protection without
 paying the update horizon and render from the newest observed snapshot after the bound.
+
+Those two entry points used to discard the settle verdict, exactly as manager
+construction did before #548, so a torn or in-flight write could make `termp version`,
+`termp status`, the pre-spawn startup check, and `watch` describe a configuration the
+user never saved (#552). They now return `(Config, settled bool, error)`. The answer to
+"what should an uncertified snapshot do" is deliberately **different at the two call
+sites, and the difference is a property of the caller, not of the flag**: construction
+decides whether to publish presence, so uncertified bytes saying `enabled = true` are a
+privacy harm and it fails closed; a read-only load publishes nothing and its only
+consumers report state back to the user, so refusing would replace an unlabeled report
+with no report at all. Read-only loads therefore keep returning the newest snapshot and
+oblige the caller to label it.
+
+Every read-only caller now handles `settled = false` explicitly, and none of them treats
+it as a load error (a fail-closed default config would be a worse answer than the newest
+real bytes). `cmd/termp` carries one shared sentence, `unsettledConfigNotice`, printed on
+stderr by `termp version`, `termp status`, and the pre-dispatch update alert;
+`startupUnsettledConfigNotice(path)` is the `start` wording, which names the file and
+points at `termp status` because the daemon is being spawned either way and does its own
+settled read (#548); and `watchSnapshot` prepends `unsettledConfigWarning` to the card's
+warning list rather than writing to stderr, which a full-screen card would scroll away.
+All three also skip the config-gated update check, on the rule
+`printAvailableUpdateContext` already applied to an unreadable config: an opt-out that
+cannot be read is not an opt-in. Nothing about presence publishing changed.
+`internal/config/readonly_settle_test.go` covers the verdict in both directions (a
+never-settling writer is uncertified; a stable saved file is certified) and asserts the
+harm's precondition, that the uncertified snapshot really can contradict the saved file.
+`cmd/termp/readonly_settle_test.go` covers the notice firing on the uncertified case only
+and the wording staying actionable (#472).
 
 Until #448, `settledConfigSnapshotForLoadWith`'s horizon loop could exit early in two
 ways: `boundedSettledConfigSnapshotWith` always passed an empty `accepted` snapshot, so a

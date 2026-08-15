@@ -78,11 +78,11 @@ func TestMaybePrintCommandUpdateAlertSkipsCommandsThatLoadTheirOwnConfig(t *test
 	var mu sync.Mutex
 	calls := 0
 	restore := readOnlyConfigLoader
-	readOnlyConfigLoader = func() (config.Config, error) {
+	readOnlyConfigLoader = func() (config.Config, bool, error) {
 		mu.Lock()
 		calls++
 		mu.Unlock()
-		return config.Default(), nil
+		return config.Default(), true, nil
 	}
 	t.Cleanup(func() { readOnlyConfigLoader = restore })
 
@@ -122,7 +122,7 @@ func TestStatusLoadsConfigExactlyOnce(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	restore := readOnlyConfigLoader
-	readOnlyConfigLoader = func() (config.Config, error) {
+	readOnlyConfigLoader = func() (config.Config, bool, error) {
 		mu.Lock()
 		calls++
 		mu.Unlock()
