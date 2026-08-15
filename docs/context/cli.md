@@ -56,6 +56,11 @@ record-bound validation (#476). Legacy records without an executable path retain
 current-binary comparison. Stop targets both a valid PID owner and a distinct valid
 publisher. Windows publishes readiness only after shutdown primitives exist. Autostart
 disable/uninstall stop the tracked daemon and report partial failure if it survives.
+The top-level stop command bounds autostart state discovery with `StatusContext` and
+charges that probe plus daemon shutdown against the same five-second deadline, so a hung
+service manager cannot postpone daemon signaling indefinitely or extend the command past
+its lifecycle budget. A prompt probe still drives relaunch-aware PID handling and the
+successful-stop autostart hint (#515).
 
 Connect never starts a daemon. It prefers the validated publisher, then the PID owner.
 Windows uses a current-user PID-addressed named pipe and verifies the server process.
@@ -123,6 +128,9 @@ Plain `termp uninstall` remains the start-at-login removal alias and points user
 `termp uninstall --all`. Full uninstall confirms unless `--yes` is supplied, stops and
 validates the daemon through the same process-image-aware stop path before deleting
 anything, then removes autostart, completions, config, state/cache, and the platform log.
+The parsed `all` result flows through command dispatch, so every true spelling accepted
+by Go's flag parser, including single-dash and explicit truthy values, suppresses the
+plain-uninstall guidance after a successful full uninstall (#516).
 The confirmation requires stdin and stdout to pass the operating system's fd-level TTY
 query, so character devices such as `/dev/null` cannot enter the Bubble Tea prompt and
 stall on EOF. It never deletes the running executable. It reuses install ownership
@@ -576,6 +584,10 @@ open file was rotated reopens the current path before its next line. Daemon stde
 rebound whenever the current generation changes so Go panic stacks remain in the bounded
 log rather than following an orphaned inode. This keeps individual log records intact
 and bounds normal verbose/crash-loop growth.
+On Windows, stderr rebinding closes the previous owning `*os.File` after replacing both
+the process standard handle and `os.Stderr`, unless the old handle is invalid or identical
+to the replacement. This prevents the old file finalizer from double-closing a reused
+numeric handle (#514).
 The banner, startup error, and reload error render through `SanitizeSingleLine`, matching
 every other single-line render boundary in the CLI.
 

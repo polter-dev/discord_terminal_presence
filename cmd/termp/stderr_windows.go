@@ -9,7 +9,8 @@ import (
 )
 
 func redirectStderr(file *os.File) error {
-	old, err := windows.GetStdHandle(windows.STD_ERROR_HANDLE)
+	oldFile := os.Stderr
+	oldHandle, err := windows.GetStdHandle(windows.STD_ERROR_HANDLE)
 	if err != nil {
 		return err
 	}
@@ -17,8 +18,8 @@ func redirectStderr(file *os.File) error {
 		return err
 	}
 	os.Stderr = file
-	if old != 0 && old != windows.InvalidHandle && old != windows.Handle(file.Fd()) {
-		_ = windows.CloseHandle(old)
+	if oldHandle != 0 && oldHandle != windows.InvalidHandle && oldHandle != windows.Handle(file.Fd()) {
+		_ = oldFile.Close()
 	}
 	return nil
 }

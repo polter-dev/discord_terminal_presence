@@ -16,7 +16,7 @@ import (
 
 const maxInstallCTAWidth = 80
 
-type autostartActionHandler func([]string) error
+type autostartActionHandler func([]string) (bool, error)
 
 type autostartManager interface {
 	Install(string, bool) (service.State, error)
@@ -34,11 +34,17 @@ var stopDaemonAfterAutostart = stopRunningDaemon
 
 func autostartActionHandlers() map[string]autostartActionHandler {
 	return map[string]autostartActionHandler{
-		"enable":    enable,
-		"disable":   disable,
-		"status":    status,
-		"install":   install,
-		"uninstall": uninstall,
+		"enable":    wrapAutostartAction(enable),
+		"disable":   wrapAutostartAction(disable),
+		"status":    wrapAutostartAction(status),
+		"install":   wrapAutostartAction(install),
+		"uninstall": uninstallAction,
+	}
+}
+
+func wrapAutostartAction(handler func([]string) error) autostartActionHandler {
+	return func(args []string) (bool, error) {
+		return false, handler(args)
 	}
 }
 
@@ -52,18 +58,19 @@ func dispatchAutostartCommand(args []string, handlers map[string]autostartAction
 		autostartUsage()
 		return flag.ErrHelp
 	}
-	return dispatchAutostartAction(fs.Arg(0), fs.Args()[1:], handlers)
+	_, err := dispatchAutostartAction(fs.Arg(0), fs.Args()[1:], handlers)
+	return err
 }
 
-func dispatchAutostartAction(action string, args []string, handlers map[string]autostartActionHandler) error {
+func dispatchAutostartAction(action string, args []string, handlers map[string]autostartActionHandler) (bool, error) {
 	handler, ok := handlers[action]
 	if !ok {
 		autostartUsage()
 		err := fmt.Errorf("%w: unknown autostart action %q", errCommandUsage, action)
 		if suggestion := closestCommand(action, autostartActionNames(handlers), 2); suggestion != "" {
-			return fmt.Errorf("%w; Did you mean %q?", err, suggestion)
+			return false, fmt.Errorf("%w; Did you mean %q?", err, suggestion)
 		}
-		return err
+		return false, err
 	}
 	return handler(args)
 }
@@ -166,26 +173,46 @@ func installOutputWidth(output *os.File) int {
 }
 
 func uninstall(args []string) error {
+	_, err := uninstallAction(args)
+	return err
+}
+
+type uninstallOptions struct {
+	force bool
+	all   bool
+	yes   bool
+}
+
+func parseUninstallOptions(args []string) (uninstallOptions, error) {
+	var options uninstallOptions
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
-	force := fs.Bool("force", false, "remove a task belonging to another installation")
-	all := fs.Bool("all", false, "remove all termp-created files and print binary removal guidance")
-	yes := fs.Bool("yes", false, "skip confirmation when used with --all")
+	fs.BoolVar(&options.force, "force", false, "remove a task belonging to another installation")
+	fs.BoolVar(&options.all, "all", false, "remove all termp-created files and print binary removal guidance")
+	fs.BoolVar(&options.yes, "yes", false, "skip confirmation when used with --all")
 	if err := parseCommandFlags(fs, args); err != nil {
-		return err
+		return uninstallOptions{}, err
 	}
 	if err := rejectUnexpectedArgs(fs, "termp uninstall [--all] [--yes] [--force]"); err != nil {
-		return err
+		return uninstallOptions{}, err
 	}
-	if *yes && !*all {
-		return fmt.Errorf("%w: --yes requires --all", errCommandUsage)
+	if options.yes && !options.all {
+		return uninstallOptions{}, fmt.Errorf("%w: --yes requires --all", errCommandUsage)
 	}
-	if *all {
-		return uninstallAll(*force, *yes)
+	return options, nil
+}
+
+func uninstallAction(args []string) (bool, error) {
+	options, err := parseUninstallOptions(args)
+	if err != nil {
+		return false, err
 	}
-	if err := uninstallAutostart(*force, true); err != nil {
-		return err
+	if options.all {
+		return true, uninstallAll(options.force, options.yes)
 	}
-	return nil
+	if err := uninstallAutostart(options.force, true); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func uninstallAutostart(force, stopAfter bool) error {

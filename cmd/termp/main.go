@@ -164,10 +164,11 @@ func dispatchCommandWithAutostartHandlers(command string, args []string, handler
 	var err error
 	switch command {
 	case "install", "disable", "enable", "status":
-		err = dispatchAutostartAction(command, args, handlers)
+		_, err = dispatchAutostartAction(command, args, handlers)
 	case "uninstall":
-		err = dispatchAutostartAction(command, args, handlers)
-		if err == nil && !uninstallAllRequested(args) {
+		var all bool
+		all, err = dispatchAutostartAction(command, args, handlers)
+		if err == nil && !all {
 			fmt.Println("To remove everything, run: termp uninstall --all")
 		}
 	case "autostart":
@@ -199,15 +200,6 @@ func dispatchCommandWithAutostartHandlers(command string, args []string, handler
 		return nil
 	}
 	return err
-}
-
-func uninstallAllRequested(args []string) bool {
-	for _, arg := range args {
-		if arg == "--all" || arg == "--all=true" {
-			return true
-		}
-	}
-	return false
 }
 
 func commandNames() []string {
@@ -1421,6 +1413,7 @@ func activityButtons(buttons []registry.Button, cta config.CTA) []presence.Butto
 }
 
 func stop(args []string) error {
+	stopDeadline := time.Now().Add(stopTimeout)
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
 	addVerboseFlag(fs)
 	if err := parseCommandFlags(fs, args); err != nil {
@@ -1435,8 +1428,11 @@ func stop(args []string) error {
 		processIdentityMatches(state.PID, state.StartTime, state.ExecutablePath, processAlive, processLooksLikeTermpAtPath) {
 		publisher = daemonPIDRecord{PID: state.PID, StartTime: state.StartTime, ExecutablePath: state.ExecutablePath}
 	}
-	serviceState := service.NewManager().Status()
-	pid, err := stopDaemonAndPublisher(pidPath, publisher, stopTimeout, stopPollInterval, processAlive, processLooksLikeTermpAtPath, signalTermpProcessAtPath, time.Sleep, serviceWillRelaunch(serviceState))
+	statusCtx, cancelStatus := context.WithTimeout(context.Background(), min(statusTimeout, stopTimeout))
+	serviceState := service.NewManager().StatusContext(statusCtx)
+	cancelStatus()
+	remaining := max(time.Until(stopDeadline), 0)
+	pid, err := stopDaemonAndPublisher(pidPath, publisher, remaining, stopPollInterval, processAlive, processLooksLikeTermpAtPath, signalTermpProcessAtPath, time.Sleep, serviceWillRelaunch(serviceState))
 	if errors.Is(err, errUnreadablePIDFileRemoved) {
 		fmt.Println(errUnreadablePIDFileRemoved.Error())
 		return nil
