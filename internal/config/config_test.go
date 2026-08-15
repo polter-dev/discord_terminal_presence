@@ -2741,6 +2741,22 @@ func TestAllowlistCoverageLoosened(t *testing.T) {
 	}
 }
 
+func BenchmarkAllowlistCoverageLoosened(b *testing.B) {
+	for _, n := range []int{10, 50, 200, 1000} {
+		allowlist := make([]string, n)
+		for i := range allowlist {
+			allowlist[i] = filepath.Join("allowlist", fmt.Sprintf("entry-%d", i))
+		}
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			for b.Loop() {
+				if allowlistCoverageLoosened(allowlist, allowlist) {
+					b.Fatal("unchanged allowlist reported as loosened")
+				}
+			}
+		})
+	}
+}
+
 // TestManagerReloadPreservesPerToolShowDirectoryAcrossTruncationStall covers
 // a per-tool show_directory=false override (extra privacy for one tool) that
 // is lost to a truncating, stalling writer while the global show_directory

@@ -225,7 +225,10 @@ canonical-equivalent changes, and moving an entry deeper under an already allowe
 not pay a new horizon because they authorize no path the previous config denied. Empty
 allowlists keep their established allow-everything meaning. The comparison uses the same
 home expansion, path canonicalization, and component-aware prefix logic as
-`ResolvedTool.DirectoryAllowed`.
+`ResolvedTool.DirectoryAllowed`. Since #528, an identical allowlist returns before path
+work, and other comparisons expand and canonicalize every entry once before applying the
+same coverage predicate. This avoids repeated Windows symlink evaluation without changing
+which path transitions count as loosening.
 
 `Manager` currently has no lifecycle/`Close` method. Its `time.AfterFunc` retry retains
 the manager until it fires and may read the config path after the daemon has otherwise
