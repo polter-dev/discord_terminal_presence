@@ -554,6 +554,12 @@ func TestSelectorStillSelectsCurrentUserProcess(t *testing.T) {
 // not just a hand-set Process.Owned literal: a TTY-resolvable process whose
 // ownership lookup errors (permission denied, process exited mid-scan) must
 // still fail closed and be excluded, exactly like a confirmed-foreign one.
+//
+// It also asserts the #566 short-circuit: once ownership is known to be
+// false, enrich() must not go on to resolve TTY for a process the selector's
+// ownership gate is going to discard anyway. Ownership itself must still be
+// resolved unconditionally (never skipped, never reordered after TTY) --
+// that invariant is the process.Owned assertion below, not the TTY state.
 func TestSelectorExcludesProcessWhenOwnerLookupFails(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	clock := &fakeClock{now: base}
@@ -568,8 +574,8 @@ func TestSelectorExcludesProcessWhenOwnerLookupFails(t *testing.T) {
 	if process.Owned {
 		t.Fatalf("enriched process.Owned = true, want false after a failed ownership lookup")
 	}
-	if process.TTY.State != TTYResolved {
-		t.Fatalf("TTY state = %v, want resolved (ownership must gate independently of TTY)", process.TTY.State)
+	if process.TTY.State != TTYUnknown {
+		t.Fatalf("TTY state = %v, want unknown: TTY resolution must be skipped once ownership fails (#566)", process.TTY.State)
 	}
 
 	detection := selector.Select([]Process{process})

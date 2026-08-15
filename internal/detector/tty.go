@@ -81,6 +81,15 @@ func (e *presenceProcessEnricher) enrich(process Process, toolID string) Process
 			process.Owned = owned
 		}
 	}
+	// Ownership is now known. Everything below (TTY resolve, tmux query,
+	// atime stat, and on Windows a spawned console-probe child) is expensive
+	// per-candidate work that the selector's ownership gate at detector.go
+	// discards for any foreign process. Bail here, after ownership is
+	// resolved (never before it, and never skipping it), so that discarded
+	// work is never done at all (#566).
+	if !process.Owned {
+		return process
+	}
 	if e.resolver == nil {
 		return process
 	}
