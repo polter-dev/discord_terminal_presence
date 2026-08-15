@@ -215,18 +215,17 @@ override carries its own explicit-vs-absent tracking already (`allowlistSet`, se
 per-tool override remains a valid, deliberate way to opt that tool out of a restrictive
 global allowlist (see the `directory_allowlist` section below).
 
-`privacyPosture`'s `allowlistRestricted` is a boolean (whether the resolved allowlist has
-any entries at all), not a comparison of the entries themselves. It does not notice
-entry-level widening: `["/a/b"]` → `["/a"]` is a broader allowlist but still reads as
-"restricted", and a disjoint swap (`["/a"]` → `["/b"]`) is invisible the same way. This is
-a known, accepted limit rather than an oversight: no strict byte-prefix of a TOML array
-parses as valid TOML, so a truncating, stalling writer cannot produce a widened-but-valid
-allowlist the way it can drop an allowlist to empty or drop a per-tool override to absent —
-only a complete, deliberate rewrite can change specific entries, and the guard is not
-required to delay a config that was never truncated in the first place. If a future
-allowlist representation ever became reachable through a partial write (or a caller started
-constructing `Config` values from something other than a fully-decoded TOML document), this
-reasoning would need to be revisited.
+Since #518, `privacyPosture` retains the resolved allowlist entries and compares their
+effective path coverage instead of recording only empty versus non-empty. A next entry is
+non-loosening only when its entire subtree is already covered by a previous entry. This
+gates widening to a parent, adding a disjoint entry, or swapping to a disjoint allowlist,
+including the demonstrated partial rewrite where a new global allowlist is complete before
+a restrictive per-tool override is restored. Reordering entries, removing entries,
+canonical-equivalent changes, and moving an entry deeper under an already allowed path do
+not pay a new horizon because they authorize no path the previous config denied. Empty
+allowlists keep their established allow-everything meaning. The comparison uses the same
+home expansion, path canonicalization, and component-aware prefix logic as
+`ResolvedTool.DirectoryAllowed`.
 
 `Manager` currently has no lifecycle/`Close` method. Its `time.AfterFunc` retry retains
 the manager until it fires and may read the config path after the daemon has otherwise
@@ -308,9 +307,9 @@ whole-document save preserves portable entries such as `~/projects` instead of b
 the current home directory into the user's config (#479). This applies to both global
 and per-tool allowlists. Tests that redirect home while exercising this expansion set
 both `HOME` and `USERPROFILE`, matching `os.UserHomeDir` on Unix and Windows respectively.
-`permissivenessLoosened` remains unchanged: it still compares
-the same resolved privacy posture dimensions through `Config.Resolve`, while the actual
-path expansion is deferred to the point where a candidate directory is checked.
+`permissivenessLoosened` compares the same resolved privacy posture dimensions through
+`Config.Resolve`; for allowlist coverage it expands and canonicalizes entries using the
+same helpers as the point where a candidate directory is checked.
 `DirectoryAllowed` treats a zero-length `DirectoryAllowlist` as "no restriction configured"
 (allow every directory once `show_directory` is on) — this is intentional for a genuinely
 absent key, but before #449, validation-time path expansion silently dropped

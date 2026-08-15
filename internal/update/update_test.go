@@ -629,8 +629,9 @@ func TestGoUpdateRejectsInvalidReleaseTagsWithoutRunning(t *testing.T) {
 
 func TestInstallMethodDetection(t *testing.T) {
 	home := filepath.Join(string(filepath.Separator), "Users", "test")
-	goBin := filepath.Join(string(filepath.Separator), "Users", "test", "bin")
-	goPath := filepath.Join(string(filepath.Separator), "opt", "gopath")
+	goBin := filepath.Join(string(filepath.Separator), "Users", "test", "bin") + string(filepath.Separator)
+	goPathRoot := filepath.Join(string(filepath.Separator), "opt", "gopath")
+	goPath := strings.Join([]string{filepath.Join(string(filepath.Separator), "opt", "other"), goPathRoot}, string(os.PathListSeparator))
 	homebrewPrefixes := []string{"/opt/homebrew", "/usr/local"}
 	defaultScoop := filepath.Join(home, "scoop")
 	relocatedScoop := filepath.Join(string(filepath.Separator), "tools", "scoop")
@@ -657,8 +658,13 @@ func TestInstallMethodDetection(t *testing.T) {
 		{name: "unrecognized Scoop-like path", path: filepath.Join(home, "elsewhere", "apps", "termp", "current", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, "", "", ""), want: InstallGeneric},
 		{name: "nested Scoop app path", path: filepath.Join(defaultScoop, "apps", "termp", "0.1.0", "bin", "termp.exe"), goos: "windows", scoopRoots: scoopInstallRoots(home, "", "", ""), want: InstallGeneric},
 		{name: "GOBIN", path: filepath.Join(goBin, "termp"), goos: "linux", want: InstallGo},
-		{name: "GOPATH bin", path: filepath.Join(goPath, "bin", "termp"), goos: "linux", want: InstallGo},
+		{name: "nested under GOBIN", path: filepath.Join(goBin, "portable", "termp"), goos: "linux", want: InstallGeneric},
+		{name: "GOPATH bin", path: filepath.Join(goPathRoot, "bin", "termp"), goos: "linux", want: InstallGo},
+		{name: "nested under GOPATH bin", path: filepath.Join(goPathRoot, "bin", "portable", "termp"), goos: "linux", want: InstallGeneric},
 		{name: "default home Go bin", path: filepath.Join(home, "go", "bin", "termp"), goos: "linux", want: InstallGo},
+		{name: "case-insensitive macOS GOBIN", path: filepath.Join(strings.ToUpper(goBin), "termp"), goos: "darwin", want: InstallGo},
+		{name: "case-insensitive Windows GOBIN", path: filepath.Join(strings.ToUpper(goBin), "termp"), goos: "windows", want: InstallGo},
+		{name: "case-sensitive Linux GOBIN", path: filepath.Join(strings.ToUpper(goBin), "termp"), goos: "linux", want: InstallGeneric},
 		{name: "Debian package", path: filepath.Join("/usr/bin/termp"), goos: "linux", systemPackage: InstallDebian, want: InstallDebian},
 		{name: "RPM package", path: filepath.Join("/usr/bin/termp"), goos: "linux", systemPackage: InstallRPM, want: InstallRPM},
 		{name: "ambiguous system package", path: filepath.Join("/usr/bin/termp"), goos: "linux", systemPackage: InstallSystemPackage, want: InstallSystemPackage},
@@ -737,6 +743,30 @@ func TestInstallDetectionResolvesSymlinkBeforeMatching(t *testing.T) {
 	}
 	if got := detectInstall(link, filepath.EvalSymlinks, runtime.GOOS, nil, "", "", root, nil, resolvedRoot); got != InstallHomebrew {
 		t.Fatalf("symlinked Homebrew install = %q, want %q", got, InstallHomebrew)
+	}
+}
+
+func TestGoInstallDetectionResolvesSymlinkBeforeMatching(t *testing.T) {
+	requireSymlink(t)
+
+	root := t.TempDir()
+	goPath := filepath.Join(root, "go")
+	target := filepath.Join(goPath, "bin", "termp")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "portable", "termp")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectInstall(link, filepath.EvalSymlinks, runtime.GOOS, nil, "", goPath, "", nil); got != InstallGo {
+		t.Fatalf("symlinked Go install = %q, want %q", got, InstallGo)
 	}
 }
 

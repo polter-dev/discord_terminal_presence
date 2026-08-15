@@ -636,6 +636,100 @@ func TestSelectorSwitchesAfterIdleTimeoutToActiveChallenger(t *testing.T) {
 	}
 }
 
+func TestSelectorUnavailableCPUDoesNotFabricateChallengerActivity(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	clock := &fakeClock{now: base}
+	selector := NewSelector(testRegistry(t), Config{
+		HeadlinerIdleTimeout: 30 * time.Second,
+		ActivitySwitching:    true,
+	}, clock)
+	claude := Process{Owned: true, Pid: 1, Name: "claude", CreateTime: base, CPUTime: 100, CPUTimeKnown: true}
+	codex := Process{Owned: true, Pid: 2, Name: "codex", CreateTime: base.Add(-time.Minute), CPUTime: 100, CPUTimeKnown: true}
+
+	if detection := selector.Select([]Process{claude}); detection.Tool.ID != "claude-code" {
+		t.Fatalf("initial tool = %q, want claude-code", detection.Tool.ID)
+	}
+	clock.Advance(time.Second)
+	claude.CPUTime++
+	if detection := selector.Select([]Process{claude, codex}); detection.Tool.ID != "claude-code" {
+		t.Fatalf("tool after codex baseline = %q, want claude-code", detection.Tool.ID)
+	}
+
+	clock.Advance(time.Second)
+	codex.CPUTime = 0
+	codex.CPUTimeKnown = false
+	if detection := selector.Select([]Process{claude, codex}); detection.Tool.ID != "claude-code" {
+		t.Fatalf("tool during unavailable sample = %q, want claude-code", detection.Tool.ID)
+	}
+
+	clock.Advance(31 * time.Second)
+	codex.CPUTime = 100
+	codex.CPUTimeKnown = true
+	if detection := selector.Select([]Process{claude, codex}); detection.Tool.ID != "claude-code" {
+		t.Fatalf("tool after unchanged CPU sample recovered = %q, want claude-code", detection.Tool.ID)
+	}
+}
+
+func TestSelectorCPUAggregateRebaselinesAfterProcessIdentityChanges(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	oldCodex := Process{Owned: true, Pid: 2, Name: "codex", CreateTime: base.Add(-time.Hour), CPUTime: 100, CPUTimeKnown: true}
+	tests := []struct {
+		name    string
+		initial []Process
+		next    []Process
+	}{
+		{
+			name:    "new process",
+			initial: []Process{oldCodex},
+			next: []Process{
+				oldCodex,
+				{Owned: true, Pid: 3, Name: "codex", CreateTime: base.Add(-time.Minute), CPUTime: 1000, CPUTimeKnown: true},
+			},
+		},
+		{
+			name: "exited process",
+			initial: []Process{
+				oldCodex,
+				{Owned: true, Pid: 3, Name: "codex", CreateTime: base.Add(-time.Minute), CPUTime: 1000, CPUTimeKnown: true},
+			},
+			next: []Process{oldCodex},
+		},
+		{
+			name:    "reused PID",
+			initial: []Process{oldCodex},
+			next: []Process{
+				{Owned: true, Pid: oldCodex.Pid, Name: "codex", CreateTime: base.Add(-time.Minute), CPUTime: 1000, CPUTimeKnown: true},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clock := &fakeClock{now: base}
+			reg := testRegistry(t)
+			selector := NewSelector(reg, Config{
+				Pin:                  "claude-code",
+				HeadlinerIdleTimeout: 30 * time.Second,
+				ActivitySwitching:    true,
+			}, clock)
+			claude := Process{Owned: true, Pid: 1, Name: "claude", CreateTime: base, CPUTime: 100, CPUTimeKnown: true}
+			initial := append([]Process{claude}, test.initial...)
+			if detection := selector.Select(initial); detection.Tool.ID != "claude-code" {
+				t.Fatalf("initial tool = %q, want claude-code", detection.Tool.ID)
+			}
+
+			selector.Reconfigure(reg, Config{HeadlinerIdleTimeout: 30 * time.Second, ActivitySwitching: true})
+			clock.Advance(time.Second)
+			selector.Select(initial)
+			clock.Advance(31 * time.Second)
+			next := append([]Process{claude}, test.next...)
+			if detection := selector.Select(next); detection.Tool.ID != "claude-code" {
+				t.Fatalf("tool after identity change = %q, want claude-code", detection.Tool.ID)
+			}
+		})
+	}
+}
+
 func TestSelectorStaleAtimeExcludedFromCandidatesAndOthers(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("presence detection unimplemented on Windows — see #183")

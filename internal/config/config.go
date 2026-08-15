@@ -1117,7 +1117,7 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 	return false
 }
 
-// privacyPosture is a comparable summary of everything that affects what a
+// privacyPosture is a summary of everything that affects what a
 // resolved tool may disclose, computed from the SAME Config.Resolve path
 // presence mapping uses. It deliberately does not enumerate Config fields by
 // name beyond this one place: TestPrivacyPostureCoversAllPrivacyFields and
@@ -1125,13 +1125,13 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 // reflection to fail the build the day a new field is added to Privacy or
 // ToolOverride without a conscious decision about whether postureFor below
 // needs to grow with it. That is the actual defect this bug family (#410 ->
-// #425 -> #434 -> #435 -> #438 -> #440 -> #447) keeps regenerating: a rule
+// #425 -> #434 -> #435 -> #438 -> #440 -> #447 -> #518) keeps regenerating: a rule
 // bound to an enumeration of one.
 type privacyPosture struct {
 	enabled               bool
 	showDirectory         bool
 	directoryBasenameOnly bool // true is MORE private: basename only
-	allowlistRestricted   bool // true means the allowlist actively narrows disclosure
+	directoryAllowlist    []string
 }
 
 func postureFor(r ResolvedTool) privacyPosture {
@@ -1139,8 +1139,36 @@ func postureFor(r ResolvedTool) privacyPosture {
 		enabled:               r.Enabled,
 		showDirectory:         r.ShowDirectory,
 		directoryBasenameOnly: r.DirectoryBasenameOnly,
-		allowlistRestricted:   len(r.DirectoryAllowlist) > 0,
+		directoryAllowlist:    r.DirectoryAllowlist,
 	}
+}
+
+// allowlistCoverageLoosened reports whether next authorizes any path that
+// prev denied. Each entry authorizes its whole subtree, so every next entry
+// must fall under at least one previous entry. An empty allowlist authorizes
+// every path.
+func allowlistCoverageLoosened(prev, next []string) bool {
+	if len(prev) == 0 {
+		return false
+	}
+	if len(next) == 0 {
+		return true
+	}
+	for _, nextEntry := range next {
+		nextPath := canonicalPrivacyPath(expandHome(nextEntry))
+		covered := false
+		for _, prevEntry := range prev {
+			prevPath := canonicalPrivacyPath(expandHome(prevEntry))
+			if pathHasPrefix(nextPath, prevPath) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return true
+		}
+	}
+	return false
 }
 
 // postureLoosened reports whether next could disclose something prev did
@@ -1155,7 +1183,7 @@ func postureLoosened(prev, next privacyPosture) bool {
 	if prev.directoryBasenameOnly && !next.directoryBasenameOnly {
 		return true
 	}
-	if prev.allowlistRestricted && !next.allowlistRestricted {
+	if allowlistCoverageLoosened(prev.directoryAllowlist, next.directoryAllowlist) {
 		return true
 	}
 	return false

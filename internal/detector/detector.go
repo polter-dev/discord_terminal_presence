@@ -271,7 +271,6 @@ type Selector struct {
 	clock    Clock
 
 	previousFeatured   string
-	previousCPU        map[string]float64
 	idleSince          map[string]time.Time
 	processCPU         map[string]processCPUObservation
 	selectedInstances  map[string]string
@@ -319,7 +318,6 @@ func newSelectorWithEpisodes(reg *registry.Registry, config Config, clock Clock,
 		registry:           reg,
 		config:             config,
 		clock:              clock,
-		previousCPU:        make(map[string]float64),
 		idleSince:          make(map[string]time.Time),
 		processCPU:         make(map[string]processCPUObservation),
 		selectedInstances:  make(map[string]string),
@@ -339,6 +337,8 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	candidateInstances := make(map[string][]toolCandidate)
 	collectionInstances := make(map[string][]toolCandidate)
 	cpuTotals := make(map[string]float64)
+	cpuActivity := make(map[string]float64)
+	cpuAvailable := make(map[string]bool)
 	now := s.clock.Now()
 	eligibleEpisodes := make(map[string]struct{})
 	observedProcesses := make(map[string]struct{})
@@ -403,7 +403,15 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		if !featuredEligible {
 			continue
 		}
-		cpuTotals[tool.ID] += proc.CPUTime
+		if _, ok := cpuAvailable[tool.ID]; !ok {
+			cpuAvailable[tool.ID] = true
+		}
+		if proc.CPUTimeKnown {
+			cpuTotals[tool.ID] += proc.CPUTime
+			cpuActivity[tool.ID] += processActivity
+		} else {
+			cpuAvailable[tool.ID] = false
+		}
 		candidateInstances[tool.ID] = append(candidateInstances[tool.ID], candidate)
 	}
 	for key := range s.processCPU {
@@ -429,15 +437,16 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 
 	if len(candidates) == 0 {
 		s.previousFeatured = ""
-		s.previousCPU = make(map[string]float64)
 		s.idleSince = make(map[string]time.Time)
 		return Detection{None: true}
 	}
 
 	for id, candidate := range candidates {
-		activity := cpuTotals[id] - s.previousCPU[id]
-		if activity < 0 {
+		activity := cpuActivity[id]
+		if !cpuAvailable[id] {
 			activity = 0
+		} else if s.previousFeatured == "" {
+			activity = cpuTotals[id]
 		}
 		candidate.Activity = activity
 		candidates[id] = candidate
@@ -447,7 +456,6 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			s.idleSince[id] = now
 		}
 	}
-	s.previousCPU = cpuTotals
 	for id := range s.idleSince {
 		if _, running := candidates[id]; !running {
 			delete(s.idleSince, id)

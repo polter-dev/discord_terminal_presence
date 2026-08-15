@@ -56,7 +56,11 @@ distinct system-package method whose guidance names both release-asset installat
 uses standard roots plus a once-cached, 500ms-bounded `brew --prefix`, and requires the
 resolved executable to match the `termp` Cellar or Caskroom layout. Go locations include
 a once-cached, 500ms-bounded `go env GOBIN GOPATH`, the `GOPATH` environment variable,
-and `~/go/bin`. Other resolution uncertainty is generic.
+and `~/go/bin`. A Go-owned executable must be an immediate child of one of those bin
+directories; nested descendants are generic so `go install` cannot update a different
+file (#520). Candidate bin symlinks are resolved when possible, trailing separators are
+cleaned, and path equality is case-insensitive on Windows and macOS. Other resolution
+uncertainty is generic.
 
 Automatic attempt state shares the update cache and records time, target, error, and a
 distinct skipped flag. All cache read-modify-write transactions share a cross-process lock,
