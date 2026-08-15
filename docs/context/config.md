@@ -84,6 +84,21 @@ other invalid config does (consistent with #462's fail-closed handling), without
 scan itself ever taking more than linear time regardless of how deep the (rejected) nesting
 claims to be.
 
+Until #574, the two multiline-string exits assumed the closing delimiter was always the
+literal three bytes at the position of the first `"` or `'` found, advancing the scan by
+exactly two bytes on a match. TOML 1.0 allows up to two extra quote characters as literal
+content immediately before the closing delimiter (`"""x""""` is the valid string `x"`), so
+a four- or five-quote run left the scan pointing at a leftover quote back in the default
+state, which opened a phantom basic or literal string that swallowed the rest of the
+document. Every bracket after that point went uncounted and the guard returned false,
+restoring the #497 quadratic decode with a thirteen-byte prefix. Both exits now find the
+full run of consecutive quote characters at the closing position; a run of three or more
+closes the string on its last three quotes (any leading quotes in the run are literal
+content, matching the spec), and a run of fewer than three cannot close and is skipped as
+content. `FuzzTomlNestingTooDeep` (`internal/config/toml_nesting_quote_test.go`) checks
+`tomlNestingTooDeep` against an independently written reference scanner; a 30s run found
+no divergence beyond the known bypass the fix and its regression tests already cover.
+
 If a provisional candidate changes during that budget, `Manager.Reload` leaves last-good
 and `LastError` untouched and relies on the save's completion to fire another fsnotify
 event. Standalone loads and manager construction have no last-good value to retain, so

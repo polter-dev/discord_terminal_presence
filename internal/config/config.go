@@ -750,14 +750,40 @@ func tomlNestingTooDeep(data []byte) bool {
 			switch {
 			case c == '\\':
 				i++
-			case c == '"' && i+2 < n && data[i+1] == '"' && data[i+2] == '"':
-				state = stateDefault
-				i += 2
+			case c == '"':
+				// TOML 1.0 allows up to two extra quotes as literal content
+				// immediately before the closing delimiter (so `x""""` inside
+				// a multi-line basic string is the content `x"` followed by
+				// the closing `"""`). A run of fewer than three quotes can
+				// never be a closing delimiter and must stay literal content;
+				// a run of three or more closes on its LAST three quotes,
+				// with any leading quotes in the run counted as content.
+				// Advancing i by only 2 on the naive three-quote check landed
+				// back in stateDefault on a leftover quote, which then opened
+				// a phantom stateBasicString that swallowed the rest of the
+				// document and let every subsequent bracket bypass the depth
+				// count entirely (#574).
+				j := i
+				for j < n && data[j] == '"' {
+					j++
+				}
+				if j-i >= 3 {
+					state = stateDefault
+				}
+				i = j - 1
 			}
 		case stateMultilineLiteral:
-			if c == '\'' && i+2 < n && data[i+1] == '\'' && data[i+2] == '\'' {
-				state = stateDefault
-				i += 2
+			if c == '\'' {
+				// Same quote-run handling as stateMultilineBasic, for the
+				// literal-string delimiter instead of the basic-string one.
+				j := i
+				for j < n && data[j] == '\'' {
+					j++
+				}
+				if j-i >= 3 {
+					state = stateDefault
+				}
+				i = j - 1
 			}
 		}
 	}
