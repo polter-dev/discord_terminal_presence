@@ -209,9 +209,9 @@ func TestUnknownCommandSuggestsCloseMatch(t *testing.T) {
 func TestAutostartActionSuggestionAndValidDispatch(t *testing.T) {
 	calls := 0
 	handlers := map[string]autostartActionHandler{
-		"uninstall": func([]string) error {
+		"uninstall": func([]string) (bool, error) {
 			calls++
-			return nil
+			return false, nil
 		},
 	}
 	err := dispatchAutostartCommand([]string{"uninstal"}, handlers)
