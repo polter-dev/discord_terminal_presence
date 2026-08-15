@@ -928,6 +928,11 @@ func start(args []string) error {
 	manager, cfg, loadErr := newWatchedConfigManager(configPath, func(manager *config.Manager) {
 		startConfigWatchWithRetry(ctx, manager, configPath)
 	})
+	// The daemon owns this manager for the whole process, so Close is about
+	// leaving no armed loosening retry behind rather than about a bug visible
+	// today (#553). It never resolves a pending decision, so shutdown cannot
+	// change presence in either direction.
+	defer manager.Close()
 	if loadErr != nil {
 		log.Print(startupConfigError(cfg.Path, loadErr))
 	}
@@ -2365,6 +2370,8 @@ func watch(args []string) error {
 			log.Printf("config watch disabled: %v", err)
 		}
 	})
+	// Watch teardown stops the manager's pending loosening retry (#553).
+	defer manager.Close()
 	logConfigWarnings(cfg.Warnings)
 
 	applied, err := newDetectionRuntime(cfg)

@@ -19,8 +19,14 @@ type Manager struct {
 	accepted         fileSnapshot
 	lastErr          error
 	pendingLoosening pendingEnabledLoosening
-	reloads          chan ReloadResult
-	watchErrs        chan error
+	horizon          time.Duration
+	closed           bool
+	// retries tracks armed loosening retries that have not finished. Close
+	// waits on it so a retry that had already started when Close ran cannot
+	// still be touching manager state after Close returns.
+	retries   sync.WaitGroup
+	reloads   chan ReloadResult
+	watchErrs chan error
 }
 
 type pendingEnabledLoosening struct {
@@ -58,6 +64,20 @@ func newManagerPathWith(
 	snapshot func(string) fileSnapshot,
 	now func() time.Time,
 	sleep func(time.Duration),
+) *Manager {
+	return newManagerPathWithHorizon(path, snapshot, now, sleep, enabledLooseningHorizon)
+}
+
+// newManagerPathWithHorizon is the construction seam. horizon is a parameter
+// only so lifecycle tests can arm and observe the loosening retry in
+// milliseconds instead of racing a three-second wall-clock wait; every
+// production path passes enabledLooseningHorizon.
+func newManagerPathWithHorizon(
+	path string,
+	snapshot func(string) fileSnapshot,
+	now func() time.Time,
+	sleep func(time.Duration),
+	horizon time.Duration,
 ) *Manager {
 	snap, settled := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep, fileSnapshot{})
 	cfg, enabledDefined, err := loadSnapshotWithMetadata(path, snap)
@@ -104,15 +124,49 @@ func newManagerPathWith(
 		current:   cfg,
 		accepted:  accepted,
 		lastErr:   err,
+		horizon:   horizon,
 		reloads:   make(chan ReloadResult, 1),
 		watchErrs: make(chan error, 1),
 	}
 	if uncertifiedEnabled {
 		// Arms the existing horizon without publishing a misleading successful
 		// reload while presence is held off.
+		//
+		// The lock is not ceremony. acceptReloadLocked stores the timer it just
+		// armed, and that timer's func reads the same field through reload, so
+		// the constructor is already sharing the manager with another goroutine
+		// by the time it writes. The horizon makes the window enormous in
+		// practice, but the write is unsynchronized without this and the race
+		// detector reports it as soon as a caller shortens the horizon.
+		manager.mu.Lock()
 		manager.acceptReloadLocked(pendingCfg, snap, false)
+		manager.mu.Unlock()
 	}
 	return manager
+}
+
+// Close stops the manager's pending loosening retry and makes every later
+// reload a no-op. It is safe to call more than once and from any goroutine.
+//
+// Close deliberately does NOT resolve a loosening decision that is still
+// inside its horizon. A manager torn down mid-horizon simply stops: it does
+// not commit the pending candidate, does not revert anything already
+// committed, and does not publish a reload result. Presence therefore can
+// never turn on as a side effect of shutdown (#553).
+//
+// Ordering matters for the race that time.Timer.Stop cannot win on its own. A
+// retry that has already fired is not stopped by Stop returning false, so
+// Close first marks the manager closed under the same lock every commit takes.
+// A retry that is mid-flight then finds the manager closed and returns without
+// touching state, and Close waits for it to finish before returning.
+func (m *Manager) Close() {
+	m.mu.Lock()
+	m.closed = true
+	m.clearPendingLooseningLocked()
+	m.mu.Unlock()
+	// Waiting outside the lock: a retry still running needs m.mu to observe
+	// the closed flag it is about to give up on.
+	m.retries.Wait()
 }
 
 // Current returns a copy of the current last-good config and latest load error.
@@ -150,6 +204,8 @@ func (m *Manager) WatchErrors() <-chan error {
 // settle budget runs out, Reload is a no-op: it leaves last-good and
 // LastError untouched and returns nil, relying on a later fsnotify event
 // (fired when the write finishes) to trigger another attempt.
+//
+// After Close, Reload is also a no-op and returns nil.
 func (m *Manager) Reload() error {
 	return m.reload()
 }
@@ -159,8 +215,12 @@ func (m *Manager) reload() error {
 	defer m.reloadMu.Unlock()
 
 	m.mu.RLock()
+	closed := m.closed
 	accepted := m.accepted
 	m.mu.RUnlock()
+	if closed {
+		return nil
+	}
 	snap, ok := settledConfigSnapshot(m.path, accepted)
 	if !ok {
 		return nil
@@ -168,6 +228,12 @@ func (m *Manager) reload() error {
 	cfg, enabledDefined, err := loadSnapshotWithMetadata(m.path, snap)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Re-checked under the write lock: Close may have run while this reload
+	// was reading the file. Committing or publishing now would let shutdown
+	// resolve a decision it is only allowed to stop.
+	if m.closed {
+		return nil
+	}
 	if err != nil {
 		m.clearPendingLooseningLocked()
 		m.lastErr = err
@@ -197,10 +263,14 @@ func (m *Manager) acceptReloadLocked(cfg Config, snap fileSnapshot, enabledDefin
 			m.pendingLoosening.firstSeen = now
 		}
 		elapsed := now.Sub(m.pendingLoosening.firstSeen)
-		if elapsed < enabledLooseningHorizon {
-			if m.pendingLoosening.retry == nil {
-				delay := enabledLooseningHorizon - elapsed
+		if elapsed < m.horizon {
+			// A closed manager holds the loosening unresolved rather than
+			// arming a retry that would outlive its owner.
+			if m.pendingLoosening.retry == nil && !m.closed {
+				delay := m.horizon - elapsed
+				m.retries.Add(1)
 				m.pendingLoosening.retry = time.AfterFunc(delay, func() {
+					defer m.retries.Done()
 					_ = m.reload()
 				})
 			}
@@ -216,8 +286,15 @@ func (m *Manager) acceptReloadLocked(cfg Config, snap fileSnapshot, enabledDefin
 }
 
 func (m *Manager) clearPendingLooseningLocked() {
-	if m.pendingLoosening.retry != nil {
-		m.pendingLoosening.retry.Stop()
+	if timer := m.pendingLoosening.retry; timer != nil {
+		// Stop reporting true is the only case where the retry func is
+		// guaranteed never to run, so it is the only case where this call owns
+		// the tracking entry the func would otherwise release itself. Stop
+		// reporting false means the func has already fired (possibly it is the
+		// very call stack running this), and its own deferred Done covers it.
+		if timer.Stop() {
+			m.retries.Done()
+		}
 	}
 	m.pendingLoosening = pendingEnabledLoosening{}
 }
