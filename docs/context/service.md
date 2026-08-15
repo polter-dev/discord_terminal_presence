@@ -69,17 +69,32 @@ into a hard failure over a check that is only advisory was the actual defect.
 `cmd/termp` covers the wiring directly, so deleting the validation call from
 `install()` now fails the suite instead of passing it.
 
-`isUnstableExecutablePath` has two independent signals, and only one of them is
-portable. The source-tree marker (a `.git` entry beside a `go.mod` naming this
-module) is decided purely by file contents and behaves identically everywhere.
-The temp-root check does not: `pathWithin` compares the EvalSymlinks-resolved
-executable against the raw `os.TempDir()` string, so it silently misses whenever
-those two spell the same directory differently. Windows does exactly that, since
-`TMP` can hold an 8.3 short path (`C:\Users\RUNNER~1\...`) while EvalSymlinks
-returns the long form. Any test that needs a genuinely unstable fixture on every
-platform must therefore build a fake source tree, not a `t.TempDir()` path. The
-weakened Windows temp guard is recorded separately rather than tightened here,
-because making it fire would newly refuse installs that succeed today.
+`isUnstableExecutablePath` has two independent signals. The source-tree marker (a
+`.git` entry beside a `go.mod` naming this module) is decided purely by file
+contents and behaves identically everywhere. The temp-root check used to compare
+the EvalSymlinks-resolved executable against the raw `os.TempDir()` string, so it
+silently missed whenever those two spell the same directory differently: a
+symlinked `TMPDIR` on Unix, or a `TMP` holding an 8.3 short path
+(`C:\Users\RUNNER~1\...`) where EvalSymlinks returns the long form
+(`C:\Users\runneradmin\...`). On such a machine no root matched and a
+temp-directory binary was judged stable, which is why the guard never fired on
+Windows. `unstableExecutableRoots` now compares both spellings, resolving
+`os.TempDir()` through EvalSymlinks and checking the resolved form alongside the
+raw one (#542). If resolving the root fails, the raw string alone is still
+checked, which is the pre-fix behavior, so a temporarily unreadable temp
+directory cannot abort anything. The three remaining roots are Unix-only literals
+and stay matched as written.
+
+That fix means `autostart install` now refuses temp-directory binaries on Windows
+where it used to accept them, so the refusal names the offending path and offers
+a stable destination the target OS actually has: `%LOCALAPPDATA%\Programs\termp`
+on Windows, `~/.local/bin` or `/usr/local/bin` elsewhere. Both messages render the
+path with `%q`, which escapes the backslashes of a Windows path, so tests must
+assert against the quoted rendering rather than the raw path. A test needing a
+genuinely unstable fixture on every platform should still prefer a fake source
+tree; reproducing the temp-root mismatch instead requires a symlinked temp root
+and a fixture outside the literal Unix roots, which is what
+`TestValidateInstallExecutableRefusesTempRootSpelledDifferently` builds.
 
 Note that `termp setup` still resolves the executable without calling
 `ValidateInstallExecutable`, so it can register a path that `autostart install`
