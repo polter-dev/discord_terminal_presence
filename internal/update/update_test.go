@@ -662,8 +662,6 @@ func TestInstallMethodDetection(t *testing.T) {
 		{name: "GOPATH bin", path: filepath.Join(goPathRoot, "bin", "termp"), goos: "linux", want: InstallGo},
 		{name: "nested under GOPATH bin", path: filepath.Join(goPathRoot, "bin", "portable", "termp"), goos: "linux", want: InstallGeneric},
 		{name: "default home Go bin", path: filepath.Join(home, "go", "bin", "termp"), goos: "linux", want: InstallGo},
-		{name: "case-insensitive macOS GOBIN", path: filepath.Join(strings.ToUpper(goBin), "termp"), goos: "darwin", want: InstallGo},
-		{name: "case-insensitive Windows GOBIN", path: filepath.Join(strings.ToUpper(goBin), "termp"), goos: "windows", want: InstallGo},
 		{name: "case-sensitive Linux GOBIN", path: filepath.Join(strings.ToUpper(goBin), "termp"), goos: "linux", want: InstallGeneric},
 		{name: "Debian package", path: filepath.Join("/usr/bin/termp"), goos: "linux", systemPackage: InstallDebian, want: InstallDebian},
 		{name: "RPM package", path: filepath.Join("/usr/bin/termp"), goos: "linux", systemPackage: InstallRPM, want: InstallRPM},

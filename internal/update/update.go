@@ -1298,12 +1298,16 @@ func isDirectChildOf(path, dir, goos string) bool {
 	// directories. Treating them as one would classify the executable as a Go
 	// install, so `go install` would rewrite the other directory and leave the
 	// running binary stale (#520). Compare directory identity when both paths
-	// exist, and fall back to the case-insensitive spelling match when either
-	// does not, which is what synthetic test paths rely on.
+	// exist. When either cannot be stat'ed, the directories' relationship is
+	// unknown, so this reports "not the same directory" rather than assuming
+	// they match (#559): a configured-but-not-yet-created GOBIN or
+	// $GOPATH/bin whose spelling differs from the executable's real parent
+	// only by case must not be silently treated as identical, which is the
+	// same #520 shape this whole comparison exists to avoid.
 	parentInfo, parentErr := os.Stat(parent)
 	dirInfo, dirErr := os.Stat(dir)
 	if parentErr != nil || dirErr != nil {
-		return true
+		return false
 	}
 	return os.SameFile(parentInfo, dirInfo)
 }
