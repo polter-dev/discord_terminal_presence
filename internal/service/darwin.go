@@ -63,11 +63,18 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 
 func (s darwinService) rollbackInstall(path string, previous definitionSnapshot, priorLoaded string) error {
 	var rollbackErrs []error
+	stopped := true
 	if err := s.unload(path); err != nil {
+		stopped = false
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("stop failed launch agent during rollback: %w", err))
 	}
 	restored := true
-	if err := restoreDefinition(path, previous); err != nil {
+	if !stopped && !previous.exists {
+		// Mirror Uninstall: a job that could not be stopped keeps its definition so
+		// the user still has something to boot out on a retry.
+		restored = false
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("service definition kept at %s so uninstall can be retried", path))
+	} else if err := restoreDefinition(path, previous); err != nil {
 		restored = false
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous launch agent definition: %w", err))
 	}
@@ -79,7 +86,8 @@ func (s darwinService) rollbackInstall(path string, previous definitionSnapshot,
 			Label,
 		))
 	}
-	if restored && previous.exists && priorLoaded == "true" {
+	// Do not reload the previous job while the failed replacement may still be running.
+	if stopped && restored && previous.exists && priorLoaded == "true" {
 		if err := s.load(path); err != nil {
 			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous launch agent activation: %w", err))
 		}

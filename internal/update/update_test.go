@@ -682,6 +682,49 @@ func TestInstallMethodDetection(t *testing.T) {
 	}
 }
 
+// TestInstallDetectionOnCaseSensitiveVolume covers #530: on a case-sensitive
+// volume two directories whose names differ only by case are different
+// directories, so a binary in one of them is not a Go install just because the
+// other one is GOBIN. Case sensitivity is a per-volume property, so the test
+// skips itself when the temporary directory lives on a case-insensitive volume
+// (the macOS and Windows defaults); it runs for real on Linux and on a
+// case-sensitive APFS or HFS+ volume.
+func TestInstallDetectionOnCaseSensitiveVolume(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks() error = %v", err)
+	}
+	goBin := filepath.Join(root, "gobin")
+	shoutedBin := filepath.Join(root, "GOBIN")
+	for _, dir := range []string{goBin, shoutedBin} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q) error = %v", dir, err)
+		}
+	}
+	goBinInfo, err := os.Stat(goBin)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", goBin, err)
+	}
+	shoutedInfo, err := os.Stat(shoutedBin)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", shoutedBin, err)
+	}
+	if os.SameFile(goBinInfo, shoutedInfo) {
+		t.Skipf("%q is case-insensitive, so %q and %q are one directory", root, goBin, shoutedBin)
+	}
+	identity := func(path string) (string, error) { return path, nil }
+	for _, goos := range []string{"darwin", "windows"} {
+		executable := filepath.Join(shoutedBin, "termp")
+		if got := detectInstall(executable, identity, goos, nil, goBin, "", "", nil); got != InstallGeneric {
+			t.Fatalf("detectInstall(%q, %q) = %q, want %q", executable, goos, got, InstallGeneric)
+		}
+		executable = filepath.Join(goBin, "termp")
+		if got := detectInstall(executable, identity, goos, nil, goBin, "", "", nil); got != InstallGo {
+			t.Fatalf("detectInstall(%q, %q) = %q, want %q", executable, goos, got, InstallGo)
+		}
+	}
+}
+
 func TestParseGoEnvPaths(t *testing.T) {
 	t.Run("custom GOBIN and GOPATH", func(t *testing.T) {
 		goBin := filepath.Join(string(filepath.Separator), "custom", "bin")

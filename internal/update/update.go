@@ -1283,10 +1283,29 @@ func isDirectChildOf(path, dir, goos string) bool {
 		dir = resolved
 	}
 	dir = filepath.Clean(dir)
-	if goos == "windows" || goos == "darwin" {
-		return strings.EqualFold(parent, dir)
+	if parent == dir {
+		return true
 	}
-	return parent == dir
+	if goos != "windows" && goos != "darwin" {
+		return false
+	}
+	if !strings.EqualFold(parent, dir) {
+		return false
+	}
+	// The two spellings differ only by case. Case sensitivity is a per-volume
+	// property, not a platform one: a case-sensitive APFS or HFS+ volume holds
+	// /Volumes/Case/gobin and /Volumes/Case/GOBIN as genuinely different
+	// directories. Treating them as one would classify the executable as a Go
+	// install, so `go install` would rewrite the other directory and leave the
+	// running binary stale (#520). Compare directory identity when both paths
+	// exist, and fall back to the case-insensitive spelling match when either
+	// does not, which is what synthetic test paths rely on.
+	parentInfo, parentErr := os.Stat(parent)
+	dirInfo, dirErr := os.Stat(dir)
+	if parentErr != nil || dirErr != nil {
+		return true
+	}
+	return os.SameFile(parentInfo, dirInfo)
 }
 
 // IsNewer reports whether latest has greater semantic-version precedence than
