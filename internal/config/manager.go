@@ -59,21 +59,44 @@ func newManagerPathWith(
 	now func() time.Time,
 	sleep func(time.Duration),
 ) *Manager {
-	snap, _ := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep, fileSnapshot{})
-	cfg, err := loadSnapshot(path, snap)
+	snap, settled := boundedSettledConfigSnapshotWith(path, snapshot, now, sleep, fileSnapshot{})
+	cfg, enabledDefined, err := loadSnapshotWithMetadata(path, snap)
 	accepted := fileSnapshot{}
 	if err == nil {
 		accepted = snap
 	}
-	ambiguousBlank := err == nil && ambiguousBlankConfigSnapshot(snap)
+	// Construction has no previously accepted snapshot to compare a candidate
+	// against, so the prefix rule in provisionalConfigSnapshot is inert here
+	// and cannot recognise a non-atomic writer. The only bytes that can
+	// certify presence-on at construction are bytes that settled AND said
+	// enabled = true explicitly. Everything else reads exactly like a
+	// genuinely defaulted config while it may in fact be a write in flight
+	// (#548):
+	//
+	//   - an existing blank file (#440),
+	//   - a writer's first chunk that happens to parse but omits enabled,
+	//   - a snapshot that never settled inside the standalone bound, whose
+	//     bytes are admittedly uncertified even when they do define enabled,
+	//   - a missing file, which is a genuine first run or an unlink/recreate
+	//     window (#448 route A).
+	//
+	// Seed presence off in all of those and route the candidate through the
+	// same state-commit choke point every reload uses, with enabledDefined
+	// forced false because construction cannot vouch for the bytes. That arms
+	// the false-to-true loosening guard for the manager's whole life rather
+	// than only on the blank branch, so a completed explicit opt-out applies
+	// immediately while a config that really is a plain default still becomes
+	// enabled one loosening horizon later.
+	//
+	// The three ambiguous shapes are named separately so each can be reasoned
+	// about, and reverted, on its own.
+	missingFile := err == nil && !snap.exists
+	defaultedEnabled := err == nil && snap.exists && !enabledDefined
+	unsettledSnapshot := err == nil && !settled
+	uncertifiedEnabled := cfg.Enabled &&
+		(missingFile || defaultedEnabled || unsettledSnapshot)
 	pendingCfg := cfg
-	// An existing blank file is ambiguous at construction: it may be a
-	// deliberate reset or a non-atomic writer stalled after truncation. There
-	// is no previously accepted snapshot to disambiguate it, so seed presence
-	// off while retaining the snapshot as the baseline. The first Reload then
-	// resolves a completed write immediately or applies the enabled loosening
-	// horizon to a still-defaulted config.
-	if ambiguousBlank {
+	if uncertifiedEnabled {
 		cfg = invalidFallbackWithPath(path)
 	}
 	manager := &Manager{
@@ -84,10 +107,9 @@ func newManagerPathWith(
 		reloads:   make(chan ReloadResult, 1),
 		watchErrs: make(chan error, 1),
 	}
-	if ambiguousBlank {
-		// Route the deliberate-default candidate through the same state-commit
-		// choke point as every reload. This arms the existing horizon without
-		// publishing a misleading successful reload while presence is held off.
+	if uncertifiedEnabled {
+		// Arms the existing horizon without publishing a misleading successful
+		// reload while presence is held off.
 		manager.acceptReloadLocked(pendingCfg, snap, false)
 	}
 	return manager

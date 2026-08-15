@@ -193,6 +193,21 @@ func assertManagerEnabledFalse(t *testing.T, manager *Manager, stage string) {
 	}
 }
 
+// assertManagerLooseningGuardArmed fails unless the manager is holding a
+// pending enabled-loosening decision with its retry armed. That combination is
+// what makes the fail-closed startup seed temporary rather than permanent, and
+// what proves the guard exists for the rest of this manager's life (#548).
+func assertManagerLooseningGuardArmed(t *testing.T, manager *Manager, stage string) {
+	t.Helper()
+	manager.mu.RLock()
+	firstSeen := manager.pendingLoosening.firstSeen
+	retryArmed := manager.pendingLoosening.retry != nil
+	manager.mu.RUnlock()
+	if firstSeen.IsZero() || !retryArmed {
+		t.Fatalf("loosening guard %s = {firstSeen: %v, retryArmed: %t}, want armed", stage, firstSeen, retryArmed)
+	}
+}
+
 func writeChunks(f *os.File, data []byte, sizes []int, pauses []time.Duration) error {
 	offset := 0
 	for i, size := range sizes {
@@ -645,7 +660,13 @@ func TestLoadPathNeverSettlingWriterIsBounded(t *testing.T) {
 }
 
 func TestManagerStartupConfigPolicy(t *testing.T) {
-	t.Run("absent file uses enabled defaults", func(t *testing.T) {
+	// A missing file at construction is a genuine first run or an
+	// unlink/recreate window mid-save, and construction cannot tell them
+	// apart (#548, #448 route A). Presence therefore starts off and the
+	// first-run enabled default arrives through the loosening guard, so a
+	// recreate that restores enabled = false wins the race instead of losing
+	// it. The first-run default must still arrive.
+	t.Run("absent file reaches enabled defaults through the loosening guard", func(t *testing.T) {
 		path := withConfigHome(t)
 		manager := NewManagerPath(path)
 
@@ -653,8 +674,18 @@ func TestManagerStartupConfigPolicy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Current() error = %v, want nil", err)
 		}
-		if !cfg.Enabled {
-			t.Fatal("missing config disabled presence, want enabled first-run default")
+		if cfg.Enabled {
+			t.Fatal("missing config enabled presence at construction, want fail-closed until the horizon")
+		}
+		assertManagerLooseningGuardArmed(t, manager, "for a missing config file")
+
+		select {
+		case reload := <-manager.Reloads():
+			if reload.Err != nil || !reload.Config.Enabled {
+				t.Fatalf("missing-file reload = %#v, want enabled first-run defaults", reload)
+			}
+		case <-time.After(enabledLooseningHorizon + time.Second):
+			t.Fatal("timed out waiting for missing config to load enabled first-run defaults")
 		}
 	})
 
@@ -671,6 +702,51 @@ func TestManagerStartupConfigPolicy(t *testing.T) {
 			}
 		case <-time.After(enabledLooseningHorizon + time.Second):
 			t.Fatal("timed out waiting for deliberate constructor blank to load defaults")
+		}
+	})
+
+	t.Run("explicit enabled = true starts enabled immediately", func(t *testing.T) {
+		path := withConfigHome(t)
+		writeConfig(t, path, "enabled = true\nscan_interval = \"7s\"\n")
+		manager := NewManagerPath(path)
+
+		cfg, err := manager.Current()
+		if err != nil {
+			t.Fatalf("Current() error = %v, want nil", err)
+		}
+		if !cfg.Enabled {
+			t.Fatal("settled config with explicit enabled = true did not start with presence on")
+		}
+		if cfg.ScanInterval != "7s" {
+			t.Fatalf("scan interval = %q, want the file's 7s", cfg.ScanInterval)
+		}
+		manager.mu.RLock()
+		pending := !manager.pendingLoosening.firstSeen.IsZero()
+		manager.mu.RUnlock()
+		if pending {
+			t.Fatal("settled config with explicit enabled = true paid a loosening horizon at construction")
+		}
+	})
+
+	// The documented default is enabled, so a valid config that simply omits
+	// the key must still reach presence-on. It just gets there through the
+	// guard, because those bytes are byte-identical to a stalled non-atomic
+	// writer's first chunk (#548).
+	t.Run("file omitting enabled reaches enabled defaults through the loosening guard", func(t *testing.T) {
+		path := withConfigHome(t)
+		writeConfig(t, path, "scan_interval = \"7s\"\n")
+		manager := NewManagerPath(path)
+
+		assertManagerEnabledFalse(t, manager, "while the constructor's defaulted enabled is pending")
+		assertManagerLooseningGuardArmed(t, manager, "for a config that omits enabled")
+
+		select {
+		case reload := <-manager.Reloads():
+			if reload.Err != nil || !reload.Config.Enabled || reload.Config.ScanInterval != "7s" {
+				t.Fatalf("post-horizon reload = %#v, want enabled with scan interval 7s", reload)
+			}
+		case <-time.After(enabledLooseningHorizon + time.Second):
+			t.Fatal("timed out waiting for a config that omits enabled to apply its documented enabled default")
 		}
 	})
 
@@ -785,6 +861,140 @@ func TestManagerStartupTruncatedPastSettleBudgetFailClosesAndKeepsGuardArmed(t *
 		}
 	case <-time.After(enabledLooseningHorizon + time.Second):
 		t.Fatal("timed out waiting for guarded defaulted read to apply")
+	}
+}
+
+// TestManagerStartupDivergentPartialFailsClosedAndKeepsGuardArmed is the #548
+// regression, the shape nothing covered before. A non-atomic editor save that
+// stalls after a first chunk which is non-empty, syntactically valid TOML and
+// omits enabled is NOT provisional at construction: there is no accepted
+// snapshot for the prefix rule to work from, so the settle primitive certifies
+// it on two agreeing reads. Accepting it verbatim seeded enabled = true for a
+// user whose saved file says enabled = false, and left the loosening guard
+// unarmed for the rest of the manager's life.
+func TestManagerStartupDivergentPartialFailsClosedAndKeepsGuardArmed(t *testing.T) {
+	path := withConfigHome(t)
+	// The user's real saved config: presence deliberately off.
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+
+	// The stall is expressed structurally rather than as a wall-clock sleep:
+	// the injected snapshot function returns the same first chunk for every
+	// read the constructor makes, which is exactly what a writer stalled past
+	// the settle budget looks like.
+	partial := []byte("scan_interval = \"5s\"\n")
+	settleStarted := time.Unix(0, 0)
+	settleNow := settleStarted
+	snapshot := func(string) fileSnapshot {
+		return fileSnapshot{exists: true, data: append([]byte(nil), partial...)}
+	}
+	manager := newManagerPathWith(
+		path,
+		snapshot,
+		func() time.Time { return settleNow },
+		func(delay time.Duration) { settleNow = settleNow.Add(delay) },
+	)
+
+	partialSnapshot := fileSnapshot{exists: true, data: partial}
+	if ambiguousBlankConfigSnapshot(partialSnapshot) {
+		t.Fatalf("precondition not established: candidate %#v is the #440 blank shape, not a divergent partial", partialSnapshot)
+	}
+	if provisionalConfigSnapshot(partialSnapshot, fileSnapshot{}) {
+		t.Fatalf("precondition not established: candidate %#v is provisional at construction, so the settle rules alone would have caught it", partialSnapshot)
+	}
+	manager.mu.RLock()
+	accepted := manager.accepted
+	manager.mu.RUnlock()
+	if !snapshotsEqual(accepted, partialSnapshot) {
+		t.Fatalf("precondition not established: constructor accepted snapshot = %#v, want the partial %#v it settled on", accepted, partialSnapshot)
+	}
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() after constructor settled on a divergent partial = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatalf("Current().Enabled = true from partial %q while the user's saved config says enabled = false", partial)
+	}
+	assertManagerLooseningGuardArmed(t, manager, "for a divergent partial accepted at construction")
+
+	// The save completing (here: the file on disk, which still holds the
+	// user's real opt-out) must apply immediately, not after the horizon.
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() of the completed file = %v", err)
+	}
+	cfg, err = manager.Current()
+	if err != nil {
+		t.Fatalf("Current() after reloading the completed file = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("explicit enabled = false did not apply after the fail-closed startup seed")
+	}
+	if cfg.ScanInterval != "9s" {
+		t.Fatalf("scan interval = %q, want the saved file's 9s", cfg.ScanInterval)
+	}
+}
+
+// TestManagerStartupUnsettledSnapshotFailsClosed covers the second half of
+// #548: boundedSettledConfigSnapshotWith reports whether it actually settled,
+// and construction used to discard that flag. A snapshot the settle primitive
+// admits it could not certify must not be treated as the user's real config,
+// even when its bytes explicitly say enabled = true.
+func TestManagerStartupUnsettledSnapshotFailsClosed(t *testing.T) {
+	path := withConfigHome(t)
+	// The user's real saved config: presence deliberately off.
+	writeConfig(t, path, "enabled = false\nscan_interval = \"9s\"\n")
+
+	// Every read returns different, individually valid bytes, so no two
+	// consecutive reads ever agree and the bounded settle gives up.
+	newSnapshotFunc := func() func(string) fileSnapshot {
+		reads := 0
+		return func(string) fileSnapshot {
+			reads++
+			return fileSnapshot{
+				exists: true,
+				data:   []byte(fmt.Sprintf("enabled = true\nscan_interval = \"%ds\"\n", reads)),
+			}
+		}
+	}
+
+	probeNow := time.Unix(0, 0)
+	if _, ok := boundedSettledConfigSnapshotWith(
+		path,
+		newSnapshotFunc(),
+		func() time.Time { return probeNow },
+		func(delay time.Duration) { probeNow = probeNow.Add(delay) },
+		fileSnapshot{},
+	); ok {
+		t.Fatal("precondition not established: the bounded settle certified a snapshot that never stops changing")
+	}
+
+	settleNow := time.Unix(0, 0)
+	manager := newManagerPathWith(
+		path,
+		newSnapshotFunc(),
+		func() time.Time { return settleNow },
+		func(delay time.Duration) { settleNow = settleNow.Add(delay) },
+	)
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() after an unsettled construction = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("Current().Enabled = true from a snapshot the settle primitive reported as unsettled")
+	}
+	assertManagerLooseningGuardArmed(t, manager, "for an unsettled snapshot accepted at construction")
+
+	// The file on disk is the user's real config; it must win.
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() of the settled file = %v", err)
+	}
+	cfg, err = manager.Current()
+	if err != nil {
+		t.Fatalf("Current() after reloading the settled file = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("explicit enabled = false did not apply after an unsettled startup seed")
 	}
 }
 
@@ -1132,7 +1342,11 @@ func TestLoadRejectsMalformedDurations(t *testing.T) {
 
 func TestManagerKeepsLastGoodOnInvalidDurationReload(t *testing.T) {
 	path := withConfigHome(t)
+	// enabled is stated explicitly so construction certifies presence-on
+	// immediately (#548); this test is about reload behavior, not about the
+	// constructor's ambiguity handling.
 	writeConfig(t, path, `
+enabled = true
 scan_interval = "7s"
 idle_clear_timeout = "10m"
 headliner_idle_timeout = "45s"
@@ -1344,7 +1558,10 @@ accent_color = %q
 
 func TestManagerKeepsLastGoodOnMalformedReload(t *testing.T) {
 	path := withConfigHome(t)
-	writeConfig(t, path, `scan_interval = "7s"`)
+	// enabled is stated explicitly so construction certifies presence-on
+	// immediately (#548); this test is about reload behavior, not about the
+	// constructor's ambiguity handling.
+	writeConfig(t, path, "enabled = true\nscan_interval = \"7s\"\n")
 	manager := NewManagerPath(path)
 	cfg, err := manager.Current()
 	if err != nil {
@@ -1369,7 +1586,10 @@ func TestManagerKeepsLastGoodOnMalformedReload(t *testing.T) {
 
 func TestManagerChangesDeliversSingleReload(t *testing.T) {
 	path := withConfigHome(t)
-	writeConfig(t, path, `scan_interval = "7s"`)
+	// enabled is stated explicitly so construction certifies presence-on
+	// immediately (#548); this test is about reload behavior, not about the
+	// constructor's ambiguity handling.
+	writeConfig(t, path, "enabled = true\nscan_interval = \"7s\"\n")
 	manager := NewManagerPath(path)
 
 	writeConfig(t, path, `scan_interval = "8s"`)
@@ -1389,7 +1609,10 @@ func TestManagerChangesDeliversSingleReload(t *testing.T) {
 
 func TestManagerChangesCoalescesBurstyReloadsToNewest(t *testing.T) {
 	path := withConfigHome(t)
-	writeConfig(t, path, `scan_interval = "7s"`)
+	// enabled is stated explicitly so construction certifies presence-on
+	// immediately (#548); this test is about reload behavior, not about the
+	// constructor's ambiguity handling.
+	writeConfig(t, path, "enabled = true\nscan_interval = \"7s\"\n")
 	manager := NewManagerPath(path)
 
 	writeConfig(t, path, `scan_interval = "8s"`)
@@ -1438,7 +1661,10 @@ func TestManagerChangesCoalescesBurstyReloadsToNewest(t *testing.T) {
 
 func TestManagerWatchReportsMalformedReload(t *testing.T) {
 	path := withConfigHome(t)
-	writeConfig(t, path, `scan_interval = "7s"`)
+	// enabled is stated explicitly so construction certifies presence-on
+	// immediately (#548); this test is about reload behavior, not about the
+	// constructor's ambiguity handling.
+	writeConfig(t, path, "enabled = true\nscan_interval = \"7s\"\n")
 	manager := NewManagerPath(path)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1476,7 +1702,10 @@ waitForMalformedReload:
 
 func TestManagerWatcherErrorDoesNotInvalidateConfig(t *testing.T) {
 	path := withConfigHome(t)
-	writeConfig(t, path, `scan_interval = "7s"`)
+	// enabled is stated explicitly so construction certifies presence-on
+	// immediately (#548); this test is about reload behavior, not about the
+	// constructor's ambiguity handling.
+	writeConfig(t, path, "enabled = true\nscan_interval = \"7s\"\n")
 	manager := NewManagerPath(path)
 
 	manager.reportWatchFailure(errors.New("watch backend failed"))
@@ -1506,7 +1735,10 @@ func TestManagerWatcherErrorDoesNotInvalidateConfig(t *testing.T) {
 
 func TestManagerConcurrentCurrentDuringReloadKeepsLastGood(t *testing.T) {
 	path := withConfigHome(t)
-	writeConfig(t, path, `scan_interval = "7s"`)
+	// enabled is stated explicitly so construction certifies presence-on
+	// immediately (#548); this test is about reload behavior, not about the
+	// constructor's ambiguity handling.
+	writeConfig(t, path, "enabled = true\nscan_interval = \"7s\"\n")
 	manager := NewManagerPath(path)
 
 	var wg sync.WaitGroup
@@ -1905,7 +2137,10 @@ image_url = "https://example.test/mine.png"
 // triggers a later reload of the final content.
 func TestManagerReloadRejectsChangingNonAtomicTruncationWindow(t *testing.T) {
 	path := withConfigHome(t)
-	writeConfig(t, path, `scan_interval = "7s"`)
+	// enabled is stated explicitly so construction certifies presence-on
+	// immediately (#548); this test is about reload behavior, not about the
+	// constructor's ambiguity handling.
+	writeConfig(t, path, "enabled = true\nscan_interval = \"7s\"\n")
 	manager := NewManagerPath(path)
 
 	writer := newNonAtomicWriter(t)
@@ -2538,7 +2773,10 @@ func TestManagerReloadRandomWriterSchedules(t *testing.T) {
 // filesystem quiets down.
 func TestManagerWatchIgnoresTransientEmptyDuringNonAtomicWrite(t *testing.T) {
 	path := withConfigHome(t)
-	writeConfig(t, path, `scan_interval = "7s"`)
+	// enabled is stated explicitly so construction certifies presence-on
+	// immediately (#548); this test is about reload behavior, not about the
+	// constructor's ambiguity handling.
+	writeConfig(t, path, "enabled = true\nscan_interval = \"7s\"\n")
 	manager := NewManagerPath(path)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

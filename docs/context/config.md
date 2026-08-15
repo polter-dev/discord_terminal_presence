@@ -20,7 +20,9 @@ contains polling-based reload and config-directory setup.
 **Invariants / gotchas:** A missing config loads defaults; invalid values return errors
 or documented warnings rather than silently changing privacy behavior. An existing
 config that cannot be read, decoded, or validated returns an in-memory default config
-with global presence disabled; a missing file still returns enabled first-run defaults.
+with global presence disabled; a missing file still returns enabled first-run defaults
+from the standalone load entry points (manager construction reaches that same default
+through the loosening guard instead, see #548 below).
 The manager keeps that fail-closed startup config until a valid hot reload replaces it,
 without persisting a last-good copy. Its buffered reload-result stream coalesces bursts
 to the newest ordered success or failure, so consumers cannot clear a newer failure with
@@ -245,16 +247,56 @@ The **daemon and interactive-watch** entry points close the formerly eventless s
 gap (#435) by installing the watcher before an explicit settled `Manager.Reload`, then
 using only the post-reload `Current` config; a completion event during that sequence is
 therefore queued instead of missed. `NewManagerPath` now also starts from a settled
-snapshot. If that snapshot is an existing empty file, construction cannot distinguish an
-in-flight truncation from a deliberate blank, so it seeds fail-closed with presence off,
-retains the blank accepted baseline, and routes the defaulted candidate through the same
-`enabled`-loosening choke point. A completed explicit opt-out then applies immediately;
-a genuinely blank file restores defaults after the existing horizon. Normal non-empty
-configs whose `enabled` key is absent seed enabled defaults after one settle interval,
-and missing first-run files seed them immediately. Manager construction delegates its
+snapshot.
+
+Construction is the one place with **no** previously accepted snapshot, which makes the
+prefix rule in `provisionalConfigSnapshot` inert there: only "empty" and "does not parse"
+can classify a candidate as provisional, so a non-atomic writer's first chunk that is
+non-blank, parses, and omits `enabled` settles on two agreeing reads and used to be
+accepted verbatim. That seeded `enabled = true` for a user whose saved file said
+`enabled = false`, and because `acceptReloadLocked` ran from the constructor only on the
+blank branch, it also left the false-to-true loosening guard unarmed for that manager's
+entire life. Reproduced deterministically, 3/3 (#548).
+
+Since #548, the only bytes that can start presence on are bytes that **settled** and
+**explicitly** said `enabled = true`. `newManagerPathWith` keeps the `ok` flag from the
+bounded settle (it used to discard it) and the `enabledDefined` metadata, and names three
+ambiguous shapes separately so any one of them can be reasoned about or reverted on its
+own:
+
+- `unsettledSnapshot`: the bounded settle admitted it could not certify these bytes, so
+  they are not the user's configuration even when they do define `enabled`.
+- `defaultedEnabled`: an existing file whose `enabled` key is absent. This covers the
+  empty file (#440) and the divergent partial (#548) alike; the empty-file branch is no
+  longer special-cased.
+- `missingFile`: a genuine first run or an unlink/recreate window mid-save (#448
+  route A), which are indistinguishable at construction.
+
+In each case construction seeds `invalidFallbackWithPath` (presence off), retains the
+snapshot as the accepted baseline, and routes the defaulted candidate through the same
+`enabled`-loosening choke point every reload uses, passing `enabledDefined = false`
+because it cannot vouch for the bytes. The guard is therefore armed on every construction
+path, not only the blank one. A completed explicit opt-out then applies immediately; a
+config that really is a plain default (including a blank file and a first-run absent file)
+still reaches enabled defaults on its own, one loosening horizon later, driven by the
+guard's own `time.AfterFunc` retry rather than by any filesystem event. Startup itself is
+never blocked: the first-run path still returns in well under 100ms, it just returns with
+presence off.
+
+The cost is a documented, deliberate trade: **presence starts up to three seconds late**
+on first run and on any config that omits the `enabled` key. Configs written by termp
+(`Save`, `config init`/`AnnotatedSample`, the settings TUI) always emit `enabled`
+explicitly, so they keep the previous immediate start. Manager construction delegates its
 bounded settled read through an unexported snapshot/clock/sleep seam so the #549
-stable-blank regression establishes that ambiguous precondition and the armed guard with
-a virtual clock instead of racing asymmetric wall-clock sleeps.
+stable-blank regression, the #548 divergent-partial regression
+(`TestManagerStartupDivergentPartialFailsClosedAndKeepsGuardArmed`) and the #548
+unsettled-snapshot regression (`TestManagerStartupUnsettledSnapshotFailsClosed`) establish
+their ambiguous preconditions and the armed guard with a virtual clock instead of racing
+asymmetric wall-clock sleeps. Both new tests assert the precondition explicitly (the
+candidate is neither blank nor provisional; the settle really did or did not certify it)
+so a lost race fails as "precondition not established" rather than as the bug. Tests whose
+subject is reload behavior rather than construction now state `enabled = true` in their
+starting fixture, so they still begin from a certified, presence-on manager.
 
 `Load`/`LoadPath` are safe by default for callers that may save the loaded whole document
 back over the user's file (#438). If an existing file is still empty or whitespace-only
