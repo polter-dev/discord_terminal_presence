@@ -356,7 +356,15 @@ func versionCommand(args []string) error {
 		return err
 	}
 	fmt.Print(formatVersion(currentVersionInfo()))
-	cfg, loadErr := config.LoadReadOnly()
+	cfg, settled, loadErr := config.LoadReadOnly()
+	if !settled {
+		// The version block above is build metadata and stays correct. Only
+		// the update notice below reads config, and update_check may have
+		// been turned off in the bytes that failed to settle, so it is
+		// skipped for the same reason an unreadable config skips it (#552).
+		printUnsettledConfigNotice(os.Stderr)
+		return nil
+	}
 	printAvailableUpdate(cfg, loadErr)
 	return nil
 }
@@ -872,9 +880,18 @@ func start(args []string) error {
 	}
 	background := !options.foreground
 	if background && !options.detachedChild {
-		cfg, loadErr := config.LoadReadOnly()
-		if loadErr != nil {
+		cfg, settled, loadErr := config.LoadReadOnly()
+		switch {
+		case loadErr != nil:
 			printStartupConfigError(os.Stderr, cfg.Path, loadErr)
+		case !settled:
+			// This read exists only to report a bad config before the child
+			// is spawned; it decides nothing. An uncertified snapshot can
+			// report an error the saved file does not have, or stay silent
+			// about one it does, so report the uncertainty instead of either
+			// (#552). The child does its own settled read and starts with
+			// presence off if it still cannot certify enabled (#548).
+			fmt.Fprintln(os.Stderr, startupUnsettledConfigNotice(cfg.Path))
 		}
 		pid, logPath, err := spawnDetachedStart(options.verbose)
 		if err != nil {
@@ -1031,6 +1048,19 @@ func startupConfigError(path string, err error) string {
 		"config load failed for %s; presence is off until the config is valid: %v",
 		path,
 		err,
+	))
+}
+
+// startupUnsettledConfigNotice is the start-command counterpart of
+// unsettledConfigNotice. The advice differs because the daemon is about to be
+// started either way: what the user can act on is checking the result once the
+// save has finished, not re-running the command that just printed this (#552).
+func startupUnsettledConfigNotice(path string) string {
+	return terminaltext.SanitizeSingleLine(fmt.Sprintf(
+		"termp: %s was being written while termp read it, so this pre-start check could not confirm it; "+
+			"the background daemon reads it again itself and keeps presence off until it can confirm that presence is on. "+
+			`Run "termp status" once the save has finished to see what it settled on.`,
+		path,
 	))
 }
 
@@ -1587,8 +1617,16 @@ func status(args []string) error {
 
 	statusCtx, cancelStatus := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancelStatus()
-	cfg, loadErr := loadConfigWithNotice(readOnlyConfigLoader, os.Stderr)
-	defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
+	cfg, settled, loadErr := loadReadOnlyConfigWithNotice(readOnlyConfigLoader, os.Stderr)
+	if !settled {
+		// Everything status renders from cfg below is a claim about the
+		// user's configuration, so say up front that this run could not
+		// confirm it, and skip the config-gated update check for the same
+		// reason an unreadable config skips it (#552).
+		printUnsettledConfigNotice(os.Stderr)
+	} else {
+		defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
+	}
 	daemonPID := statusDaemonPID(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermpAtPath)
 	running := daemonPID > 0
 
@@ -2354,7 +2392,7 @@ func watch(args []string) error {
 }
 
 func watchSnapshot(now time.Time) (string, []string, error) {
-	cfg, loadErr := config.LoadReadOnly()
+	cfg, settled, loadErr := config.LoadReadOnly()
 	reg, err := registry.NewWithCustom(cfg.CustomTools...)
 	if err != nil {
 		return "", nil, err
@@ -2380,6 +2418,11 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 		recent = []tui.RecentDetection{{Name: detection.Tool.DisplayName, At: now}}
 	}
 	warnings := cfg.Warnings
+	if !settled {
+		// The card below is rendered from cfg, so an uncertified snapshot
+		// must be labeled rather than presented as the saved config (#552).
+		warnings = append([]string{unsettledConfigWarning}, warnings...)
+	}
 	if loadErr != nil {
 		warnings = append([]string{configLoadFallbackWarning(loadErr)}, warnings...)
 	}
@@ -2390,6 +2433,12 @@ func watchSnapshot(now time.Time) (string, []string, error) {
 		Recent:    recent,
 	}, tui.DefaultCardStyles(cfg.UI.AccentColor)), warnings, nil
 }
+
+// unsettledConfigWarning is the watch-card wording of unsettledConfigNotice.
+// It goes through the warning list rather than stderr because watch renders a
+// full-screen card that would scroll a stderr line away (#552).
+const unsettledConfigWarning = "config could not be confirmed: the file was being written while termp read it, " +
+	"so this card reflects the newest partial copy and may not match what you saved; re-run once the save has finished"
 
 func configLoadFallbackWarning(err error) string {
 	return fmt.Sprintf(`config load failed; presence is off until the config is valid; run "termp status" for details: %v`, err)
