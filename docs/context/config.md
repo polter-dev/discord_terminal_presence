@@ -506,6 +506,25 @@ renames it. New files are created `0600`; forced replacement of an existing regu
 preserves that file's permission bits. Migration copies also preserve the source mode.
 Without `force`, an existing regular file is not replaced.
 
+Until #573, `privacyPosture` covered only `enabled`, `show_directory`,
+`directory_basename_only`, and the directory allowlist. `display.collection` and
+`display.small_image` both publish a second running tool's name and icon
+(`internal/presence/activity.go`), so both are privacy-relevant, but `Collection` never
+reached `ResolvedTool` at all and `SmallImage` reached `ResolvedTool` without ever
+reaching `postureFor`. A non-atomic writer that truncated a config to a prefix omitting
+the `[display]` lines resolved both permissively (their defaults are `true`), and the
+guard saw an identical posture and committed inside the ordinary settle budget instead of
+paying the three-second horizon, exactly the "enumeration of one" defect this bug family
+keeps regenerating. `ResolvedTool` now carries `Collection` (set from
+`Config.Display.Collection`; there is no per-tool override for it), and `privacyPosture`/
+`postureFor`/`postureLoosened` cover both fields (`false -> true` is the loosening
+direction for each, since privacy means the setting is off). `TestPrivacyPostureCoversToolOverridePrivacyFields`
+had misclassified `SmallImage` as "display-only ... does not affect what is disclosed";
+that assertion was itself part of the bug and now lists `SmallImage` as privacy-relevant.
+A new `TestPrivacyPostureCoversDisplayPrivacyFields` (`posture_display_test.go`) is the
+`Display` counterpart to the existing `Privacy`/`ToolOverride` reflection tests, so a
+future `Display` field cannot silently join neither list.
+
 **Depends on / used by:** Uses BurntSushi TOML and the standard library. The CLI,
 detector, presence mapping, TUI, registry construction, and update policy consume it.
 

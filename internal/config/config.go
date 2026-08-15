@@ -174,6 +174,7 @@ type ResolvedTool struct {
 	ToolName              bool
 	ElapsedTimer          bool
 	SmallImage            bool
+	Collection            bool
 	ButtonsEnabled        bool
 	ShowDirectory         bool
 	DirectoryAllowlist    []string
@@ -1067,6 +1068,7 @@ func (c Config) Resolve(tool registry.Tool) ResolvedTool {
 		ToolName:              c.Display.ToolName,
 		ElapsedTimer:          c.Display.ElapsedTimer,
 		SmallImage:            c.Display.SmallImage,
+		Collection:            c.Display.Collection,
 		ButtonsEnabled:        c.Display.Buttons,
 		ShowDirectory:         c.Privacy.ShowDirectory,
 		DirectoryAllowlist:    append([]string(nil), c.Privacy.DirectoryAllowlist...),
@@ -1133,18 +1135,25 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 // privacyPosture is a summary of everything that affects what a
 // resolved tool may disclose, computed from the SAME Config.Resolve path
 // presence mapping uses. It deliberately does not enumerate Config fields by
-// name beyond this one place: TestPrivacyPostureCoversAllPrivacyFields and
-// TestPrivacyPostureCoversToolOverridePrivacyFields (config_test.go) use
-// reflection to fail the build the day a new field is added to Privacy or
-// ToolOverride without a conscious decision about whether postureFor below
-// needs to grow with it. That is the actual defect this bug family (#410 ->
-// #425 -> #434 -> #435 -> #438 -> #440 -> #447 -> #518) keeps regenerating: a rule
-// bound to an enumeration of one.
+// name beyond this one place: TestPrivacyPostureCoversAllPrivacyFields,
+// TestPrivacyPostureCoversToolOverridePrivacyFields, and
+// TestPrivacyPostureCoversDisplayPrivacyFields (config_test.go and
+// posture_display_test.go) use reflection to fail the build the day a new
+// field is added to Privacy, ToolOverride, or Display without a conscious
+// decision about whether postureFor below needs to grow with it. That is the
+// actual defect this bug family (#410 -> #425 -> #434 -> #435 -> #438 ->
+// #440 -> #447 -> #518 -> #573) keeps regenerating: a rule bound to an
+// enumeration of one. #573 was display.collection and display.small_image:
+// both publish another running tool's name and icon
+// (internal/presence/activity.go), so both are privacy-relevant even though
+// they live on Display, not Privacy.
 type privacyPosture struct {
 	enabled               bool
 	showDirectory         bool
 	directoryBasenameOnly bool // true is MORE private: basename only
 	directoryAllowlist    []string
+	smallImage            bool // discloses another tool's name/icon
+	collection            bool // discloses other tools' names in details/state
 }
 
 func postureFor(r ResolvedTool) privacyPosture {
@@ -1153,6 +1162,8 @@ func postureFor(r ResolvedTool) privacyPosture {
 		showDirectory:         r.ShowDirectory,
 		directoryBasenameOnly: r.DirectoryBasenameOnly,
 		directoryAllowlist:    r.DirectoryAllowlist,
+		smallImage:            r.SmallImage,
+		collection:            r.Collection,
 	}
 }
 
@@ -1206,6 +1217,12 @@ func postureLoosened(prev, next privacyPosture) bool {
 		return true
 	}
 	if allowlistCoverageLoosened(prev.directoryAllowlist, next.directoryAllowlist) {
+		return true
+	}
+	if !prev.smallImage && next.smallImage {
+		return true
+	}
+	if !prev.collection && next.collection {
 		return true
 	}
 	return false
