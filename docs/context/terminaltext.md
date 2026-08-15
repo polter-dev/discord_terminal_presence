@@ -4,8 +4,8 @@
 rendering boundary.
 
 **Public surface:** `Sanitize` is a conservative terminal-safety filter: it removes
-ANSI/OSC escapes, C0/C1 controls, and Unicode bidirectional formatting controls while
-preserving ordinary Unicode text. It may remove bytes adjacent to an escape introducer
+ANSI/OSC escapes, C0/C1 controls, Unicode bidirectional formatting controls, and invisible
+formatting codepoints (see below), while preserving ordinary Unicode text. It may remove bytes adjacent to an escape introducer
 when Charm recognizes them as part of a complete sequence; for example, `ESC` plus a
 letter can be removed together. Its collateral damage is bounded, however: string
 sequences (OSC, DCS, APC, PM, and SOS, including their 8-bit C1 forms) are removed whole
@@ -19,6 +19,34 @@ separators, before sanitizing. `IsControlOrBidi(r rune) bool` exports the exact 
 predicate `Sanitize` strips by, so a caller that needs to *reject* rather than silently
 strip (e.g. `internal/registry` at config load) classifies a rune identically instead of
 maintaining a second copy of the rule that can drift from this one.
+
+**Invisible formatting rune class (#571):** Before #571, `IsControlOrBidi` covered only
+C0/C1 controls, DEL, and the named bidi formatting controls, so a class of codepoints that
+render as nothing (or as an innocuous-looking separator) while still being present in the
+string passed both `Sanitize` and `registry.firstDisallowedRune` (the same predicate)
+unrejected: ZWSP/ZWNJ/ZWJ (U+200B-U+200D), the word joiner and invisible math operators
+(U+2060-U+2064), the BOM reused as ZWNBSP (U+FEFF), soft hyphen (U+00AD), the Mongolian
+vowel separator (U+180E), the interlinear annotation controls (U+FFF9-U+FFFB), and the
+entire Unicode Tags block (U+E0000-U+E007F), a known text-smuggling channel, since an
+entire ASCII string can be encoded in Tags codepoints that render as nothing. This mattered
+most for URLs: `registry.ValidateHTTPURL` never sanitizes, only validates, so it is the
+*only* defence for `image_url` and button URLs, and this class reached the wire unchanged
+in both.
+
+The fix settles the class once in `IsControlOrBidi`, deliberately rather than by just
+adding Unicode's Cf (Format) general category: Cf alone would have missed LINE SEPARATOR
+and PARAGRAPH SEPARATOR (U+2028, U+2029, general category Zl/Zp, not Cf, but exactly as
+invisible in practice and confirmed reaching a URL unrejected) and three characters whose
+category is neither Cf nor Zl/Zp but that exist specifically to be invisible: U+034F
+COMBINING GRAPHEME JOINER (Mn), and the Hangul filler characters U+115F and U+3164 (Lo).
+The predicate now rejects Cf, Zl, Zp, and those three explicit codepoints.
+
+This does reject ZWJ (U+200D) and Persian ZWNJ (U+200C) in display names, which are
+legitimate in multi-codepoint emoji sequences (family/pride-flag emoji) and Persian
+orthography, a real, deliberate cost of closing the gap in one shared predicate rather
+than forking behavior per call site. Ordinary combining marks, astral-plane emoji (single
+codepoint, no ZWJ splice), and normal multibyte script text are unaffected; only the
+Cf/Zl/Zp categories and the three explicit exceptions are rejected.
 
 **Separator coverage (exact):** `SanitizeSingleLine` normalizes CRLF, CR (`\r`), LF
 (`\n`), vertical tab (`\v`, 0x0B), form feed (`\f`, 0x0C), NUL (0x00), RS (0x1E, RECORD
