@@ -63,7 +63,7 @@ accent produces a warning and falls back to purple.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `tool_name` | bool | `true` | Allow tool-name content |
+| `tool_name` | bool | `true` | Allow the tool's identity anywhere in the published activity: the activity name, the details/state text, and the large/small image key, URL, and tooltip text. When off, the activity header falls back to "Terminal Presence" and no per-tool image is sent (Discord falls back to the app icon). |
 | `elapsed_timer` | bool | `true` | Send the episode start timestamp |
 | `small_image` | bool | `true` | Show the highest-ranked other tool as the small image |
 | `collection` | bool | `true` | Render other enabled tools in collection text |

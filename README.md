@@ -297,7 +297,7 @@ specific terminal device.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `tool_name` | bool | `true` | Shows `Using <tool name>` on the detail line. |
+| `tool_name` | bool | `true` | Shows the tool's identity everywhere in the presence card: `Using <tool name>` on the detail line, the tool name as the presence header and large-image tooltip, and the tool icon as the large image. Off, the header becomes "Terminal Presence", no large or small image is sent (Discord falls back to the app icon), and the detail line drops to the fallback message. |
 | `elapsed_timer` | bool | `true` | Shows how long the tool has been running. |
 | `small_image` | bool | `true` | Uses the top “also running” tool as the small icon. |
 | `collection` | bool | `true` | Lists other running tools as `also: ...` when no folder is shown. |
