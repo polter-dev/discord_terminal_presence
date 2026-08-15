@@ -28,10 +28,20 @@ func TestUninstallAllUsesIsolatedPathsAndStopsBeforeDeleting(t *testing.T) {
 		{label: "state", path: filepath.Join(home, ".local", "state", "termp"), directory: true},
 		{label: "log", path: filepath.Join(home, "Library", "Logs", "termp.log")},
 	}
+	// Directory targets are only fully removed once every entry inside them
+	// is a recognized termp-owned filename (issue #562), so this plants the
+	// real filenames termp creates in each namespace directory rather than a
+	// generic placeholder that removeKnownFilesFromDirectory would not
+	// recognize and would therefore correctly leave behind.
+	knownDirectoryFile := map[string]string{"config": "config.toml", "state": "usage.json"}
 	for _, target := range targets {
 		path := target.path
 		if target.directory {
-			path = filepath.Join(path, "owned")
+			name, ok := knownDirectoryFile[target.label]
+			if !ok {
+				t.Fatalf("no known filename fixture for directory target %q", target.label)
+			}
+			path = filepath.Join(path, name)
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
