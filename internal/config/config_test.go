@@ -2682,6 +2682,65 @@ func TestManagerReloadPreservesAllowlistAcrossTruncationStall(t *testing.T) {
 	})
 }
 
+// TestManagerReloadPreservesEffectiveAllowlistAcrossSwapStall is the #518
+// reproduction: a writer changes the global allowlist before restoring vim's
+// per-tool override. The valid partial config must not temporarily authorize
+// vim for a path that both the previous and final configs deny.
+func TestManagerReloadPreservesEffectiveAllowlistAcrossSwapStall(t *testing.T) {
+	const prefix = "enabled = true\n" +
+		"[privacy]\n" +
+		"show_directory = true\n" +
+		"directory_allowlist = [\"/transient\"]\n"
+	const suffix = "[tools.vim]\n" +
+		"directory_allowlist = [\"/original\"]\n"
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, path, "enabled = true\n"+
+		"[privacy]\n"+
+		"show_directory = true\n"+
+		"directory_allowlist = [\"/original\"]\n"+
+		suffix)
+	manager := NewManagerPath(path)
+
+	if resolved := mustCurrent(t, manager).Resolve(registry.Tool{ID: "vim"}); resolved.DirectoryAllowed("/transient/project") {
+		t.Fatal("precondition failed: vim should deny /transient before the edit")
+	}
+
+	assertPrivacyHoldsAcrossTruncationStall(t, path, manager, prefix, suffix, 900*time.Millisecond, func(cfg Config) error {
+		resolved := cfg.Resolve(registry.Tool{ID: "vim"})
+		if resolved.DirectoryAllowed("/transient/project") {
+			return fmt.Errorf("vim inherited a transient global allowlist before its final override was restored: %#v", resolved.DirectoryAllowlist)
+		}
+		return nil
+	})
+}
+
+func TestAllowlistCoverageLoosened(t *testing.T) {
+	tests := []struct {
+		name string
+		prev []string
+		next []string
+		want bool
+	}{
+		{name: "same coverage reordered", prev: []string{"/one", "/two"}, next: []string{"/two", "/one"}},
+		{name: "tightened", prev: []string{"/one"}, next: []string{"/one/project"}},
+		{name: "redundant child added", prev: []string{"/one"}, next: []string{"/one", "/one/project"}},
+		{name: "previously unrestricted", prev: nil, next: []string{"/one"}},
+		{name: "widened to parent", prev: []string{"/one/project"}, next: []string{"/one"}, want: true},
+		{name: "disjoint swap", prev: []string{"/one"}, next: []string{"/two"}, want: true},
+		{name: "new disjoint entry", prev: []string{"/one"}, next: []string{"/one", "/two"}, want: true},
+		{name: "became unrestricted", prev: []string{"/one"}, next: nil, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := allowlistCoverageLoosened(tt.prev, tt.next); got != tt.want {
+				t.Fatalf("allowlistCoverageLoosened(%q, %q) = %t, want %t", tt.prev, tt.next, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestManagerReloadPreservesPerToolShowDirectoryAcrossTruncationStall covers
 // a per-tool show_directory=false override (extra privacy for one tool) that
 // is lost to a truncating, stalling writer while the global show_directory

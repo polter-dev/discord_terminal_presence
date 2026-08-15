@@ -1165,7 +1165,7 @@ func detectResolvedInstall(
 		goBins[filepath.Clean(filepath.Join(home, "go", "bin"))] = struct{}{}
 	}
 	for bin := range goBins {
-		if pathWithin(executable, bin) {
+		if isDirectChildOf(executable, bin, goos) {
 			return InstallGo
 		}
 	}
@@ -1276,12 +1276,17 @@ func isHomebrewInstall(executable string, prefixes []string) bool {
 	return false
 }
 
-func pathWithin(path, dir string) bool {
-	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
-	if err != nil {
-		return false
+// isDirectChildOf reports whether path is a direct child of dir.
+func isDirectChildOf(path, dir, goos string) bool {
+	parent := filepath.Clean(filepath.Dir(path))
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
 	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	dir = filepath.Clean(dir)
+	if goos == "windows" || goos == "darwin" {
+		return strings.EqualFold(parent, dir)
+	}
+	return parent == dir
 }
 
 // IsNewer reports whether latest has greater semantic-version precedence than
