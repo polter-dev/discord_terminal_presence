@@ -234,6 +234,7 @@ func TestAutostartActionSuggestionAndValidDispatch(t *testing.T) {
 
 type fakeAutostartManager struct {
 	statusState    service.State
+	installState   service.State
 	uninstallState service.State
 	disableState   service.State
 	statusCalls    *int
@@ -245,7 +246,7 @@ func (m fakeAutostartManager) Install(string, bool) (service.State, error) {
 	if m.installCalls != nil {
 		(*m.installCalls)++
 	}
-	return service.State{}, nil
+	return m.installState, nil
 }
 
 func (m fakeAutostartManager) Uninstall(bool) (service.State, error) {
@@ -323,6 +324,25 @@ func TestAutostartInstallValidatesExecutableBeforeRegistering(t *testing.T) {
 	}
 	if installCalls != 0 {
 		t.Fatalf("autostart manager Install called %d times, want 0 before validation passes", installCalls)
+	}
+}
+
+func TestAutostartInstallPrintsSuccessfulFallbackWarning(t *testing.T) {
+	withTermpConfigHome(t)
+	warning := "termpw.exe was not found; a console window will briefly appear at every logon; build the GUI launcher, copy it beside termp.exe, and re-run `termp autostart install`"
+	withFakeAutostartManager(t, fakeAutostartManager{
+		installState: service.State{Supported: true, Installed: true, Path: service.TaskName, Message: warning},
+	})
+
+	out, err := captureStdout(t, func() error { return install([]string{"--force"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Warning: "+warning) {
+		t.Fatalf("install output = %q, want fallback warning", out)
+	}
+	if !strings.Contains(out, "termp install") || !strings.Contains(out, service.TaskName) {
+		t.Fatalf("install output = %q, want successful install details after warning", out)
 	}
 }
 
@@ -564,6 +584,65 @@ func TestLaunchAgentDaemonLogMarker(t *testing.T) {
 	}
 	if !options.foreground || !options.daemonLog || options.detachedChild {
 		t.Fatalf("launch-agent options = %#v, want foreground daemon-owned logging", options)
+	}
+}
+
+func TestAutostartFallbackMarkerOwnsLogAndIdentifiesTrigger(t *testing.T) {
+	options, err := parseStartOptions([]string{"--foreground", "--" + autostartFallbackFlag}, false, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.foreground || !options.autostartFallback || options.detachedChild || options.daemonLog {
+		t.Fatalf("fallback options = %#v, want foreground fallback marker only", options)
+	}
+	if !daemonOwnsLog(options) {
+		t.Fatal("daemonOwnsLog = false, want fallback daemon to own rotating log")
+	}
+	if got := daemonStartTrigger(options); got != "Windows Task Scheduler fallback" {
+		t.Fatalf("daemonStartTrigger = %q", got)
+	}
+}
+
+func TestReleaseAutostartConsoleLabelsExplainsAndReleases(t *testing.T) {
+	var calls []string
+	var output bytes.Buffer
+	err := releaseAutostartConsoleWith(
+		&output,
+		func(title string) error {
+			calls = append(calls, "title:"+title)
+			return nil
+		},
+		func() error {
+			calls = append(calls, "free")
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(calls, ","), "title:Terminal Presence daemon,free"; got != want {
+		t.Fatalf("console calls = %q, want %q", got, want)
+	}
+	if got := strings.TrimSpace(output.String()); got != autostartConsoleBanner {
+		t.Fatalf("console banner = %q, want %q", got, autostartConsoleBanner)
+	}
+}
+
+func TestDaemonLifecycleMessagesAreDefaultLevelAndSanitized(t *testing.T) {
+	startLine := daemonStartMessage("v1.2.3", `C:\Program Files\termp\termp.exe`, "Windows Task Scheduler fallback")
+	for _, want := range []string{"daemon started", "version=v1.2.3", `path="C:\\Program Files\\termp\\termp.exe"`, `trigger="Windows Task Scheduler fallback"`} {
+		if !strings.Contains(startLine, want) {
+			t.Fatalf("start message = %q, want %q", startLine, want)
+		}
+	}
+	if got := daemonExitMessage(nil, true); got != "daemon exiting: reason=shutdown requested" {
+		t.Fatalf("shutdown exit message = %q", got)
+	}
+	if got := daemonExitMessage(errors.New("broken\nstate"), false); got != "daemon exiting: reason=error: broken ; state" {
+		t.Fatalf("error exit message = %q", got)
+	}
+	if got := daemonExitMessage(nil, false); got != "daemon exiting: reason=run loop completed" {
+		t.Fatalf("completed exit message = %q", got)
 	}
 }
 

@@ -590,6 +590,18 @@ open file was rotated reopens the current path before its next line. Daemon stde
 rebound whenever the current generation changes so Go panic stacks remain in the bounded
 log rather than following an orphaned inode. This keeps individual log records intact
 and bounds normal verbose/crash-loop growth.
+The Windows no-`termpw.exe` Task Scheduler fallback now passes its own internal marker and
+owns the same rotating log. Previously that action ran plain `start --foreground`, while
+the log-owning gate covered only detached children and the login-service marker. The
+rotating writer was therefore never opened, and every normal lifecycle line was gated by
+verbose `debugf`, which explains the observed zero-byte `%LOCALAPPDATA%\termp\termp.log`.
+Every daemon now records start at default verbosity with version, executable path, and
+trigger, then records exit with its error, shutdown request, or completed-loop
+reason. `termpw.exe` now passes the existing daemon-log marker, while the no-launcher
+fallback marker also sets the Windows console title, prints the one-line
+closing warning, and releases the console before daemon initialization (#545, #546).
+Manual foreground starts do not open the file log; their lifecycle records go to the
+attached terminal. Linux autostart continues to use journald.
 On Windows, stderr rebinding closes the previous owning `*os.File` after replacing both
 the process standard handle and `os.Stderr`, unless the old handle is invalid or identical
 to the replacement. This prevents the old file finalizer from double-closing a reused

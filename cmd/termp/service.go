@@ -118,6 +118,9 @@ func install(args []string) error {
 	if err != nil {
 		return err
 	}
+	if state.Message != "" {
+		fmt.Printf("Warning: %s\n\n", state.Message)
+	}
 	fmt.Print(formatInstallSuccess(state.Path, config.DefaultPath()))
 	return nil
 }

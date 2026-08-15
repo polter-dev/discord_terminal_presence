@@ -2,9 +2,9 @@
 
 // Command termpw is the Windows-only companion launcher for the termp autostart
 // task. It is linked with -H=windowsgui (the pythonw pattern) so it has no
-// console of its own, launches the real `termp.exe start --foreground` daemon as
-// a child with no visible console window, waits for the daemon's whole lifetime,
-// and propagates the daemon's exit status.
+// console of its own, launches the real `termp.exe start --foreground` daemon
+// with daemon-owned logging as a child with no visible console window, waits for
+// the daemon's whole lifetime, and propagates the daemon's exit status.
 //
 // Staying alive for the daemon's lifetime is deliberate: Task Scheduler keeps
 // owning this process, so RestartOnFailure still triggers on a real crash and
@@ -39,7 +39,7 @@ func run() int {
 	// directory.
 	daemon := filepath.Join(filepath.Dir(self), "termp.exe")
 
-	cmd := exec.Command(daemon, "start", "--foreground")
+	cmd := exec.Command(daemon, launcherDaemonArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
 	cmd.Stdin = nil
 	cmd.Stdout = nil
