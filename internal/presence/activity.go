@@ -19,6 +19,12 @@ const DefaultAppID = "1523168764793847918"
 
 const defaultDetailsFormat = "Using {tool}"
 
+// AppName is termp's own product name, used as the activity header when
+// display.tool_name is disabled and the tool's identity must not appear in
+// activity.Name. "Terminal Presence" is the product's proper name; "termp" is
+// only the command (see repo naming convention).
+const AppName = "Terminal Presence"
+
 const (
 	minActivityTextLength = 2
 	maxActivityTextLength = 128
@@ -312,13 +318,21 @@ func ActivityFromDetectionWithOmissions(detection detector.Detection, options Di
 	if tool.ID == "" {
 		tool = detection.Tool
 	}
-	activity := Activity{
-		Name: tool.DisplayName,
-		LargeImage: Image{
+	activity := Activity{}
+	if options.ToolName {
+		activity.Name = tool.DisplayName
+		activity.LargeImage = Image{
 			Key:  tool.ImageKey,
 			URL:  tool.ImageURL,
 			Text: boundText("large_image_text", tool.DisplayName),
-		},
+		}
+	} else {
+		// tool_name = false suppresses the tool's identity everywhere it
+		// leaves the process (#564), not just from details/state: the
+		// activity header becomes termp's own name, and the large image is
+		// left empty so Discord falls back to the application's registered
+		// icon instead of a per-tool one that would itself name the tool.
+		activity.Name = AppName
 	}
 
 	directory := ""
@@ -351,7 +365,7 @@ func ActivityFromDetectionWithOmissions(detection detector.Detection, options Di
 	}
 	activity.Details = boundText("details", activity.Details)
 	activity.State = boundText("state", activity.State)
-	if options.SmallImage && len(detection.Others) > 0 {
+	if options.ToolName && options.SmallImage && len(detection.Others) > 0 {
 		other := detection.Others[0]
 		activity.SmallImage = Image{
 			Key:  other.ImageKey,

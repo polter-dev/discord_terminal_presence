@@ -2,6 +2,7 @@ package presence
 
 import (
 	"bytes"
+	"encoding/json"
 	"log"
 	"strings"
 	"testing"
@@ -193,11 +194,12 @@ func TestActivityFromDetectionCollectionDoesNotExposeToolNamesWhenToolNameDisabl
 	options := DefaultDisplayOptions()
 	options.ToolName = false
 	options.Collection = true
+	options.SmallImage = true
 	options.FallbackMessage = "Fixed fallback"
 	detection := detector.Detection{
-		Tool: registry.Tool{DisplayName: "Claude Code"},
+		Tool: registry.Tool{DisplayName: "Claude Code", ImageKey: "claude-code", ImageURL: "https://example.com/claude-code.png"},
 		Others: []registry.Tool{
-			{DisplayName: "Aider"},
+			{DisplayName: "Aider", ImageKey: "aider", ImageURL: "https://example.com/aider.png"},
 		},
 	}
 
@@ -210,6 +212,60 @@ func TestActivityFromDetectionCollectionDoesNotExposeToolNamesWhenToolNameDisabl
 	}
 	if activity.Details != "Fixed fallback" || activity.State != "" {
 		t.Fatalf("details/state = %q/%q, want fallback and empty state", activity.Details, activity.State)
+	}
+	if activity.Name != AppName {
+		t.Fatalf("Name = %q, want app name %q when tool_name is false", activity.Name, AppName)
+	}
+	if activity.LargeImage.Text != "" || activity.LargeImage.Key != "" || activity.LargeImage.URL != "" {
+		t.Fatalf("LargeImage = %+v, want fully empty when tool_name is false", activity.LargeImage)
+	}
+	if activity.SmallImage.Text != "" || activity.SmallImage.Key != "" || activity.SmallImage.URL != "" {
+		t.Fatalf("SmallImage = %+v, want fully empty when tool_name is false", activity.SmallImage)
+	}
+}
+
+// TestSetActivityWireOmitsToolNameWhenToolNameDisabled proves the
+// suppression holds on the actual marshaled wire bytes, not just on struct
+// fields: TestActivityFromDetectionCollectionDoesNotExposeToolNamesWhenToolNameDisabled
+// checked struct fields and that is exactly the narrowness that let #564
+// ship, so this test builds the payload the way newSetActivityPayload does
+// and greps the encoded JSON for both the featured tool's display name and a
+// populated detection.Others tool's display name.
+func TestSetActivityWireOmitsToolNameWhenToolNameDisabled(t *testing.T) {
+	options := DefaultDisplayOptions()
+	options.ToolName = false
+	options.SmallImage = true
+	options.Collection = true
+	detection := detector.Detection{
+		Tool: registry.Tool{
+			DisplayName: "Claude Code",
+			ImageKey:    "claude-code",
+			ImageURL:    "https://example.test/claude-code.png",
+		},
+		Others: []registry.Tool{
+			{
+				DisplayName: "Aider",
+				ImageKey:    "aider",
+				ImageURL:    "https://example.test/aider.png",
+			},
+		},
+	}
+
+	activity, ok := ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	activity = normalizeActivity(activity)
+
+	encoded, err := json.Marshal(newSetActivityPayload(activity, 42, "test-nonce"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"Claude Code", "Aider", "claude-code", "aider"} {
+		if strings.Contains(string(encoded), name) {
+			t.Fatalf("wire payload = %s, must not contain tool identifier %q when tool_name is false", encoded, name)
+		}
 	}
 }
 

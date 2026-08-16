@@ -25,6 +25,22 @@ for callers to route through their verbose-gated debug logger, so mapped output 
 empty or 2–128 runes without writing to the global logger. The activity name has no
 minimum. Opted-in directory or collection placement does not depend on tool-name display.
 
+`options.ToolName = false` suppresses the tool's identity everywhere it leaves the
+process, not only from `Details`/`State` (#564). `ActivityFromDetectionWithOmissions`
+(`internal/presence/activity.go`) sets `activity.Name` to `AppName` ("Terminal Presence",
+the product's own name) instead of `tool.DisplayName`, and leaves `LargeImage` fully zero
+(`Key`, `URL`, `Text` all empty) instead of the tool's image and tooltip. `newSetActivityPayload`
+omits the `assets` object entirely when both image values are empty, so Discord falls back
+to the application's own registered icon; no new asset was needed. `SmallImage` is now
+gated on `options.ToolName && options.SmallImage` (previously `SmallImage` alone), because
+`detection.Others[0].DisplayName` is still another tool's name. Before this fix, only
+`Details`/`State` were gated (#321) while `Name`, `LargeImage`, and `SmallImage` shipped
+the tool's identity unconditionally or on a narrower gate; the guarding test asserted only
+`Details`/`State` and so never caught it. Known residual, not fixed here: a user-authored
+`details_format` or custom per-tool registry text can still spell out a tool name even with
+`tool_name = false`; only the built-in identity fields (`Name`, image key/URL/text) are
+covered by this gate.
+
 The IPC boundary converts validated activity buttons directly to the wire payload's
 field-compatible named type. It validates a per-field minimum for non-empty details,
 state, and image tooltip text, along with the other bounded activity text, image values,
