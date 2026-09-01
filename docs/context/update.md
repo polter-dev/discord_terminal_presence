@@ -15,7 +15,11 @@ which is *not* a lookup. `DefaultCachePath` resolves update state. `InstallMetho
 `UpdateCommandForMethod`, `GenericInstallDir`, and `PerformUpdate` select/run an
 install-aware exact-tag updater. `AutomaticUpdateAttempt`,
 `ReadAutomaticUpdateAttempt`, `RecordAutomaticUpdateAttempt`, and
-`ClearAutomaticUpdateAttempt` persist and retire automation status.
+`ClearAutomaticUpdateAttempt` persist and retire automation status. Since #584 a
+recorded **success** is also read back, by `cmd/termp`, as the evidence that an
+unattended install landed while the daemon that performed it is still running the old
+code; the record is what carries that notice to `termp status`, so nothing in this
+package may treat a success record as write-only bookkeeping.
 
 **Key files:** `internal/update/update.go` contains anonymous GitHub lookup, semver,
 cache/lock handling, attempt persistence, updater commands, install detection, and generic
