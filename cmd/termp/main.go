@@ -1527,7 +1527,7 @@ func stop(args []string) error {
 	serviceState := service.NewManager().StatusContext(statusCtx)
 	cancelStatus()
 	remaining := max(time.Until(stopDeadline), 0)
-	pid, err := stopDaemonAndPublisher(pidPath, publisher, remaining, stopPollInterval, processAlive, processLooksLikeTermpAtPath, signalTermpProcessAtPath, time.Sleep, serviceMayRelaunch(serviceState))
+	pid, err := stopDaemonAndPublisher(pidPath, publisher, remaining, stopPollInterval, processAlive, processLooksLikeTermpAtPath, commandSignalTermpProcessAtPath, time.Sleep, serviceMayRelaunch(serviceState))
 	if errors.Is(err, errUnreadablePIDFileRemoved) {
 		fmt.Println(errUnreadablePIDFileRemoved.Error())
 		return nil
@@ -1553,7 +1553,7 @@ func stopRunningDaemon() (int, bool, error) {
 		stopPollInterval,
 		processAlive,
 		processLooksLikeTermpAtPath,
-		signalTermpProcessAtPath,
+		commandSignalTermpProcessAtPath,
 		time.Sleep,
 		false,
 	)
@@ -1565,6 +1565,11 @@ func stopRunningDaemon() (int, bool, error) {
 	}
 	return pid, true, nil
 }
+
+// commandSignalTermpProcessAtPath is the command-level signal dependency. The
+// test binary replaces it with a sandbox guard; production keeps the platform
+// implementation directly, with no test-only path policy.
+var commandSignalTermpProcessAtPath = signalTermpProcessAtPath
 
 func printStopSuccess(pid int, state service.State) {
 	fmt.Printf("stopped (pid %d)\n", pid)
