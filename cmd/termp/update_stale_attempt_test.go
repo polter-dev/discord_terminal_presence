@@ -195,12 +195,19 @@ func TestAutomaticUpdateCheckClearsStaleAttemptWithAutoUpdateDisabled(t *testing
 	}
 }
 
-// TestClearStaleAutomaticUpdateAttemptOnlyClearsFailures pins the helper's
-// contract: it retires *failure* records, so a recorded success is left alone
-// even when the predicate would call it stale. Nothing renders a success
-// record today, but the record is the only evidence an unattended install ran
-// and clearing it is not this code path's job.
-func TestClearStaleAutomaticUpdateAttemptOnlyClearsFailures(t *testing.T) {
+// TestClearStaleAutomaticUpdateAttemptDefersToThePredicate pins the helper's
+// contract after issue #584: staleness is the caller's predicate to decide, for
+// a recorded success as much as for a failure.
+//
+// It used to skip success records outright, on the reasoning that nothing
+// rendered one. Something does now: `termp status` reads a recorded success to
+// tell the user an automatic update installed but the running daemon still
+// holds the old code. That notice has to end by itself, and the restarted
+// daemon's retirement pass is what ends it, so the helper has to be able to
+// reach a success. Which successes are stale stays with the caller, and
+// retireStaleAutomaticUpdateAttempt keeps every success the running version has
+// not reached yet.
+func TestClearStaleAutomaticUpdateAttemptDefersToThePredicate(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "update-check.json")
 	attemptedAt := time.Date(2026, 7, 28, 17, 46, 2, 0, time.UTC)
 	if err := updatepkg.RecordAutomaticUpdateAttempt(statePath, "0.1.3", attemptedAt, nil); err != nil {
@@ -214,15 +221,23 @@ func TestClearStaleAutomaticUpdateAttemptOnlyClearsFailures(t *testing.T) {
 	called := false
 	clearStaleAutomaticUpdateAttempt(statePath, func(updatepkg.AutomaticUpdateAttempt) bool {
 		called = true
-		return true
+		return false
 	})
 
-	if called {
-		t.Fatal("staleness predicate consulted for a success record")
+	if !called {
+		t.Fatal("staleness predicate was not consulted for a success record")
 	}
 	after, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
 	if !ok || after.Target != before.Target {
 		t.Fatalf("attempt = (%+v, %t), want the success record for 0.1.3 preserved", after, ok)
+	}
+
+	// And a success the predicate does call stale is actually cleared.
+	clearStaleAutomaticUpdateAttempt(statePath, func(updatepkg.AutomaticUpdateAttempt) bool {
+		return true
+	})
+	if _, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath); ok {
+		t.Fatal("a success record the predicate called stale was not cleared")
 	}
 
 	// A missing state file must be a silent no-op, not a panic or an error:

@@ -494,10 +494,12 @@ type cacheEntry struct {
 // AutomaticUpdateAttempt records the outcome of the last automatic install
 // attempt so status can report failures after the daemon has started.
 type AutomaticUpdateAttempt struct {
-	AttemptedAt time.Time `json:"attempted_at"`
-	Target      string    `json:"target_version"`
-	Error       string    `json:"error,omitempty"`
-	Skipped     bool      `json:"skipped,omitempty"`
+	AttemptedAt        time.Time `json:"attempted_at"`
+	Target             string    `json:"target_version"`
+	Error              string    `json:"error,omitempty"`
+	Skipped            bool      `json:"skipped,omitempty"`
+	InstallerPID       int       `json:"installer_pid,omitempty"`
+	InstallerStartTime uint64    `json:"installer_start_time,omitempty"`
 }
 
 // ReadAutomaticUpdateAttempt reads the last automatic install attempt from the
@@ -541,9 +543,22 @@ func LastKnownLatest(path string) string {
 // RecordAutomaticUpdateAttempt replaces the last automatic install attempt
 // while retaining the release-check metadata stored in the same cache.
 func RecordAutomaticUpdateAttempt(path, target string, attemptedAt time.Time, updateErr error) error {
+	return recordAutomaticUpdateAttempt(path, target, attemptedAt, updateErr, 0, 0)
+}
+
+// RecordAutomaticUpdateAttemptForProcess records the daemon identity that made
+// an attempt. Status can then report a pending restart only while that exact
+// process is still running.
+func RecordAutomaticUpdateAttemptForProcess(path, target string, attemptedAt time.Time, updateErr error, installerPID int, installerStartTime uint64) error {
+	return recordAutomaticUpdateAttempt(path, target, attemptedAt, updateErr, installerPID, installerStartTime)
+}
+
+func recordAutomaticUpdateAttempt(path, target string, attemptedAt time.Time, updateErr error, installerPID int, installerStartTime uint64) error {
 	attempt := &AutomaticUpdateAttempt{
-		AttemptedAt: attemptedAt,
-		Target:      target,
+		AttemptedAt:        attemptedAt,
+		Target:             target,
+		InstallerPID:       installerPID,
+		InstallerStartTime: installerStartTime,
 	}
 	if updateErr != nil {
 		attempt.Error = updateErr.Error()

@@ -2231,7 +2231,7 @@ func TestAutomaticGenericWindowsUpdateRecordsLimitation(t *testing.T) {
 			t.Fatalf("recorded skip %q missing %q", attempt.Error, want)
 		}
 	}
-	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric)
+	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric, daemonPIDRecord{})
 	for _, want := range []string{"skipped for v1.1.0", "not supported on Windows", "run `termp update`"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status update reason %q missing %q", status, want)
@@ -2241,7 +2241,7 @@ func TestAutomaticGenericWindowsUpdateRecordsLimitation(t *testing.T) {
 
 func TestAutomaticUpdateStatusReportsGenericWindowsLimitationBeforeAttempt(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "missing-update-check.json")
-	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric)
+	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric, daemonPIDRecord{})
 	for _, want := range []string{"skipped:", "not supported on Windows", "run `termp update`"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status update reason %q missing %q", status, want)
@@ -2251,7 +2251,7 @@ func TestAutomaticUpdateStatusReportsGenericWindowsLimitationBeforeAttempt(t *te
 	if !strings.Contains(rendered, "Updates\n  Automatic  "+status+"\n") {
 		t.Fatalf("status did not report generic Windows automatic-update limitation:\n%s", rendered)
 	}
-	if got := automaticUpdateStatus(statePath, false, "1.0.0", "windows", updatepkg.InstallGeneric); got != "" {
+	if got := automaticUpdateStatus(statePath, false, "1.0.0", "windows", updatepkg.InstallGeneric, daemonPIDRecord{}); got != "" {
 		t.Fatalf("disabled automatic update status = %q, want empty", got)
 	}
 }
@@ -2441,10 +2441,10 @@ func TestAutomaticUpdateStatusSuppressedWhenAutoUpdateDisabled(t *testing.T) {
 	// version, turning auto_update off retires the "Automatic" status line:
 	// it describes automatic-update behavior, and automatic updates are not
 	// running (issue #418).
-	if got := automaticUpdateStatus(statePath, false, "v1.0.0", "linux", updatepkg.InstallGo); got != "" {
+	if got := automaticUpdateStatus(statePath, false, "v1.0.0", "linux", updatepkg.InstallGo, daemonPIDRecord{}); got != "" {
 		t.Fatalf("automaticUpdateStatus() with auto_update disabled = %q, want empty", got)
 	}
-	if got := automaticUpdateStatus(statePath, true, "v1.0.0", "linux", updatepkg.InstallGo); got == "" {
+	if got := automaticUpdateStatus(statePath, true, "v1.0.0", "linux", updatepkg.InstallGo, daemonPIDRecord{}); got == "" {
 		t.Fatal("automaticUpdateStatus() with auto_update enabled unexpectedly empty; want the still-actionable failure")
 	}
 }
@@ -2517,7 +2517,7 @@ func TestRunUpdateSelectsInstallMethodCommand(t *testing.T) {
 			runner := &recordingUpdateRunner{}
 			checker := stubLatestChecker{result: updatepkg.Result{Current: "1.0.0", Latest: "v1.1.0", Method: tt.method}}
 			var stdout bytes.Buffer
-			err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, &stdout, io.Discard)
+			err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, &stdout, io.Discard, noDaemonRunning)
 			if tt.method == updatepkg.InstallGeneric && runtime.GOOS == "windows" {
 				if err != nil {
 					t.Fatalf("Windows generic update error = %v, want nil (permanent limitation, not a failure)", err)
@@ -2570,7 +2570,7 @@ func TestRunUpdateFallsBackToSystemPackageGuidance(t *testing.T) {
 			runner := &recordingUpdateRunner{err: errors.New("sudo unavailable")}
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
-			if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, &stdout, &stderr); err != nil {
+			if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, nil, &stdout, &stderr, noDaemonRunning); err != nil {
 				t.Fatal(err)
 			}
 			wantCalls := 1
@@ -2610,7 +2610,7 @@ func TestRunUpdatePrintsWindowsGenericGuidanceWithoutRunningCommand(t *testing.T
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	err := runUpdateForPlatform(context.Background(), context.Background(), "v0.1.0", checker, runner, nil, &stdout, &stderr, "windows")
+	err := runUpdateForPlatform(context.Background(), context.Background(), "v0.1.0", checker, runner, nil, &stdout, &stderr, noDaemonRunning, "windows")
 	if err != nil {
 		t.Fatalf("runUpdateForPlatform() error = %v, want nil (permanent limitation, not a failure)", err)
 	}
@@ -2650,7 +2650,7 @@ func TestRunUpdatePrintsScoopGuidanceWithoutRunningCommand(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	if err := runUpdate(context.Background(), context.Background(), "v0.1.0", checker, runner, nil, &stdout, &stderr); err != nil {
+	if err := runUpdate(context.Background(), context.Background(), "v0.1.0", checker, runner, nil, &stdout, &stderr, noDaemonRunning); err != nil {
 		t.Fatal(err)
 	}
 	const want = "Update available: v0.1.0 -> v0.1.1\n\nTo update:\n  scoop update termp\n"
@@ -2693,7 +2693,7 @@ func TestAutomaticSystemPackageUpdateIsSkippedWithoutInstalling(t *testing.T) {
 			if !ok || !attempt.Skipped || !strings.Contains(attempt.Error, updatepkg.GuidanceForMethod(method, "v1.1.0").Text) {
 				t.Fatalf("automatic attempt = (%+v, %t), want managed-package skip", attempt, ok)
 			}
-			status := automaticUpdateStatus(statePath, true, "1.0.0", "linux", method)
+			status := automaticUpdateStatus(statePath, true, "1.0.0", "linux", method, daemonPIDRecord{})
 			if !strings.Contains(status, "skipped for v1.1.0") || !strings.Contains(status, updatepkg.GuidanceForMethod(method, "v1.1.0").Text) {
 				t.Fatalf("automatic package status = %q, want recorded release-package guidance", status)
 			}
@@ -2729,6 +2729,7 @@ func TestRunUpdateFailurePrintsMethodRetryCommand(t *testing.T) {
 				nil,
 				&stdout,
 				&stderr,
+				noDaemonRunning,
 			)
 			if tt.method == updatepkg.InstallGeneric && runtime.GOOS == "windows" {
 				// A Windows generic install is a permanent platform
@@ -2771,7 +2772,7 @@ func TestRunUpdateAlreadyLatest(t *testing.T) {
 	runner := &recordingUpdateRunner{}
 	checker := stubLatestChecker{result: updatepkg.Result{Current: "1.2.0", Latest: "v1.2.0", Method: updatepkg.InstallGo}}
 	var stdout bytes.Buffer
-	if err := runUpdate(context.Background(), context.Background(), "1.2.0", checker, runner, nil, &stdout, io.Discard); err != nil {
+	if err := runUpdate(context.Background(), context.Background(), "1.2.0", checker, runner, nil, &stdout, io.Discard, noDaemonRunning); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := stdout.String(), "You're already on the latest version (v1.2.0).\n"; got != want {
@@ -2785,7 +2786,7 @@ func TestRunUpdateAlreadyLatest(t *testing.T) {
 func TestRunUpdateCheckFailureDoesNotRunUpdater(t *testing.T) {
 	runner := &recordingUpdateRunner{}
 	checker := stubLatestChecker{err: errors.New("offline")}
-	err := runUpdate(context.Background(), context.Background(), "1.2.0", checker, runner, nil, io.Discard, io.Discard)
+	err := runUpdate(context.Background(), context.Background(), "1.2.0", checker, runner, nil, io.Discard, io.Discard, noDaemonRunning)
 	if err == nil || !strings.Contains(err.Error(), "unable to check for updates") || !strings.Contains(err.Error(), "offline") {
 		t.Fatalf("error = %v, want clear offline check failure", err)
 	}

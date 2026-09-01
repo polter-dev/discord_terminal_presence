@@ -1640,7 +1640,8 @@ func status(args []string) error {
 	} else {
 		defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
 	}
-	daemonPID := statusDaemonPID(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermpAtPath)
+	daemonRecord := statusDaemonRecord(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermpAtPath)
+	daemonPID := daemonRecord.PID
 	running := daemonPID > 0
 
 	reg, registryErr := registry.NewWithCustom(cfg.CustomTools...)
@@ -1701,7 +1702,7 @@ func status(args []string) error {
 		configError:         configError,
 		configUsingLastGood: configUsingLastGood,
 		configWarnings:      cfg.Warnings,
-		updateFailure:       automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, version, runtime.GOOS, updateMethod),
+		updateFailure:       automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, version, runtime.GOOS, updateMethod, daemonRecord),
 		homeDir:             homeDir,
 	}
 
@@ -1714,15 +1715,19 @@ func status(args []string) error {
 }
 
 func statusDaemonPID(pidPath, discordStatePath string, now time.Time, alive func(int) bool, looksLikeTermp func(int, string) bool) int {
+	return statusDaemonRecord(pidPath, discordStatePath, now, alive, looksLikeTermp).PID
+}
+
+func statusDaemonRecord(pidPath, discordStatePath string, now time.Time, alive func(int) bool, looksLikeTermp func(int, string) bool) daemonPIDRecord {
 	if record, _, err := readPIDIdentity(pidPath); err == nil &&
 		pidRecordIdentityMatches(record, alive, looksLikeTermp) {
-		return record.PID
+		return record
 	}
 	if state, ok := readFreshDaemonDiscordState(discordStatePath, now, daemonDiscordStateStaleAfter); ok &&
 		processIdentityMatches(state.PID, state.StartTime, state.ExecutablePath, alive, looksLikeTermp) {
-		return state.PID
+		return daemonPIDRecord{PID: state.PID, StartTime: state.StartTime, ExecutablePath: state.ExecutablePath}
 	}
-	return 0
+	return daemonPIDRecord{}
 }
 
 func statusConfigHealth(loadErr error, daemonPID int, state daemonDiscordState, stateOK bool) (bool, error, bool) {
@@ -2248,7 +2253,7 @@ func automaticUpdateFailure(path, current string) string {
 // "Automatic" line describes automatic-update behavior, and a stale failure
 // from before the user turned it off is no longer actionable advice about a
 // feature that is not running.
-func automaticUpdateStatus(path string, enabled bool, current, goos string, method updatepkg.InstallMethod) string {
+func automaticUpdateStatus(path string, enabled bool, current, goos string, method updatepkg.InstallMethod, daemonRecord daemonPIDRecord) string {
 	if !enabled {
 		return ""
 	}
@@ -2263,7 +2268,48 @@ func automaticUpdateStatus(path string, enabled bool, current, goos string, meth
 		}
 		return fmt.Sprintf("skipped: %s", err)
 	}
-	return automaticUpdateFailure(path, current)
+	if failure := automaticUpdateFailure(path, current); failure != "" {
+		return failure
+	}
+	return automaticUpdatePendingRestart(path, current, daemonRecord)
+}
+
+// automaticUpdatePendingRestart renders the notice for an automatic update that
+// installed successfully but has not taken effect yet, because the daemon that
+// installed it is still running the old code (issue #584).
+//
+// The automatic path runs inside the daemon, where there may be no attached
+// terminal. Its normal log records the notice, and `termp status` is where the
+// same fact can reach a person directly, so the recorded success is the carrier.
+//
+// Four conditions have to hold together, and each one rules out a false claim:
+//
+//   - The exact daemon process that installed the update is still running.
+//     Matching both PID and start time prevents a replacement daemon or PID
+//     reuse from inheriting the notice.
+//   - The last recorded attempt succeeded. A failure is more actionable and is
+//     reported by automaticUpdateFailure instead.
+//   - This binary is no longer behind the attempted target, so the install did
+//     land on disk. While the running version is still behind it, the update
+//     has not been observed to take, and the failure/retirement rules own it.
+//
+// The record is normally cleared by the next daemon start, whose version
+// satisfies the target (see retireStaleAutomaticUpdateAttempt). The identity
+// match also suppresses the notice immediately after replacement, including
+// when an update-check opt-out deliberately prevents that cleanup write.
+func automaticUpdatePendingRestart(path, current string, daemonRecord daemonPIDRecord) string {
+	if daemonRecord.PID <= 0 || daemonRecord.StartTimeUnavailable || daemonRecord.StartTime == 0 {
+		return ""
+	}
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
+	if !ok || attempt.Error != "" || updatepkg.IsNewer(current, attempt.Target) ||
+		attempt.InstallerPID != daemonRecord.PID || attempt.InstallerStartTime != daemonRecord.StartTime {
+		return ""
+	}
+	return fmt.Sprintf("installed %s at %s. The running daemon is still on the previous version. Run \"termp stop\" then \"termp start\" to finish updating.",
+		attempt.Target,
+		attempt.AttemptedAt.Local().Format(time.RFC3339),
+	)
 }
 
 func autostartLocationLabel(goos string) string {

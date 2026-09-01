@@ -163,7 +163,7 @@ func TestInteractiveGenericUpdateDoesNotRunElevationPreflight(t *testing.T) {
 	}}
 	runner := &recordingUpdateRunner{}
 
-	if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, strings.NewReader("password\n"), io.Discard, io.Discard); err != nil {
+	if err := runUpdate(context.Background(), context.Background(), "1.0.0", checker, runner, strings.NewReader("password\n"), io.Discard, io.Discard, noDaemonRunning); err != nil {
 		t.Fatal(err)
 	}
 	if runner.calls != 2 || runner.command.Name != "sh" {

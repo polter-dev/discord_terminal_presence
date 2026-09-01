@@ -221,6 +221,54 @@ attempt record and no cached latest — reported "not cleared" under either beha
 pinned neither. The opt-out cases therefore seed a **non-empty** cache and the control
 proves that state really is retirable.
 
+**Update completion and the stale daemon (#584).** On Unix, replacing the file a
+process is executing leaves that process on the old inode, so `termp update` swaps the
+binary while the running daemon keeps publishing with the old code. `termp version` and
+`termp status` then both report the new version and the report is wrong about the thing
+actually talking to Discord. Nothing on screen said so, and a successful update printed
+only `Updating termp from X to Y...` and returned, which reads like an interrupted
+command.
+
+Two surfaces carry the fix, one per path:
+
+- **Manual (`termp update`).** `printUpdateComplete` (cmd/termp/update.go) prints
+  `Updated termp from X to Y.` after each path that actually performed an update: the
+  generic/Homebrew branch and the system-package branch. The paths that only print
+  guidance (Scoop, and the Windows generic/archive case, which cannot replace a running
+  `termp.exe` at all) deliberately do not print it, because no update happened there.
+  The second line, naming the running daemon and the commands to restart it, prints only
+  when a daemon is running, so a user with none is not told to restart something that is
+  not there.
+- **Automatic (daemon).** That path may have no attached terminal. It now writes the
+  actionable notice at normal daemon-log visibility instead of hiding it behind `debugf`.
+  The recorded success also carries the notice to `termp status`.
+  `automaticUpdatePendingRestart` (cmd/termp/main.go) shows it on the existing
+  `Automatic` row only when the live daemon's PID and process start time match the daemon
+  identity recorded with the successful attempt, and when this binary is no longer behind
+  the attempted target. A recorded **failure** still takes precedence on that row. The
+  identity match makes the notice disappear immediately after a replacement daemon starts,
+  even if an update-check opt-out deliberately prevents the normal retirement write.
+
+**There is no `termp restart`.** The guidance names the two real subcommands,
+`termp stop` then `termp start`. `TestUpdateRestartGuidanceNamesRealCommands`
+(cmd/termp/update_notice_test.go) pins that, and fails loudly if a `restart` command is
+ever added so the copy gets revisited rather than silently going stale.
+
+Restarting the daemon automatically, or prompting to, is **out of scope by owner
+decision** (#584). An updater that stops and starts a daemon can orphan or double-start
+it, and this repo has a settled posture against reactivating anything on the user's
+behalf. Do not add it without an owner decision.
+
+Daemon detection here reuses `statusDaemonPID`, not `knownDaemonPID`. The two agree on
+the PID file, which is the primary source, and differ only in the fallback: `statusDaemonPID`
+additionally requires the daemon's Discord state file to be fresh. That bound is the
+right one because the message is a claim about the machine that should match what the
+user reads back from `termp status` a second later, and because it errs toward silence:
+a stale state file cannot make the updater assert a daemon that status calls stopped.
+`statusDaemonRecord` exposes the same validated result with its existing PID/start-time
+identity so pending automatic-update copy can require the installer process itself, not
+merely any running daemon.
+
 **Stale automatic-attempt clearing (#418, #458).** `retireStaleAutomaticUpdateAttempt`
 (cmd/termp/update.go) owns the rule and runs on every daemon startup where neither
 update-check opt-out is in force (see **Update-check opt-outs** above),
@@ -233,6 +281,14 @@ A recorded **failure** is stale when either:
   original #418 rule; or
 - the release source is not offering the target
   (`!SameVersion(target, latest) && latest != ""`), added for #458 cause 2.
+
+A recorded **success** is now reached by this pass too (#584). It is stale under the
+first rule only. `clearStaleAutomaticUpdateAttempt` used to skip every success before
+consulting the predicate, on the reasoning that nothing rendered one; something does
+now (see **Update completion and the stale daemon** below), so the skip moved out of
+the helper and into the predicate. The second rule deliberately does not apply to a
+success: a successful install superseded by a newer release is still an install the
+running daemon has not picked up, and clearing it would silently drop the notice.
 
 The second rule exists because the first alone cannot retire a target that is bogus:
 the reporter's cache held `target_version: "1.1.0"`, which is not a real release and
