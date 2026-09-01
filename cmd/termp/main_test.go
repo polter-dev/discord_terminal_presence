@@ -1119,7 +1119,7 @@ func TestFormatStatusGroupedAlignedAndComplete(t *testing.T) {
 		"  Supported  yes\n" +
 		"  Installed  yes\n" +
 		"  Loaded     no\n" +
-		"  Enabled    —\n" +
+		"  Enabled    n/a\n" +
 		"  Path       " + shortServicePath + "\n" +
 		"  Message    ready\n\n" +
 		"Config\n" +
@@ -1975,10 +1975,10 @@ func TestDisplayValueCollapsesBlankLineInCombinedGuidance(t *testing.T) {
 	}
 }
 
-func TestDisplayValueRestoresNAPlaceholderAfterTrailingNewline(t *testing.T) {
+func TestDisplayValueRestoresNotApplicablePlaceholderAfterTrailingNewline(t *testing.T) {
 	got := displayValue("n/a\n")
-	if got != "—" {
-		t.Fatalf("displayValue(%q) = %q, want the em-dash placeholder", "n/a\n", got)
+	if got != naPlaceholder {
+		t.Fatalf("displayValue(%q) = %q, want the not-applicable placeholder %q", "n/a\n", got, naPlaceholder)
 	}
 }
 
@@ -2020,7 +2020,7 @@ func TestCommandUpdateAlertUsesCacheWithoutNetwork(t *testing.T) {
 
 	var stderr bytes.Buffer
 	printCommandUpdateAlert("start", nil, true, cfg, nil, &stderr)
-	want := "A new version (v1.2.0) is available — run `termp update`\n"
+	want := "A new version (v1.2.0) is available. Run `termp update` to install it.\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("alert = %q, want %q", got, want)
 	}
@@ -2118,7 +2118,7 @@ func TestCommandUpdateAlertShownForEveryOtherCommand(t *testing.T) {
 	cfg.AutoUpdate = false
 
 	silent := map[string]bool{"update": true, "version": true, "status": true, "completion": true}
-	want := "A new version (v2.0.0) is available — run `termp update`\n"
+	want := "A new version (v2.0.0) is available. Run `termp update` to install it.\n"
 	checked := 0
 	for _, command := range append(commandNames(), "help") {
 		if silent[command] {
@@ -2198,7 +2198,7 @@ func TestDaemonRefreshesCacheWithoutAutoUpdate(t *testing.T) {
 	version = "1.0.0"
 	var stderr bytes.Buffer
 	printCommandUpdateAlert("start", nil, true, cfg, nil, &stderr)
-	want := "A new version (v1.1.0) is available — run `termp update`\n"
+	want := "A new version (v1.1.0) is available. Run `termp update` to install it.\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("alert after daemon refresh = %q, want %q", got, want)
 	}
@@ -3058,7 +3058,7 @@ func TestTryStartConfigWatchLogsExactlyLikeWatchCommand(t *testing.T) {
 		t.Fatal("tryStartConfigWatch() succeeded against a stray file, want failure")
 	}
 	if len(logs) != 1 || !strings.Contains(logs[0], "config watch disabled") {
-		t.Fatalf("tryStartConfigWatch() logs = %v, want exactly one \"config watch disabled\" line (previously missing entirely — issue #416)", logs)
+		t.Fatalf("tryStartConfigWatch() logs = %v, want exactly one \"config watch disabled\" line (previously missing entirely; issue #416)", logs)
 	}
 }
 
@@ -3240,7 +3240,7 @@ func TestConfigWatchSelfHealsOnceDirectoryBecomesAvailable(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("retryConfigWatch never recovered once the config directory became available (presence would stay off forever — issue #416)")
+		t.Fatal("retryConfigWatch never recovered once the config directory became available (presence would stay off forever; issue #416)")
 	}
 
 	// No further edit happens from here on. The already-fixed config must
@@ -3256,7 +3256,7 @@ func TestConfigWatchSelfHealsOnceDirectoryBecomesAvailable(t *testing.T) {
 			t.Fatalf("reload after self-heal failed: %v", result.Err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("config that was already fixed before recovery was never loaded (self-heal started watching but did not reload — issue #416)")
+		t.Fatal("config that was already fixed before recovery was never loaded (self-heal started watching but did not reload; issue #416)")
 	}
 	if _, err := manager.Current(); err != nil {
 		t.Fatalf("manager.Current() after self-heal = %v, want the fixed config applied", err)
@@ -3520,7 +3520,7 @@ func TestPrintStopSuccessAutostartHint(t *testing.T) {
 		},
 	}
 
-	const hint = "Autostart is on — run \"termp autostart disable\" to pause it (or \"termp autostart uninstall\" to remove autostart, not the binary)."
+	const hint = "Autostart is on. Run \"termp autostart disable\" to pause it, or \"termp autostart uninstall\" to remove autostart without removing the binary."
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out, err := captureStdout(t, func() error {

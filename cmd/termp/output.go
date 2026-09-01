@@ -44,10 +44,18 @@ func formatSections(title string, sections ...outputSection) string {
 	return b.String()
 }
 
+// naPlaceholder fills a status-table cell that has no value to show.
+//
+// It reads "not applicable in this row", not "value missing", which is why it
+// is the literal text rather than a dash. `n/a` is also what displayValue
+// already accepts as *input* and normalizes, so input and output now agree, and
+// it survives any terminal font or encoding a dash may not (issue #585).
+const naPlaceholder = "n/a"
+
 func displayValue(value string) string {
 	value = strings.TrimSpace(terminaltext.SanitizeSingleLine(value))
-	if value == "" || strings.EqualFold(value, "n/a") {
-		return "—"
+	if value == "" || strings.EqualFold(value, naPlaceholder) {
+		return naPlaceholder
 	}
 	return value
 }

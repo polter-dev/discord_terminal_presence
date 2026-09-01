@@ -78,7 +78,7 @@ func TestMaybePrintFirstRunCTAIsPlainWhenNotTerminal(t *testing.T) {
 
 	maybePrintFirstRunCTA(&output, configPath, false)
 
-	const want = "First run detected — run \"termp setup\" to configure.\n"
+	const want = "First run detected. Run \"termp setup\" to configure.\n"
 	if got := output.String(); got != want {
 		t.Fatalf("plain first-run hint = %q, want %q", got, want)
 	}
@@ -534,7 +534,7 @@ func TestStartPrintsFirstRunCTA(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "daemon already running") {
 		t.Fatalf("start() error = %v, want already-running error", err)
 	}
-	if !strings.Contains(out, `First run detected — run "termp setup" to configure.`) {
+	if !strings.Contains(out, `First run detected. Run "termp setup" to configure.`) {
 		t.Fatalf("start output missing first-run setup hint: %q", out)
 	}
 }

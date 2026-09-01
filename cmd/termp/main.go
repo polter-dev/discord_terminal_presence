@@ -1569,7 +1569,7 @@ func stopRunningDaemon() (int, bool, error) {
 func printStopSuccess(pid int, state service.State) {
 	fmt.Printf("stopped (pid %d)\n", pid)
 	if serviceWillRelaunch(state) {
-		fmt.Println("Autostart is on — run \"termp autostart disable\" to pause it (or \"termp autostart uninstall\" to remove autostart, not the binary).")
+		fmt.Println("Autostart is on. Run \"termp autostart disable\" to pause it, or \"termp autostart uninstall\" to remove autostart without removing the binary.")
 		return
 	}
 	if serviceRelaunchUnknown(state) {
@@ -3172,7 +3172,7 @@ func maybePrintFirstRunCTA(w io.Writer, configPath string, terminal bool) {
 		return
 	}
 	if !terminal {
-		fmt.Fprintln(w, `First run detected — run "termp setup" to configure.`)
+		fmt.Fprintln(w, `First run detected. Run "termp setup" to configure.`)
 		return
 	}
 

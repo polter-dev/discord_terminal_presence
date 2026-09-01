@@ -73,7 +73,7 @@ func printCommandUpdateAlert(command string, args []string, stderrTerminal bool,
 	if !ok {
 		return
 	}
-	fmt.Fprintf(stderr, "A new version (%s) is available — run `termp update`\n", result.Latest)
+	fmt.Fprintf(stderr, "A new version (%s) is available. Run `termp update` to install it.\n", result.Latest)
 }
 
 // runPeriodicAutomaticUpdate keeps the shared update-check cache fresh for as

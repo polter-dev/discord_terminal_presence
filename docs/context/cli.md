@@ -221,6 +221,35 @@ attempt record and no cached latest — reported "not cleared" under either beha
 pinned neither. The opt-out cases therefore seed a **non-empty** cache and the control
 proves that state really is retirable.
 
+**No em dash in printed copy (#585).** The owner's standing rule is that no em dash
+(U+2014) appears in any user-facing explanation or copy. Shipped v0.1.4 printed one in
+four places. All four are fixed:
+
+- `displayValue` (cmd/termp/output.go) now returns the `naPlaceholder` constant, whose
+  value is the literal text `n/a`. **The choice was between `n/a` and a plain hyphen.**
+  `n/a` wins because this cell means "not applicable in this row", not "value missing",
+  and a bare `-` cannot say which of the two it means, or be told apart from a real
+  one-character value. `n/a` is also already what `displayValue` accepts as *input* and
+  normalizes, so input and output now agree, and plain ASCII survives any terminal font
+  or encoding a dash may not. An en dash was never on the table: it is the same problem
+  one codepoint over. Use `naPlaceholder`, not a literal, at any new call site.
+- The update alert, the autostart-still-on hint after `stop`, and the first-run
+  non-TTY line were each restructured into two sentences rather than having the dash
+  swapped for a comma, which is what the rule is actually aiming at.
+
+The roughly fifty em dashes in Go **comments** are deliberately untouched: comments are
+not user-facing copy, and churning them would bury the real change.
+
+`TestNoEmDashInUserFacingStringLiterals` (cmd/termp/emdash_guard_test.go) keeps it from
+regressing. It parses each production Go file in cmd/termp with `go/ast` and inspects
+`*ast.BasicLit` string literals, not lines. A line-based grep is swamped by those comments
+and would be permanently red. Test files are excluded because their diagnostic strings
+are not CLI copy; tests that pin production output are updated with the production
+literal. The guard over-approximates within production code, in that a literal that never
+reaches a user still fails, because deciding which literals are printed needs dataflow a
+test cannot do. It was verified by reintroducing the character through a string escape
+and watching the test fail.
+
 **Update completion and the stale daemon (#584).** On Unix, replacing the file a
 process is executing leaves that process on the old inode, so `termp update` swaps the
 binary while the running daemon keeps publishing with the old code. `termp version` and
