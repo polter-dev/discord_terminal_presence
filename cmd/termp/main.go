@@ -1701,7 +1701,7 @@ func status(args []string) error {
 		configError:         configError,
 		configUsingLastGood: configUsingLastGood,
 		configWarnings:      cfg.Warnings,
-		updateFailure:       automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, version, runtime.GOOS, updateMethod),
+		updateFailure:       automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, version, runtime.GOOS, updateMethod, running),
 		homeDir:             homeDir,
 	}
 
@@ -2248,7 +2248,7 @@ func automaticUpdateFailure(path, current string) string {
 // "Automatic" line describes automatic-update behavior, and a stale failure
 // from before the user turned it off is no longer actionable advice about a
 // feature that is not running.
-func automaticUpdateStatus(path string, enabled bool, current, goos string, method updatepkg.InstallMethod) string {
+func automaticUpdateStatus(path string, enabled bool, current, goos string, method updatepkg.InstallMethod, daemonRunning bool) string {
 	if !enabled {
 		return ""
 	}
@@ -2263,7 +2263,46 @@ func automaticUpdateStatus(path string, enabled bool, current, goos string, meth
 		}
 		return fmt.Sprintf("skipped: %s", err)
 	}
-	return automaticUpdateFailure(path, current)
+	if failure := automaticUpdateFailure(path, current); failure != "" {
+		return failure
+	}
+	return automaticUpdatePendingRestart(path, current, daemonRunning)
+}
+
+// automaticUpdatePendingRestart renders the notice for an automatic update that
+// installed successfully but has not taken effect yet, because the daemon that
+// installed it is still running the old code (issue #584).
+//
+// The automatic path runs inside the daemon, where there is no user to print
+// to: its own report went to debugf and no human ever saw it. `termp status` is
+// where that fact can honestly reach a person, so the recorded success is the
+// carrier.
+//
+// Three conditions have to hold together, and each one rules out a false claim:
+//
+//   - A daemon is running. With nothing running there is nothing stale and
+//     nothing to restart.
+//   - The last recorded attempt succeeded. A failure is more actionable and is
+//     reported by automaticUpdateFailure instead.
+//   - This binary is no longer behind the attempted target, so the install did
+//     land on disk. While the running version is still behind it, the update
+//     has not been observed to take, and the failure/retirement rules own it.
+//
+// The record is cleared by the next daemon start, whose version satisfies the
+// target (see retireStaleAutomaticUpdateAttempt), so the notice disappears on
+// its own once the restart happens.
+func automaticUpdatePendingRestart(path, current string, daemonRunning bool) string {
+	if !daemonRunning {
+		return ""
+	}
+	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
+	if !ok || attempt.Error != "" || updatepkg.IsNewer(current, attempt.Target) {
+		return ""
+	}
+	return fmt.Sprintf("installed %s at %s. The running daemon is still on the previous version. Run \"termp stop\" then \"termp start\" to finish updating.",
+		attempt.Target,
+		attempt.AttemptedAt.Local().Format(time.RFC3339),
+	)
 }
 
 func autostartLocationLabel(goos string) string {

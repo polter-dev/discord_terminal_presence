@@ -270,6 +270,11 @@ func runAutomaticUpdateWithStatePathForPlatform(ctx context.Context, cfg config.
 	if err := updatepkg.RecordAutomaticUpdateAttempt(statePath, result.Latest, time.Now(), nil); err != nil {
 		debugf("automatic update success could not be recorded: %v", err)
 	}
+	// The success is recorded above, and `termp status` turns that record into
+	// a user-visible notice for as long as this daemon keeps running the old
+	// code (issue #584). This path has no user attached to write to: it runs
+	// inside the daemon, whose stdout is a log file or /dev/null, so status is
+	// the only place the notice can honestly reach a person.
 	debugf("automatic update installed %s; it will take effect on next start", result.Latest)
 }
 
@@ -309,6 +314,16 @@ func retireStaleAutomaticUpdateAttempt(statePath, current, checkedLatest string)
 		if !updatepkg.IsNewer(current, attempt.Target) {
 			return true
 		}
+		if attempt.Error == "" {
+			// A recorded success the running version has not reached yet is
+			// the "installed, not yet restarted" state that status reports
+			// (issue #584). Only the rule above retires it, and it does so
+			// from the restarted daemon, whose version satisfies the target.
+			// The release-source rule below must not reach it: a success
+			// superseded by a newer release is still an update the running
+			// daemon has not picked up.
+			return false
+		}
 		return latest != "" && !updatepkg.SameVersion(attempt.Target, latest)
 	})
 }
@@ -317,10 +332,13 @@ func retireStaleAutomaticUpdateAttempt(statePath, current, checkedLatest string)
 // when stale reports it can no longer be acted on. It is best-effort by
 // design: every caller is on a daemon-startup path, so a state file that
 // cannot be read or written is logged and otherwise ignored rather than
-// turned into an error. Successful attempts (Error == "") are never touched.
+// turned into an error. Whether a successful attempt (Error == "") is stale is
+// decided by the caller's predicate: a success is kept while the running
+// version has not reached its target, because that is the record status uses to
+// tell the user the daemon still holds the old code (issue #584).
 func clearStaleAutomaticUpdateAttempt(statePath string, stale func(updatepkg.AutomaticUpdateAttempt) bool) {
 	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath)
-	if !ok || attempt.Error == "" || !stale(attempt) {
+	if !ok || !stale(attempt) {
 		return
 	}
 	if err := updatepkg.ClearAutomaticUpdateAttempt(statePath); err != nil {
@@ -420,16 +438,29 @@ func updateCommand(args []string) error {
 	}
 	checkCtx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
 	defer cancel()
-	return runUpdate(checkCtx, context.Background(), version, releaseChecker, updatepkg.ExecRunner{Interactive: true}, os.Stdin, os.Stdout, os.Stderr)
+	return runUpdate(checkCtx, context.Background(), version, releaseChecker, updatepkg.ExecRunner{Interactive: true}, os.Stdin, os.Stdout, os.Stderr, updateDaemonRunning)
 }
 
-func runUpdate(checkCtx, updateCtx context.Context, current string, checker latestChecker, runner updatepkg.CommandRunner, stdin io.Reader, stdout, stderr io.Writer) error {
-	return runUpdateForPlatform(checkCtx, updateCtx, current, checker, runner, stdin, stdout, stderr, runtime.GOOS)
+// updateDaemonRunning reports whether a daemon is running right now, using the
+// same detection `termp status` uses (statusDaemonPID). Two candidates existed:
+// this one and knownDaemonPID. They agree on the PID file, which is the primary
+// source; they differ only in the fallback, where statusDaemonPID additionally
+// requires the daemon's Discord state file to be fresh. The freshness bound is
+// the right one here because the message this feeds is a claim about the state
+// of the machine, and it should say exactly what the user will read back in
+// `termp status` a second later. It is also the conservative direction: a stale
+// state file cannot make the updater assert a daemon that status calls stopped.
+func updateDaemonRunning() bool {
+	return statusDaemonPID(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermpAtPath) > 0
+}
+
+func runUpdate(checkCtx, updateCtx context.Context, current string, checker latestChecker, runner updatepkg.CommandRunner, stdin io.Reader, stdout, stderr io.Writer, daemonRunning func() bool) error {
+	return runUpdateForPlatform(checkCtx, updateCtx, current, checker, runner, stdin, stdout, stderr, daemonRunning, runtime.GOOS)
 }
 
 // runUpdateForPlatform is runUpdate with an injectable goos so tests can
 // exercise the Windows-generic-install path from any host.
-func runUpdateForPlatform(checkCtx, updateCtx context.Context, current string, checker latestChecker, runner updatepkg.CommandRunner, stdin io.Reader, stdout, stderr io.Writer, goos string) error {
+func runUpdateForPlatform(checkCtx, updateCtx context.Context, current string, checker latestChecker, runner updatepkg.CommandRunner, stdin io.Reader, stdout, stderr io.Writer, daemonRunning func() bool, goos string) error {
 	result, err := checker.Latest(checkCtx, current)
 	if err != nil {
 		return fmt.Errorf("unable to check for updates: %w", err)
@@ -460,6 +491,7 @@ func runUpdateForPlatform(checkCtx, updateCtx context.Context, current string, c
 		fmt.Fprintln(stdout, "termp is managed by your system package manager.")
 		fmt.Fprintf(stdout, "Updating termp from %s to %s...\n", current, result.Latest)
 		if err := updatepkg.PerformUpdate(updateCtx, result.Method, result.Latest, runner, stdin, stdout, stderr); err == nil {
+			printUpdateComplete(stdout, current, result.Latest, daemonRunning)
 			return nil
 		} else {
 			fmt.Fprintf(stderr, "termp update: automatic package update unavailable: %v\n", err)
@@ -482,7 +514,32 @@ func runUpdateForPlatform(checkCtx, updateCtx context.Context, current string, c
 		}
 		return err
 	}
+	printUpdateComplete(stdout, current, result.Latest, daemonRunning)
 	return nil
+}
+
+// printUpdateComplete reports a finished update. Before this, a successful run
+// printed only "Updating termp from X to Y..." and returned, which reads like a
+// command that was interrupted rather than one that finished (issue #584).
+//
+// The second half is the part that matters. On Unix, replacing the file a
+// process is executing does not change that process: the running daemon keeps
+// the old inode, so it goes on publishing to Discord with the old code while
+// `termp version` reports the new one. The guidance is printed only when a
+// daemon is actually running, so a user with no daemon up is not told to
+// restart something that is not there.
+//
+// There is no `termp restart`, so the two real commands are named explicitly.
+//
+// Restarting the daemon automatically is deliberately not done here. That is a
+// product decision the owner has reserved (issue #584), and an updater that
+// stops and starts a daemon can orphan or double-start it.
+func printUpdateComplete(stdout io.Writer, current, latest string, daemonRunning func() bool) {
+	fmt.Fprintf(stdout, "Updated termp from %s to %s.\n", current, latest)
+	if daemonRunning == nil || !daemonRunning() {
+		return
+	}
+	fmt.Fprintln(stdout, "The background daemon is still running the previous version. Run \"termp stop\" then \"termp start\" to finish updating.")
 }
 
 func updateRetryCommand(command updatepkg.Command) string {
