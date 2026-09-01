@@ -150,6 +150,15 @@ type Registry struct {
 	tools []Tool
 }
 
+// processIdentity contains only values derived from a single process. Keep its
+// identities raw: exact-name matching and regex/exclude matching intentionally
+// apply their existing normalization at different points.
+type processIdentity struct {
+	identities       []string
+	subcommand       string
+	shellInterpreter bool
+}
+
 // New returns a registry containing built-ins plus custom tool overrides/extensions.
 func New(custom ...Tool) (*Registry, error) {
 	tools, err := builtinTools()
@@ -394,9 +403,10 @@ func (r *Registry) MatchProcess(process ProcessInfo) (Tool, bool) {
 		best Tool
 		ok   bool
 	)
+	identity := processIdentityForMatch(process)
 
 	for _, tool := range r.tools {
-		if !tool.matchesProcess(process) {
+		if !tool.matchesProcess(identity) {
 			continue
 		}
 		if !ok || compareTools(tool, best) > 0 {
@@ -441,17 +451,16 @@ func newFromTools(tools []Tool) (*Registry, error) {
 	return &Registry{tools: compiled}, nil
 }
 
-func (t Tool) matchesProcess(process ProcessInfo) bool {
-	if isShellInterpreterProcess(process) {
+func (t Tool) matchesProcess(identity processIdentity) bool {
+	if identity.shellInterpreter {
 		return false
 	}
 
-	identities, subcommand := processMatchIdentity(process)
 	matched := false
 
 	if t.Match.Name != "" {
 		matchName := normalizeName(t.Match.Name)
-		for _, candidate := range identities {
+		for _, candidate := range identity.identities {
 			if strings.EqualFold(normalizeName(candidate), matchName) {
 				matched = true
 				break
@@ -460,9 +469,9 @@ func (t Tool) matchesProcess(process ProcessInfo) bool {
 	}
 
 	if !matched && t.Match.compiled != nil {
-		for _, identity := range identities {
+		for _, candidate := range identity.identities {
 			// Catalog regexes are written with Unix separators; normalize Windows paths.
-			if t.Match.compiled.MatchString(strings.ReplaceAll(identity, `\`, "/")) {
+			if t.Match.compiled.MatchString(strings.ReplaceAll(candidate, `\`, "/")) {
 				matched = true
 				break
 			}
@@ -473,9 +482,9 @@ func (t Tool) matchesProcess(process ProcessInfo) bool {
 	}
 
 	if t.compiledExclude != nil {
-		excludeSurfaces := identities
-		if subcommand != "" {
-			excludeSurfaces = append(append([]string(nil), identities...), subcommand)
+		excludeSurfaces := identity.identities
+		if identity.subcommand != "" {
+			excludeSurfaces = append(append([]string(nil), identity.identities...), identity.subcommand)
 		}
 		for _, surface := range excludeSurfaces {
 			if t.compiledExclude.MatchString(strings.ReplaceAll(surface, `\`, "/")) {
@@ -484,6 +493,17 @@ func (t Tool) matchesProcess(process ProcessInfo) bool {
 		}
 	}
 	return true
+}
+
+func processIdentityForMatch(process ProcessInfo) processIdentity {
+	if isShellInterpreterProcess(process) {
+		return processIdentity{shellInterpreter: true}
+	}
+	identities, subcommand := processMatchIdentity(process)
+	return processIdentity{
+		identities: identities,
+		subcommand: subcommand,
+	}
 }
 
 func processMatchIdentity(process ProcessInfo) ([]string, string) {

@@ -26,6 +26,14 @@ the catalog intentionally avoids ubiquitous names such as shells, `ssh`, `node`,
 `python`, and plain `git`. Wrapper patterns must stay narrow enough to identify known
 tool entrypoints without turning a runtime process into a false positive.
 
+`MatchProcess` derives shell-interpreter status, raw identity surfaces, and the immediate
+subcommand once per process before walking the tool catalog (#588). This is per-call work,
+not stored state or a cache. The raw identities must remain raw at that boundary: exact
+name matching receives the original surfaces, while only the regex and exclude branches
+slash-normalize each surface. A full-catalog legacy-versus-hoisted equivalence test covers
+both separator regimes, including drive-letter, UNC, mixed-separator, trailing-separator,
+case, and shell-interpreter inputs.
+
 Built-ins are embedded and custom entries with an existing ID replace that built-in.
 Regexes are compiled once and case-insensitively. Image resolution prefers explicit URL,
 key, then configured icon source, with the self-hosted generic mark as fallback; flagship
