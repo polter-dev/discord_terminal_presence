@@ -152,6 +152,18 @@ type tmuxPanes struct {
 	err      error
 }
 
+type lazyTmuxPanes struct {
+	query    func() TmuxPaneSnapshot
+	snapshot TmuxPaneSnapshot
+}
+
+func (p *lazyTmuxPanes) Detached(tty string) (bool, bool) {
+	if p.snapshot == nil {
+		p.snapshot = p.query()
+	}
+	return p.snapshot.Detached(tty)
+}
+
 func queryTmuxPanes() TmuxPaneSnapshot {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxQueryTimeout)
 	defer cancel()

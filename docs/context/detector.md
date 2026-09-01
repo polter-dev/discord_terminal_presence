@@ -118,6 +118,11 @@ Recovery establishes a fresh per-process baseline. Process observations are keye
 by PID and creation time, so starts, exits, and PID reuse cannot mix unrelated
 cumulative CPU totals.
 
+Tmux pane discovery is a lazy per-scan snapshot (#596): constructing an enricher does
+not spawn `tmux`; the first `Detached` lookup queries once and all later lookups in that
+scan reuse the result. Scans with no matched tools never query tmux, and a missing tmux
+binary remains an unknown snapshot that fails open exactly as before.
+
 When one tool has multiple eligible processes, the selector keeps the current
 representative unless the same challenger has a clear per-process CPU or recent
 terminal-activity advantage for two consecutive scans. With no distinguishing

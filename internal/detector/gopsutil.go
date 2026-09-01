@@ -86,7 +86,7 @@ func (l *GopsutilLister) NewScanProcessEnricher() ProcessEnricher {
 	enricher := &presenceProcessEnricher{
 		base:     l,
 		resolver: newSystemTTYResolver(),
-		tmux:     queryTmuxPanes(),
+		tmux:     &lazyTmuxPanes{query: queryTmuxPanes},
 		atime:    l.ttyAtimeSource(),
 		owner:    newSystemOwnerResolver(),
 	}
