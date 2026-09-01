@@ -2859,8 +2859,8 @@ func TestPrivacyPostureCoversAllPrivacyFields(t *testing.T) {
 
 // TestPrivacyPostureCoversToolOverridePrivacyFields is the ToolOverride
 // counterpart. ToolOverride mixes privacy fields (Enabled, ShowDirectory,
-// DirectoryAllowlist, DirectoryBasenameOnly, SmallImage) with display-only
-// fields (ToolName, ElapsedTimer, Buttons) that do not affect what is
+// DirectoryAllowlist, DirectoryBasenameOnly, ToolName, SmallImage) with
+// display-only fields (ElapsedTimer, Buttons) that do not affect what is
 // disclosed. A new exported field must be explicitly classified into one of
 // the two lists below, so it cannot silently join neither.
 //
@@ -2874,12 +2874,12 @@ func TestPrivacyPostureCoversAllPrivacyFields(t *testing.T) {
 // postureFor/Config.Resolve (see privacyPosture in config.go).
 func TestPrivacyPostureCoversToolOverridePrivacyFields(t *testing.T) {
 	displayOnly := map[string]bool{
-		"ToolName":     true,
 		"ElapsedTimer": true,
 		"Buttons":      true,
 	}
 	privacyRelevant := map[string]bool{
 		"Enabled":               true,
+		"ToolName":              true,
 		"ShowDirectory":         true,
 		"DirectoryAllowlist":    true,
 		"DirectoryBasenameOnly": true,

@@ -12,21 +12,21 @@ import (
 
 // TestPrivacyPostureCoversDisplayPrivacyFields is the Display counterpart to
 // TestPrivacyPostureCoversToolOverridePrivacyFields. Display mixes privacy
-// fields (SmallImage, Collection: both disclose a second running tool's
-// identity, see internal/presence/activity.go) with display-only fields
-// (ToolName, ElapsedTimer, Buttons: they only affect how the current tool's
-// own presence is rendered). A new exported field must be explicitly
+// fields (ToolName discloses tool identity throughout the activity;
+// SmallImage and Collection disclose a second running tool's identity, see
+// internal/presence/activity.go) with display-only fields (ElapsedTimer and
+// Buttons). A new exported field must be explicitly
 // classified into one of the two lists below, so it cannot silently join
 // neither and inherit the #573 gap where Collection was entirely absent
 // from ResolvedTool/privacyPosture and SmallImage reached ResolvedTool but
 // not privacyPosture.
 func TestPrivacyPostureCoversDisplayPrivacyFields(t *testing.T) {
 	displayOnly := map[string]bool{
-		"ToolName":     true,
 		"ElapsedTimer": true,
 		"Buttons":      true,
 	}
 	privacyRelevant := map[string]bool{
+		"ToolName":   true,
 		"SmallImage": true,
 		"Collection": true,
 	}
