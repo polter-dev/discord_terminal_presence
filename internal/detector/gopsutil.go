@@ -72,24 +72,6 @@ func (*GopsutilLister) List() ([]Process, error) {
 	return out, nil
 }
 
-// ListIdentities returns only fields needed for registry matching.
-func (*GopsutilLister) ListIdentities() ([]Process, error) {
-	processes, err := psprocess.Processes()
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]Process, 0, len(processes))
-	for _, proc := range processes {
-		process := processIdentity(proc)
-		if process.Name == "" && process.Exe == "" && process.Cmdline == "" && process.Argv0 == "" {
-			continue
-		}
-		out = append(out, process)
-	}
-	return out, nil
-}
-
 // Enrich resolves fields needed only after a process matches a known tool.
 func (*GopsutilLister) Enrich(process Process) Process {
 	proc, err := psprocess.NewProcess(process.Pid)

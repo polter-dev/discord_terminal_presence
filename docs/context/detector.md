@@ -14,7 +14,9 @@ real scan and both always returned `Detection{None: true}` against real process 
 helper. `EpisodeStore` and its load/save helpers persist elapsed-session anchors.
 
 **Key files:** `internal/detector/detector.go` owns scan/debounce/selection and debug
-reporting. `gopsutil.go` preserves structured argv and enriches selected identities.
+reporting. `gopsutil.go` preserves structured argv and enriches selected identities;
+`gopsutil_identity_darwin.go` lists identities from one retained `kern.proc.all` snapshot,
+while `gopsutil_identity_other.go` keeps the gopsutil listing path on Linux and Windows.
 `tty_*.go` and `idle_cpu_*.go` own platform presence. `episode.go` owns persistence.
 
 **Invariants / gotchas:** Registry matching is restricted to process identity:
@@ -50,6 +52,23 @@ done is a direct unit-level demonstration that pre-fix `SelectWithEnricher` acce
 even featured a `Process{Owned: false}` candidate over an owned one (see
 `TestSelectorExcludesForeignOwnedProcess` / `TestSelectorExcludesProcessWhenOwnerLookupFails`,
 confirmed failing against the pre-fix selector before the gate was added).
+
+Darwin identity listing applies the same effective-UID rule early (#594), directly from
+each `KinfoProc.Eproc.Ucred.Uid` returned by one
+`unix.SysctlKinfoProcSlice("kern.proc.all")`, before any per-process argv or executable
+lookup. This is only a prefilter: the authoritative `unixOwnerResolver.Owned` call above
+remains in its original enrichment choke point and still fails closed. Processes retained
+by the prefilter pay one `CmdlineSlice` and one `Exe` call; `p_comm`, pid, and millisecond
+creation time come from the bulk record. Linux and Windows retain the prior gopsutil
+listing implementation. The Darwin path deliberately replicates gopsutil v4.26.6's
+`Name` rule (a `p_comm` of at least 15 bytes is extended with the basename of argv0), and
+its call site flags that a future gopsutil upgrade can drift. Live-host tests re-check
+every dropped process with the real owner resolver, compare all identity fields for pids
+present in both listings, and hold adversarial long, exactly-15-byte, quoted-argv, and
+Unicode/emoji-named helper processes alive across both snapshots. A process whose
+effective UID changes from foreign to owned during one scan can be dropped one scan
+earlier than under the old per-process reads; this follows the existing fail-closed
+direction and self-heals on the next scan.
 
 Ownership is resolved unconditionally in `enrich` (never skipped, never reordered after
 TTY), but once it is known to be `false` the enricher now returns immediately (#566):
