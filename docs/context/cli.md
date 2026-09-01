@@ -454,6 +454,12 @@ basename-only publishes only the final segment (`📁 project`) while `basename_
 false` publishes the fuller two-segment form (`📁 private/project`), and a per-tool
 `directory_basename_only` override reasserts basename-only over a global full-path
 setting — mutating `presence.DirectoryDisplay` to ignore the flag fails these cases.
+`buildActivity` also resolves every non-featured tool independently before passing the
+other-tools list to presence: a tool whose own effective `tool_name` is false is removed
+from both collection text (whether it lands in details or state) and the small image,
+while tools without that explicit opt-out retain the default disclosure established by
+#488. If the only other tool is opted out, the featured activity remains complete and
+uses the normal fallback details with no partial collection or small image (#592).
 Per-tool enablement is passed into detector selection, and hot reloads that change it
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
 Live watch loads the daemon's episode anchors for matching elapsed-time display but runs

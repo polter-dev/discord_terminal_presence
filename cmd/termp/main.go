@@ -1445,7 +1445,7 @@ func buildActivity(cfg config.Config, detection detector.Detection, fallbackMess
 	}
 
 	showDir := resolved.DirectoryAllowed(detection.Cwd)
-	detection.Others = enabledOthers(cfg, detection.Others)
+	detection.Others = publishableOthers(cfg, detection.Others)
 	if !showDir {
 		detection.Cwd = ""
 	}
@@ -1479,13 +1479,16 @@ func selectFallbackMessage(messages []string) string {
 	return messages[rand.IntN(len(messages))]
 }
 
-func enabledOthers(cfg config.Config, others []registry.Tool) []registry.Tool {
+// publishableOthers applies each other tool's own identity policy before any
+// collection text or small image can be built from it.
+func publishableOthers(cfg config.Config, others []registry.Tool) []registry.Tool {
 	if len(others) == 0 {
 		return nil
 	}
 	filtered := make([]registry.Tool, 0, len(others))
 	for _, tool := range others {
-		if cfg.Resolve(tool).Enabled {
+		resolved := cfg.Resolve(tool)
+		if resolved.Enabled && resolved.ToolName {
 			filtered = append(filtered, tool)
 		}
 	}
