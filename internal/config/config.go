@@ -1199,13 +1199,16 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 // field is added to Privacy, ToolOverride, or Display without a conscious
 // decision about whether postureFor below needs to grow with it. That is the
 // actual defect this bug family (#410 -> #425 -> #434 -> #435 -> #438 ->
-// #440 -> #447 -> #518 -> #573) keeps regenerating: a rule bound to an
+// #440 -> #447 -> #518 -> #573 -> #591) keeps regenerating: a rule bound to an
 // enumeration of one. #573 was display.collection and display.small_image:
 // both publish another running tool's name and icon
 // (internal/presence/activity.go), so both are privacy-relevant even though
-// they live on Display, not Privacy.
+// they live on Display, not Privacy. #591 was display.tool_name: #583 expanded
+// it from a rendering preference into the gate for tool identity everywhere
+// in the published activity, but the posture classification stayed stale.
 type privacyPosture struct {
 	enabled               bool
+	toolName              bool // discloses tool identity throughout the activity
 	showDirectory         bool
 	directoryBasenameOnly bool // true is MORE private: basename only
 	directoryAllowlist    []string
@@ -1216,6 +1219,7 @@ type privacyPosture struct {
 func postureFor(r ResolvedTool) privacyPosture {
 	return privacyPosture{
 		enabled:               r.Enabled,
+		toolName:              r.ToolName,
 		showDirectory:         r.ShowDirectory,
 		directoryBasenameOnly: r.DirectoryBasenameOnly,
 		directoryAllowlist:    r.DirectoryAllowlist,
@@ -1265,6 +1269,9 @@ func allowlistCoverageLoosened(prev, next []string) bool {
 // not, for one resolved tool.
 func postureLoosened(prev, next privacyPosture) bool {
 	if !prev.enabled && next.enabled {
+		return true
+	}
+	if !prev.toolName && next.toolName {
 		return true
 	}
 	if !prev.showDirectory && next.showDirectory {

@@ -563,6 +563,20 @@ A new `TestPrivacyPostureCoversDisplayPrivacyFields` (`posture_display_test.go`)
 `Display` counterpart to the existing `Privacy`/`ToolOverride` reflection tests, so a
 future `Display` field cannot silently join neither list.
 
+#591 found that this classification was already stale after #583 changed
+`display.tool_name` from a rendering preference into a privacy gate that suppresses tool
+identity from the activity name, details/state, both images, and other-tools collection.
+`ResolvedTool.ToolName` already carried both the global value and any per-tool override,
+but `postureFor` omitted it and both reflection tests still called it display-only. A
+stable-looking truncated prefix could therefore restore the permissive default inside the
+ordinary settle budget. `privacyPosture`, `postureFor`, and `postureLoosened` now treat
+`false -> true` as loosening, and both the `Display` and `ToolOverride` classifications
+call `ToolName` privacy-relevant. `TestHuntToolNameSurvivesTruncationStall`
+(`posture_tool_name_test.go`) is the byte-for-byte #573-style regression. The #583 audit
+found no second setting miss: `SmallImage` only gained `ToolName` as an additional gate
+and was already covered by #573, while `Collection` was not changed by #583 and remains
+covered.
+
 **Depends on / used by:** Uses BurntSushi TOML and the standard library. The CLI,
 detector, presence mapping, TUI, registry construction, and update policy consume it.
 
