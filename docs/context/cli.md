@@ -616,6 +616,40 @@ path, so every test that drives it — the periodic-loop tests included — used
 which `DefaultCachePath` uses on Windows) to a temporary directory for the whole package.
 Tests needing a specific location still override with `t.Setenv`, which wins.
 
+Test isolation for daemon lifecycle state (#590): `pidFilePath()` does not use
+`updatepkg.DefaultCachePath`; after `XDG_RUNTIME_DIR`, it falls back to
+`os.UserCacheDir`. On Darwin that API ignores `XDG_CACHE_HOME` and resolves beneath
+`$HOME/Library/Caches`, so the package-wide cache redirect above still let command tests
+read the developer's real PID file and signal the real daemon. `TestMain` now creates one
+temporary tree, redirects `HOME`, `XDG_RUNTIME_DIR`, `XDG_CACHE_HOME`, and
+`LOCALAPPDATA` into it, and creates `$HOME/Library/Caches` so every Darwin fallback is
+writable. The tree is removed after `m.Run` as before. `TestPIDFilePathStaysInsideTestTree`
+asserts the resolved default PID path remains inside that tree.
+
+There is also a test-binary-only signal backstop. The production command binding
+`commandSignalTermpProcessAtPath` still points directly to the platform
+`signalTermpProcessAtPath`; `TestMain` replaces it with
+`guardedTestSignalTermpProcessAtPath`, implemented only in `_test.go`. The guard resolves
+the PID record's executable path and refuses it unless it lies beneath the immutable
+package test tree. This protects `stop`, autostart disable/uninstall, and full uninstall
+if a future test forgets to inject lifecycle state, while the shipped binary contains no
+test-tree policy. Direct platform signal tests continue to call the real platform
+function so they still verify OS signaling.
+
+The #590 call-site audit found three direct test references: the start test in
+`command_more_test.go` injects `XDG_RUNTIME_DIR`, the PID-path test in `main_test.go`
+injects the runtime/cache/home inputs, and `stop_darwin_test.go` injects both HOME and
+the runtime directory. Indirect default-path coverage is broader: the full `status()`
+test reaches it after `withTermpConfigHome`; three autostart disable/uninstall tests in
+`command_more_test.go` reach `stopRunningDaemon` without their own PID-path injection and
+were the live-signal exposure. Connect tests use injected `connectCommandDeps` (and the
+non-Windows command returns before constructing defaults), spawn tests exercise
+`waitForDetachedStart` with an injected path, full-uninstall tests inject
+`uninstallAllDeps`, and update tests inject their `daemonRunning` callback, so those do
+not reach the default PID path. The production `connect.go`, `spawn.go`, `uninstall.go`,
+and `update.go` defaults still do, which is why package-wide isolation is required even
+though their current focused tests inject dependencies.
+
 Cost note: broadening eligibility means commands that load config for their own work now
 also pay `main()`'s pre-dispatch `LoadReadOnly` — one extra settled read, the same one
 `start`/`install`/`stop` already paid. `setup`/`settings` remain on the
