@@ -718,9 +718,13 @@ rotated inode. Linux autostart is not covered by file rotation because systemd s
 output to journald. Rotation happens before a complete logger write, uses rename rather
 than copy/truncate, and coordinates writers through a cross-process lock; a writer whose
 open file was rotated reopens the current path before its next line. Daemon stderr is
-rebound whenever the current generation changes so Go panic stacks remain in the bounded
-log rather than following an orphaned inode. This keeps individual log records intact
-and bounds normal verbose/crash-loop growth.
+rebound whenever the current generation changes so Go panic stacks remain captured in
+the active log rather than following an orphaned inode. Direct writes to the duplicated
+stderr descriptor bypass the managed writer and can therefore grow the active generation
+past the cap temporarily; the next managed log write or the next writer startup rotates
+that generation after the fact. This keeps managed records intact and capped immediately,
+and bounds repeated verbose/crash-loop growth without risking lost panic output in a pipe
+pump (#604).
 The Windows no-`termpw.exe` Task Scheduler fallback now passes its own internal marker and
 owns the same rotating log. Previously that action ran plain `start --foreground`, while
 the log-owning gate covered only detached children and the login-service marker. The
@@ -816,6 +820,21 @@ fixes in the same window:
   bytes (preserving a trailing newline if the original had one) before the existing
   rotate-then-write logic runs, so no single write can defeat the cap regardless of
   whether it lands in an empty or freshly rotated file.
+- **#604 (redirected stderr bounded after the fact).** `RedirectStderr` intentionally
+  keeps duplicating the raw log descriptor onto fd 2 so runtime panic output cannot be
+  stranded in a pipe when the process dies. Those raw writes do not pass through
+  `rotatingLogWriter.Write`, so they are not record-bounded. The writer now applies one
+  shared rotation decision when it opens at daemon startup and before each managed log
+  write: an active generation already at or above `maxBytes` is rotated, while the
+  existing prospective check still rotates before a managed write would cross the cap.
+  Raw stderr can therefore exceed the active-generation cap until the next managed write
+  or daemon start, but repeated crash-loop output cannot append indefinitely to the same
+  generation. Rotation continues to rebind stderr to the new current generation.
+- **#605 (`io.Writer` count after deliberate truncation).** A successfully persisted
+  bounded prefix now returns the caller's original input length, expressing that the
+  omitted suffix was deliberately consumed and discarded. Any genuine Stat, rotation,
+  reopen, or file-write error still returns that error and the actual underlying file
+  write count; an error path never inflates the count to the original record length.
 
 **Depends on / used by:** Composes every `internal/*` package and is the application
 entry point. Release automation depends on GitHub Actions and GoReleaser.

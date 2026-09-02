@@ -51,7 +51,17 @@ func newRotatingLogWriter(path string, maxBytes int64, retained int) (*rotatingL
 		lockFile: lockFile,
 	}
 	if err := writer.withRotationLock(func() error {
-		return writer.openCurrentLocked()
+		if err := writer.openCurrentLocked(); err != nil {
+			return err
+		}
+		rotate, err := writer.rotationNeededLocked(0)
+		if err != nil {
+			return err
+		}
+		if rotate {
+			return writer.rotateLocked()
+		}
+		return nil
 	}); err != nil {
 		_ = lockFile.Close()
 		return nil, err
@@ -63,14 +73,12 @@ func (w *rotatingLogWriter) Write(line []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	originalLength := len(line)
+	boundedLength := originalLength
 	written := 0
 	err := w.withRotationLock(func() error {
 		var rotationErr error
 		if err := w.openCurrentLocked(); err != nil {
-			return err
-		}
-		info, err := w.file.Stat()
-		if err != nil {
 			return err
 		}
 		// Cap the record itself first: without this, a single record larger
@@ -79,7 +87,12 @@ func (w *rotatingLogWriter) Write(line []byte) (int, error) {
 		// the size cap regardless of how aggressively rotation runs
 		// (issue #563).
 		line = boundLogRecord(line, w.maxBytes)
-		if info.Size() > 0 && info.Size()+int64(len(line)) > w.maxBytes {
+		boundedLength = len(line)
+		rotate, err := w.rotationNeededLocked(int64(boundedLength))
+		if err != nil {
+			return err
+		}
+		if rotate {
 			if err := w.rotateLocked(); err != nil {
 				rotationErr = err
 				if reopenErr := w.openCurrentLocked(); reopenErr != nil {
@@ -90,16 +103,21 @@ func (w *rotatingLogWriter) Write(line []byte) (int, error) {
 		written, err = w.file.Write(line)
 		return errors.Join(rotationErr, err)
 	})
+	if err == nil && written == boundedLength {
+		return originalLength, nil
+	}
 	return written, err
 }
 
-// boundLogRecord caps a single log write at maxBytes so one oversized record
-// (a large diagnostic line or a panic dump) can never itself exceed the
-// rotation cap, whether it lands in an empty file or one rotation just
-// created (issue #563). Records within the cap are returned unmodified. A
-// truncated record that originally ended in a newline keeps ending in one,
-// so it still reads as a complete (if cut short) line rather than blurring
-// into whatever gets appended next.
+// boundLogRecord caps a log record written through rotatingLogWriter so one
+// oversized managed write cannot itself exceed the rotation cap, whether it
+// lands in an empty file or one rotation just created (issue #563). Writes
+// made directly to the stderr file descriptor bypass this function and may
+// exceed the cap until the next managed write or writer startup rotates the
+// active generation (issue #604). Records within the cap are returned
+// unmodified. A truncated record that originally ended in a newline keeps
+// ending in one, so it still reads as a complete (if cut short) line rather
+// than blurring into whatever gets appended next.
 func boundLogRecord(line []byte, maxBytes int64) []byte {
 	if maxBytes <= 0 || int64(len(line)) <= maxBytes {
 		return line
@@ -123,28 +141,48 @@ func (w *rotatingLogWriter) Close() error {
 	return errors.Join(fileErr, lockErr)
 }
 
-// RedirectStderr keeps runtime panic output on the same bounded log stream.
-// Rotation rebinds stderr to the newly opened current generation.
+// RedirectStderr duplicates the current log file descriptor onto stderr so
+// runtime panic output is retained. Direct descriptor writes bypass Write and
+// can temporarily exceed the cap; the next managed write or writer startup
+// rotates an active generation at or over the cap. Rotation rebinds stderr to
+// the newly opened current generation (issue #604).
 func (w *rotatingLogWriter) RedirectStderr() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := w.openCurrentLocked(); err != nil {
-		return err
-	}
-	if err := redirectStderr(w.file); err != nil {
-		return fmt.Errorf("redirect daemon stderr: %w", err)
-	}
-	w.stderr = true
+	return w.withRotationLock(func() error {
+		if err := w.openCurrentLocked(); err != nil {
+			return err
+		}
+		rotate, err := w.rotationNeededLocked(0)
+		if err != nil {
+			return err
+		}
+		if rotate {
+			if err := w.rotateLocked(); err != nil {
+				return fmt.Errorf("rotate daemon log before redirecting stderr: %w", err)
+			}
+		}
+		if err := redirectStderr(w.file); err != nil {
+			return fmt.Errorf("redirect daemon stderr: %w", err)
+		}
+		w.stderr = true
+		return nil
+	})
+}
+
+// rotationNeededLocked reports whether the active generation has reached the
+// cap already (including through a direct stderr descriptor write), or whether
+// appending nextBytes would exceed the cap.
+func (w *rotatingLogWriter) rotationNeededLocked(nextBytes int64) (bool, error) {
 	info, err := w.file.Stat()
 	if err != nil {
-		return err
+		return false, err
 	}
-	if info.Size() >= w.maxBytes {
-		if err := w.withRotationLock(w.rotateLocked); err != nil {
-			return fmt.Errorf("rotate daemon log after redirecting stderr: %w", err)
-		}
+	if info.Size() >= w.maxBytes ||
+		(info.Size() > 0 && nextBytes > w.maxBytes-info.Size()) {
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 func (w *rotatingLogWriter) withRotationLock(fn func() error) error {
