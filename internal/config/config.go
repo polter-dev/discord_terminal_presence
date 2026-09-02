@@ -1206,6 +1206,10 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 // they live on Display, not Privacy. #591 was display.tool_name: #583 expanded
 // it from a rendering preference into the gate for tool identity everywhere
 // in the published activity, but the posture classification stayed stale.
+// #607 explicitly considered display.elapsed_timer and display.buttons; they
+// deliberately remain display-only because they disclose session timing and
+// static button links, respectively, not tool identity, which the owner does
+// not consider privacy-affecting for termp's purposes.
 type privacyPosture struct {
 	enabled               bool
 	toolName              bool // discloses tool identity throughout the activity
