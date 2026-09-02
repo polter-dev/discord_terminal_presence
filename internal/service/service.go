@@ -130,8 +130,8 @@ func ValidateInstallExecutable(exe string, force bool) (string, error) {
 		candidate = resolved
 	case errors.Is(err, fs.ErrNotExist):
 		return "", fmt.Errorf(
-			"cannot install autostart from %q: %w; that file, or one of its parent directories, does not exist. Run `where termp` on Windows (`which termp` elsewhere) to see the path your shell actually resolves, re-run `termp autostart install` from that path, or pass --force to register this path unchecked",
-			invocationPath, err,
+			"cannot install autostart from %q: %s (%w). Run `where termp` on Windows (`which termp` elsewhere) to see the path your shell actually resolves, re-run `termp autostart install` from that path, or pass --force to register this path unchecked",
+			invocationPath, missingComponentDetail(invocationPath), err,
 		)
 	}
 	if !isUnstableExecutablePath(candidate) {
@@ -148,6 +148,36 @@ func ValidateInstallExecutable(exe string, force bool) (string, error) {
 		"refusing to install autostart from unstable executable path %q; move the binary to a stable location such as %s, then re-run `termp install` (or use --force to install this path anyway)",
 		candidate, stableLocation,
 	)
+}
+
+// missingComponentDetail names which part of exe is actually absent. That is
+// the actionable half of the message and the OS error usually does not carry
+// it: on Windows the failure is a bare syscall.Errno where errno 3
+// (ERROR_PATH_NOT_FOUND, a missing DIRECTORY component) and errno 2
+// (ERROR_FILE_NOT_FOUND, a missing file) both render as one sentence with no
+// path in it, and both map to fs.ErrNotExist. The distinction is recovered by
+// statting the path's ancestors rather than by reading the errno, so the
+// wording is identical on every OS and independent of the system locale
+// (issue #472).
+func missingComponentDetail(exe string) string {
+	missingDir := ""
+	for dir := filepath.Dir(exe); ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(dir); err == nil {
+			break
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			// Something else (an unreadable ancestor, say) hides whether this
+			// component exists. Do not guess which one is missing.
+			return "that file, or one of its parent directories, does not exist"
+		}
+		missingDir = dir
+		if parent := filepath.Dir(dir); parent == dir {
+			break
+		}
+	}
+	if missingDir != "" {
+		return fmt.Sprintf("the directory %q does not exist", missingDir)
+	}
+	return "that file does not exist"
 }
 
 func isUnstableExecutablePath(exe string) bool {

@@ -67,13 +67,36 @@ heuristic, so it separates that resolution's two failure modes (#472). A path
 that does not exist is still refused, but with a message that names the path and
 the next command to run, because on Windows the underlying error is a bare
 `syscall.Errno` that renders as `The system cannot find the path specified.` with
-no path in it at all. Any other resolution failure (an unreadable parent
+no path in it at all. `missingComponentDetail` then says *which* component is
+absent: it walks the path's ancestors and either names the shallowest missing
+directory or reports that only the file is missing. That distinction is the
+actionable part - errno 3 (`ERROR_PATH_NOT_FOUND`, the one the reporter hit)
+means a directory component, errno 2 (`ERROR_FILE_NOT_FOUND`) means the file -
+but it is recovered by statting rather than by reading the errno, so the wording
+is identical on every OS and never depends on the system locale.
+`install_path_error_windows_test.go` carries the Windows-only half: it is
+Windows-only by filename, so the `Test (windows-latest)` job executes it, and it
+pins that both errnos classify as `fs.ErrNotExist` (the branch selection depends
+on that), that a missing directory component yields the actionable message, and
+that `--force` bypasses resolution there too. No test asserts on the operating
+system's own error text, which is locale-dependent.
+
+Any other resolution failure (an unreadable parent
 directory, an unfollowable reparse point, a flaky share) no longer aborts the
 install: validation falls back to judging the unresolved absolute path, which
 still catches temp-directory and source-tree installs. Turning a working install
 into a hard failure over a check that is only advisory was the actual defect.
 `cmd/termp` covers the wiring directly, so deleting the validation call from
 `install()` now fails the suite instead of passing it.
+
+`--force` deliberately returns the absolute invocation path without resolving it
+at all, even for a path that does not exist. Resolution here feeds only the
+advisory unstable-path heuristic, so skipping it gives up no safety property -
+it is exactly the "register this path unchecked" the refusal offers, and the
+service manager still rejects a path it cannot use. That intent is pinned by
+`TestValidateInstallExecutableForceSkipsPathResolutionEntirely` so it cannot be
+narrowed by accident; the ordering bug in #472 was force being checked *after*
+resolution, which made the message's own advice false.
 
 `isUnstableExecutablePath` has two independent signals. The source-tree marker (a
 `.git` entry beside a `go.mod` naming this module) is decided purely by file
