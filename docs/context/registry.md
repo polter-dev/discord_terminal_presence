@@ -7,6 +7,7 @@ values, and matches a process identity to the highest-priority tool.
 `Button` define registry data. `New` loads embedded built-ins and merges runtime tools;
 `NewWithCustom` converts config-facing tools. `Registry.Tools` returns safe copies.
 `MatchProcess` performs identity matching; `Match` is the name-only compatibility wrapper.
+`MaxIdentityFieldBytes` and `BoundIdentityField` provide the shared process-identity cap.
 
 **Key files:** `internal/registry/catalog.json` is the embedded built-in catalog.
 `internal/registry/registry.go` constructs registries, compiles match/exclude regexes,
@@ -16,9 +17,13 @@ extracts process identity, resolves icons, and chooses by priority then catalog 
 surface is process name, argv0, executable path, and—only for recognized language-runtime
 wrappers—the script/package entrypoint, including `python -m <package>`. Catalog name and
 regex rules run only on those surfaces. Exclusions run on the same identity surfaces plus
-only the immediate subcommand. Python and PyPy wrappers accept tightly anchored numeric
-version suffixes such as `python3.12`; interpreter-like prefixes such as `pythonish-tool`
-are not wrappers.
+only the immediate subcommand. Every structured-argv value that reaches normalization or
+regex work is bounded to the shared 4096-byte process-identity cap, including argv0
+wrapper classification, the promoted interpreter entrypoint, and the subcommand (#603).
+The bound retains the exact prefix without splitting a UTF-8 rune; the detector delegates
+its eager field bounding to the same helper while preserving raw structured `Argv` for
+other consumers. Python and PyPy wrappers accept tightly anchored numeric version suffixes
+such as `python3.12`; interpreter-like prefixes such as `pythonish-tool` are not wrappers.
 
 Structured argv from the detector is authoritative. If unavailable, the registry parses
 the command line into argv as a fallback. Generic shell interpreters are rejected, and
@@ -26,13 +31,13 @@ the catalog intentionally avoids ubiquitous names such as shells, `ssh`, `node`,
 `python`, and plain `git`. Wrapper patterns must stay narrow enough to identify known
 tool entrypoints without turning a runtime process into a false positive.
 
-`MatchProcess` derives shell-interpreter status, raw identity surfaces, and the immediate
+`MatchProcess` derives shell-interpreter status, identity surfaces, and the immediate
 subcommand once per process before walking the tool catalog (#588). This is per-call work,
-not stored state or a cache. The raw identities must remain raw at that boundary: exact
-name matching receives the original surfaces, while only the regex and exclude branches
-slash-normalize each surface. A full-catalog legacy-versus-hoisted equivalence test covers
-both separator regimes, including drive-letter, UNC, mixed-separator, trailing-separator,
-case, and shell-interpreter inputs.
+not stored state or a cache. Identity values within the cap must remain raw at that
+boundary: exact name matching receives the original surface, while only the regex and
+exclude branches slash-normalize it. A full-catalog legacy-versus-hoisted equivalence test
+covers both separator regimes, including drive-letter, UNC, mixed-separator,
+trailing-separator, case, and shell-interpreter inputs.
 
 Built-ins are embedded and custom entries with an existing ID replace that built-in.
 Regexes are compiled once and case-insensitively. Image resolution prefers explicit URL,

@@ -24,6 +24,12 @@ const (
 	MaxDisplayNameLength = 128
 	MaxImageValueLength  = 256
 
+	// MaxIdentityFieldBytes is the shared byte cap for process identity
+	// surfaces. Sharing the bound with the detector keeps eagerly bounded
+	// fields and registry-derived argv surfaces identical in both byte limit
+	// and UTF-8 truncation behavior.
+	MaxIdentityFieldBytes = 4096
+
 	// MaxCustomRegexLength bounds a user-supplied match/exclude regex's raw
 	// length before it is compiled. RE2 rules out catastrophic backtracking
 	// (checked, not assumed, for #577), but match cost is still
@@ -157,6 +163,23 @@ type processIdentity struct {
 	identities       []string
 	subcommand       string
 	shellInterpreter bool
+}
+
+// BoundIdentityField truncates a process identity to MaxIdentityFieldBytes
+// without splitting a multi-byte UTF-8 rune.
+func BoundIdentityField(s string) string {
+	if len(s) <= MaxIdentityFieldBytes {
+		return s
+	}
+	b := s[:MaxIdentityFieldBytes]
+	for len(b) > 0 {
+		r, size := utf8.DecodeLastRuneInString(b)
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		b = b[:len(b)-1]
+	}
+	return b
 }
 
 // New returns a registry containing built-ins plus custom tool overrides/extensions.
@@ -516,20 +539,22 @@ func processMatchIdentity(process ProcessInfo) ([]string, string) {
 		return identities, ""
 	}
 
+	argv0 := BoundIdentityField(argv[0])
 	entrypointIndex := 0
-	if isToolInterpreter(argv[0]) {
+	if isToolInterpreter(argv0) {
 		entrypointIndex = 1
-		if len(argv) > 2 && isPythonInterpreter(argv[0]) && argv[1] == "-m" {
+		if len(argv) > 2 && isPythonInterpreter(argv0) && argv[1] == "-m" {
 			entrypointIndex = 2
 		}
 		if entrypointIndex < len(argv) {
-			identities = uniqueNonEmpty(append(identities, argv[entrypointIndex])...)
+			entrypoint := BoundIdentityField(argv[entrypointIndex])
+			identities = uniqueNonEmpty(append(identities, entrypoint)...)
 		}
 	}
 
 	subcommandIndex := entrypointIndex + 1
 	if subcommandIndex < len(argv) {
-		return identities, argv[subcommandIndex]
+		return identities, BoundIdentityField(argv[subcommandIndex])
 	}
 	return identities, ""
 }

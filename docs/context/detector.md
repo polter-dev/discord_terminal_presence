@@ -80,8 +80,10 @@ another user's TTY device per foreign candidate per scan; on Windows
 (4 KiB, rune-safe) in `processIdentity` before they ever reach `registry.MatchProcess`
 (#565): matching only ever inspects identity plus the immediate subcommand, so an
 attacker-controlled multi-MiB `argv` (measured at ~360ns/byte in the matcher) can no longer
-push a scan past the interval. The structured `Argv` slice is left unbounded since matching
-only reads its first couple of elements.
+push a scan past the interval. The structured `Argv` slice remains intact for non-matching
+consumers; for matching, the registry bounds argv0, the recognized interpreter entrypoint,
+and the immediate subcommand with the same shared rune-safe helper before any normalization
+or regex work (#603).
 
 PID reuse between identity capture (`ListIdentities`), enrichment (`Enrich`), and ownership
 (`OwnerResolver.Owned`) is mitigated, not eliminated (#569, plausible-not-confirmed): each
