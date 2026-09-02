@@ -2231,7 +2231,7 @@ func TestAutomaticGenericWindowsUpdateRecordsLimitation(t *testing.T) {
 			t.Fatalf("recorded skip %q missing %q", attempt.Error, want)
 		}
 	}
-	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric, false)
+	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric, runningDaemonEvidence{}, time.Now())
 	for _, want := range []string{"skipped for v1.1.0", "not supported on Windows", "run `termp update`"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status update reason %q missing %q", status, want)
@@ -2241,7 +2241,7 @@ func TestAutomaticGenericWindowsUpdateRecordsLimitation(t *testing.T) {
 
 func TestAutomaticUpdateStatusReportsGenericWindowsLimitationBeforeAttempt(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "missing-update-check.json")
-	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric, false)
+	status := automaticUpdateStatus(statePath, true, "1.0.0", "windows", updatepkg.InstallGeneric, runningDaemonEvidence{}, time.Now())
 	for _, want := range []string{"skipped:", "not supported on Windows", "run `termp update`"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("status update reason %q missing %q", status, want)
@@ -2251,7 +2251,7 @@ func TestAutomaticUpdateStatusReportsGenericWindowsLimitationBeforeAttempt(t *te
 	if !strings.Contains(rendered, "Updates\n  Automatic  "+status+"\n") {
 		t.Fatalf("status did not report generic Windows automatic-update limitation:\n%s", rendered)
 	}
-	if got := automaticUpdateStatus(statePath, false, "1.0.0", "windows", updatepkg.InstallGeneric, false); got != "" {
+	if got := automaticUpdateStatus(statePath, false, "1.0.0", "windows", updatepkg.InstallGeneric, runningDaemonEvidence{}, time.Now()); got != "" {
 		t.Fatalf("disabled automatic update status = %q, want empty", got)
 	}
 }
@@ -2441,10 +2441,10 @@ func TestAutomaticUpdateStatusSuppressedWhenAutoUpdateDisabled(t *testing.T) {
 	// version, turning auto_update off retires the "Automatic" status line:
 	// it describes automatic-update behavior, and automatic updates are not
 	// running (issue #418).
-	if got := automaticUpdateStatus(statePath, false, "v1.0.0", "linux", updatepkg.InstallGo, false); got != "" {
+	if got := automaticUpdateStatus(statePath, false, "v1.0.0", "linux", updatepkg.InstallGo, runningDaemonEvidence{}, time.Now()); got != "" {
 		t.Fatalf("automaticUpdateStatus() with auto_update disabled = %q, want empty", got)
 	}
-	if got := automaticUpdateStatus(statePath, true, "v1.0.0", "linux", updatepkg.InstallGo, false); got == "" {
+	if got := automaticUpdateStatus(statePath, true, "v1.0.0", "linux", updatepkg.InstallGo, runningDaemonEvidence{}, time.Now()); got == "" {
 		t.Fatal("automaticUpdateStatus() with auto_update enabled unexpectedly empty; want the still-actionable failure")
 	}
 }
@@ -2693,7 +2693,7 @@ func TestAutomaticSystemPackageUpdateIsSkippedWithoutInstalling(t *testing.T) {
 			if !ok || !attempt.Skipped || !strings.Contains(attempt.Error, updatepkg.GuidanceForMethod(method, "v1.1.0").Text) {
 				t.Fatalf("automatic attempt = (%+v, %t), want managed-package skip", attempt, ok)
 			}
-			status := automaticUpdateStatus(statePath, true, "1.0.0", "linux", method, false)
+			status := automaticUpdateStatus(statePath, true, "1.0.0", "linux", method, runningDaemonEvidence{}, time.Now())
 			if !strings.Contains(status, "skipped for v1.1.0") || !strings.Contains(status, updatepkg.GuidanceForMethod(method, "v1.1.0").Text) {
 				t.Fatalf("automatic package status = %q, want recorded release-package guidance", status)
 			}

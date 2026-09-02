@@ -243,11 +243,49 @@ Two surfaces carry the fix, one per path:
   its notice went to `debugf` where nobody saw it. It cannot print to a person, so the
   recorded success is the carrier and `termp status` renders it.
   `automaticUpdatePendingRestart` (cmd/termp/main.go) shows the notice on the existing
-  `Automatic` row when all three of these hold: a daemon is running, the last recorded
-  attempt succeeded, and this binary is no longer behind the attempted target. A recorded
-  **failure** still takes precedence on that row, being the more actionable of the two.
-  The notice ends by itself because the restarted daemon runs the new version and its own
-  startup retirement clears the record (see **Stale automatic-attempt clearing** below).
+  `Automatic` row when all four of these hold: a daemon is running, the last recorded
+  attempt succeeded, this binary is no longer behind the attempted target, and the running
+  daemon demonstrably started **before** the attempt (see **Start-generation evidence**
+  below). A recorded **failure** still takes precedence on that row, being the more
+  actionable of the two.
+
+**Start-generation evidence for the pending-restart notice (#606).** As shipped for #584
+the notice was inferred from two on-disk facts only -- a retained success record and a
+binary at or above the recorded target -- and had no evidence about the running process at
+all. Those two facts are identical in two different real states: the daemon still running
+pre-update code (notice correct), and a daemon the user already restarted whose record was
+never retired (notice wrong, and restarting does not clear it because restarting is not
+what clears it). The design leaned on retirement at daemon start, but retirement is
+skipped outright while either update-check opt-out is in force (#463, and reopening that
+is an owner decision) and is best-effort otherwise, so a record can outlive the restart
+indefinitely and the wrong notice repeats on every `termp status` forever.
+
+The fix gives the check evidence about the daemon itself. The PID record now carries
+`started_at`, the wall clock the daemon stamped when it claimed the PID file
+(`daemonPIDRecord.StartedAt`, written in `writePIDOwnedWithHook`). The existing
+`start_time` field cannot serve this: it is an opaque platform-specific value (Darwin
+epoch microseconds, Linux jiffies since boot, a Windows FILETIME) comparable only to
+itself, so ordering it against a recorded `AttemptedAt` is not portable.
+
+`daemonPredatesAutomaticUpdate` (cmd/termp/main.go) prints only against affirmative
+evidence and **fails toward silence** everywhere else, because the two failures are not
+symmetric: a missed reminder costs one delayed restart, a wrong one is an unbounded loop of
+advice that provably does nothing. Silent when the recorded daemon start is zero (an older
+PID record, or a daemon located only through the Discord-state fallback, which carries
+process identity but no wall clock); silent when `AttemptedAt` is zero; silent when
+`AttemptedAt` is stamped after `now`, since a record from the future means a clock moved
+and neither timestamp can order anything; and silent on equal timestamps, which are at
+least as consistent with the post-update daemon. Only a strictly earlier daemon start
+prints.
+
+`status` therefore reads the whole record through `statusDaemonRecord` (a
+`statusDaemonPID` that returns more than the PID) and passes a `runningDaemonEvidence`
+value rather than a bare `daemonRunning` bool.
+
+Pinned by cmd/termp/update_pending_restart_evidence_test.go. The #584 positive case is
+still pinned by `TestStatusReportsAnAutomaticUpdateAwaitingRestart`
+(cmd/termp/update_notice_test.go), which was not weakened: it now supplies a daemon start
+before the attempt so the assertion still describes the state it is about.
 
 **There is no `termp restart`.** The guidance names the two real subcommands,
 `termp stop` then `termp start`. `TestUpdateRestartGuidanceNamesRealCommands`
