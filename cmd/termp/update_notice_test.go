@@ -175,7 +175,10 @@ func writeSucceededAttempt(t *testing.T, target string) string {
 // notice went to debugf and nobody saw it. status carries it instead (#584).
 func TestStatusReportsAnAutomaticUpdateAwaitingRestart(t *testing.T) {
 	statePath := writeSucceededAttempt(t, "0.1.4")
-	got := automaticUpdateStatus(statePath, true, "0.1.4", "linux", updatepkg.InstallGeneric, true)
+	// A daemon that started before the install is the state the notice is
+	// about: it can still be executing pre-update code (#606).
+	daemon := runningDaemonEvidence{running: true, startedAt: time.Now().Add(-time.Hour)}
+	got := automaticUpdateStatus(statePath, true, "0.1.4", "linux", updatepkg.InstallGeneric, daemon, time.Now())
 	for _, want := range []string{"installed 0.1.4", "still on the previous version", `"termp stop"`, `"termp start"`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("automaticUpdateStatus() = %q, want it to contain %q", got, want)
@@ -185,7 +188,7 @@ func TestStatusReportsAnAutomaticUpdateAwaitingRestart(t *testing.T) {
 
 func TestStatusStaysQuietWhenNoDaemonIsRunning(t *testing.T) {
 	statePath := writeSucceededAttempt(t, "0.1.4")
-	if got := automaticUpdateStatus(statePath, true, "0.1.4", "linux", updatepkg.InstallGeneric, false); got != "" {
+	if got := automaticUpdateStatus(statePath, true, "0.1.4", "linux", updatepkg.InstallGeneric, runningDaemonEvidence{}, time.Now()); got != "" {
 		t.Fatalf("automaticUpdateStatus() with no daemon = %q, want empty", got)
 	}
 }
@@ -194,7 +197,8 @@ func TestStatusStaysQuietWhenNoDaemonIsRunning(t *testing.T) {
 // been observed to land, so status must not claim it did.
 func TestStatusStaysQuietWhileTheBinaryIsStillBehindTheTarget(t *testing.T) {
 	statePath := writeSucceededAttempt(t, "0.1.4")
-	if got := automaticUpdateStatus(statePath, true, "0.1.3", "linux", updatepkg.InstallGeneric, true); got != "" {
+	daemon := runningDaemonEvidence{running: true, startedAt: time.Now().Add(-time.Hour)}
+	if got := automaticUpdateStatus(statePath, true, "0.1.3", "linux", updatepkg.InstallGeneric, daemon, time.Now()); got != "" {
 		t.Fatalf("automaticUpdateStatus() before the install landed = %q, want empty", got)
 	}
 }
@@ -207,7 +211,8 @@ func TestRestartedDaemonRetiresTheSucceededAttempt(t *testing.T) {
 	if _, ok := updatepkg.ReadAutomaticUpdateAttempt(statePath); ok {
 		t.Fatal("a succeeded attempt the running version satisfies was not retired")
 	}
-	if got := automaticUpdateStatus(statePath, true, "0.1.4", "linux", updatepkg.InstallGeneric, true); got != "" {
+	daemon := runningDaemonEvidence{running: true, startedAt: time.Now().Add(-time.Hour)}
+	if got := automaticUpdateStatus(statePath, true, "0.1.4", "linux", updatepkg.InstallGeneric, daemon, time.Now()); got != "" {
 		t.Fatalf("automaticUpdateStatus() after the restart = %q, want empty", got)
 	}
 }

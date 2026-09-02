@@ -1648,7 +1648,8 @@ func status(args []string) error {
 	} else {
 		defer printAvailableUpdateContext(statusCtx, cfg, loadErr)
 	}
-	daemonPID := statusDaemonPID(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermpAtPath)
+	daemonRecord := statusDaemonRecord(pidFilePath(), daemonDiscordStatePath(), time.Now(), processAlive, processLooksLikeTermpAtPath)
+	daemonPID := daemonRecord.PID
 	running := daemonPID > 0
 
 	reg, registryErr := registry.NewWithCustom(cfg.CustomTools...)
@@ -1709,7 +1710,7 @@ func status(args []string) error {
 		configError:         configError,
 		configUsingLastGood: configUsingLastGood,
 		configWarnings:      cfg.Warnings,
-		updateFailure:       automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, version, runtime.GOOS, updateMethod, running),
+		updateFailure:       automaticUpdateStatus(updatepkg.DefaultCachePath(), cfg.AutoUpdate, version, runtime.GOOS, updateMethod, runningDaemonEvidence{running: running, startedAt: daemonRecord.StartedAt}, time.Now()),
 		homeDir:             homeDir,
 	}
 
@@ -1722,15 +1723,24 @@ func status(args []string) error {
 }
 
 func statusDaemonPID(pidPath, discordStatePath string, now time.Time, alive func(int) bool, looksLikeTermp func(int, string) bool) int {
+	return statusDaemonRecord(pidPath, discordStatePath, now, alive, looksLikeTermp).PID
+}
+
+// statusDaemonRecord is statusDaemonPID's whole answer, not just the PID. The
+// pending-restart notice needs the daemon's start generation as well (#606),
+// and that only exists on the PID file's record: the Discord-state fallback
+// carries process identity but no wall-clock start, so a daemon found only
+// that way yields a zero StartedAt and the notice stays quiet.
+func statusDaemonRecord(pidPath, discordStatePath string, now time.Time, alive func(int) bool, looksLikeTermp func(int, string) bool) daemonPIDRecord {
 	if record, _, err := readPIDIdentity(pidPath); err == nil &&
 		pidRecordIdentityMatches(record, alive, looksLikeTermp) {
-		return record.PID
+		return record
 	}
 	if state, ok := readFreshDaemonDiscordState(discordStatePath, now, daemonDiscordStateStaleAfter); ok &&
 		processIdentityMatches(state.PID, state.StartTime, state.ExecutablePath, alive, looksLikeTermp) {
-		return state.PID
+		return daemonPIDRecord{PID: state.PID, StartTime: state.StartTime, ExecutablePath: state.ExecutablePath}
 	}
-	return 0
+	return daemonPIDRecord{}
 }
 
 func statusConfigHealth(loadErr error, daemonPID int, state daemonDiscordState, stateOK bool) (bool, error, bool) {
@@ -2256,7 +2266,7 @@ func automaticUpdateFailure(path, current string) string {
 // "Automatic" line describes automatic-update behavior, and a stale failure
 // from before the user turned it off is no longer actionable advice about a
 // feature that is not running.
-func automaticUpdateStatus(path string, enabled bool, current, goos string, method updatepkg.InstallMethod, daemonRunning bool) string {
+func automaticUpdateStatus(path string, enabled bool, current, goos string, method updatepkg.InstallMethod, daemon runningDaemonEvidence, now time.Time) string {
 	if !enabled {
 		return ""
 	}
@@ -2274,7 +2284,18 @@ func automaticUpdateStatus(path string, enabled bool, current, goos string, meth
 	if failure := automaticUpdateFailure(path, current); failure != "" {
 		return failure
 	}
-	return automaticUpdatePendingRestart(path, current, daemonRunning)
+	return automaticUpdatePendingRestart(path, current, daemon, now)
+}
+
+// runningDaemonEvidence is what a command has actually established about the
+// daemon running right now. startedAt is the wall clock the daemon recorded
+// when it claimed the PID file, and is the zero time whenever that is unknown
+// -- an older record, or a daemon found only through the Discord-state
+// fallback. Readers must treat the zero value as "no evidence", never as an
+// early start.
+type runningDaemonEvidence struct {
+	running   bool
+	startedAt time.Time
 }
 
 // automaticUpdatePendingRestart renders the notice for an automatic update that
@@ -2286,7 +2307,7 @@ func automaticUpdateStatus(path string, enabled bool, current, goos string, meth
 // where that fact can honestly reach a person, so the recorded success is the
 // carrier.
 //
-// Three conditions have to hold together, and each one rules out a false claim:
+// Four conditions have to hold together, and each one rules out a false claim:
 //
 //   - A daemon is running. With nothing running there is nothing stale and
 //     nothing to restart.
@@ -2295,22 +2316,68 @@ func automaticUpdateStatus(path string, enabled bool, current, goos string, meth
 //   - This binary is no longer behind the attempted target, so the install did
 //     land on disk. While the running version is still behind it, the update
 //     has not been observed to take, and the failure/retirement rules own it.
+//   - The running daemon demonstrably predates the install
+//     (daemonPredatesAutomaticUpdate). Without this the notice is inferred
+//     entirely from on-disk facts and says nothing about the process it is
+//     talking about; see #606 and the comment on that function.
 //
-// The record is cleared by the next daemon start, whose version satisfies the
-// target (see retireStaleAutomaticUpdateAttempt), so the notice disappears on
-// its own once the restart happens.
-func automaticUpdatePendingRestart(path, current string, daemonRunning bool) string {
-	if !daemonRunning {
+// The record is normally retired by the next daemon start, whose version
+// satisfies the target (see retireStaleAutomaticUpdateAttempt). That is not
+// something this notice may rely on: retirement is skipped outright while
+// either update-check opt-out is in force (#463) and is best-effort even
+// without one, so a record can outlive the restart indefinitely. The
+// start-generation check above is what ends the notice in those cases.
+func automaticUpdatePendingRestart(path, current string, daemon runningDaemonEvidence, now time.Time) string {
+	if !daemon.running {
 		return ""
 	}
 	attempt, ok := updatepkg.ReadAutomaticUpdateAttempt(path)
 	if !ok || attempt.Error != "" || updatepkg.IsNewer(current, attempt.Target) {
 		return ""
 	}
+	if !daemonPredatesAutomaticUpdate(daemon.startedAt, attempt.AttemptedAt, now) {
+		return ""
+	}
 	return fmt.Sprintf("installed %s at %s. The running daemon is still on the previous version. Run \"termp stop\" then \"termp start\" to finish updating.",
 		attempt.Target,
 		attempt.AttemptedAt.Local().Format(time.RFC3339),
 	)
+}
+
+// daemonPredatesAutomaticUpdate reports whether the daemon running now is
+// positively known to have started before the recorded update attempt, which is
+// the only state in which it can still be executing pre-update code.
+//
+// Every branch below fails toward silence, deliberately. The failure this
+// guards against is telling a user to restart a daemon that is already on the
+// installed version, and restarting does not clear the record, so the wrong
+// notice repeats on every `termp status` forever. A missed reminder costs the
+// user one delayed restart; a wrong one costs them an unbounded loop of
+// following advice that does nothing. The reminder is therefore only printed
+// against affirmative evidence:
+//
+//   - Zero daemonStartedAt: unknown generation (a PID record from an older
+//     build, or a daemon located only through the Discord-state fallback).
+//     Silent.
+//   - Zero attemptedAt: the record cannot say when the install happened, so
+//     nothing can be ordered against it. Silent.
+//   - attemptedAt after now: the record is from the future, so a clock changed
+//     between writing it and reading it and neither timestamp can be trusted to
+//     order anything. Silent.
+//   - Equal timestamps: not evidence the daemon predates the install. A daemon
+//     that started at the same instant the update was recorded is at least as
+//     likely to be the new one, and second-resolution serialization can collapse
+//     a real ordering into equality. Silent.
+//
+// Only a strictly earlier daemon start prints.
+func daemonPredatesAutomaticUpdate(daemonStartedAt, attemptedAt, now time.Time) bool {
+	if daemonStartedAt.IsZero() || attemptedAt.IsZero() {
+		return false
+	}
+	if attemptedAt.After(now) {
+		return false
+	}
+	return daemonStartedAt.Before(attemptedAt)
 }
 
 func autostartLocationLabel(goos string) string {
@@ -2680,6 +2747,18 @@ type daemonPIDRecord struct {
 	StartTime            uint64 `json:"start_time,omitempty"`
 	StartTimeUnavailable bool   `json:"start_time_unavailable,omitempty"`
 	ExecutablePath       string `json:"executable_path,omitempty"`
+	// StartedAt is the wall-clock instant the daemon claimed this PID file,
+	// recorded so a later `termp status` can compare the running daemon's
+	// generation against timestamps written by other code paths (#606).
+	// StartTime above cannot serve that purpose: it is an opaque
+	// platform-specific value (Darwin epoch microseconds, Linux jiffies since
+	// boot, a Windows FILETIME), comparable only to itself.
+	//
+	// It is zero for a record written by an older build, and readers must
+	// treat zero as "no evidence" rather than "started at the epoch". No
+	// omitempty: encoding/json never omits a zero-value struct, so the tag
+	// would claim something untrue.
+	StartedAt time.Time `json:"started_at"`
 }
 
 func pidRecordIdentityMatches(record daemonPIDRecord, alive func(int) bool, looksLikeTermp func(int, string) bool) bool {
@@ -2775,7 +2854,7 @@ func writePIDOwnedWithHook(path string, pid int, initializingHook func()) (os.Fi
 	if err := ensurePIDDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	record := daemonPIDRecord{PID: pid}
+	record := daemonPIDRecord{PID: pid, StartedAt: time.Now().UTC()}
 	executablePath, err := currentProcessExecutablePath()
 	if err != nil {
 		return nil, fmt.Errorf("resolve current executable: %w", err)
