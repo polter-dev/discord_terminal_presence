@@ -4,8 +4,8 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
+	"github.com/polter-dev/discord_terminal_presence/internal/registry"
 	psprocess "github.com/shirou/gopsutil/v4/process"
 )
 
@@ -16,25 +16,15 @@ import (
 // unbounded flattened Cmdline is attacker-controlled: any process can set an
 // arbitrarily long argv, and matching costs about 360ns/byte, so a handful of
 // multi-MiB command lines can push one scan past the default scan interval
-// (#565). The structured Argv slice is left intact for the entrypoint/
-// subcommand checks that only ever look at its first couple of elements.
-const maxIdentityFieldBytes = 4096
+// (#565). The structured Argv slice is left intact for other consumers; the
+// registry applies this same shared bound to the elements it promotes into
+// entrypoint and subcommand matching (#603).
+const maxIdentityFieldBytes = registry.MaxIdentityFieldBytes
 
 // boundIdentityField truncates s to at most maxIdentityFieldBytes bytes
 // without splitting a multi-byte UTF-8 rune.
 func boundIdentityField(s string) string {
-	if len(s) <= maxIdentityFieldBytes {
-		return s
-	}
-	b := s[:maxIdentityFieldBytes]
-	for len(b) > 0 {
-		r, size := utf8.DecodeLastRuneInString(b)
-		if r != utf8.RuneError || size != 1 {
-			break
-		}
-		b = b[:len(b)-1]
-	}
-	return b
+	return registry.BoundIdentityField(s)
 }
 
 // GopsutilLister reads processes through gopsutil.
