@@ -1223,6 +1223,14 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	if usageStore != nil {
 		usageStore.Prune(registryToolIDs(applied.registry.Tools()), time.Now())
 	}
+	// lastUsageSave is deliberately unsynchronized. It is touched from two
+	// goroutines — the translation goroutine below (throttled saveUsage(false)
+	// after each detection) and this one (the forced saveUsage(true) at
+	// shutdown) — but never at the same time: the shutdown save runs only
+	// after finalizeAfterTranslator has observed the translation goroutine
+	// return. That wait is the whole ordering guarantee (#593); removing it
+	// reintroduces a data race, because writer.RunActivities can return on
+	// ctx cancellation while the translation goroutine is still mid-save.
 	lastUsageSave := time.Time{}
 	saveUsage := func(force bool) {
 		if usageStore == nil || usageLoadFailed {
@@ -1243,7 +1251,9 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	// reloads re-apply the current detection immediately; detector reloads scan
 	// again with the new matching and selection settings.
 	activities := make(chan *presence.Activity)
+	translatorDone := make(chan struct{})
 	go func() {
+		defer close(translatorDone)
 		defer close(activities)
 		var (
 			last           detector.Detection
@@ -1324,8 +1334,22 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	}()
 
 	writer.RunActivities(ctx, activities)
-	saveUsage(true)
+	// RunActivities returns either because the translation goroutine closed
+	// `activities` (it has already returned) or because ctx was cancelled,
+	// which does not by itself stop that goroutine. Wait for it before the
+	// final save so the two saveUsage call sites can never overlap. The wait
+	// terminates in both cases: every blocking point in the goroutine selects
+	// on ctx.Done.
+	finalizeAfterTranslator(translatorDone, func() { saveUsage(true) })
 	return nil
+}
+
+// finalizeAfterTranslator waits for the detection-translation goroutine to
+// stop and only then runs shutdown work, so anything finalize touches is
+// strictly ordered after everything that goroutine touched. See #593.
+func finalizeAfterTranslator(translatorDone <-chan struct{}, finalize func()) {
+	<-translatorDone
+	finalize()
 }
 
 type detectionRuntime struct {

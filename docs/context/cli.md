@@ -459,6 +459,19 @@ checks that each cross-repository publishing token is present, can see its confi
 target, and has `permissions.push` access without writing to that repository. Its token
 probes run in separate steps and report every invalid token in one run.
 
+`run()`'s daemon loop has exactly two goroutines that touch usage state: the
+detection-translation goroutine (throttled `saveUsage(false)` after each non-empty scan)
+and `run()` itself (the forced `saveUsage(true)` once `writer.RunActivities` returns).
+Those two share `lastUsageSave`, an unsynchronized `time.Time`. They are safe only
+because `finalizeAfterTranslator` waits on the translation goroutine's `translatorDone`
+channel before the forced save. That wait is load-bearing: `RunActivities` returns on
+either a closed `activities` channel (the goroutine has already returned) *or* plain ctx
+cancellation, and cancellation alone does not stop the goroutine, so without the wait the
+forced save can run while a throttled save is in flight (#593). The wait cannot deadlock,
+because every blocking point in that goroutine selects on `ctx.Done()`. The ordering is
+pinned by `cmd/termp/usage_save_ordering_test.go`, whose `-race` case reports a data race
+on a `lastUsageSave` stand-in if the wait is removed.
+
 Config initialization safety is documented in [`config.md`](config.md), terminal
 rendering in [`tui.md`](tui.md), update cache/detection in [`update.md`](update.md), and
 usage retention in [`usage.md`](usage.md).
