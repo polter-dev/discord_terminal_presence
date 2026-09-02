@@ -577,6 +577,11 @@ found no second setting miss: `SmallImage` only gained `ToolName` as an addition
 and was already covered by #573, while `Collection` was not changed by #583 and remains
 covered.
 
+#607 explicitly considered `display.elapsed_timer` and `display.buttons`. They deliberately
+remain display-only because they disclose session timing and static button links,
+respectively, not tool identity, which the owner does not consider privacy-affecting for
+termp's purposes.
+
 **Depends on / used by:** Uses BurntSushi TOML and the standard library. The CLI,
 detector, presence mapping, TUI, registry construction, and update policy consume it.
 
