@@ -23,6 +23,22 @@ import (
 // $HOME/Library/Caches, and pidFilePath does not go through
 // updatepkg.DefaultCachePath. Without those redirects, stop-path tests can read
 // and signal the developer's real daemon (issue #590).
+//
+// XDG_STATE_HOME and XDG_CONFIG_HOME get the same treatment for the same
+// reason, closing the part of that defect class #590 left open:
+// config.DefaultPath (internal/config/config.go), usage.StatePath
+// (internal/usage/usage.go), detector.EpisodeStatePath
+// (internal/detector/episode.go), and daemonDiscordStatePath (derived from
+// usage's state directory, cmd/termp/main.go) all honor an exported
+// XDG_STATE_HOME or XDG_CONFIG_HOME ahead of HOME. Redirecting only HOME, as
+// above, is not enough: any developer or CI runner with either variable set
+// in their ambient shell would otherwise have `go test ./cmd/termp` read and
+// write their real config.toml, usage.json, presence.json, and discord.json.
+// It is dormant on a machine that happens not to export them, which is
+// exactly how the #590 fix still missed it. os.Setenv unconditionally
+// overwrites whatever the ambient shell exported, so a hostile inherited
+// value is replaced rather than merely shadowed. See
+// TestPIDFilePathStaysInsideTestTree, which now also asserts these paths.
 func TestMain(m *testing.M) {
 	testRoot, err := os.MkdirTemp("", "termp-test-cache")
 	if err != nil {
@@ -31,11 +47,15 @@ func TestMain(m *testing.M) {
 	home := filepath.Join(testRoot, "home")
 	runtimeDir := filepath.Join(testRoot, "run")
 	localAppData := filepath.Join(testRoot, "local")
+	xdgConfigHome := filepath.Join(testRoot, "xdg-config")
+	xdgStateHome := filepath.Join(testRoot, "xdg-state")
 	for _, dir := range []string{
 		home,
 		filepath.Join(home, "Library", "Caches"),
 		runtimeDir,
 		localAppData,
+		xdgConfigHome,
+		xdgStateHome,
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			panic(err)
@@ -54,6 +74,12 @@ func TestMain(m *testing.M) {
 	// braces for Windows: with it unset there, os.UserCacheDir reads
 	// LOCALAPPDATA, so redirect that too.
 	if err := os.Setenv("LOCALAPPDATA", localAppData); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("XDG_CONFIG_HOME", xdgConfigHome); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("XDG_STATE_HOME", xdgStateHome); err != nil {
 		panic(err)
 	}
 	testSignalRoot = testRoot

@@ -1341,6 +1341,17 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	// terminates in both cases: every blocking point in the goroutine selects
 	// on ctx.Done.
 	finalizeAfterTranslator(translatorDone, func() { saveUsage(true) })
+	// The translation goroutine above only reads `detections` while it is
+	// still running; its own ctx.Done() case returns without draining it, so
+	// the detector goroutine that owns `detections` (started as `det.Run(ctx)`
+	// above) is not necessarily done yet. That goroutine's deferred episode
+	// save (internal/detector.(*Detector).run) runs strictly before it closes
+	// `detections` (`defer close(out)` is registered before `defer
+	// saveEpisodes(...)`, so the save runs first on the way out), so waiting
+	// for the close here guarantees the save has already happened before
+	// run() returns and the process can exit. See #613/#593 for the matching
+	// usage-save ordering; this closes the equivalent gap for episodes.
+	awaitDetectorShutdown(detections)
 	return nil
 }
 
@@ -1350,6 +1361,18 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 func finalizeAfterTranslator(translatorDone <-chan struct{}, finalize func()) {
 	<-translatorDone
 	finalize()
+}
+
+// awaitDetectorShutdown drains any detections left in the channel and blocks
+// until the detector goroutine closes it. This cannot hang: the detector
+// selects on ctx.Done() at every point where it might otherwise block
+// (listProcesses/SelectWithEnricher themselves are bounded, ordinary scan
+// work, not indefinite waits), so once shutdown is underway it closes the
+// channel as soon as its current scan step finishes and it observes
+// cancellation.
+func awaitDetectorShutdown(detections <-chan detector.Detection) {
+	for range detections {
+	}
 }
 
 type detectionRuntime struct {

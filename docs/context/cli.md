@@ -472,6 +472,23 @@ because every blocking point in that goroutine selects on `ctx.Done()`. The orde
 pinned by `cmd/termp/usage_save_ordering_test.go`, whose `-race` case reports a data race
 on a `lastUsageSave` stand-in if the wait is removed.
 
+`run()` also awaits the detector goroutine itself (`det.Run(ctx)`'s returned channel,
+`detections`) before returning, via `awaitDetectorShutdown`. Without it, `finalizeAfterTranslator`
+only guarantees the translation goroutine has stopped — that goroutine's own `ctx.Done()`
+case returns without draining `detections`, so on SIGTERM `run()` (and therefore `main()`)
+could exit before the detector's deferred episode-store save
+(`internal/detector.(*Detector).run`, which calls `saveEpisodes(episodes)` before its
+`defer close(out)` runs, since defers execute LIFO and `close(out)` was registered first)
+had actually happened. `awaitDetectorShutdown` drains `detections` until the detector
+closes it, which — like the translator's wait — cannot deadlock: every point where the
+detector might otherwise block on sending (`listProcesses`/`SelectWithEnricher` themselves
+are bounded scan work, not indefinite waits) also selects on `ctx.Done()`. Loss without
+this fix was already bounded (incremental episode saves happen on every
+`episodesChanged` scan, so at most one scan interval of `LastAtime`, plus a possible
+orphaned `presence.json.tmp-*` scavenged after an hour) — this is a low-severity
+correctness fix, not a data-loss emergency, but it closes the same "goroutine never
+awaited on shutdown" defect class as #593 for the detector side.
+
 Config initialization safety is documented in [`config.md`](config.md), terminal
 rendering in [`tui.md`](tui.md), update cache/detection in [`update.md`](update.md), and
 usage retention in [`usage.md`](usage.md).
@@ -706,6 +723,30 @@ non-Windows command returns before constructing defaults), spawn tests exercise
 not reach the default PID path. The production `connect.go`, `spawn.go`, `uninstall.go`,
 and `update.go` defaults still do, which is why package-wide isolation is required even
 though their current focused tests inject dependencies.
+
+**Test isolation for config/state paths (#590 follow-up).** The #590 fix above redirected
+`HOME`, `XDG_RUNTIME_DIR`, `XDG_CACHE_HOME`, and `LOCALAPPDATA`, but left two more
+XDG variables live: `XDG_CONFIG_HOME` (`config.DefaultPath`, `internal/config/config.go`)
+and `XDG_STATE_HOME` (`usage.StatePath`, `internal/usage/usage.go`; `EpisodeStatePath`,
+`internal/detector/episode.go`; and `daemonDiscordStatePath` in `cmd/termp/main.go`, which
+derives from `usage.StatePath`'s directory). Whichever of these two an ambient shell or CI
+runner happened to export flowed straight through untouched, so `go test ./cmd/termp/...`
+could read and **write** the real `config.toml`, `usage.json`, `presence.json`, and
+`discord.json` — dormant only on a machine that doesn't export either var, exactly like
+#590 was dormant until it wasn't. (`internal/service.systemdUnitPath` also reads
+`XDG_CONFIG_HOME`, but is reachable only through Linux-branch code paths this package's
+tests never exercise on a non-Linux `runtime.GOOS`/injected `Manager.GOOS`; it inherits the
+same safe redirect regardless, since it shares the variable.) `TestMain`
+(`cmd/termp/main_testmain_test.go`) now also redirects `XDG_CONFIG_HOME` and
+`XDG_STATE_HOME` into two subdirectories of the same temporary tree. `os.Setenv`
+unconditionally overwrites whatever the ambient shell exported, so a hostile inherited
+value is replaced rather than merely shadowed — the same reasoning already applied to the
+other four variables. `TestPIDFilePathStaysInsideTestTree` (`testmain_isolation_test.go`)
+was extended (not just the PID path) to assert `config.DefaultPath()`,
+`usage.StatePath()`, `detector.EpisodeStatePath()`, and `daemonDiscordStatePath()` all
+resolve inside that tree; verified to fail on the pre-fix `TestMain` when
+`XDG_STATE_HOME`/`XDG_CONFIG_HOME` are exported to a directory outside it, and to pass
+after the fix whether or not those two variables are exported.
 
 Cost note: broadening eligibility means commands that load config for their own work now
 also pay `main()`'s pre-dispatch `LoadReadOnly` — one extra settled read, the same one

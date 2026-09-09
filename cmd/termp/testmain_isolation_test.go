@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/polter-dev/discord_terminal_presence/internal/config"
+	"github.com/polter-dev/discord_terminal_presence/internal/detector"
+	usagepkg "github.com/polter-dev/discord_terminal_presence/internal/usage"
 )
 
 var testSignalRoot string
@@ -35,9 +39,20 @@ func pathWithinTree(root, path string) bool {
 }
 
 // TestPIDFilePathStaysInsideTestTree asserts that TestMain's package-wide
-// environment contains the default PID path. On darwin this fails without the
+// environment contains the default PID path, plus every other production
+// state/config path this package's tests can reach: config.DefaultPath,
+// usage.StatePath, detector.EpisodeStatePath, and daemonDiscordStatePath (the
+// remaining four production readers of XDG_CONFIG_HOME/XDG_STATE_HOME
+// enumerated on TestMain). On darwin the PID check fails without the
 // HOME/XDG_RUNTIME_DIR redirects because os.UserCacheDir ignores
-// XDG_CACHE_HOME and escapes to the ambient $HOME/Library/Caches.
+// XDG_CACHE_HOME and escapes to the ambient $HOME/Library/Caches; the four
+// added checks fail — on any platform — whenever the invoking shell exports
+// XDG_STATE_HOME or XDG_CONFIG_HOME and TestMain does not override them,
+// which is exactly the state this test tree's containment assertion is
+// designed to catch. Run with those two variables exported to a scratch
+// directory (outside this test's tree) to exercise that failure mode against
+// stock TestMain; TestMain's redirect makes it pass regardless of what the
+// invoking shell exports.
 func TestPIDFilePathStaysInsideTestTree(t *testing.T) {
 	testRoot := os.Getenv("XDG_CACHE_HOME")
 	if !pathWithinTree(testRoot, os.Getenv("HOME")) {
@@ -47,6 +62,19 @@ func TestPIDFilePathStaysInsideTestTree(t *testing.T) {
 	t.Logf("pidFilePath() = %s (TestMain tree = %s)", path, testRoot)
 	if !pathWithinTree(testRoot, path) {
 		t.Fatalf("pidFilePath() = %q, want a path inside TestMain tree %q", path, testRoot)
+	}
+
+	paths := map[string]string{
+		"config.DefaultPath()":        config.DefaultPath(),
+		"usage.StatePath()":           usagepkg.StatePath(),
+		"detector.EpisodeStatePath()": detector.EpisodeStatePath(),
+		"daemonDiscordStatePath()":    daemonDiscordStatePath(),
+	}
+	for name, p := range paths {
+		t.Logf("%s = %s (TestMain tree = %s)", name, p, testRoot)
+		if !pathWithinTree(testRoot, p) {
+			t.Fatalf("%s = %q, want a path inside TestMain tree %q — XDG_STATE_HOME/XDG_CONFIG_HOME leaked past TestMain's redirect", name, p, testRoot)
+		}
 	}
 }
 
