@@ -568,6 +568,67 @@ func TestActivityFromDetectionDirectoryRenderingPrivacyCap(t *testing.T) {
 	}
 }
 
+// TestDirectoryDisplayHomeRedaction exercises DirectoryDisplay directly. No
+// direct unit test of this function existed before this change; the only
+// prior coverage was indirect (via ActivityFromDetection in
+// TestActivityFromDetectionDirectoryRenderingPrivacyCap above), and none of
+// those cases ever used a cwd equal to a home directory, so this is new
+// coverage rather than a changed assertion.
+func TestDirectoryDisplayHomeRedaction(t *testing.T) {
+	tests := []struct {
+		name         string
+		cwd          string
+		home         string
+		basenameOnly bool
+		want         string
+	}{
+		{name: "home exactly matches, basename-only mode", cwd: "/Users/alice", home: "/Users/alice", basenameOnly: true, want: "~"},
+		{name: "home exactly matches, two-segment mode", cwd: "/Users/alice", home: "/Users/alice", basenameOnly: false, want: "~"},
+		{name: "home has a trailing slash", cwd: "/Users/alice", home: "/Users/alice/", basenameOnly: true, want: "~"},
+		{name: "cwd has a trailing slash", cwd: "/Users/alice/", home: "/Users/alice", basenameOnly: true, want: "~"},
+		{name: "parent equals home renders tilde-prefixed name", cwd: "/Users/alice/myproject", home: "/Users/alice", basenameOnly: false, want: "~/myproject"},
+		{name: "grandchild of home is unaffected in two-segment mode", cwd: "/Users/alice/a/b", home: "/Users/alice", basenameOnly: false, want: "a/b"},
+		{name: "grandchild of home is unaffected in basename-only mode", cwd: "/Users/alice/a/b", home: "/Users/alice", basenameOnly: true, want: "b"},
+		{name: "sibling sharing a name prefix is not treated as home", cwd: "/Users/alice2", home: "/Users/alice", basenameOnly: true, want: "alice2"},
+		{name: "sibling sharing a name prefix, two-segment parent", cwd: "/Users/alice2/project", home: "/Users/alice", basenameOnly: false, want: "alice2/project"},
+		{name: "a case-different path is not treated as home", cwd: "/Users/Alice", home: "/Users/alice", basenameOnly: true, want: "Alice"},
+		{name: "empty home falls back to prior basename-only behavior", cwd: "/Users/alice", home: "", basenameOnly: true, want: "alice"},
+		{name: "empty home falls back to prior two-segment behavior", cwd: "/Users/alice", home: "", basenameOnly: false, want: "Users/alice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DirectoryDisplay(tt.cwd, tt.home, tt.basenameOnly)
+			if got != tt.want {
+				t.Fatalf("DirectoryDisplay(%q, %q, %v) = %q, want %q", tt.cwd, tt.home, tt.basenameOnly, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestActivityFromDetectionHomeDirectoryRendersTilde is the end-to-end
+// demonstration that a cwd of $HOME renders as "~" rather than the OS
+// account name once callers populate DisplayOptions.Home.
+func TestActivityFromDetectionHomeDirectoryRendersTilde(t *testing.T) {
+	options := DefaultDisplayOptions()
+	options.ShowDirectory = true
+	options.Home = "/Users/alice"
+	detection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Gemini CLI", ImageURL: "https://example.com/gemini.png"},
+		Cwd:  "/Users/alice",
+	}
+
+	activity, ok := ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.Details != "📁 ~" {
+		t.Fatalf("details = %q, want %q (home directory must render as ~, not the account name)", activity.Details, "📁 ~")
+	}
+	if strings.Contains(activity.Details, "alice") {
+		t.Fatalf("details leaked the account name: %q", activity.Details)
+	}
+}
+
 func TestActivityFromDetectionNone(t *testing.T) {
 	activity, ok := ActivityFromDetection(detector.Detection{None: true}, DefaultDisplayOptions())
 	if ok {

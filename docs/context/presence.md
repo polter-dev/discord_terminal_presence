@@ -155,6 +155,31 @@ Directory path reduction is centralized in `DirectoryDisplay`: basename-only mod
 one component and expanded mode returns at most the final two. Presence adds the folder
 emoji separately so non-payload consumers can reuse the same privacy boundary.
 
+`DirectoryDisplay(cwd, home string, basenameOnly bool)` takes the resolved home directory
+as an explicit parameter and never calls `os.UserHomeDir()` itself, so it stays a pure,
+directly-unit-testable function (`TestDirectoryDisplayHomeRedaction` in
+`activity_test.go`; a Windows-backslash variant lives in the `//go:build windows`-gated
+`activity_windows_test.go`, compiled/vetted only via `GOOS=windows` cross-compilation, not
+run on real Windows hardware here). This closes a privacy leak: `filepath.Base($HOME)` is
+normally the OS login name — on macOS that is usually the user's real name — so a cwd of
+exactly `$HOME` (the default-posture leak) or any project directly under `$HOME` in
+two-segment mode (`~/myproject` → `<account name>/myproject`) previously published that
+name to Discord even though the user only opted into "show my folder name," not "show my
+legal name," defeating a pseudonymous Discord handle. The fix compares cleaned, exact
+(case-sensitive) full paths — never a basename-only or prefix comparison, which would
+wrongly match a sibling like `/Users/alice2` — so a cwd equal to home renders as `~`, and
+in two-segment mode a parent equal to home renders as `~/name`; a grandchild of home
+(`~/a/b`) is unaffected because its parent is not home. An empty, unresolvable, or
+non-matching `home` value falls back to the pre-existing basename behavior rather than
+panicking or emitting an empty string. `DisplayOptions.Home` carries this value into
+`ActivityFromDetectionWithOmissions`/`directoryState`; `cmd/termp/main.go`'s
+`resolveHomeDir()` (used by both `buildActivity` and `debugDetectionDirectory`) is the one
+production boundary that calls `os.UserHomeDir()`, returning `""` on error so an
+unresolvable home degrades gracefully instead of failing. No test asserted the leaking
+behavior before this change — `DirectoryDisplay` had no direct unit test, and the existing
+indirect coverage via `ActivityFromDetection` never used a cwd equal to a home directory —
+so no prior assertion needed to change.
+
 `StatusProbe` checks cancellation before work and threads its context through discovery
 and dialing. A watcher goroutine forces a read/write deadline to `time.Now()` when the
 context ends so frame I/O unblocks promptly. The status-only `statusIOTimeout` remains

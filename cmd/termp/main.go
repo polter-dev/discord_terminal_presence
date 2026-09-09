@@ -1441,9 +1441,21 @@ func otherToolIDs(tools []registry.Tool) string {
 func debugDetectionDirectory(cfg config.Config, detection detector.Detection) string {
 	resolved := cfg.Resolve(detection.Tool)
 	if resolved.DirectoryAllowed(detection.Cwd) {
-		return presence.DirectoryDisplay(detection.Cwd, resolved.DirectoryBasenameOnly)
+		return presence.DirectoryDisplay(detection.Cwd, resolveHomeDir(), resolved.DirectoryBasenameOnly)
 	}
 	return "hidden"
+}
+
+// resolveHomeDir resolves the current user's home directory for
+// presence.DirectoryDisplay's home-directory redaction, falling back to ""
+// (which disables that redaction, preserving prior basename behavior) rather
+// than panicking or propagating an error when it cannot be determined.
+func resolveHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
 }
 
 func registryToolIDs(tools []registry.Tool) []string {
@@ -1482,6 +1494,7 @@ func buildActivity(cfg config.Config, detection detector.Detection, fallbackMess
 		Collection:            cfg.Display.Collection,
 		ShowDirectory:         showDir,
 		DirectoryBasenameOnly: resolved.DirectoryBasenameOnly,
+		Home:                  resolveHomeDir(),
 	}
 	activity, ok, omissions := presence.ActivityFromDetectionWithOmissions(detection, opts)
 	if !ok {

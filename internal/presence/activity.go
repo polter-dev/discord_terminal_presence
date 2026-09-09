@@ -42,6 +42,14 @@ type DisplayOptions struct {
 	Buttons               bool
 	ShowDirectory         bool
 	DirectoryBasenameOnly bool
+	// Home is the resolved user home directory, used only to render it as "~"
+	// in directory display instead of leaking the OS account name
+	// (filepath.Base($HOME) is normally the user's real login name). Callers
+	// resolve this once (e.g. via os.UserHomeDir()) and pass it in; leave it
+	// empty when home cannot be resolved to fall back to prior behavior.
+	// DirectoryDisplay itself never calls os.UserHomeDir so it stays a pure,
+	// easily-tested function.
+	Home string
 }
 
 // DefaultDisplayOptions returns privacy-first defaults: all fields enabled except cwd.
@@ -337,7 +345,7 @@ func ActivityFromDetectionWithOmissions(detection detector.Detection, options Di
 
 	directory := ""
 	if options.ShowDirectory && detection.Cwd != "" {
-		directory = directoryState(detection.Cwd, options.DirectoryBasenameOnly)
+		directory = directoryState(detection.Cwd, options.Home, options.DirectoryBasenameOnly)
 	}
 	if customizedDetailsFormat(options.DetailsFormat) {
 		if directory != "" {
@@ -447,8 +455,8 @@ func collectionState(prefix string, others []registry.Tool) string {
 	return state
 }
 
-func directoryState(cwd string, basenameOnly bool) string {
-	directory := DirectoryDisplay(cwd, basenameOnly)
+func directoryState(cwd, home string, basenameOnly bool) string {
+	directory := DirectoryDisplay(cwd, home, basenameOnly)
 	if directory == "" {
 		return ""
 	}
@@ -456,20 +464,50 @@ func directoryState(cwd string, basenameOnly bool) string {
 }
 
 // DirectoryDisplay reduces a directory path to the components permitted for display.
-func DirectoryDisplay(cwd string, basenameOnly bool) string {
+//
+// home is the resolved user home directory ("" when unknown). It exists so the
+// home directory itself renders as "~" rather than as its basename, which on a
+// typical account is the OS login name (filepath.Base("/Users/alice") ==
+// "alice") — showing that would defeat a pseudonymous Discord handle for any
+// user opting into directory display. DirectoryDisplay stays a pure function
+// (no os.UserHomeDir call here); callers resolve home once and pass it in. An
+// empty, unresolvable, or non-matching home falls back to the pre-existing
+// basename behavior. Comparison is an exact (case-sensitive) string match on
+// cleaned paths — it never treats a differently-cased or merely
+// prefix-sharing path (e.g. a sibling directory "/Users/alice2") as home.
+func DirectoryDisplay(cwd, home string, basenameOnly bool) string {
 	clean := filepath.Clean(cwd)
 	base := filepath.Base(clean)
 	if base == "." || base == string(filepath.Separator) || base == filepath.VolumeName(clean)+string(filepath.Separator) {
 		return ""
 	}
+	homeClean := cleanHomeDir(home)
+	if homeClean != "" && clean == homeClean {
+		return "~"
+	}
 	if basenameOnly {
 		return base
 	}
-	parent := filepath.Base(filepath.Dir(clean))
+	parentDir := filepath.Dir(clean)
+	if homeClean != "" && parentDir == homeClean {
+		return "~/" + base
+	}
+	parent := filepath.Base(parentDir)
 	if parent == "." || parent == string(filepath.Separator) || parent == filepath.VolumeName(clean)+string(filepath.Separator) {
 		return base
 	}
 	return parent + "/" + base
+}
+
+// cleanHomeDir normalizes home for exact comparison against a cleaned cwd
+// (e.g. trimming a trailing separator). It returns "" for an empty input so
+// callers can treat that as "no home-directory redaction" without special
+// casing filepath.Clean("")'s "." result.
+func cleanHomeDir(home string) string {
+	if home == "" {
+		return ""
+	}
+	return filepath.Clean(home)
 }
 
 func buttonsFromTool(tool registry.Tool) []Button {
