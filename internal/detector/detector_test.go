@@ -1096,7 +1096,7 @@ func TestEpisodePersistenceRoundTripAndCorruptFile(t *testing.T) {
 	store := NewEpisodeStore()
 	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))
 	tty := TTYInfo{State: TTYResolved, Path: "/dev/ttys007", Atime: base, AtimeKnown: true}
-	anchor, _ := store.Observe(key, tty, base, 20*time.Minute)
+	anchor, _ := store.Observe(key, tty, base)
 	if err := SaveEpisodeStore(path, store); err != nil {
 		t.Fatal(err)
 	}
@@ -1104,7 +1104,7 @@ func TestEpisodePersistenceRoundTripAndCorruptFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed, _ := loaded.Observe(key, tty, base.Add(time.Minute), 20*time.Minute)
+	resumed, _ := loaded.Observe(key, tty, base.Add(time.Minute))
 	if !resumed.Equal(anchor) {
 		t.Fatalf("round-trip anchor = %s, want %s", resumed, anchor)
 	}
@@ -1121,7 +1121,7 @@ func TestEpisodePersistenceRoundTripAndCorruptFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("LoadEpisodeStore() of a corrupt file returned a nil error, want an error distinguishing corrupt from absent (#567)")
 	}
-	if got, _ := corrupt.Observe(key, tty, base.Add(2*time.Minute), 20*time.Minute); !got.Equal(base.Add(2 * time.Minute)) {
+	if got, _ := corrupt.Observe(key, tty, base.Add(2*time.Minute)); !got.Equal(base.Add(2 * time.Minute)) {
 		t.Fatalf("corrupt state anchor = %s, want a safe new episode", got)
 	}
 	selector := newSelectorWithEpisodes(testRegistry(t), Config{IdleClearTimeout: 20 * time.Minute, ActivitySwitching: true}, &fakeClock{now: base.Add(2 * time.Minute)}, corrupt, nil)
@@ -1203,7 +1203,7 @@ func TestEpisodeAtimeUpdatesArePersistedAtMostOncePerMinute(t *testing.T) {
 	store := NewEpisodeStore()
 	tty := TTYInfo{State: TTYResolved, Path: "/dev/ttys007", Atime: base, AtimeKnown: true}
 
-	if _, changed := store.Observe(key, tty, base, 20*time.Minute); !changed {
+	if _, changed := store.Observe(key, tty, base); !changed {
 		t.Fatal("new episode was not dirty")
 	}
 	if err := SaveEpisodeStore(path, store); err != nil {
@@ -1211,11 +1211,11 @@ func TestEpisodeAtimeUpdatesArePersistedAtMostOncePerMinute(t *testing.T) {
 	}
 
 	tty.Atime = base.Add(30 * time.Second)
-	if _, changed := store.Observe(key, tty, tty.Atime, 20*time.Minute); changed {
+	if _, changed := store.Observe(key, tty, tty.Atime); changed {
 		t.Fatal("sub-minute atime advance should be throttled")
 	}
 	tty.Atime = base.Add(time.Minute)
-	if _, changed := store.Observe(key, tty, tty.Atime, 20*time.Minute); !changed {
+	if _, changed := store.Observe(key, tty, tty.Atime); !changed {
 		t.Fatal("minute atime advance was not marked dirty")
 	}
 	if err := SaveEpisodeStore(path, store); err != nil {
@@ -1232,7 +1232,7 @@ func TestEpisodeAtimeUpdatesArePersistedAtMostOncePerMinute(t *testing.T) {
 	crashRecoveryAtime := tty.Atime.Add(20 * time.Minute)
 	crashTTY := tty
 	crashTTY.Atime = crashRecoveryAtime
-	anchor, _ := loaded.Observe(key, crashTTY, crashRecoveryAtime, 20*time.Minute)
+	anchor, _ := loaded.Observe(key, crashTTY, crashRecoveryAtime)
 	if !anchor.Equal(base) {
 		t.Fatalf("crash recovery anchor = %s, want %s", anchor, base)
 	}
@@ -1244,23 +1244,31 @@ func TestEpisodeTTYChangeIsImmediatelyDirty(t *testing.T) {
 	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))
 	store := NewEpisodeStore()
 	tty := TTYInfo{State: TTYResolved, Path: "/dev/ttys007", Atime: base, AtimeKnown: true}
-	store.Observe(key, tty, base, 20*time.Minute)
+	store.Observe(key, tty, base)
 	if err := SaveEpisodeStore(path, store); err != nil {
 		t.Fatal(err)
 	}
 
 	tty.Path = "/dev/ttys008"
-	if _, changed := store.Observe(key, tty, base, 20*time.Minute); !changed {
+	if _, changed := store.Observe(key, tty, base); !changed {
 		t.Fatal("TTY identity change was not marked dirty")
 	}
 }
 
-func TestEpisodeRestartAfterAtimeGapStartsNewAnchor(t *testing.T) {
+// TestEpisodeRestartWithSameKeyResumesDespiteAtimeGap covers the owner
+// decision (2026-09-09, docs/context/detector.md): resumption is keyed on
+// process identity (tool, pid, and process create time — see EpisodeKey),
+// not on TTY atime freshness. Before this decision, an atime gap wider than
+// the timeout discarded the anchor even when the key (and therefore the
+// underlying OS process) was unchanged; this test used to assert that
+// discarding as correct (as TestEpisodeRestartAfterAtimeGapStartsNewAnchor)
+// and is now inverted to assert the resumption the owner chose instead.
+func TestEpisodeRestartWithSameKeyResumesDespiteAtimeGap(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))
 	store := NewEpisodeStore()
 	oldTTY := TTYInfo{State: TTYResolved, Path: "/dev/ttys007", Atime: base, AtimeKnown: true}
-	store.Observe(key, oldTTY, base, 20*time.Minute)
+	store.Observe(key, oldTTY, base)
 	path := filepath.Join(t.TempDir(), "presence.json")
 	if err := SaveEpisodeStore(path, store); err != nil {
 		t.Fatal(err)
@@ -1269,9 +1277,63 @@ func TestEpisodeRestartAfterAtimeGapStartsNewAnchor(t *testing.T) {
 	now := base.Add(time.Hour)
 	newTTY := oldTTY
 	newTTY.Atime = base.Add(21 * time.Minute)
-	anchor, _ := loaded.Observe(key, newTTY, now, 20*time.Minute)
-	if !anchor.Equal(now) {
-		t.Fatalf("anchor after atime gap = %s, want %s", anchor, now)
+	anchor, _ := loaded.Observe(key, newTTY, now)
+	if !anchor.Equal(base) {
+		t.Fatalf("anchor after atime gap with unchanged key = %s, want resumed %s", anchor, base)
+	}
+}
+
+// TestEpisodeResumesOnIdentityWithoutKnownAtime is the core Fix 2 regression:
+// on a stock Linux relatime/noatime mount, linuxTTYAtimeSource.Atime never
+// reports AtimeKnown=true (tty_linux_logic.go), so before the owner decision
+// above, canResumeEpisode's precondition on AtimeKnown made every anchor
+// discardable on every daemon restart, autostart relaunch, and auto-update
+// restart even though the same OS process (same pid + create time) was still
+// running the whole time. Resumption must now succeed on the matching
+// episode key alone.
+func TestEpisodeResumesOnIdentityWithoutKnownAtime(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))
+	store := NewEpisodeStore()
+	unknownTTY := TTYInfo{State: TTYResolved, Path: "/dev/pts/3", AtimeKnown: false}
+	store.Observe(key, unknownTTY, base)
+	path := filepath.Join(t.TempDir(), "presence.json")
+	if err := SaveEpisodeStore(path, store); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadEpisodeStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restart := base.Add(time.Hour)
+	anchor, _ := loaded.Observe(key, unknownTTY, restart)
+	if !anchor.Equal(base) {
+		t.Fatalf("anchor after restart with unknown atime = %s, want resumed %s", anchor, base)
+	}
+}
+
+// TestEpisodeResumesOnIdentityWhenIdleClearTimeoutDisabled covers the other
+// documented precondition that used to block resumption outright:
+// idle_clear_timeout = 0 (config.IdleClearTimeout <= 0). Process identity
+// must still resume the anchor even when idle-based clearing is disabled.
+func TestEpisodeResumesOnIdentityWhenIdleClearTimeoutDisabled(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	key := EpisodeKey("claude-code", 7, base.Add(-time.Hour))
+	store := NewEpisodeStore()
+	tty := TTYInfo{State: TTYResolved, Path: "/dev/ttys007", Atime: base, AtimeKnown: true}
+	store.Observe(key, tty, base)
+	path := filepath.Join(t.TempDir(), "presence.json")
+	if err := SaveEpisodeStore(path, store); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadEpisodeStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restart := base.Add(time.Hour)
+	anchor, _ := loaded.Observe(key, tty, restart)
+	if !anchor.Equal(base) {
+		t.Fatalf("anchor after restart with idle_clear_timeout disabled = %s, want resumed %s", anchor, base)
 	}
 }
 
@@ -1902,6 +1964,132 @@ func TestRunScanErrorsClearPresenceAtThresholdAndRecoverWithDebounce(t *testing.
 		case <-time.After(time.Second):
 			t.Fatal("timed out waiting for detector shutdown")
 		}
+	}
+}
+
+// TestRunReconfigureDoesNotDisarmScanFailureClear guards against a regression
+// where applyReconfigure reset hasEmitted (the "did we successfully emit
+// something" bookkeeping flag) without also resetting emitted (the actual
+// published Detection). The scan-failure guard reads hasEmitted as a proxy for
+// "is something currently published"; once the two disagreed after any hot
+// reload, the guard's `!hasEmitted` check short-circuited every failed scan
+// forever, and None was never emitted no matter how many consecutive scan
+// failures followed. See TestRunScanErrorsClearPresenceAtThresholdAndRecoverWithDebounce
+// for the no-reload control this test complements: that test proves the
+// threshold-clear behavior works before any reload ever happens, so this test
+// alone cannot pass vacuously from a change that broke the guard outright.
+func TestRunReconfigureDoesNotDisarmScanFailureClear(t *testing.T) {
+	base := time.Date(2026, 9, 9, 3, 4, 5, 0, time.UTC)
+	process := Process{Owned: true, Pid: 9, Name: "claude", CreateTime: base, Cwd: "/project"}
+	lister := newControlledLister()
+	reg := testRegistry(t)
+	// ScanInterval is deliberately long (not the usual time.Nanosecond used
+	// elsewhere in this file) so the ticker cannot fire an unsolicited scan
+	// between the initial detection and the Reconfigure call below: an
+	// uncontrolled extra scan would block forever on lister.calls with
+	// nothing to service it, deadlocking the test rather than exercising
+	// the bug. Every scan after the initial one is driven explicitly by
+	// Reconfigure's own forced immediate scan and by waitForCall/completeScan.
+	det, err := New(reg, lister, Config{
+		ScanInterval:   time.Hour,
+		DebounceCycles: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	det.presenceStatePath = filepath.Join(t.TempDir(), "presence.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := det.Run(ctx)
+
+	waitForCall := func() {
+		t.Helper()
+		select {
+		case <-lister.calls:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for process scan")
+		}
+	}
+	assertNoDetection := func(stage string) {
+		t.Helper()
+		select {
+		case detection := <-ch:
+			t.Fatalf("%s emitted unexpected detection: %#v", stage, detection)
+		default:
+		}
+	}
+
+	waitForCall()
+	lister.results <- processListResult{processes: []Process{process}}
+	select {
+	case detection := <-ch:
+		if detection.None || detection.Tool.ID != "claude-code" {
+			t.Fatalf("initial detection = %#v, want active claude-code", detection)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial detection")
+	}
+
+	// reload triggers one immediate scan itself (this is the only way this
+	// test advances the detector, since ScanInterval is deliberately set to
+	// an hour above so the ticker never fires and races the assertions
+	// below); calling it again before each subsequent failure below drives
+	// each successive scan just as deterministically, without depending on
+	// ticker timing at all.
+	reload := func() {
+		t.Helper()
+		if err := det.Reconfigure(ctx, reg, Config{
+			ScanInterval:   time.Hour,
+			DebounceCycles: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A live config reload (e.g. a settings save) while presence is active
+	// and scanning is healthy, immediately followed by a failed scan.
+	reload()
+	waitForCall()
+	lister.results <- processListResult{err: errors.New("post-reload scan failure 1")}
+	assertNoDetection("post-reload failure 1")
+
+	// Reload again (simulating further settings saves) before each
+	// remaining failure below the threshold. Every one of these must stay
+	// silent, exactly as the no-reload control
+	// (TestRunScanErrorsClearPresenceAtThresholdAndRecoverWithDebounce) proves
+	// for scans 1..ScanFailureClearThreshold-1.
+	for scan := 2; scan < ScanFailureClearThreshold; scan++ {
+		reload()
+		waitForCall()
+		lister.results <- processListResult{err: fmt.Errorf("post-reload scan failure %d", scan)}
+		assertNoDetection(fmt.Sprintf("post-reload failure %d", scan))
+	}
+
+	// The threshold-th failure must clear the stale presence, exactly as it
+	// does with no reload in between. Pre-fix, this never fires: reloading
+	// leaves hasEmitted permanently false while emitted still holds the
+	// active detection, so the guard's `!hasEmitted` term returns early
+	// forever regardless of scanFailures.
+	reload()
+	waitForCall()
+	lister.results <- processListResult{err: errors.New("post-reload scan failure at threshold")}
+	select {
+	case detection := <-ch:
+		if !detection.None {
+			t.Fatalf("threshold detection after reload = %#v, want none", detection)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("config reload disarmed the scan-failure clear: no none emitted at threshold")
+	}
+
+	cancel()
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("detection channel remained open after cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for detector shutdown")
 	}
 }
 

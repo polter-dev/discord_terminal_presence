@@ -204,3 +204,50 @@ must have live callers" rule above. Its apparent intent (picking a console-shari
 PID) could not be confidently established or safely wired into `inspectWindowsConsole`
 without Windows hardware to verify against, so it was removed along with its test rather
 than guessed into production.
+
+`applyReconfigure` (`detector.go`, in `(*Detector).run`) no longer resets `hasEmitted` on
+a hot reload. The scan-failure guard (`ScanFailureClearThreshold`) reads `hasEmitted` as
+its proxy for "is something currently published," checked against the still-intact
+`emitted` Detection; resetting only `hasEmitted` desynced the two so that after any
+reload, every subsequent failed scan hit the guard's `!hasEmitted` term and returned
+early forever; the daemon-published `None` clear on persistent scan failure never fired
+again for the rest of that run, leaving stale presence on Discord indefinitely. All three
+`applyReconfigure` call sites already force an immediate re-render (`forceEmit = true` or
+`scan(true)`), so the reset was never needed for its stated purpose ("registry metadata
+... can change the rendered activity even when the selected IDs stay the same"). The
+sibling reset, `candidateSet = false`, has the same redundant relationship to that stated
+purpose (streak/debug bookkeeping only, also bypassed by the forced re-render) but is not
+independently buggy, since the scan-failure guard never reads it; left unchanged.
+Regression coverage: `TestRunReconfigureDoesNotDisarmScanFailureClear`, which fails
+(deterministically, not via timeout) against the pre-fix code and passes after; the
+pre-existing `TestRunScanErrorsClearPresenceAtThresholdAndRecoverWithDebounce` is the
+no-reload control proving the guard isn't just broken outright.
+
+Episode resumption (`canResumeEpisode`, `episode.go`) is now keyed on process identity
+alone, not on TTY atime freshness (owner decision, 2026-09-09). The episode key
+(`EpisodeKey`: tool ID, pid, process create time) already proves the identical OS process
+instance before `canResumeEpisode` is ever called — `Observe`'s `s.Episodes[key]` lookup
+only reaches it on an exact key match — so that identity is now sufficient by itself:
+resumption no longer requires `AtimeKnown`, a resolved TTY, or `idle_clear_timeout > 0`.
+Previously all of those were hard preconditions, and on a stock Linux relatime/noatime
+mount `linuxTTYAtimeSource.Atime` never reports `AtimeKnown = true`
+(`tty_linux_logic.go`), so every anchor was silently discarded on every daemon restart,
+autostart relaunch, and automatic-update restart — contradicting the "elapsed timers
+survive daemon restarts" promise in `docs/product/architecture.md`. `canResumeEpisode`
+now takes only the `Episode` and reduces to `!episode.PresentSince.IsZero()`; the old
+atime-delta comparison was deleted rather than kept as a second path, since with the
+single call site (gated on an exact key match) there is no scenario where it could
+independently change the result — keeping it as a live-looking `||` branch would have
+been dead logic disguised as one (a send-back caught an earlier draft doing exactly
+this). If a future caller ever needs to resume without first proving key identity, the
+atime-delta logic should be reintroduced deliberately at that call site rather than
+revived here speculatively. **Trade-off, stated explicitly per owner request:** a session that went idle while the daemon was down (or across a reload) now
+resumes its original start time rather than restarting the elapsed-session timer, since
+there is no longer an atime-gap cutoff for a key-identical episode. `docs/product/architecture.md`'s
+detector bullet was updated to describe this. Regression coverage:
+`TestEpisodeResumesOnIdentityWithoutKnownAtime` (the core Linux-relatime scenario),
+`TestEpisodeResumesOnIdentityWhenIdleClearTimeoutDisabled`, and
+`TestEpisodeRestartWithSameKeyResumesDespiteAtimeGap` — the last of these **replaces**
+`TestEpisodeRestartAfterAtimeGapStartsNewAnchor`, which asserted the pre-decision
+behavior (a same-key episode discarded after an atime gap) and was inverted rather than
+kept, since it encoded the now-superseded behavior as correct.
