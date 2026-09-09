@@ -43,6 +43,20 @@ also skip reactivation when the failed replacement could not be stopped, matchin
 Windows guard, because the OS may still be running it. When macOS rollback cannot unload
 a replacement it installed over nothing, the definition is kept and the error says so,
 matching `Uninstall`, so the job can still be booted out on a retry (#539).
+macOS is the only platform whose activating install unloads the running job before writing
+the new definition (Linux writes the unit before touching systemd; Windows creates the task
+before running it). The plist is now built before that unload, so a build failure leaves the
+job alone, and a write failure after it goes through `installFailure`, the same path a load
+failure takes: `rollbackInstall` restores the previous plist and reloads it if it was loaded,
+and the error states whether autostart was left in its previous working state (#619). A write
+failure passes `alreadyUnloaded`, so rollback skips a second unload that would re-read a plist
+the failed write may have truncated. `restoreDefinition` (shared with Linux) skips the rewrite
+when the file already matches the snapshot, because a read-only or `uchg` file refuses the
+install write before truncating and would refuse the restore the same way, which used to leave
+the agent unloaded. Whether writing the plist before unloading would be safe on macOS is an
+open question: nothing here settles whether `launchctl bootout` resolves the job from the
+loaded Label or by re-reading the plist at that path, so the order was not changed. Covered
+only through the `Runner` and filesystem test seams; real `launchd` behaviour needs hardware.
 Windows snapshot queries are best effort so an export or verbose-state query failure does
 not block an overwrite that Task Scheduler would accept. If activation then fails without
 a complete snapshot, the replacement definition is left in place; a pre-existing task is

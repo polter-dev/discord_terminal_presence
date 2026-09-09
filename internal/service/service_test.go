@@ -869,7 +869,7 @@ func TestDarwinRollbackSkipsReactivationWhenUnloadFails(t *testing.T) {
 		unloadCall:  {{out: "Unload failed: Operation not permitted\n", err: errors.New("exit status 5")}},
 	}}
 
-	err = darwinService{runner: runner}.rollbackInstall(path, previous, "true")
+	err = darwinService{runner: runner}.rollbackInstall(path, previous, "true", false)
 	if err == nil || !strings.Contains(err.Error(), "stop failed launch agent during rollback") {
 		t.Fatalf("rollbackInstall() error = %v, want stop failure", err)
 	}
@@ -910,7 +910,7 @@ func TestDarwinRollbackKeepsDefinitionWhenUnloadFailsWithoutPrevious(t *testing.
 		unloadCall:  {{out: "Unload failed: Operation not permitted\n", err: errors.New("exit status 5")}},
 	}}
 
-	err = darwinService{runner: runner}.rollbackInstall(path, previous, "false")
+	err = darwinService{runner: runner}.rollbackInstall(path, previous, "false", false)
 	kept := "service definition kept at " + path + " so uninstall can be retried"
 	if err == nil || !strings.Contains(err.Error(), kept) {
 		t.Fatalf("rollbackInstall() error = %v, want retry affordance %q", err, kept)
@@ -967,6 +967,50 @@ func TestDarwinInstallLeavesRestoredDefinitionUnloadedWhenPriorActivationUnknown
 	}
 	if got := countCall(runner.calls, loadCall); got != 1 {
 		t.Fatalf("load calls = %d, want only failed activation fallback; calls: %#v", got, runner.calls)
+	}
+}
+
+// #619: install boots the running agent out before writing the new plist. A
+// read-only plist makes that write fail, and the previous agent must come back.
+func TestDarwinInstallReloadsPreviousAgentWhenPlistWriteFails(t *testing.T) {
+	requireGOOS(t, "darwin")
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
+	home := fakeHome(t)
+	path := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	exe := "/opt/termp/termp"
+	original, err := BuildLaunchAgentPlist(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, original, 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	printCall := "launchctl print gui/" + userID() + "/" + Label
+	bootoutCall := "launchctl bootout gui/" + userID() + " " + path
+	bootstrapCall := "launchctl bootstrap gui/" + userID() + " " + path
+	runner := &recordingRunner{fail: map[string]error{}, out: map[string]string{printCall: "service data\n"}}
+
+	state, err := (Manager{GOOS: "darwin", Runner: runner, Executable: exe}).Install(exe, false)
+	if got := countCall(runner.calls, bootstrapCall); got != 1 {
+		t.Fatalf("bootstrap calls = %d, want the previous agent reloaded once; calls: %#v; error: %v", got, runner.calls, err)
+	}
+	if got := countCall(runner.calls, bootoutCall); got != 1 {
+		t.Fatalf("bootout calls = %d, want 1; calls: %#v", got, runner.calls)
+	}
+	if err == nil || !strings.Contains(err.Error(), "permission denied") || !strings.Contains(err.Error(), "restored and reloaded") {
+		t.Fatalf("Install() error = %v, want the write failure with a restored-and-reloaded verdict", err)
+	}
+	if !state.Installed {
+		t.Fatalf("Install() state = %+v, want Installed since the previous plist is still on disk", state)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(original) {
+		t.Fatalf("plist after failed install = %q, %v; want the previous definition unchanged", got, err)
 	}
 }
 
