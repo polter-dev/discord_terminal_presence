@@ -369,7 +369,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			continue
 		}
 
-		startedAt, changed := s.episodes.Observe(episodeKey, proc.TTY, now, s.config.IdleClearTimeout)
+		startedAt, changed := s.episodes.Observe(episodeKey, proc.TTY, now)
 		eligibleEpisodes[episodeKey] = struct{}{}
 		episodesChanged = episodesChanged || changed
 
@@ -787,8 +787,18 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection, persistEpisode
 			ticker.Reset(request.config.ScanInterval)
 		}
 		// Registry metadata and selection settings can change the rendered
-		// activity even when the selected IDs stay the same.
-		hasEmitted = false
+		// activity even when the selected IDs stay the same, so every
+		// applyReconfigure call site forces an immediate re-render
+		// (forceEmit = true, or an explicit scan(true)) rather than relying
+		// on this to trigger one. hasEmitted intentionally is NOT reset
+		// here (#615): it is the scan-failure guard's proxy
+		// for "is something currently published" (checked against the
+		// still-intact `emitted` Detection), and resetting it desynced the
+		// two, permanently disarming the None-on-persistent-failure clear
+		// after any reload. candidateSet = false remains: it only affects
+		// streak bookkeeping and debug logging for the change-detection
+		// path, both already bypassed here by the forced re-render, so it
+		// is redundant in the same way but not independently buggy.
 		candidateSet = false
 		close(request.done)
 	}

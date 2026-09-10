@@ -42,7 +42,11 @@ Package and application boundaries match the entries in `docs/context/`.
 - Selects one featured tool with pinning and activity-aware hysteresis, retains other
   present tools as a collection, and debounces changes.
 - Persists episode anchors so elapsed timers survive daemon restarts and valid config
-  reloads.
+  reloads. Resumption is keyed on process identity (tool, pid, and process create time):
+  if the same OS process instance is still running, its anchor resumes even when TTY
+  atime is unknowable (the Linux default) or `idle_clear_timeout` is disabled. A
+  trade-off follows from this: a session that went idle while the daemon was down
+  resumes its original start time rather than restarting the elapsed timer.
 
 ### `presence`
 
