@@ -791,7 +791,7 @@ func (d *Detector) run(ctx context.Context, out chan<- Detection, persistEpisode
 		// applyReconfigure call site forces an immediate re-render
 		// (forceEmit = true, or an explicit scan(true)) rather than relying
 		// on this to trigger one. hasEmitted intentionally is NOT reset
-		// here (#fix-detector-reload): it is the scan-failure guard's proxy
+		// here (#615): it is the scan-failure guard's proxy
 		// for "is something currently published" (checked against the
 		// still-intact `emitted` Detection), and resetting it desynced the
 		// two, permanently disarming the None-on-persistent-failure clear
