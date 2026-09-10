@@ -7,6 +7,29 @@ import (
 	"testing"
 )
 
+// hostPath rewrites a slash-shaped test path into one shaped like the HOST's
+// filesystem. Tables below stay readable as "/a/Projects" while every value
+// that actually reaches a function under test is separator-correct on whatever
+// runner executes it.
+//
+// This helper exists because of a rule that this file has now violated three
+// times, each time going red only on windows-latest: only CASE SENSITIVITY is
+// injected from goos. Separators, volume parsing and every structural behavior
+// of filepath.Rel still follow the host, and pathHasPrefixOn's doc comment says
+// so explicitly -- "Callers must pass host-shaped paths."
+//
+// A bare "/a/Projects" literal breaks that rule on a Windows host three ways at
+// once: filepath.Clean rewrites it to `\a\Projects`, filepath.Join builds
+// `\a\Projects\termp`, and neither is ever equal to the forward-slash literal
+// the test compares against. The result is a test that asserts something
+// different on Windows than it does on Unix -- so it fails there for a reason
+// that has nothing to do with the behavior under test. Route every path literal
+// in this file through hostPath (or build it with filepath.Join/t.TempDir) so
+// all three hosts assert the same thing.
+func hostPath(path string) string {
+	return filepath.FromSlash(path)
+}
+
 // allowlistTool builds a resolved tool whose only privacy restriction is the
 // given allowlist, so directoryAllowedOn's answer is entirely about path
 // canonicalization.
@@ -196,11 +219,15 @@ func TestDirectoryAllowlistUnresolvableCwdFailsClosed(t *testing.T) {
 // unit-level guard on the fold: the canonicalization must be byte-identical to
 // filepath.Clean on Linux and the BSDs, so #624's fix cannot change what those
 // platforms authorize.
+//
+// The inputs deliberately arrive uncleaned (the ".." row) so the assertion
+// covers the whole of canonicalPrivacyPathOn's non-folding branch rather than
+// just its return value for an already-normalized path.
 func TestCanonicalPrivacyPathOnLeavesCaseSensitivePlatformsAlone(t *testing.T) {
 	paths := []string{
-		filepath.Join("/home", "Alice", "Projects"),
-		filepath.Join("/home", "alice", "projects"),
-		filepath.Join("/srv", "Mixed", "..", "Case"),
+		hostPath("/home/Alice/Projects"),
+		hostPath("/home/alice/projects"),
+		hostPath("/srv/Mixed/../Case"),
 	}
 	for _, goos := range []string{"linux", "freebsd", "openbsd", "netbsd"} {
 		for _, path := range paths {
@@ -222,6 +249,11 @@ func TestCanonicalPrivacyPathOnLeavesCaseSensitivePlatformsAlone(t *testing.T) {
 // whatever the caller happened to do first, because a helper that is only
 // correct when its caller has already lowercased both arguments is the same
 // half-working abstraction that produced this bug.
+//
+// "Not pre-canonicalized" means not pre-folded and not pre-Cleaned; it does
+// NOT mean POSIX-shaped. The table is written with slashes for legibility and
+// converted to host shape by hostPath at the call, because separators follow
+// the host on every row regardless of tt.goos.
 func TestPathHasPrefixOnUsesInjectedCaseRules(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -259,12 +291,18 @@ func TestPathHasPrefixOnUsesInjectedCaseRules(t *testing.T) {
 		// filepath.Rel's structural behavior must survive unchanged.
 		{"linux parent is not a descendant", "linux", "/a", "/a/Projects", false},
 		{"linux uncleaned operands are cleaned", "linux", "/a/Projects/./x/../x", "/a/b/../Projects", true},
+		// The root prefix is meaningful on every host: hostPath turns "/"
+		// into Windows' volume-relative root `\`, filepath.Rel accepts it
+		// (both operands have an empty volume name and both are rooted), and
+		// Windows' filepath.Join does not double the separator when the first
+		// element already ends in one -- so Join(`\`, "foo") is `\foo`.
 		{"linux root prefix", "linux", "/foo", "/", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := pathHasPrefixOn(tt.goos, tt.path, tt.prefix); got != tt.want {
-				t.Fatalf("pathHasPrefixOn(%q, %q, %q) = %v, want %v", tt.goos, tt.path, tt.prefix, got, tt.want)
+			path, prefix := hostPath(tt.path), hostPath(tt.prefix)
+			if got := pathHasPrefixOn(tt.goos, path, prefix); got != tt.want {
+				t.Fatalf("pathHasPrefixOn(%q, %q, %q) = %v, want %v", tt.goos, path, prefix, got, tt.want)
 			}
 		})
 	}
@@ -281,6 +319,12 @@ func TestPathHasPrefixOnUsesInjectedCaseRules(t *testing.T) {
 // case and the exact re-derivation is the only thing upholding the invariant.
 // A Windows-host-only defect is not observable from a darwin host; what this
 // pins is the property, on whichever host runs it.
+//
+// Both the operands and the byte-for-byte expectation are host-shaped, which
+// is what makes "exact" mean the same thing on every runner: the expectation
+// already joins with filepath.Separator, so feeding it slash-shaped operands
+// while pathHasPrefixOn Cleaned them to backslashes made the two halves
+// disagree on Windows for reasons unrelated to case.
 func TestPathHasPrefixOnNonFoldingMatchesAreExact(t *testing.T) {
 	prefixes := []string{"/a/Projects", "/a/projects", "/A/Projects"}
 	paths := []string{
@@ -290,8 +334,9 @@ func TestPathHasPrefixOnNonFoldingMatchesAreExact(t *testing.T) {
 		"/a", "/b/Projects/termp",
 	}
 	for _, goos := range []string{"linux", "freebsd", "openbsd", "netbsd"} {
-		for _, prefix := range prefixes {
-			for _, path := range paths {
+		for _, rawPrefix := range prefixes {
+			for _, rawPath := range paths {
+				prefix, path := hostPath(rawPrefix), hostPath(rawPath)
 				got := pathHasPrefixOn(goos, path, prefix)
 				exact := path == prefix ||
 					strings.HasPrefix(path, prefix+string(filepath.Separator))
@@ -318,14 +363,39 @@ func TestPathCaseFoldsOnCoversEveryBuildPlatform(t *testing.T) {
 		"openbsd": false,
 		"netbsd":  false,
 	}
+
+	// Detect folding by the property the seam actually depends on -- two
+	// spellings that differ ONLY by case canonicalize to the same string --
+	// rather than by asking whether canonicalPrivacyPathOn changed its input.
+	//
+	// The "changed its input" form this replaces (canonicalPrivacyPathOn(goos,
+	// "/A/B") != "/A/B") conflated the case fold with filepath.Clean's own
+	// rewriting, so it did not measure folding at all. On a Windows host Clean
+	// turns "/A/B" into `\A\B`, which differs from the literal for EVERY goos,
+	// so openbsd was reported as folding. It is latently wrong on Unix too:
+	// any input Clean normalizes -- a trailing slash, a doubled separator, a
+	// ".." -- would report a fold that never happened. Comparing two spellings
+	// against each other has no such coupling, because Clean, EvalSymlinks and
+	// the separator all act identically on both operands and cancel out.
+	//
+	// Both spellings live under a nonexistent subdirectory of t.TempDir(), so
+	// EvalSymlinks fails identically for each and cannot introduce a
+	// difference of its own, and the shared parent means the only thing that
+	// can differ is the case of the two trailing elements.
+	base := filepath.Join(t.TempDir(), "no-such-root")
+	upper := filepath.Join(base, "A", "B")
+	lower := filepath.Join(base, "a", "b")
+
 	for goos, folds := range want {
 		if got := pathCaseFoldsOn(goos); got != folds {
 			t.Fatalf("pathCaseFoldsOn(%q) = %v, want %v", goos, got, folds)
 		}
 		// The two halves must never disagree about a platform.
-		canonicalFolds := canonicalPrivacyPathOn(goos, "/A/B") != "/A/B"
+		canonicalUpper := canonicalPrivacyPathOn(goos, upper)
+		canonicalLower := canonicalPrivacyPathOn(goos, lower)
+		canonicalFolds := canonicalUpper == canonicalLower
 		if canonicalFolds != folds {
-			t.Fatalf("canonicalPrivacyPathOn(%q) folds = %v, but pathCaseFoldsOn(%q) = %v: the seam's two halves disagree", goos, canonicalFolds, goos, folds)
+			t.Fatalf("canonicalPrivacyPathOn(%q) folded %q and %q to %q and %q (folds = %v), but pathCaseFoldsOn(%q) = %v: the seam's two halves disagree", goos, upper, lower, canonicalUpper, canonicalLower, canonicalFolds, goos, folds)
 		}
 	}
 }
@@ -344,6 +414,10 @@ func TestPathCaseFoldsOnCoversEveryBuildPlatform(t *testing.T) {
 // returns targ[t0:], a verbatim tail of the target path, so a folded match
 // yields the same rel as an exact one -- which is precisely why rel alone
 // cannot be trusted and prefix must be re-checked.
+//
+// rel goes through hostPath along with path and prefix: relMatchedExactly
+// rejoins rel onto prefix with filepath.Join, so a multi-element rel has to be
+// spelled with the host's separator for the rejoin to reproduce path.
 func TestRelMatchedExactlyRejectsFoldedTriples(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -363,12 +437,18 @@ func TestRelMatchedExactlyRejectsFoldedTriples(t *testing.T) {
 		// legitimate match on every platform.
 		{"exact single element", "/a/Projects/termp", "/a/Projects", "termp", true},
 		{"exact multi element", "/a/Projects/sub/termp", "/a/Projects", "sub/termp", true},
+		// Kept unscoped rather than restricted to Unix: hostPath maps "/" to
+		// `\`, Windows' volume-relative root, and Windows' filepath.Join
+		// strips leading separators from the next element after a trailing
+		// one, so Join(`\`, "foo") is `\foo` and not the UNC-looking `\\foo`.
+		// The row therefore asserts the same thing on every host.
 		{"exact under root", "/foo", "/", "foo", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := relMatchedExactly(tt.path, tt.prefix, tt.rel); got != tt.want {
-				t.Fatalf("relMatchedExactly(%q, %q, %q) = %v, want %v", tt.path, tt.prefix, tt.rel, got, tt.want)
+			path, prefix, rel := hostPath(tt.path), hostPath(tt.prefix), hostPath(tt.rel)
+			if got := relMatchedExactly(path, prefix, rel); got != tt.want {
+				t.Fatalf("relMatchedExactly(%q, %q, %q) = %v, want %v", path, prefix, rel, got, tt.want)
 			}
 		})
 	}
@@ -379,6 +459,11 @@ func TestRelMatchedExactlyRejectsFoldedTriples(t *testing.T) {
 // produces on THIS host must be one relMatchedExactly accepts. Without this,
 // the test above could drift into asserting something filepath.Rel never
 // returns.
+//
+// This is also the row-level check that the hand-written rels above are
+// host-shaped: it derives rel from the host's own filepath.Rel rather than
+// spelling it out, so if hostPath ever stopped matching what Rel produces,
+// this test fails on that host.
 func TestRelMatchedExactlyAgreesWithRealRel(t *testing.T) {
 	pairs := [][2]string{
 		{"/a/Projects", "/a/Projects/termp"},
@@ -387,7 +472,8 @@ func TestRelMatchedExactlyAgreesWithRealRel(t *testing.T) {
 		{"/a", "/a/b"},
 	}
 	for _, pair := range pairs {
-		prefix, path := filepath.Clean(pair[0]), filepath.Clean(pair[1])
+		prefix := filepath.Clean(hostPath(pair[0]))
+		path := filepath.Clean(hostPath(pair[1]))
 		rel, err := filepath.Rel(prefix, path)
 		if err != nil {
 			t.Fatalf("filepath.Rel(%q, %q) error = %v", prefix, path, err)

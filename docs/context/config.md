@@ -562,6 +562,53 @@ restating it. Note that the pre-existing allowlist assertions
 checks) never encoded the bug, but never exercised a case difference either — they pass
 only because `withConfigHome` already stores a symlink-resolved `HOME`, which is why the
 gap survived this long.
+
+**Test hygiene: host-shaped paths are not optional (three red Windows runs).** The
+"tests must still build host-shaped paths" rule above was recorded when the seam was
+first built and then violated three times in a row on this branch, each time producing a
+windows-latest-only failure with a green macOS and Ubuntu. The mechanism is always the
+same: a hardcoded POSIX literal such as `"/a/Projects"` is a *rooted, volume-relative*
+path on Windows that `filepath.Clean` rewrites to `\a\Projects` and `filepath.Join`
+extends as `\a\Projects\termp`, so any assertion comparing a function's output against
+the forward-slash literal it was handed compares two different things — and the test then
+asserts something different on Windows than it does on Unix. Production is never affected,
+because `relMatchedExactly` is only reachable through `pathHasPrefixOn`, which
+`filepath.Clean`s both operands before it gets there and so never sees a raw POSIX literal
+on a Windows host. `allowlist_case_test.go` now routes every path literal through a
+`hostPath` helper (`filepath.FromSlash`) at the point of use, which keeps the tables
+readable as `/a/Projects` while guaranteeing the value reaching the function under test is
+separator-correct on every runner; the `rel` operands go through it too, because
+`relMatchedExactly` rejoins `rel` onto `prefix` with `filepath.Join`. The `"/"`-prefix and
+`"/foo"` rows are deliberately kept unscoped rather than restricted to Unix: `hostPath`
+maps `/` to Windows' volume-relative root `\`, `filepath.Rel` accepts it (both operands
+have an empty volume name and both are rooted), and Windows' `filepath.Join` strips leading
+separators from the next element after a trailing one, so `Join(\, "foo")` is `\foo` and
+not the UNC-looking `\\foo` — the rows therefore assert the same thing everywhere.
+
+The same run exposed a **latent bug in the folding detector** inside
+`TestPathCaseFoldsOnCoversEveryBuildPlatform`. It inferred "this platform folds" from
+`canonicalPrivacyPathOn(goos, "/A/B") != "/A/B"` — that is, from whether the function
+changed its input at all, which conflates the case fold with `filepath.Clean`'s own
+rewriting and so never measured folding. On a Windows host `Clean` turns `/A/B` into
+`\A\B` for *every* `goos`, so openbsd was reported as folding and the seam-agreement
+assertion fired. It was wrong on Unix too, independent of the separator: any input `Clean`
+normalizes — a trailing slash, a doubled separator, a `..`, a `.` — makes the old
+expression report a fold that never happened (verified on a darwin host for all four
+shapes). The detector now compares two spellings that differ *only* by case against each
+other and asks whether they converge, which is the property the seam actually depends on
+and has no coupling to `Clean`, `EvalSymlinks` or the separator, since all three act
+identically on both operands and cancel out. Both spellings sit under a nonexistent
+subdirectory of `t.TempDir()` so `EvalSymlinks` fails identically for each and cannot
+introduce a difference of its own.
+
+Non-vacuity of this file is re-proven four ways, all on a darwin host: stubbing
+`relMatchedExactly` to `return true` fails all four folded-triple rows of
+`TestRelMatchedExactlyRejectsFoldedTriples` (the guard that is otherwise unobservable on a
+case-sensitive host); reverting `pathCaseFoldsOn` to `goos == "windows"` fails the darwin
+rows of the case-fold, symlink, fail-closed, prefix and predicate tests; splitting the seam
+so canonicalization folds only on windows while the predicate still claims darwin folds
+fires the new agreement assertion; and the old detector expression demonstrably reports
+"linux folds" for four normalizing inputs where the new one correctly reports it does not.
 `DirectoryAllowed` treats a zero-length `DirectoryAllowlist` as "no restriction configured"
 (allow every directory once `show_directory` is on) — this is intentional for a genuinely
 absent key, but before #449, validation-time path expansion silently dropped
