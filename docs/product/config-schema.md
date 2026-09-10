@@ -75,7 +75,7 @@ accent produces a warning and falls back to purple.
 | --- | --- | --- | --- |
 | `show_directory` | bool | `false` | Opt in to directory display |
 | `directory_allowlist` | string[] | unset | Allowed path prefixes; unset allows any path after opt-in |
-| `directory_basename_only` | bool | `true` | Show only the final path component; false shows at most the last two components |
+| `directory_basename_only` | bool | `true` | Show only the final path component; false shows at most the last two components. Either way, the home directory itself normally renders as `~` rather than the account name (falls back on an unusual volume or a redirected home) |
 
 Allowlist entries expand `~` and are compared by path components, not raw string prefix. An
 absent `directory_allowlist` key means "no restriction configured" (any path is allowed once

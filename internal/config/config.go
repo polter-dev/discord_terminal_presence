@@ -344,6 +344,8 @@ show_directory = %t         # Show the working directory on Discord. Off by defa
 #                              Unset (the default) means no restriction. A key that is present must
 #                              have at least one non-blank entry: an empty or blank-only list is rejected.
 directory_basename_only = %t # Show only the final directory name; false shows at most the last two segments.
+#                              Either way, your home folder itself normally shows as "~" rather than
+#                              your account name (may fall back on an unusual volume or a redirected home).
 
 [cta]
 enabled = %t                # Show the "What is this?" button when fewer than two tool buttons exist.

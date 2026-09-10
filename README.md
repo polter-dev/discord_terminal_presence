@@ -203,7 +203,13 @@ not a password or secret.
 Your directory is hidden by default. If you opt in with
 `show_directory = true`, you can restrict what appears with
 `directory_allowlist`; `directory_basename_only = true` shows only the folder
-name rather than its full path.
+name rather than its full path. Your home folder renders as `~` instead of
+your account name — that matters most with `directory_basename_only = false`,
+which shows the last two path segments, so a project stored directly in your
+home folder would otherwise appear as `<your account name>/myproject`. This
+match can miss on an unusual setup, such as a case-sensitive volume or a
+symlinked/redirected home directory, in which case it falls back to showing
+the account name.
 
 By default, `termp status` and `termp version` make an anonymous,
 unauthenticated request to GitHub Releases at most once every 24 hours to look
@@ -309,7 +315,7 @@ specific terminal device.
 |---|---|---|---|
 | `show_directory` | bool | `false` | Shows the folder only when enabled and allowed. |
 | `directory_allowlist` | string[] | `[]` | Allowed folders by path prefix (`~` works). Empty allows any folder. |
-| `directory_basename_only` | bool | `true` | Shows the folder name instead of its full path. |
+| `directory_basename_only` | bool | `true` | Shows the folder name instead of its full path. Either way, your home folder itself normally shows as `~` rather than your account name (may fall back on an unusual volume or a redirected home). |
 
 ### Button options (`[cta]`)
 

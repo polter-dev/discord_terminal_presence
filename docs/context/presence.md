@@ -155,6 +155,56 @@ Directory path reduction is centralized in `DirectoryDisplay`: basename-only mod
 one component and expanded mode returns at most the final two. Presence adds the folder
 emoji separately so non-payload consumers can reuse the same privacy boundary.
 
+`DirectoryDisplay(cwd, home string, basenameOnly bool)` takes the resolved home directory
+as an explicit parameter and never calls `os.UserHomeDir()` itself, so it stays a pure,
+directly-unit-testable function (`TestDirectoryDisplayHomeRedaction` in
+`activity_test.go`; a Windows-backslash variant lives in the `//go:build windows`-gated
+`activity_windows_test.go`, compiled/vetted only via `GOOS=windows` cross-compilation, not
+run on real Windows hardware here). This closes a privacy leak: `filepath.Base($HOME)` is
+normally the OS login name — on macOS that is usually the user's real name — so a cwd of
+exactly `$HOME` (the default-posture leak) or any project directly under `$HOME` in
+two-segment mode (`~/myproject` → `<account name>/myproject`) previously published that
+name to Discord even though the user only opted into "show my folder name," not "show my
+legal name," defeating a pseudonymous Discord handle. The fix compares cleaned, whole full paths through
+`homePathsEqual` (never a basename-only or prefix comparison, which would wrongly match a
+sibling like `/Users/alice2`), so a cwd equal to home renders as `~`, and in two-segment
+mode a parent equal to home renders as `~/name`; a grandchild of home (`~/a/b`) is
+unaffected because its parent is not home. An empty, unresolvable, or non-matching `home`
+value falls back to the pre-existing basename behavior rather than panicking or emitting an
+empty string. `DisplayOptions.Home` carries this value into
+`ActivityFromDetectionWithOmissions`/`directoryState`; `cmd/termp/main.go`'s
+`resolveHomeDir()` (used by both `buildActivity` and `debugDetectionDirectory`) is the one
+production boundary that calls `os.UserHomeDir()`, returning `""` on error so an
+unresolvable home degrades gracefully instead of failing. No test asserted the leaking
+behavior before this change: `DirectoryDisplay` had no direct unit test, and the existing
+indirect coverage via `ActivityFromDetection` never used a cwd equal to a home directory.
+
+**Case handling in the home comparison is per build platform.** The first cut of the fix
+compared exactly (case-sensitively), and its Windows test *asserted* that
+`C:\Users\Alice` with home `C:\Users\alice` should publish `Alice`. That assertion
+encoded the leak: APFS/HFS+ (macOS) and NTFS (Windows) are case-insensitive, so those are
+the same directory, and any casing difference between the detected cwd and
+`os.UserHomeDir()` made the home check miss and published the account name after all.
+`homePathsEqualOn(goos, a, b)` (in `activity.go`, the same GOOS-injected shape as
+`update.isDirectChildOf`) now folds case with `strings.EqualFold` when `goos` is `darwin`
+or `windows` and matches exactly everywhere else, because `/home/Alice` and `/home/alice`
+really are different directories on Linux and folding them would render another user's
+directory as `~`. Nothing but this one home comparison is folded. The decision is by
+platform, not by probing the volume, because `DirectoryDisplay` must stay pure (no stat,
+no `os.SameFile`); the accepted residual is that a case-sensitive volume on macOS, or a
+case-insensitive mount on Linux, is not detected. On macOS/Windows that residual can only
+over-hide (a differently-cased non-home directory renders as `~`), never reveal the
+account name, so it is strictly better than the exact-only behavior it replaces. Known
+`EqualFold`-vs-filesystem table disagreements are confined to exotic non-ASCII case pairs
+(e.g. U+212A KELVIN SIGN) and NFC/NFD normalization is not handled; both are documented on
+the helper. Tests: `TestHomePathsEqualOn` (`activity_test.go`) pins the decision for
+`darwin`, `windows`, `linux`, `freebsd`, and an unknown GOOS on one host, including
+sibling-prefix and drive-letter-case rows; the integrated `DirectoryDisplay` casing rows
+live in `//go:build`-gated `activity_darwin_test.go` (runs here),
+`activity_linux_test.go` and `activity_windows_test.go` (compiled/vetted via `GOOS=linux`
+/ `GOOS=windows` cross-compilation only; executed for real only by the ubuntu and windows
+CI jobs). The platform-independent rows stay in `TestDirectoryDisplayHomeRedaction`.
+
 `StatusProbe` checks cancellation before work and threads its context through discovery
 and dialing. A watcher goroutine forces a read/write deadline to `time.Now()` when the
 context ends so frame I/O unblocks promptly. The status-only `statusIOTimeout` remains

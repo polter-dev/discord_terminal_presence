@@ -568,6 +568,116 @@ func TestActivityFromDetectionDirectoryRenderingPrivacyCap(t *testing.T) {
 	}
 }
 
+// TestDirectoryDisplayHomeRedaction exercises DirectoryDisplay directly. No
+// direct unit test of this function existed before this change; the only
+// prior coverage was indirect (via ActivityFromDetection in
+// TestActivityFromDetectionDirectoryRenderingPrivacyCap above), and none of
+// those cases ever used a cwd equal to a home directory, so this is new
+// coverage rather than a changed assertion.
+//
+// Rows here must hold on every platform. Whether a cwd that differs from home
+// only by case is home depends on the build platform (folded on darwin and
+// windows, exact elsewhere), so those rows live in the //go:build-gated
+// activity_darwin_test.go, activity_linux_test.go, and
+// activity_windows_test.go; the platform decision itself is pinned for all
+// three GOOS values on one host by TestHomePathsEqualOn below.
+func TestDirectoryDisplayHomeRedaction(t *testing.T) {
+	tests := []struct {
+		name         string
+		cwd          string
+		home         string
+		basenameOnly bool
+		want         string
+	}{
+		{name: "home exactly matches, basename-only mode", cwd: "/Users/alice", home: "/Users/alice", basenameOnly: true, want: "~"},
+		{name: "home exactly matches, two-segment mode", cwd: "/Users/alice", home: "/Users/alice", basenameOnly: false, want: "~"},
+		{name: "home has a trailing slash", cwd: "/Users/alice", home: "/Users/alice/", basenameOnly: true, want: "~"},
+		{name: "cwd has a trailing slash", cwd: "/Users/alice/", home: "/Users/alice", basenameOnly: true, want: "~"},
+		{name: "parent equals home renders tilde-prefixed name", cwd: "/Users/alice/myproject", home: "/Users/alice", basenameOnly: false, want: "~/myproject"},
+		{name: "grandchild of home is unaffected in two-segment mode", cwd: "/Users/alice/a/b", home: "/Users/alice", basenameOnly: false, want: "a/b"},
+		{name: "grandchild of home is unaffected in basename-only mode", cwd: "/Users/alice/a/b", home: "/Users/alice", basenameOnly: true, want: "b"},
+		{name: "sibling sharing a name prefix is not treated as home", cwd: "/Users/alice2", home: "/Users/alice", basenameOnly: true, want: "alice2"},
+		{name: "sibling sharing a name prefix, two-segment parent", cwd: "/Users/alice2/project", home: "/Users/alice", basenameOnly: false, want: "alice2/project"},
+		{name: "empty home falls back to prior basename-only behavior", cwd: "/Users/alice", home: "", basenameOnly: true, want: "alice"},
+		{name: "empty home falls back to prior two-segment behavior", cwd: "/Users/alice", home: "", basenameOnly: false, want: "Users/alice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DirectoryDisplay(tt.cwd, tt.home, tt.basenameOnly)
+			if got != tt.want {
+				t.Fatalf("DirectoryDisplay(%q, %q, %v) = %q, want %q", tt.cwd, tt.home, tt.basenameOnly, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHomePathsEqualOn pins the per-platform case decision behind the home
+// redaction for every GOOS on one host: darwin and windows fold case (their
+// default filesystems are case-insensitive, so a cwd reported in a different
+// casing than $HOME is still the home directory and must not fall through to
+// publishing the account name), everything else matches exactly (/home/Alice
+// and /home/alice are different directories on Linux). The sibling-prefix
+// rows prove folding never degrades into a prefix match. Inputs are plain
+// strings, so no filepath semantics are involved and Windows drive-letter
+// spellings can be checked here without a GOOS=windows build.
+func TestHomePathsEqualOn(t *testing.T) {
+	tests := []struct {
+		name string
+		goos string
+		a, b string
+		want bool
+	}{
+		{name: "darwin exact match", goos: "darwin", a: "/Users/alice", b: "/Users/alice", want: true},
+		{name: "darwin case-different is home", goos: "darwin", a: "/Users/Alice", b: "/Users/alice", want: true},
+		{name: "darwin all-caps is home", goos: "darwin", a: "/USERS/ALICE", b: "/Users/alice", want: true},
+		{name: "darwin sibling prefix is not home", goos: "darwin", a: "/Users/alice2", b: "/Users/alice", want: false},
+		{name: "darwin case-different sibling prefix is not home", goos: "darwin", a: "/Users/ALICE2", b: "/Users/alice", want: false},
+		{name: "darwin home is not a prefix match of a longer cwd", goos: "darwin", a: "/Users/alice/x", b: "/Users/alice", want: false},
+		{name: "darwin cwd is not a prefix match of a longer home", goos: "darwin", a: "/Users/ali", b: "/Users/alice", want: false},
+		{name: "windows exact match", goos: "windows", a: `C:\Users\alice`, b: `C:\Users\alice`, want: true},
+		{name: "windows case-different is home", goos: "windows", a: `C:\Users\Alice`, b: `C:\Users\alice`, want: true},
+		{name: "windows drive letter case-different is home", goos: "windows", a: `c:\users\alice`, b: `C:\Users\alice`, want: true},
+		{name: "windows sibling prefix is not home", goos: "windows", a: `C:\Users\alice2`, b: `C:\Users\alice`, want: false},
+		{name: "windows case-different sibling prefix is not home", goos: "windows", a: `C:\Users\ALICE2`, b: `C:\Users\alice`, want: false},
+		{name: "linux exact match", goos: "linux", a: "/home/alice", b: "/home/alice", want: true},
+		{name: "linux case-different is a different directory", goos: "linux", a: "/home/Alice", b: "/home/alice", want: false},
+		{name: "linux sibling prefix is not home", goos: "linux", a: "/home/alice2", b: "/home/alice", want: false},
+		{name: "freebsd case-different is a different directory", goos: "freebsd", a: "/home/Alice", b: "/home/alice", want: false},
+		{name: "unknown platform defaults to exact", goos: "plan9", a: "/home/Alice", b: "/home/alice", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := homePathsEqualOn(tt.goos, tt.a, tt.b); got != tt.want {
+				t.Fatalf("homePathsEqualOn(%q, %q, %q) = %v, want %v", tt.goos, tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestActivityFromDetectionHomeDirectoryRendersTilde is the end-to-end
+// demonstration that a cwd of $HOME renders as "~" rather than the OS
+// account name once callers populate DisplayOptions.Home.
+func TestActivityFromDetectionHomeDirectoryRendersTilde(t *testing.T) {
+	options := DefaultDisplayOptions()
+	options.ShowDirectory = true
+	options.Home = "/Users/alice"
+	detection := detector.Detection{
+		Tool: registry.Tool{DisplayName: "Gemini CLI", ImageURL: "https://example.com/gemini.png"},
+		Cwd:  "/Users/alice",
+	}
+
+	activity, ok := ActivityFromDetection(detection, options)
+	if !ok {
+		t.Fatal("expected active detection to produce activity")
+	}
+	if activity.Details != "📁 ~" {
+		t.Fatalf("details = %q, want %q (home directory must render as ~, not the account name)", activity.Details, "📁 ~")
+	}
+	if strings.Contains(activity.Details, "alice") {
+		t.Fatalf("details leaked the account name: %q", activity.Details)
+	}
+}
+
 func TestActivityFromDetectionNone(t *testing.T) {
 	activity, ok := ActivityFromDetection(detector.Detection{None: true}, DefaultDisplayOptions())
 	if ok {
