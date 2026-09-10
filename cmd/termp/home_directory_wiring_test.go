@@ -12,10 +12,23 @@ import (
 )
 
 // TestHomeDirectoryWiringRendersTildeNotAccountName drives the real
-// production wiring for #620 end to end, through t.Setenv("HOME", ...) rather
-// than a hardcoded `home` string. t.Setenv wins over TestMain's package-wide
-// HOME redirect (main_testmain_test.go) for the duration of this test, which
-// is exactly what's needed here.
+// production wiring for #620 end to end, through the environment
+// os.UserHomeDir() actually reads rather than a hardcoded `home` string.
+// t.Setenv wins over TestMain's package-wide HOME redirect
+// (main_testmain_test.go) for the duration of this test, which is exactly
+// what's needed here.
+//
+// os.UserHomeDir() consults a *different* variable per platform (see
+// UserHomeDir in $GOROOT/src/os/file.go): %USERPROFILE% on windows, $home on
+// plan9, and $HOME everywhere else. Redirecting only HOME is therefore a no-op
+// on Windows: resolveHomeDir() kept returning the CI runner's real home, which
+// never equals this test's fake cwd, so the home comparison missed and
+// DirectoryDisplay fell back to filepath.Base — publishing accountName and
+// failing all three subtests on windows-latest alone. Both variables are set
+// below so the redirect actually takes on every platform this project builds
+// for (plan9 is not a supported target). This is the same defect class as
+// #616: a harness redirecting the Unix-shaped variable and silently missing
+// the Windows-native one.
 //
 // Every other test covering buildActivity/debugDetectionDirectory's directory
 // handling (TestBuildActivityDirectoryPrivacy,
@@ -31,11 +44,20 @@ import (
 // the captured failure output).
 func TestHomeDirectoryWiringRendersTildeNotAccountName(t *testing.T) {
 	const accountName = "wiring-test-account-620"
+	// t.TempDir() is natively shaped on each platform, so `home` carries a
+	// drive letter and backslashes under GOOS=windows (C:\...\<accountName>)
+	// and a POSIX path elsewhere. Every path below is derived from this one
+	// string via filepath.Join, so the cwd and the home directory can never
+	// diverge by separator, drive-letter casing, or 8.3 shortening. The
+	// hardcoded native-path rows live in internal/presence's per-GOOS tests
+	// (activity_windows_test.go, activity_darwin_test.go); this test's job is
+	// the env-to-production wiring, not path lexing.
 	home := filepath.Join(t.TempDir(), accountName)
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	tool := registry.Tool{ID: "test-tool", DisplayName: "Test Tool"}
 	cfg := config.Default()

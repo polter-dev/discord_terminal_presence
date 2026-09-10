@@ -707,6 +707,19 @@ not reach the default PID path. The production `connect.go`, `spawn.go`, `uninst
 and `update.go` defaults still do, which is why package-wide isolation is required even
 though their current focused tests inject dependencies.
 
+Redirecting the home directory in a test takes two variables, not one.
+`os.UserHomeDir()` reads `%USERPROFILE%` on windows, `$home` on plan9, and `$HOME`
+everywhere else (`UserHomeDir` in `$GOROOT/src/os/file.go`), so a harness that sets only
+`HOME` is a silent no-op on Windows: the code under test keeps resolving the runner's
+real home. `TestHomeDirectoryWiringRendersTildeNotAccountName` hit exactly that — it
+passed on macOS and Linux and failed all three subtests on `windows-latest`, because
+`resolveHomeDir()` returned the real home, the `homePathsEqual` check missed, and
+`DirectoryDisplay` fell back to `filepath.Base`, publishing the fake account name the
+test exists to catch (#620). Tests that redirect home now set `HOME` and `USERPROFILE`
+together, matching `withTermpConfigHome` and the `config` package's helpers. Note that
+`TestMain`'s package-wide redirect sets only `HOME`, so it does not shield Windows here;
+per-test redirection is what carries the guarantee. Same defect class as #616.
+
 Cost note: broadening eligibility means commands that load config for their own work now
 also pay `main()`'s pre-dispatch `LoadReadOnly` — one extra settled read, the same one
 `start`/`install`/`stop` already paid. `setup`/`settings` remain on the
