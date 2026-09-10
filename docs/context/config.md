@@ -452,11 +452,64 @@ same helpers as the point where a candidate directory is checked.
 
 Path canonicalization for both of those call sites lives in `canonicalPrivacyPath`, which
 since #624 delegates to `canonicalPrivacyPathOn(goos, path)` — the injected-GOOS shape
-already used by `update.isDirectChildOf` and `presence.homePathsEqualOn`, so every
-platform's decision is unit-testable on one host. `ResolvedTool.DirectoryAllowed` has the
-matching `directoryAllowedOn(goos, path)` seam for the same reason; note that path
-arithmetic (`pathHasPrefix`, via `filepath.Rel`) still uses the *host's* `filepath`, so
-tests must use host-shaped paths regardless of the injected `goos`.
+already used by `update.isDirectChildOf` and `presence.homePathsEqualOn`.
+`ResolvedTool.DirectoryAllowed` has the matching `directoryAllowedOn(goos, path)` seam.
+
+**What the GOOS seam actually injects, and what it does not.** #624 claimed the seam let
+"every platform's allowlist decision execute on one host". That was an overclaim, and
+windows-latest proved it on PR #630: `goos` reached `canonicalPrivacyPathOn` but *not* the
+prefix comparison, and `filepath.Rel` compares path elements with the **host's** case rules
+(`strings.EqualFold` in the `windows` build, `==` everywhere else). So on the Windows
+runner a comparison asked to behave like Linux folded case anyway, and all four non-folding
+platforms reported a match Linux would never make. Production was never wrong — there the
+injected `goos` is always `runtime.GOOS` — but the seam was dishonest, which made the
+Linux/BSD assertions (the ones proving the fold is not over-broad) worthless on that host.
+
+#630 completes the seam. Exactly two things now follow `goos`:
+
+- whether operands are case-folded and symlink-resolved (`canonicalPrivacyPathOn`), and
+- whether the prefix comparison is case-sensitive (`pathHasPrefixOn`).
+
+Both read one predicate, `pathCaseFoldsOn(goos)`, so the two halves cannot drift apart
+about a platform — the split decision is what caused the bug, and
+`TestPathCaseFoldsOnCoversEveryBuildPlatform` asserts the halves agree.
+
+Everything else still follows the **host's** `path/filepath`: separator, volume-name
+parsing, absolute-path rules, and every structural behaviour of `filepath.Rel` (`.`/`..`
+handling, and the cross-volume error Windows returns for two different drives). Tests must
+still build host-shaped paths — `t.TempDir()` does — because injecting `goos` selects that
+platform's *case rules only*; it does not turn the host into that platform.
+
+`pathHasPrefixOn` reaches the injected platform's answer in two steps. For folding
+platforms it lowercases both operands itself rather than trusting the caller to have done
+it, so a case-sensitive host reaches the same answer a Windows host does; at the allowlist
+call site the operands arrive already lowercased by `canonicalPrivacyPathOn`, so this is a
+no-op and darwin/windows behaviour is byte-for-byte what it was before. For non-folding
+platforms, after `filepath.Rel` accepts, `relMatchedExactly` re-derives the prefix Rel
+actually consumed and requires it to equal `prefix` exactly: Rel returns a *verbatim tail*
+of `path` in the descendant case, so rejoining it onto `prefix` reinstates `prefix`'s own
+spelling, and any case divergence the host folded away surfaces as an inequality. Every
+branch can only turn a match into a non-match, so the fail-closed property is preserved:
+nothing here can create a match `filepath.Rel` did not already make.
+
+`pathHasPrefix` (host-only, no seam) is gone; both callers now name their platform.
+`directoryAllowedOn` passes its injected `goos`; `allowlistCoverageLoosened` passes
+`runtime.GOOS`, which is what it always meant — it canonicalizes with host-GOOS
+`canonicalPrivacyPath`, so host semantics are correct there and are now stated rather than
+inherited. Behaviour at both call sites is unchanged in production.
+
+**Testing limitation, stated plainly.** A case-sensitive host cannot observe the
+non-folding fix through `pathHasPrefixOn`, because `filepath.Rel` never folds there and so
+never produces the folded `(path, prefix, rel)` triple that failed on Windows — deleting
+the check leaves this package green on darwin and red only on windows-latest. That is why
+`relMatchedExactly` is a separate function: `TestRelMatchedExactlyRejectsFoldedTriples`
+calls it directly with the triples a Windows host's `Rel` would hand it, which does fail on
+darwin when the check is removed, and `TestRelMatchedExactlyAgreesWithRealRel` ties those
+synthetic triples back to what `filepath.Rel` really returns on the running host so the
+first test cannot drift into asserting something Rel never produces.
+`TestPathHasPrefixOnNonFoldingMatchesAreExact` states the invariant as a property (a true
+result on a non-folding platform implies a byte-for-byte prefix); it cannot fail on a
+case-sensitive host and earns its keep on windows-latest.
 
 **On darwin and windows** the path is symlink-resolved (best effort) and lowercased;
 **on Linux and the BSDs** it is only cleaned. Before #624, darwin was treated like Linux.

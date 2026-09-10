@@ -1180,9 +1180,25 @@ func (r ResolvedTool) DirectoryAllowed(path string) bool {
 }
 
 // directoryAllowedOn is DirectoryAllowed with the build platform injected so
-// the per-platform canonicalization in canonicalPrivacyPathOn can be tested
-// for every platform on one host. Path arithmetic still uses the host's
-// filepath, so tests must use host-shaped paths regardless of goos.
+// every platform's allowlist decision can be exercised on one host.
+//
+// Exactly two things follow goos rather than the host: whether paths are
+// case-folded and symlink-resolved before comparison (canonicalPrivacyPathOn)
+// and whether the prefix comparison itself is case-sensitive
+// (pathHasPrefixOn). Both read the same pathCaseFoldsOn predicate, so they
+// cannot disagree about a platform.
+//
+// Everything else still follows the HOST's path/filepath: the separator,
+// volume-name parsing, and what counts as an absolute path. Tests must
+// therefore build host-shaped paths (t.TempDir() does) regardless of goos --
+// a Windows-shaped literal like `C:\x` is not a rooted path to a darwin
+// host's filepath and will not behave as one. Injecting goos does not turn
+// this host into that platform; it selects that platform's case rules only.
+//
+// #630 is why this is spelled out: goos was injected into the
+// canonicalization but not into the comparison, so on a Windows runner
+// filepath.Rel folded case for goos "linux" anyway and the seam reported
+// matches that Linux would never make.
 func (r ResolvedTool) directoryAllowedOn(goos, path string) bool {
 	if !r.Enabled || !r.ShowDirectory || path == "" {
 		return false
@@ -1192,7 +1208,7 @@ func (r ResolvedTool) directoryAllowedOn(goos, path string) bool {
 	}
 	cleanPath := canonicalPrivacyPathOn(goos, path)
 	for _, allowed := range r.DirectoryAllowlist {
-		if pathHasPrefix(cleanPath, canonicalPrivacyPathOn(goos, expandHome(allowed))) {
+		if pathHasPrefixOn(goos, cleanPath, canonicalPrivacyPathOn(goos, expandHome(allowed))) {
 			return true
 		}
 	}
@@ -1267,7 +1283,7 @@ func allowlistCoverageLoosened(prev, next []string) bool {
 	for _, nextPath := range nextPaths {
 		covered := false
 		for _, prevPath := range prevPaths {
-			if pathHasPrefix(nextPath, prevPath) {
+			if pathHasPrefixOn(runtime.GOOS, nextPath, prevPath) {
 				covered = true
 				break
 			}
@@ -1722,8 +1738,60 @@ func expandHome(path string) string {
 	return path
 }
 
-func pathHasPrefix(path, prefix string) bool {
+// pathCaseFoldsOn reports whether goos's default filesystems are
+// case-insensitive, and is the ONE place that decision is spelled out. Both
+// halves of an allowlist comparison -- canonicalPrivacyPathOn, which folds the
+// operands, and pathHasPrefixOn, which compares them -- read it, so the seam
+// cannot fold in one half and not the other. Splitting this predicate in two
+// is exactly what caused #630.
+//
+// darwin/APFS+HFS+ and windows/NTFS fold by default. Linux and the BSDs
+// (ext4, XFS, btrfs, ZFS, UFS) do not, and folding there would let one user's
+// allowlist entry authorize another user's directory. The per-volume
+// limitation canonicalPrivacyPathOn documents applies here too.
+func pathCaseFoldsOn(goos string) bool {
+	return goos == "darwin" || goos == "windows"
+}
+
+// pathHasPrefixOn reports whether path lies at or under prefix, using goos's
+// case rules rather than the host's.
+//
+// Injected from goos: case sensitivity, and nothing else.
+//
+// Still the host's: the separator, volume-name parsing, absolute-path rules,
+// and every structural behavior of filepath.Rel -- "." and ".." handling, and
+// the cross-volume error Rel returns on a Windows host for two different
+// drives. Callers must pass host-shaped paths.
+//
+// The subtlety this exists for: filepath.Rel compares path elements with the
+// HOST's case rules (strings.EqualFold in the windows build, == everywhere
+// else). Injecting goos into canonicalization alone was therefore not enough
+// -- on a Windows runner, a comparison asked to behave like Linux still folded
+// case and reported a match Linux would never make -- the windows-latest
+// failure that #630 fixes. Two steps close that:
+//
+//   - Folding platforms: both operands are lowercased up front, so a
+//     case-sensitive host reaches the same answer a Windows host does. At the
+//     allowlist call site the operands arrive already lowercased by
+//     canonicalPrivacyPathOn, so this is a no-op there and behavior on darwin
+//     and windows is byte-for-byte what it was before.
+//   - Non-folding platforms: after Rel accepts, the prefix it actually
+//     consumed is re-derived and required to equal prefix exactly. Rel returns
+//     a verbatim tail of path in the descendant case, so rejoining it onto
+//     prefix reinstates prefix's own spelling; any case divergence the host
+//     folded away then shows up as an inequality. On a case-sensitive host
+//     this check can never reject a match Rel accepted, because Rel accepted
+//     it byte-for-byte.
+//
+// Fail-closed is preserved: every branch here can only turn a match into a
+// non-match. Nothing in it can create a match that Rel did not already make.
+func pathHasPrefixOn(goos, path, prefix string) bool {
+	path = filepath.Clean(path)
 	prefix = filepath.Clean(prefix)
+	if pathCaseFoldsOn(goos) {
+		path = strings.ToLower(path)
+		prefix = strings.ToLower(prefix)
+	}
 	if path == prefix {
 		return true
 	}
@@ -1731,7 +1799,31 @@ func pathHasPrefix(path, prefix string) bool {
 	if err != nil {
 		return false
 	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	// Rel accepted, but on a Windows host it may have folded case to get
+	// there. Demand that the prefix it consumed matched exactly.
+	return relMatchedExactly(path, prefix, rel)
+}
+
+// relMatchedExactly reports whether rel -- as returned by
+// filepath.Rel(prefix, path) for a strict descendant -- was reached without
+// folding case, i.e. whether prefix appears in path byte for byte.
+//
+// filepath.Rel returns a verbatim tail of path in the descendant case, never a
+// re-spelling of it, so rejoining rel onto prefix reinstates prefix's own
+// spelling. If the host folded case to accept the match, the two spellings
+// differ and the rejoin does not reproduce path.
+//
+// This is split out because it is the only part of pathHasPrefixOn a
+// case-sensitive host cannot exercise through filepath.Rel: on darwin or Linux
+// Rel never folds, so it never hands this function a folded triple. Calling it
+// directly with the triple a Windows host would produce is the one way to test
+// #630's fix anywhere but windows-latest. See
+// TestRelMatchedExactlyRejectsFoldedTriples.
+func relMatchedExactly(path, prefix, rel string) bool {
+	return filepath.Join(prefix, rel) == path
 }
 
 // canonicalPrivacyPath normalizes one path so the directory allowlist's
@@ -1782,7 +1874,7 @@ func canonicalPrivacyPath(path string) string {
 // miss.
 func canonicalPrivacyPathOn(goos, path string) string {
 	path = filepath.Clean(path)
-	if goos != "windows" && goos != "darwin" {
+	if !pathCaseFoldsOn(goos) {
 		return path
 	}
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
