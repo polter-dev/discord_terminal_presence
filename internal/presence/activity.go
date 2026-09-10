@@ -3,6 +3,7 @@ package presence
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -470,11 +471,14 @@ func directoryState(cwd, home string, basenameOnly bool) string {
 // typical account is the OS login name (filepath.Base("/Users/alice") ==
 // "alice") — showing that would defeat a pseudonymous Discord handle for any
 // user opting into directory display. DirectoryDisplay stays a pure function
-// (no os.UserHomeDir call here); callers resolve home once and pass it in. An
-// empty, unresolvable, or non-matching home falls back to the pre-existing
-// basename behavior. Comparison is an exact (case-sensitive) string match on
-// cleaned paths — it never treats a differently-cased or merely
-// prefix-sharing path (e.g. a sibling directory "/Users/alice2") as home.
+// (no os.UserHomeDir call, no stat, no filesystem access); callers resolve
+// home once and pass it in. An empty, unresolvable, or non-matching home falls
+// back to the pre-existing basename behavior. Comparison is a whole-path match
+// on cleaned paths via homePathsEqual, never a basename or prefix match, so a
+// sibling directory such as "/Users/alice2" is never treated as home. Case is
+// folded on macOS and Windows, whose default filesystems are case-insensitive,
+// and matched exactly elsewhere; see homePathsEqualOn for why that decision is
+// made per build platform rather than per volume.
 func DirectoryDisplay(cwd, home string, basenameOnly bool) string {
 	clean := filepath.Clean(cwd)
 	base := filepath.Base(clean)
@@ -482,14 +486,14 @@ func DirectoryDisplay(cwd, home string, basenameOnly bool) string {
 		return ""
 	}
 	homeClean := cleanHomeDir(home)
-	if homeClean != "" && clean == homeClean {
+	if homeClean != "" && homePathsEqual(clean, homeClean) {
 		return "~"
 	}
 	if basenameOnly {
 		return base
 	}
 	parentDir := filepath.Dir(clean)
-	if homeClean != "" && parentDir == homeClean {
+	if homeClean != "" && homePathsEqual(parentDir, homeClean) {
 		return "~/" + base
 	}
 	parent := filepath.Base(parentDir)
@@ -508,6 +512,65 @@ func cleanHomeDir(home string) string {
 		return ""
 	}
 	return filepath.Clean(home)
+}
+
+// homePathsEqual reports whether two cleaned paths name the user's home
+// directory for the purpose of rendering it as "~". It is the only comparison
+// DirectoryDisplay uses for that decision; nothing else is case-folded.
+func homePathsEqual(a, b string) bool {
+	return homePathsEqualOn(runtime.GOOS, a, b)
+}
+
+// homePathsEqualOn is homePathsEqual with the build platform injected so every
+// platform's decision can be unit-tested on one host (the same shape as
+// update.isDirectChildOf). Both inputs must already be filepath.Clean'ed whole
+// paths: this is a whole-string comparison, never a prefix or basename one, so
+// "/Users/alice2" can never equal "/Users/alice" in either mode.
+//
+// On darwin and windows the comparison folds case, because the default
+// filesystems there (APFS, HFS+, NTFS) are case-insensitive: "/Users/Alice" and
+// "/Users/alice" are the same directory, and a cwd reported in a different
+// casing than os.UserHomeDir() is still the home directory. Without the fold,
+// a one-character casing difference made the home check miss and published
+// filepath.Base($HOME), the OS account name (on macOS usually the user's real
+// name), which is exactly the leak the "~" rendering exists to prevent (#620).
+// Everywhere else (Linux and the BSDs) the match stays exact, because
+// "/home/Alice" and "/home/alice" genuinely are different directories on ext4,
+// XFS, btrfs, ZFS, and UFS, and folding them would render another user's
+// directory as "~".
+//
+// Deliberate trade-off: case sensitivity is really a per-volume property, not a
+// per-platform one. A case-sensitive APFS volume on macOS, or a FAT/NTFS/CIFS
+// mount on Linux, is not detected. Detecting it would need a stat or an
+// os.SameFile identity check, and DirectoryDisplay is required to stay pure
+// (no filesystem access), so the platform default is used instead. That is
+// still strictly better than the exact-only status quo: on the default
+// (case-insensitive) volumes of macOS and Windows it closes a real leak of the
+// account name, and its only failure mode on an unusual case-sensitive volume
+// there is to render some other differently-cased directory as "~", which
+// hides a folder name and never reveals the account name. Linux behavior is
+// unchanged.
+//
+// strings.EqualFold is Unicode simple case folding, the same class of 1:1
+// mapping the case-insensitive filesystems apply (APFS folds via a Unicode
+// table, NTFS via its per-volume $UpCase table). The tables can disagree on a
+// handful of exotic pairs where their Unicode versions differ (e.g. U+212A
+// KELVIN SIGN vs "k", or scripts whose case pairs were added recently), so in
+// principle EqualFold can report equal for two names a given volume treats as
+// distinct (again fail-closed: "~" instead of a folder name) or distinct for
+// two names a volume folds together, which would require the account name
+// itself to contain such a character and the cwd to be reported in a different
+// spelling of it than $HOME. For ASCII and for every common-script case pair
+// the tables agree. Unicode normalization (NFC vs NFD on APFS/HFS+) is a
+// separate axis and is deliberately not handled here.
+func homePathsEqualOn(goos, a, b string) bool {
+	if a == b {
+		return true
+	}
+	if goos != "darwin" && goos != "windows" {
+		return false
+	}
+	return strings.EqualFold(a, b)
 }
 
 func buttonsFromTool(tool registry.Tool) []Button {
