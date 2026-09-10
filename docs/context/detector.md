@@ -251,3 +251,39 @@ detector bullet was updated to describe this. Regression coverage:
 `TestEpisodeRestartAfterAtimeGapStartsNewAnchor`, which asserted the pre-decision
 behavior (a same-key episode discarded after an atime gap) and was inverted rather than
 kept, since it encoded the now-superseded behavior as correct.
+
+That identity now has to be **known**, not merely matching (#623). `processIdentity`
+(`gopsutil.go`) leaves `Process.CreateTime` zero when `proc.CreateTime()` fails, and
+`EpisodeKey` used to format that through `UnixNano`, which overflows the zero
+`time.Time` to one constant — so every process sharing a tool and a pid produced the
+same key and looked, to the resume path, like the same OS process instance. That was
+survivable while `canResumeEpisode` also demanded TTY continuity and an atime delta as
+an independent cross-check; with identity as the sole basis for resuming it would hand
+an unrelated earlier session's start time to the elapsed timer. `EpisodeKey` now emits
+`episodeUnknownCreateTime` (`"unknown"`) for a zero create time instead of a
+timestamp-shaped constant, and `canResumeEpisode` takes the key as well as the
+`Episode` and requires `episodeIdentityKnown` before resuming. This is deliberately not
+a rollback of the 2026-09-09 decision: on Linux, where gopsutil reads creation time
+from `/proc/[pid]/stat`, no key changes and nothing stops resuming, so the
+relatime/noatime regression #617 fixed stays fixed — `TestEpisodeResumeRequiresKnownProcessIdentity`
+runs both cases through the identical relatime scenario (`AtimeKnown = false`) and
+differs only in the create time. **Upgrade path:** a `presence.json` written by an
+older build can still hold the old zero-create-time keys, and `episodeIdentityKnown`
+deliberately does *not* test for them — no key this build constructs can equal one
+(`EpisodeKey` only formats a create time that passed gopsutil's `millis > 0` check, and
+the overflow constant decodes to 1754), so a loaded legacy entry is unreachable for
+resumption rather than gated, and the first `EndAbsent` sweep drops it from the store
+and the next save from the file. Adding a second suffix test for it would be the same
+dead-logic-disguised-as-live the atime `||` branch was sent back for above.
+**Residual, deliberately not fixed here:** within a single daemon run, `Observe`'s
+already-observed fast path still returns the stored anchor for an unknown-identity key,
+so a pid recycled between two scans by the same tool would inherit the previous
+instance's anchor. Closing that would mean re-anchoring on every scan (a permanently
+restarting timer), which is worse than the bug; the same gap is documented on
+`enrichVerifyingInstance`. Regression coverage:
+`TestEpisodeResumeRequiresKnownProcessIdentity` (fails pre-fix on the unknown subtest
+only), `TestEpisodeLegacyZeroCreateTimeKeyDoesNotResume` (also fails pre-fix),
+`TestEpisodeUnknownCreateTimeAnchorIsStableWithinRun` (a guard against this fix's own
+failure mode, so it passes both before and after by design), and
+`TestEpisodeKeyIdentityKnown` (pins `EpisodeKey` and `episodeIdentityKnown` to the same
+encoding), all in `internal/detector/episode_identity_test.go`.
