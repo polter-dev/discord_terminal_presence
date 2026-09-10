@@ -449,6 +449,66 @@ both `HOME` and `USERPROFILE`, matching `os.UserHomeDir` on Unix and Windows res
 `permissivenessLoosened` compares the same resolved privacy posture dimensions through
 `Config.Resolve`; for allowlist coverage it expands and canonicalizes entries using the
 same helpers as the point where a candidate directory is checked.
+
+Path canonicalization for both of those call sites lives in `canonicalPrivacyPath`, which
+since #624 delegates to `canonicalPrivacyPathOn(goos, path)` — the injected-GOOS shape
+already used by `update.isDirectChildOf` and `presence.homePathsEqualOn`, so every
+platform's decision is unit-testable on one host. `ResolvedTool.DirectoryAllowed` has the
+matching `directoryAllowedOn(goos, path)` seam for the same reason; note that path
+arithmetic (`pathHasPrefix`, via `filepath.Rel`) still uses the *host's* `filepath`, so
+tests must use host-shaped paths regardless of the injected `goos`.
+
+**On darwin and windows** the path is symlink-resolved (best effort) and lowercased;
+**on Linux and the BSDs** it is only cleaned. Before #624, darwin was treated like Linux.
+Because macOS's default APFS and HFS+ volumes are case-insensitive exactly like NTFS, an
+allowlist entry written `~/Projects` did not match a cwd reported as
+`/Users/alice/projects`, and the directory was silently dropped from the published
+activity with nothing explaining why. That direction is fail-closed — a usability defect,
+not a leak — but it is the same per-platform case-sensitivity assumption that caused the
+#620 home-directory miss. Linux and the BSDs must stay case-sensitive: `/home/Alice` and
+`/home/alice` genuinely are different directories on ext4, XFS, btrfs, ZFS and UFS, so
+folding there would let one user's allowlist entry authorize another user's directory,
+which is the opposite (fail-open) defect.
+
+Symlink resolution was extended to darwin alongside the fold, rather than left
+windows-only, because macOS keeps `/tmp`, `/var` and `/etc` as symlinks into `/private`:
+a cwd reported as `/private/var/…` and an entry written `/var/…` are the same directory
+spelled two ways. `filepath.EvalSymlinks` touches the filesystem and fails for a path that
+does not exist (a typo, an unmounted volume, a directory deleted out from under a still
+running process); on failure the cleaned literal path is kept, which can only *lose* a
+match, never create one, so the failure mode stays fail-closed. The visible cost is that a
+cwd which can no longer be resolved while its allowlist entry still can is now hidden
+where it previously matched — Windows has always behaved that way, and
+`TestDirectoryAllowlistUnresolvableCwdFailsClosed` pins it deliberately. Resolution was
+*not* extended to Linux/BSD: nothing reported a miss there, and it would add filesystem
+access to a comparison that does none today.
+
+Cost of the added filesystem access, by call site: `DirectoryAllowed` runs once per scan
+interval per detection in the daemon loop (`cmd/termp/main.go` `buildActivity` /
+`debugDetectionDirectory`), holding no lock, so it pays `1 + len(allowlist)` `EvalSymlinks`
+walks per scan on darwin/windows. `allowlistCoverageLoosened` runs inside
+`acceptReloadLocked` **while the manager's write lock is held**, but its `slices.Equal`
+fast path returns before canonicalizing anything when the allowlist is unchanged, which is
+the steady state on every reload poll — the syscalls are only paid on an edit that
+actually changes an allowlist.
+
+Deliberate limitation, identical to the one `presence.homePathsEqualOn` documents: case
+sensitivity is really a per-volume property, not a per-platform one. A case-sensitive APFS
+volume on macOS is not detected; detecting it would need an `os.SameFile` identity check
+per candidate prefix. On such a volume a differently-cased sibling directory could satisfy
+an allowlist entry, which is the accepted cost of closing the far more common miss on the
+default volume.
+
+The #624 coverage is `internal/config/allowlist_case_test.go`, which drives darwin,
+windows, linux and three BSDs through the injected-GOOS seam on one host. Fail-before was
+proven by keeping the seam and reverting only the predicate to `goos != "windows"`: the
+darwin case-fold, darwin symlink and darwin fail-closed assertions all fail, while every
+linux/BSD/windows assertion passes, so the tests discriminate the fix rather than
+restating it. Note that the pre-existing allowlist assertions
+(`TestPrivacyDirectoryRules` and the `canonicalTestPath(t, os.Getenv("HOME"))` round-trip
+checks) never encoded the bug, but never exercised a case difference either — they pass
+only because `withConfigHome` already stores a symlink-resolved `HOME`, which is why the
+gap survived this long.
 `DirectoryAllowed` treats a zero-length `DirectoryAllowlist` as "no restriction configured"
 (allow every directory once `show_directory` is on) — this is intentional for a genuinely
 absent key, but before #449, validation-time path expansion silently dropped

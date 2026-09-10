@@ -1176,15 +1176,23 @@ func (c Config) Resolve(tool registry.Tool) ResolvedTool {
 // DirectoryAllowed reports whether path may be displayed under the effective privacy rules.
 // It does not format path for display.
 func (r ResolvedTool) DirectoryAllowed(path string) bool {
+	return r.directoryAllowedOn(runtime.GOOS, path)
+}
+
+// directoryAllowedOn is DirectoryAllowed with the build platform injected so
+// the per-platform canonicalization in canonicalPrivacyPathOn can be tested
+// for every platform on one host. Path arithmetic still uses the host's
+// filepath, so tests must use host-shaped paths regardless of goos.
+func (r ResolvedTool) directoryAllowedOn(goos, path string) bool {
 	if !r.Enabled || !r.ShowDirectory || path == "" {
 		return false
 	}
 	if len(r.DirectoryAllowlist) == 0 {
 		return true
 	}
-	cleanPath := canonicalPrivacyPath(path)
+	cleanPath := canonicalPrivacyPathOn(goos, path)
 	for _, allowed := range r.DirectoryAllowlist {
-		if pathHasPrefix(cleanPath, canonicalPrivacyPath(expandHome(allowed))) {
+		if pathHasPrefix(cleanPath, canonicalPrivacyPathOn(goos, expandHome(allowed))) {
 			return true
 		}
 	}
@@ -1726,9 +1734,55 @@ func pathHasPrefix(path, prefix string) bool {
 	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// canonicalPrivacyPath normalizes one path so the directory allowlist's
+// prefix comparisons behave the way the underlying filesystem does. See
+// canonicalPrivacyPathOn for the per-platform decision and its limits.
 func canonicalPrivacyPath(path string) string {
+	return canonicalPrivacyPathOn(runtime.GOOS, path)
+}
+
+// canonicalPrivacyPathOn is canonicalPrivacyPath with the build platform
+// injected so every platform's decision can be unit-tested on one host (the
+// same shape as update.isDirectChildOf and presence.homePathsEqualOn).
+//
+// On darwin and windows the returned path is symlink-resolved (best effort)
+// and lowercased, because the default filesystems there (APFS, HFS+, NTFS)
+// are case-insensitive: "~/Projects" and "/Users/alice/projects" name the same
+// directory, and an allowlist entry whose spelling differs from the detected
+// cwd only by case must still match. Without the fold the entry silently does
+// not match and the directory is dropped from the published activity with
+// nothing explaining why (#624). darwin was previously treated like Linux
+// here, which is the same per-platform case-sensitivity assumption that caused
+// the home-directory miss in #620.
+//
+// Everywhere else (Linux and the BSDs) the path is only cleaned. Folding case
+// there would be a privacy defect rather than a fix: "/home/Alice" and
+// "/home/alice" genuinely are different directories on ext4, XFS, btrfs, ZFS,
+// and UFS, so folding would let one user's allowlist entry authorize another
+// user's directory. Symlink resolution is likewise left off on those
+// platforms; nothing reported a miss there, and it would add filesystem
+// access to a comparison that does none today.
+//
+// Symlink resolution is applied on darwin for the same reason it was already
+// applied on windows: macOS keeps /tmp, /var, and /etc as symlinks into
+// /private, so a cwd reported as "/private/var/…" and an allowlist entry
+// written as "/var/…" are the same directory spelled two ways. EvalSymlinks
+// touches the filesystem and fails for a path that does not exist (a typo, an
+// unmounted volume, a directory deleted out from under a still-running
+// process); on failure the cleaned literal path is kept, which can only lose a
+// match, never create one, so the failure mode stays fail-closed — the
+// directory is hidden — which is the safe direction for a privacy gate.
+//
+// Deliberate limitation, the same one presence.homePathsEqualOn documents:
+// case sensitivity is really a per-volume property. A case-sensitive APFS
+// volume on macOS is not detected, and detecting it would need an os.SameFile
+// identity check per candidate prefix. The cost of the platform default here
+// is that on such a volume a differently-cased sibling directory could satisfy
+// an allowlist entry; on the default case-insensitive volume it closes a real
+// miss.
+func canonicalPrivacyPathOn(goos, path string) string {
 	path = filepath.Clean(path)
-	if runtime.GOOS != "windows" {
+	if goos != "windows" && goos != "darwin" {
 		return path
 	}
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
