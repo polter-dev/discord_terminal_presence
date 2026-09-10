@@ -165,9 +165,11 @@ func (s *EpisodeStore) LastAtime(key string) (time.Time, bool) {
 }
 
 // Observe returns the episode anchor and whether the store should be persisted.
-// A loaded episode is preserved only when its tty identity and atime history make
-// continuity clear. Atime-only saves are throttled against the last saved snapshot.
-func (s *EpisodeStore) Observe(key string, tty TTYInfo, now time.Time, timeout time.Duration) (time.Time, bool) {
+// A loaded episode's anchor is resumed whenever its key matches (see
+// canResumeEpisode): that key identifies the same OS process instance, which
+// is sufficient on its own. Atime-only saves are throttled against the last
+// saved snapshot.
+func (s *EpisodeStore) Observe(key string, tty TTYInfo, now time.Time) (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.Episodes == nil {
@@ -193,7 +195,7 @@ func (s *EpisodeStore) Observe(key string, tty TTYInfo, now time.Time, timeout t
 	}
 
 	anchor := now
-	if loaded, ok := s.Episodes[key]; ok && canResumeEpisode(loaded, tty, timeout) {
+	if loaded, ok := s.Episodes[key]; ok && canResumeEpisode(loaded) {
 		anchor = loaded.PresentSince
 	}
 	episode := Episode{PresentSince: anchor}
@@ -206,13 +208,21 @@ func (s *EpisodeStore) Observe(key string, tty TTYInfo, now time.Time, timeout t
 	return anchor, true
 }
 
-func canResumeEpisode(episode Episode, tty TTYInfo, timeout time.Duration) bool {
-	if episode.PresentSince.IsZero() || timeout <= 0 || tty.State != TTYResolved || !tty.AtimeKnown ||
-		episode.TTY == "" || episode.TTY != tty.Path || episode.LastAtime.IsZero() {
-		return false
-	}
-	delta := tty.Atime.Sub(episode.LastAtime)
-	return delta >= 0 && delta <= timeout
+// canResumeEpisode reports whether a loaded episode should resume its
+// PresentSince anchor instead of starting a fresh one. The caller only
+// reaches here after finding this exact episode under its process-identity
+// key (tool, pid, and process create time, see EpisodeKey) - a match on that
+// key alone already proves this is the identical OS process instance that
+// started the episode, not a coincidentally-matching new one. Owner decision
+// (2026-09-09, see docs/context/detector.md): that identity is sufficient by
+// itself to resume, regardless of whether TTY atime is knowable (relatime and
+// noatime mounts mean linuxTTYAtimeSource.Atime routinely can't report it) or
+// whether idle_clear_timeout is configured at all. Before this, both were
+// hard preconditions, so on a stock Linux relatime mount AtimeKnown was never
+// true and every anchor was discarded on every daemon restart, autostart
+// relaunch, and auto-update restart.
+func canResumeEpisode(episode Episode) bool {
+	return !episode.PresentSince.IsZero()
 }
 
 func (s *EpisodeStore) EndAbsent(eligible map[string]struct{}) bool {
