@@ -412,6 +412,51 @@ func TestDefaultPathWindowsMigration(t *testing.T) {
 	})
 }
 
+// TestDefaultPathWindowsStaysWithinRedirectedTree exercises, through the
+// injectable pathResolver seam, the containment property cmd/termp's
+// TestMain relies on for its Windows-branch guarantee (issue #616):
+// defaultPathFor's `goos == "windows"` branch is an early return before the
+// XDG_CONFIG_HOME check, so on that platform only userConfigDir (backed by
+// %AppData% via os.UserConfigDir) and userHomeDir (backed by %USERPROFILE%
+// via os.UserHomeDir, used for the legacy-migration fallback) determine
+// where config.toml lands. This test cannot run the Windows branch on a
+// non-Windows host through os.UserConfigDir/os.UserHomeDir directly — it
+// drives defaultPathFor's windows path with resolver functions standing in
+// for them instead. The first case proves the resolved path stays inside a
+// scratch tree when both are redirected into it, matching what TestMain now
+// does; the second proves the same containment assertion actually fails
+// when they are not redirected (the pre-#616-fix TestMain), so the first
+// case is not a tautology.
+func TestDefaultPathWindowsStaysWithinRedirectedTree(t *testing.T) {
+	tree := t.TempDir()
+	outside := t.TempDir()
+	withinTree := func(path string) bool {
+		rel, err := filepath.Rel(tree, path)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+
+	redirected := pathResolver{
+		goos:          "windows",
+		getenv:        func(string) string { return "" },
+		userConfigDir: func() (string, error) { return filepath.Join(tree, "AppData", "Roaming"), nil },
+		userHomeDir:   func() (string, error) { return filepath.Join(tree, "home"), nil },
+		stat:          os.Stat,
+		copyFile:      copyFileBestEffort,
+	}
+	got := defaultPathFor(redirected)
+	if !withinTree(got) {
+		t.Fatalf("defaultPathFor with APPDATA/USERPROFILE redirected into the tree = %q, want a path inside %q", got, tree)
+	}
+
+	unredirected := redirected
+	unredirected.userConfigDir = func() (string, error) { return filepath.Join(outside, "AppData", "Roaming"), nil }
+	unredirected.userHomeDir = func() (string, error) { return filepath.Join(outside, "home"), nil }
+	got = defaultPathFor(unredirected)
+	if withinTree(got) {
+		t.Fatalf("defaultPathFor with APPDATA/USERPROFILE left unredirected unexpectedly stayed inside %q (got %q) — the containment assertion above would not have caught a missing TestMain redirect", tree, got)
+	}
+}
+
 func TestLoadMissingFileUsesDefaults(t *testing.T) {
 	path := withConfigHome(t)
 	cfg, err := Load()
