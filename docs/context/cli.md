@@ -480,14 +480,24 @@ could exit before the detector's deferred episode-store save
 (`internal/detector.(*Detector).run`, which calls `saveEpisodes(episodes)` before its
 `defer close(out)` runs, since defers execute LIFO and `close(out)` was registered first)
 had actually happened. `awaitDetectorShutdown` drains `detections` until the detector
-closes it, which — like the translator's wait — cannot deadlock: every point where the
-detector might otherwise block on sending (`listProcesses`/`SelectWithEnricher` themselves
-are bounded scan work, not indefinite waits) also selects on `ctx.Done()`. Loss without
-this fix was already bounded (incremental episode saves happen on every
-`episodesChanged` scan, so at most one scan interval of `LastAtime`, plus a possible
-orphaned `presence.json.tmp-*` scavenged after an hour) — this is a low-severity
-correctness fix, not a data-loss emergency, but it closes the same "goroutine never
-awaited on shutdown" defect class as #593 for the detector side.
+closes it — but unlike the translator's wait above, this one is bounded, not guaranteed to
+return: `listProcesses` (`internal/detector/detector.go`, called at the top of every scan)
+takes no context and is an ordinary blocking call rather than a `select`, so a scan stuck
+there leaves the detector unable to observe `ctx.Done()` until it returns, which would hang
+this drain — and daemon shutdown — indefinitely. An earlier version of this fix claimed the
+wait "cannot deadlock" by analogy to `finalizeAfterTranslator`; that analogy does not hold,
+because the translator only ever blocks on channel selects while the detector blocks on a
+real syscall. `detectorShutdownTimeout` (`cmd/termp/main.go`, 3s) bounds the wait instead:
+if it fires, `awaitDetectorShutdown` gives up, logs that the episode save may not have
+completed, and lets `run()` return rather than hang the process on exit. Loss on the
+ordinary path (the wait completes before the timeout) was already bounded (incremental
+episode saves happen on every `episodesChanged` scan, so at most one scan interval of
+`LastAtime`, plus a possible orphaned `presence.json.tmp-*` scavenged after an hour); a
+timeout firing adds, at most, the loss of whatever the detector's deferred save would have
+captured — this is a low-severity correctness fix, not a data-loss emergency, but it closes
+the same "goroutine never awaited on shutdown" defect class as #593 for the detector side.
+The ordering is pinned by `cmd/termp/detector_shutdown_ordering_test.go`, whose `-race`
+case reports a data race on an episode-save stand-in if the wait is removed (#618).
 
 Config initialization safety is documented in [`config.md`](config.md), terminal
 rendering in [`tui.md`](tui.md), update cache/detection in [`update.md`](update.md), and
@@ -746,7 +756,44 @@ was extended (not just the PID path) to assert `config.DefaultPath()`,
 `usage.StatePath()`, `detector.EpisodeStatePath()`, and `daemonDiscordStatePath()` all
 resolve inside that tree; verified to fail on the pre-fix `TestMain` when
 `XDG_STATE_HOME`/`XDG_CONFIG_HOME` are exported to a directory outside it, and to pass
-after the fix whether or not those two variables are exported.
+after the fix whether or not those two variables are exported — on Unix (`HOME`/XDG)
+semantics. That claim does not extend to Windows: `config.defaultPathFor` and the
+Windows-branch functions in `usage.go`/`episode.go` take an early
+`goos == "windows"` return before ever consulting `XDG_CONFIG_HOME`/`XDG_STATE_HOME`
+(`internal/config/config.go`, `internal/usage/usage.go`,
+`internal/detector/episode.go`), so redirecting those two variables is a no-op on that
+platform, and the four-path assertion in `TestPIDFilePathStaysInsideTestTree` never
+actually exercises the Windows branch of any of them — it only runs whatever branch
+`runtime.GOOS` selects for the host `go test` is built for, and that host is never
+Windows here (see the doc comments on `TestMain` and `TestPIDFilePathStaysInsideTestTree`
+for what those checks do and do not cover).
+
+**Windows follow-up (#616).** With only the redirects above, `config.DefaultPath()` on
+Windows still resolved through `os.UserConfigDir` (`%AppData%`) and, for the
+legacy-migration fallback, `os.UserHomeDir` (`%USERPROFILE%`) — neither of which `TestMain`
+touched, so `go test ./cmd/termp` could still read and write a developer's real
+`config.toml` on that platform even after the XDG redirect landed; `usage.StatePath()` and
+`detector.EpisodeStatePath()` were narrower gaps, since their native path already goes
+through `os.UserCacheDir` (`%LocalAppData%`, already redirected via `LOCALAPPDATA`) and
+only their legacy-fallback path reads `%USERPROFILE%` — live only when a legacy
+`usage.json`/`presence.json` already exists at the real location. `TestMain` now also
+redirects `APPDATA` and `USERPROFILE` into the same temporary tree (Windows environment
+variable lookups are case-insensitive, so this is read correctly by `os.UserConfigDir`'s
+and `os.UserHomeDir`'s internal `Getenv("AppData")`/`Getenv("USERPROFILE")` on a real
+Windows host). Because this repository cannot execute a Windows test binary, the
+containment property is instead proven through each package's injectable resolver seam —
+`pathResolver` (`internal/config`), `statePathResolver` (`internal/usage`), and
+`episodePathResolver` (`internal/detector`) — with a new test in each package
+(`TestDefaultPathWindowsStaysWithinRedirectedTree`,
+`TestStatePathWindowsStaysWithinRedirectedTree`,
+`TestEpisodeStatePathWindowsStaysWithinRedirectedTree`) that drives the `goos: "windows"`
+branch directly: one case redirects the resolver's `userConfigDir`/`userCacheDir` and
+`userHomeDir` into a scratch tree and asserts containment, and a second case leaves them
+pointing outside it (usage/detector's second case also plants a real legacy state file
+outside the tree with a forced migration failure, reproducing "a legacy file exists at the
+real `%USERPROFILE%` location") and asserts the same containment check fails — proving the
+first case is not a tautology and that these tests would have caught the pre-#616-fix
+`TestMain`.
 
 Cost note: broadening eligibility means commands that load config for their own work now
 also pay `main()`'s pre-dispatch `LoadReadOnly` — one extra settled read, the same one

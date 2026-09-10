@@ -195,6 +195,61 @@ func TestStatePathWindowsMigration(t *testing.T) {
 	})
 }
 
+// TestStatePathWindowsStaysWithinRedirectedTree exercises, through the
+// injectable statePathResolver seam, the containment property cmd/termp's
+// TestMain relies on for its Windows-branch guarantee (issue #616).
+// windowsStatePathFor's native path is already anchored to userCacheDir
+// (backed by %LocalAppData% via os.UserCacheDir, which TestMain redirects
+// via LOCALAPPDATA), but its legacy-migration fallback also consults
+// userHomeDir (backed by %USERPROFILE% via os.UserHomeDir) whenever a
+// legacy usage.json already exists there and cannot be copied forward — the
+// exact "a legacy file exists at the real %USERPROFILE% location" scenario
+// issue #616 called out. This test cannot run the Windows branch on a
+// non-Windows host directly — it drives statePathFor's windows path with
+// resolver functions standing in for os.UserCacheDir/os.UserHomeDir
+// instead. The first case proves the resolved path stays inside a scratch
+// tree when both are redirected into it and no legacy file exists yet,
+// matching what TestMain now does; the second proves the same containment
+// assertion actually fails once userHomeDir is left pointing outside the
+// tree at a real pre-existing legacy file whose migration fails — the
+// pre-#616-fix TestMain state — so the first case is not a tautology.
+func TestStatePathWindowsStaysWithinRedirectedTree(t *testing.T) {
+	tree := t.TempDir()
+	outside := t.TempDir()
+	withinTree := func(path string) bool {
+		rel, err := filepath.Rel(tree, path)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+
+	redirected := statePathResolver{
+		goos:         "windows",
+		getenv:       func(string) string { return "" },
+		userCacheDir: func() (string, error) { return filepath.Join(tree, "AppData", "Local"), nil },
+		userHomeDir:  func() (string, error) { return filepath.Join(tree, "home"), nil },
+		stat:         os.Stat,
+		copyFile:     copyStateFileBestEffort,
+	}
+	got := statePathFor(redirected)
+	if !withinTree(got) {
+		t.Fatalf("statePathFor with LOCALAPPDATA/USERPROFILE redirected into the tree = %q, want a path inside %q", got, tree)
+	}
+
+	legacyOutside := filepath.Join(outside, "home", ".local", "state", "termp", defaultStateFile)
+	if err := os.MkdirAll(filepath.Dir(legacyOutside), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyOutside, []byte(`{"tools":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unredirected := redirected
+	unredirected.userHomeDir = func() (string, error) { return filepath.Join(outside, "home"), nil }
+	unredirected.copyFile = func(string, string) error { return errors.New("simulated migration failure") }
+	got = statePathFor(unredirected)
+	if withinTree(got) {
+		t.Fatalf("statePathFor with USERPROFILE left unredirected at a real legacy file unexpectedly stayed inside %q (got %q) — the containment assertion above would not have caught a missing TestMain redirect", tree, got)
+	}
+}
+
 func TestRecordRankOrdersByFrequencyThenRecency(t *testing.T) {
 	store := New()
 	base := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)

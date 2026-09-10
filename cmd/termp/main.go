@@ -50,6 +50,13 @@ const (
 	statusTimeout                   = 2500 * time.Millisecond
 	daemonDiscordStateWriteInterval = 15 * time.Second
 	daemonDiscordStateStaleAfter    = 45 * time.Second
+	// detectorShutdownTimeout bounds awaitDetectorShutdown's wait for the
+	// detector goroutine to close `detections` on shutdown. Unlike the other
+	// timeouts above, it does not bound an external command or network call;
+	// it exists because listProcesses (internal/detector/detector.go) takes
+	// no context and can leave the detector unable to observe cancellation
+	// until a stuck scan returns. See #618.
+	detectorShutdownTimeout = 3 * time.Second
 )
 
 var errDaemonNotRunning = errors.New("daemon is not running")
@@ -1349,8 +1356,11 @@ func run(ctx context.Context, manager *config.Manager, control *daemonControl) e
 	// `detections` (`defer close(out)` is registered before `defer
 	// saveEpisodes(...)`, so the save runs first on the way out), so waiting
 	// for the close here guarantees the save has already happened before
-	// run() returns and the process can exit. See #613/#593 for the matching
-	// usage-save ordering; this closes the equivalent gap for episodes.
+	// run() returns and the process can exit — provided the wait actually
+	// completes. Unlike finalizeAfterTranslator's wait, this one is bounded
+	// rather than guaranteed to return: see awaitDetectorShutdown's doc
+	// comment. See #613/#593 for the matching usage-save ordering; this
+	// closes the equivalent gap for episodes, #618.
 	awaitDetectorShutdown(detections)
 	return nil
 }
@@ -1364,14 +1374,31 @@ func finalizeAfterTranslator(translatorDone <-chan struct{}, finalize func()) {
 }
 
 // awaitDetectorShutdown drains any detections left in the channel and blocks
-// until the detector goroutine closes it. This cannot hang: the detector
-// selects on ctx.Done() at every point where it might otherwise block
-// (listProcesses/SelectWithEnricher themselves are bounded, ordinary scan
-// work, not indefinite waits), so once shutdown is underway it closes the
-// channel as soon as its current scan step finishes and it observes
-// cancellation.
+// until the detector goroutine closes it, so the caller can rely on the
+// detector's deferred episode save (internal/detector.(*Detector).run)
+// having already happened once this returns. The detector selects on
+// ctx.Done() at every point where it blocks waiting to send on `out`, but
+// listProcesses (internal/detector/detector.go, called at the top of each
+// scan) takes no context and is an ordinary blocking call, not a select —
+// once inside it, the detector cannot observe cancellation until it
+// returns. A scan stuck there would otherwise hang this drain, and with it
+// daemon shutdown, indefinitely. detectorShutdownTimeout bounds that: if it
+// fires first, this gives up and logs that the episode save may not have
+// completed rather than blocking run() (and therefore main()) from
+// returning. See #618.
 func awaitDetectorShutdown(detections <-chan detector.Detection) {
-	for range detections {
+	timer := time.NewTimer(detectorShutdownTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case _, ok := <-detections:
+			if !ok {
+				return
+			}
+		case <-timer.C:
+			log.Printf("shutdown: detector did not close its detections channel within %s; the final episode save may not have completed", detectorShutdownTimeout)
+			return
+		}
 	}
 }
 
