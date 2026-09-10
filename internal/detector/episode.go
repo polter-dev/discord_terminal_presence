@@ -141,8 +141,36 @@ func copyEpisodeFileBestEffort(from, to string) error {
 	return os.Rename(tmpPath, to)
 }
 
+// episodeUnknownCreateTime is the create-time component EpisodeKey emits for
+// a process whose creation time could not be read (processIdentity leaves
+// Process.CreateTime zero when proc.CreateTime() fails, gopsutil.go). It is
+// deliberately not a timestamp: formatting the zero time.Time through
+// UnixNano overflows to one constant, so before #623 every such process
+// sharing a tool and pid hashed to the same key and looked like the same OS
+// process instance to the resume path.
+const episodeUnknownCreateTime = "unknown"
+
+// EpisodeKey builds the process-identity key for an episode. A key whose
+// create-time component is episodeUnknownCreateTime identifies a tool and a
+// pid but not a process instance; use episodeIdentityKnown before treating a
+// key match as proof of the same instance.
 func EpisodeKey(toolID string, pid int32, createTime time.Time) string {
+	if createTime.IsZero() {
+		return fmt.Sprintf("%s\x00%d\x00%s", toolID, pid, episodeUnknownCreateTime)
+	}
 	return fmt.Sprintf("%s\x00%d\x00%d", toolID, pid, createTime.UnixNano())
+}
+
+// episodeIdentityKnown reports whether key names one specific OS process
+// instance. A presence.json written before #623 can still hold the old
+// zero-create-time keys (tool, pid, and the overflowed UnixNano constant),
+// and they are not checked for here: no key this build constructs can equal
+// one, since EpisodeKey only formats a create time that passed
+// proc.CreateTime()'s millis > 0 check and that constant decodes to 1754. A
+// loaded legacy entry is therefore unreachable for resumption, and the first
+// EndAbsent sweep drops it from the store and the next save from the file.
+func episodeIdentityKnown(key string) bool {
+	return !strings.HasSuffix(key, "\x00"+episodeUnknownCreateTime)
 }
 
 func NewEpisodeStore() *EpisodeStore {
@@ -165,10 +193,14 @@ func (s *EpisodeStore) LastAtime(key string) (time.Time, bool) {
 }
 
 // Observe returns the episode anchor and whether the store should be persisted.
-// A loaded episode's anchor is resumed whenever its key matches (see
-// canResumeEpisode): that key identifies the same OS process instance, which
-// is sufficient on its own. Atime-only saves are throttled against the last
-// saved snapshot.
+// A loaded episode's anchor is resumed whenever its key matches and that key
+// actually names a process instance (see canResumeEpisode): such a key
+// identifies the same OS process instance, which is sufficient on its own.
+// Atime-only saves are throttled against the last saved snapshot. An episode
+// this run already observed keeps its anchor unconditionally - the resume
+// gate applies only to what a load pulled in from disk, so declining to
+// resume costs one fresh anchor at the next restart, never a timer that
+// restarts on every scan.
 func (s *EpisodeStore) Observe(key string, tty TTYInfo, now time.Time) (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -195,7 +227,7 @@ func (s *EpisodeStore) Observe(key string, tty TTYInfo, now time.Time) (time.Tim
 	}
 
 	anchor := now
-	if loaded, ok := s.Episodes[key]; ok && canResumeEpisode(loaded) {
+	if loaded, ok := s.Episodes[key]; ok && canResumeEpisode(key, loaded) {
 		anchor = loaded.PresentSince
 	}
 	episode := Episode{PresentSince: anchor}
@@ -211,18 +243,24 @@ func (s *EpisodeStore) Observe(key string, tty TTYInfo, now time.Time) (time.Tim
 // canResumeEpisode reports whether a loaded episode should resume its
 // PresentSince anchor instead of starting a fresh one. The caller only
 // reaches here after finding this exact episode under its process-identity
-// key (tool, pid, and process create time, see EpisodeKey) - a match on that
-// key alone already proves this is the identical OS process instance that
-// started the episode, not a coincidentally-matching new one. Owner decision
-// (2026-09-09, see docs/context/detector.md): that identity is sufficient by
-// itself to resume, regardless of whether TTY atime is knowable (relatime and
-// noatime mounts mean linuxTTYAtimeSource.Atime routinely can't report it) or
-// whether idle_clear_timeout is configured at all. Before this, both were
-// hard preconditions, so on a stock Linux relatime mount AtimeKnown was never
-// true and every anchor was discarded on every daemon restart, autostart
-// relaunch, and auto-update restart.
-func canResumeEpisode(episode Episode) bool {
-	return !episode.PresentSince.IsZero()
+// key (tool, pid, and process create time, see EpisodeKey) - a match on a key
+// that carries a real create time already proves this is the identical OS
+// process instance that started the episode, not a coincidentally-matching
+// new one. Owner decision (2026-09-09, see docs/context/detector.md): that
+// identity is sufficient by itself to resume, regardless of whether TTY atime
+// is knowable (relatime and noatime mounts mean linuxTTYAtimeSource.Atime
+// routinely can't report it) or whether idle_clear_timeout is configured at
+// all. Before this, both were hard preconditions, so on a stock Linux
+// relatime mount AtimeKnown was never true and every anchor was discarded on
+// every daemon restart, autostart relaunch, and auto-update restart.
+//
+// The identity has to be known, not merely matching (#623). When
+// proc.CreateTime() fails, the key names only a tool and a pid, so every
+// process instance that reuses that pid collides on it; with atime and TTY
+// continuity no longer acting as a second gate, resuming on such a key would
+// hand an unrelated earlier session's start time to the elapsed timer.
+func canResumeEpisode(key string, episode Episode) bool {
+	return episodeIdentityKnown(key) && !episode.PresentSince.IsZero()
 }
 
 func (s *EpisodeStore) EndAbsent(eligible map[string]struct{}) bool {
