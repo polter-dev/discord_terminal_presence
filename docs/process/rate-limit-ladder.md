@@ -5,44 +5,43 @@ Agent work should use the available delegated capacity first and degrade predict
 ## The ladder
 
 ```text
-1. Codex CLI implementation agents
+1. The lead dispatches Claude Code implementation subagents:
+        - implementer-sonnet  (non-trivial or design-sensitive work)
+        - mechanical-haiku    (bounded mechanical work)
         |
-        | Codex is rate-limited
+        | subagent capacity is unavailable
         v
-2. The lead dispatches fallback implementation agents:
-        - a capable coding model for design-sensitive work
-        - a smaller model for bounded mechanical work
-        |
-        | fallback capacity is also unavailable
-        v
-3. Pause dispatch until capacity resets, then retry from the top
+2. Pause dispatch until capacity resets, then retry from the top
 ```
 
-Codex is the primary implementation runner. Fallback agents are used only when that
-capacity is unavailable; the pipeline pauses when neither runner has usable capacity.
+Implementation is always delegated. The lead plans, reviews, and approves; it does not
+write the change itself. When subagent capacity runs out the pipeline pauses rather than
+collapsing the dispatch step into the lead.
 
-## Task routing on the fallback rung
+## Task routing
 
 | Task type | Routing |
 | --- | --- |
-| Implementation, non-trivial logic, or design-sensitive work | Capable coding model |
-| Mechanical, low-judgment, or high-volume work | Smaller model |
+| Implementation, non-trivial logic, or design-sensitive work | `implementer-sonnet` |
+| Mechanical, low-judgment, or high-volume work | `mechanical-haiku` |
 | Planning, review, approval, and cross-cutting decisions | Lead; never delegated |
 
-When the correct route is unclear, use the more capable implementation model.
+When the correct route is unclear, use `implementer-sonnet`. A task dispatched as
+mechanical that turns out to need design judgment is handed back and re-dispatched — the
+smaller model must not make the call itself.
 
-## Detecting a Codex rate limit
+## Detecting exhausted capacity
 
-Treat Codex as unavailable when `codex exec` returns an explicit quota/rate-limit error
-such as HTTP 429, or repeatedly times out:
+Treat a runner as unavailable when it returns an explicit quota/rate-limit error such as
+HTTP 429, or repeatedly times out:
 
-1. Record the condition and reset estimate when one is supplied.
-2. Use the fallback rung for subsequent dispatches.
-3. Retry Codex periodically and return to the first rung once it succeeds.
+1. Record the condition, and the reset estimate when one is supplied.
+2. Stop dispatching to that runner.
+3. Retry periodically and resume once a dispatch succeeds.
 
 ## Pausing
 
-If fallback capacity is also unavailable:
+If subagent capacity is unavailable:
 
 - Stop dispatching instead of repeatedly retrying.
 - Record the in-flight task, approved but unlanded work, and blockers.
@@ -51,6 +50,6 @@ If fallback capacity is also unavailable:
 
 ## Invariant
 
-Fallback never relaxes the approval gate. The lead still reviews every command and
-change regardless of which implementation runner produced it; see
-[`orchestration.md`](orchestration.md).
+A capacity shortfall never relaxes the approval gate, and it is never a reason for the
+lead to implement the change itself. The lead still reviews every command and change
+regardless of which subagent produced it; see [`orchestration.md`](orchestration.md).

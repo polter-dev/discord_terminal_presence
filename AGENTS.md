@@ -1,17 +1,19 @@
 # AGENTS.md — Operating rules for AI agents in this repo
 
 This file is the **single source of truth** for how AI agents work in this repository.
-Codex CLI reads it natively; Claude Code reads it via [`CLAUDE.md`](CLAUDE.md). Read it
-in full before taking any action.
+Claude Code reads it via [`CLAUDE.md`](CLAUDE.md); any other agent runner reads it
+directly. Read it in full before taking any action.
 
 ## The system at a glance
 
 - **Lead orchestrator** — the latest Opus model, run inside Claude Code. It plans work,
   dispatches subagents, **reviews and approves every command and code change** before it
   lands, and owns the security gate. It does not blindly trust subagent output.
-- **Subagents** — do the actual implementation. Primary runner is **Codex CLI**
-  (`codex exec`). When Codex is rate-limited, the lead spins up its own subagents
-  (Sonnet for implementation, Haiku for mechanical work). See
+- **Subagents** — do the actual implementation. The lead dispatches Claude Code
+  subagents: **Sonnet** (`implementer-sonnet`) for non-trivial or design-sensitive work,
+  **Haiku** (`mechanical-haiku`) for bounded mechanical work. Their briefs live in
+  `.claude/agents/`, which is machine-local and not tracked in git. Routing, and what to
+  do when capacity runs out, are in
   [`docs/process/rate-limit-ladder.md`](docs/process/rate-limit-ladder.md).
 - **Human (repo owner)** — answers agent questions via GitHub issues and gives final
   sign-off on outward-facing actions.

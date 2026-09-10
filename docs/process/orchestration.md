@@ -7,7 +7,7 @@ How this repository is built by a team of AI agents with a human in the loop.
 ### Lead orchestrator
 
 - Plans work and breaks milestones into focused tasks.
-- Dispatches tasks to agents using the fallback policy in
+- Dispatches tasks to implementation subagents using the routing policy in
   [`rate-limit-ladder.md`](rate-limit-ladder.md).
 - Reviews and approves every proposed command and code change before it lands.
 - Owns the security gate and escalates genuine product decisions to the human.
