@@ -6,6 +6,8 @@ name: Daemon soak
 # the issue's close procedure asks for.
 
 on:
+  push: # TEMPORARY test trigger, removed before review
+    branches: [ci/soak-589]
   workflow_dispatch:
     inputs:
       duration_minutes:
@@ -26,7 +28,7 @@ permissions:
 jobs:
   soak:
     name: Soak (${{ inputs.runner }}, ${{ inputs.duration_minutes }} min)
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
     timeout-minutes: 360
     steps:
       - name: Check out repository
@@ -44,7 +46,7 @@ jobs:
       - name: Run soak
         shell: bash
         env:
-          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+          DURATION_MINUTES: ${{ inputs.duration_minutes || 10 }}
         run: |
           set -euo pipefail
           case "$DURATION_MINUTES" in ''|*[!0-9]*) echo "duration_minutes must be a whole number" >&2; exit 1 ;; esac
@@ -199,5 +201,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: soak-${{ inputs.runner }}-${{ github.run_id }}
+          name: soak-${{ inputs.runner || 'macos-latest' }}-${{ github.run_id }}
           path: ${{ runner.temp }}/soak/out
