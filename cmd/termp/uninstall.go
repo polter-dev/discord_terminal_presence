@@ -120,8 +120,13 @@ func uninstallAllWithDeps(force, yes bool, deps uninstallAllDeps) error {
 
 	var removalErrors []error
 	for _, target := range targets {
-		if err := removeUninstallTarget(target, deps.removeFile, deps.removeAll); err != nil {
+		kept, err := removeUninstallTarget(target, deps.removeFile, deps.removeAll)
+		if err != nil {
 			removalErrors = append(removalErrors, err)
+			continue
+		}
+		if kept {
+			fmt.Fprintf(deps.stdout, "Kept %s: %s (it holds files termp did not create)\n", target.label, target.path)
 			continue
 		}
 		fmt.Fprintf(deps.stdout, "Removed %s: %s\n", target.label, target.path)
@@ -164,6 +169,11 @@ func defaultUninstallTargets() ([]uninstallRemovalTarget, error) {
 		{label: "rotated log", path: logPath + ".3"},
 		{label: "runtime state", path: pidFilePath()},
 	}
+	// Without XDG_RUNTIME_DIR the PID file lives in <cache>/termp/run, a
+	// directory nothing else lists on macOS (#636).
+	if runDir := filepath.Dir(pidFilePath()); filepath.Base(runDir) == "run" && filepath.Base(filepath.Dir(runDir)) == "termp" {
+		candidates = append(candidates, uninstallRemovalTarget{label: "runtime directory", path: filepath.Dir(runDir), directory: true})
+	}
 	targets := make([]uninstallRemovalTarget, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
 	for _, target := range candidates {
@@ -202,18 +212,20 @@ func formatUninstallPlan(completionPaths []string, targets []uninstallRemovalTar
 	return b.String()
 }
 
-func removeUninstallTarget(target uninstallRemovalTarget, removeFile, removeAll func(string) error) error {
+// removeUninstallTarget reports kept=true when a directory target survives
+// because it holds files termp did not create.
+func removeUninstallTarget(target uninstallRemovalTarget, removeFile, removeAll func(string) error) (bool, error) {
 	if err := validateUninstallTarget(target); err != nil {
-		return err
+		return false, err
 	}
 	if target.directory {
 		return removeKnownFilesFromDirectory(target, removeFile, removeAll)
 	}
 	err := removeFile(target.path)
 	if err == nil || errors.Is(err, os.ErrNotExist) {
-		return nil
+		return false, nil
 	}
-	return fmt.Errorf("remove %s %s: %w", target.label, target.path, err)
+	return false, fmt.Errorf("remove %s %s: %w", target.label, target.path, err)
 }
 
 // knownUninstallFiles lists the exact basenames full uninstall may remove
@@ -223,12 +235,17 @@ func removeUninstallTarget(target uninstallRemovalTarget, removeFile, removeAll 
 // are also included here because on Linux the update-cache directory and the
 // detached daemon log directory are the same XDG cache directory. Anything
 // else in one of these directories is left alone: it is the user's, not
-// termp's (issue #562).
+// termp's (issue #562). "run" is the PID directory pidFilePath nests under
+// <cache>/termp; it is a directory, so it is cleaned the same way (#636).
 var knownUninstallFiles = []string{
 	"config.toml",
 	"usage.json",
 	"presence.json",
+	"discord.json",
 	"update-check.json",
+	"update-check.json.lock",
+	"run",
+	"termp.pid",
 	"termp.log",
 	"termp.log.lock",
 	"termp.log.1",
@@ -254,13 +271,13 @@ func isKnownUninstallFile(name string) bool {
 // A directory holding only recognized files still ends up fully removed, so
 // this preserves the "everything termp created is gone" promise without the
 // blast radius of a full recursive delete.
-func removeKnownFilesFromDirectory(target uninstallRemovalTarget, removeFile, removeAll func(string) error) error {
+func removeKnownFilesFromDirectory(target uninstallRemovalTarget, removeFile, removeAll func(string) error) (bool, error) {
 	entries, err := os.ReadDir(target.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("read %s directory %s: %w", target.label, target.path, err)
+		return false, fmt.Errorf("read %s directory %s: %w", target.label, target.path, err)
 	}
 	var removalErrors []error
 	unknownRemains := false
@@ -271,20 +288,28 @@ func removeKnownFilesFromDirectory(target uninstallRemovalTarget, removeFile, re
 			continue
 		}
 		full := filepath.Join(target.path, name)
+		if entry.IsDir() {
+			kept, err := removeKnownFilesFromDirectory(uninstallRemovalTarget{label: target.label, path: full, directory: true}, removeFile, removeAll)
+			if err != nil {
+				removalErrors = append(removalErrors, err)
+			}
+			unknownRemains = unknownRemains || kept
+			continue
+		}
 		if err := removeFile(full); err != nil && !errors.Is(err, os.ErrNotExist) {
 			removalErrors = append(removalErrors, fmt.Errorf("remove %s file %s: %w", target.label, full, err))
 		}
 	}
 	if err := errors.Join(removalErrors...); err != nil {
-		return err
+		return false, err
 	}
 	if unknownRemains {
-		return nil
+		return true, nil
 	}
 	if err := removeAll(target.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove %s %s: %w", target.label, target.path, err)
+		return false, fmt.Errorf("remove %s %s: %w", target.label, target.path, err)
 	}
-	return nil
+	return false, nil
 }
 
 func validateUninstallTarget(target uninstallRemovalTarget) error {
