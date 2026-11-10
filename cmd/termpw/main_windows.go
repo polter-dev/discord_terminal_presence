@@ -7,9 +7,14 @@
 // the daemon's whole lifetime, and propagates the daemon's exit status.
 //
 // Staying alive for the daemon's lifetime is deliberate: Task Scheduler keeps
-// owning this process, so RestartOnFailure still triggers on a real crash and
-// `schtasks /End` still stops the tree. A fire-and-forget launcher would
-// silently degrade into the rejected "detach and exit" option.
+// owning this process, so RestartOnFailure still triggers on a real crash. A
+// fire-and-forget launcher would silently degrade into the rejected "detach and
+// exit" option.
+//
+// Task Scheduler's End (`schtasks /End`, Stop-ScheduledTask) terminates only this
+// process, so the launcher puts itself in a kill-on-close job object before
+// starting the daemon: the daemon inherits the job, and when this process dies
+// for any reason its job handle closes and Windows ends the daemon too (#662).
 package main
 
 import (
@@ -17,6 +22,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // createNoWindow runs the console-subsystem daemon without allocating a visible
@@ -39,6 +47,10 @@ func run() int {
 	// directory.
 	daemon := filepath.Join(filepath.Dir(self), "termp.exe")
 
+	// Fail open: if the job cannot be set up, presence still starts, and only
+	// ending the task falls back to leaving the daemon running.
+	_ = killChildrenOnExit()
+
 	cmd := exec.Command(daemon, launcherDaemonArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
 	cmd.Stdin = nil
@@ -57,4 +69,27 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// killChildrenOnExit assigns this process to a new job object that kills every
+// process in it when its last handle closes. Only this process holds the handle
+// (it is not inheritable), and children started afterwards join the job, so the
+// handle is deliberately never closed: it closes when this process exits.
+func killChildrenOnExit() error {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return err
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		windows.CloseHandle(job)
+		return err
+	}
+	if err := windows.AssignProcessToJobObject(job, windows.CurrentProcess()); err != nil {
+		windows.CloseHandle(job)
+		return err
+	}
+	return nil
 }
