@@ -128,6 +128,63 @@ func TestSaveCreatesTargetOfDanglingSymlinkedConfig(t *testing.T) {
 	}
 }
 
+// #652: a single relative dangling link (Stow style) creates its target.
+func TestSaveCreatesTargetOfRelativeDanglingSymlink(t *testing.T) {
+	link, target := symlinkedConfig(t)
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../dotfiles/termp/config.toml", link); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(Default(), link); err != nil {
+		t.Fatalf("Save through a relative dangling link: %v", err)
+	}
+	requireSymlink(t, link)
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("target was not created: %v", err)
+	}
+}
+
+// #652 review: a relative dangling link reached through a symlinked config
+// directory resolves ".." from where the link really lives, as the kernel does,
+// not textually against the unresolved path. Otherwise Save writes a stray file
+// and the save is lost.
+func TestSaveRelativeDanglingSymlinkThroughSymlinkedDir(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	realConf := filepath.Join(home, "dotfiles", "config", "termp")
+	for _, d := range []string{realConf, filepath.Join(home, "dotfiles", "store"), filepath.Join(home, "store")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(home, "dotfiles", "config"), filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".config", "termp", "config.toml")
+	if err := os.Symlink("../../store/config.toml", link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.Enabled = false
+	if err := Save(cfg, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "store", "config.toml")); err == nil {
+		t.Fatal("Save wrote a stray file at home/store/config.toml instead of the link's target")
+	}
+	data, err := os.ReadFile(filepath.Join(home, "dotfiles", "store", "config.toml"))
+	if err != nil {
+		t.Fatalf("the link's real target was not created: %v", err)
+	}
+	if !strings.Contains(string(data), "enabled = false") {
+		t.Fatalf("target did not receive the save: %q", data)
+	}
+}
+
 // #652: a dangling chain (link -> relative link -> missing file) creates the
 // final file and keeps every link in the chain.
 func TestSaveFollowsDanglingSymlinkChain(t *testing.T) {

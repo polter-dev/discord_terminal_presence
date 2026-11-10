@@ -732,9 +732,13 @@ stop every symlinked user from saving. A link that cannot be resolved (a loop) r
 
 Two follow-ups are the owner's decision on #652. A **dangling** link (for example GNU Stow
 linking a dotfiles file not yet created) makes `EvalSymlinks` fail with not-exist, so
-`danglingTarget` reads the link (relative targets join the link's directory), resolves only
-the target's parent, and Save creates the target there and keeps the link. A chain of links
-ending in a missing file is followed to its end, so no link in it is replaced. If the
+`danglingTarget` reads the link, resolves only the target's parent, and Save creates the target there and keeps the link. A chain of links
+ending in a missing file is followed to its end, so no link in it is replaced. A relative
+target is joined to the link's *resolved* directory (`EvalSymlinks(Dir(link))`), because the
+kernel resolves `..` from where the link really lives: joining it textually to the unresolved
+path picked a different file when the config directory was itself a symlink (e.g.
+`~/.config -> ~/dotfiles/config` with a Stow-style `../../store/config.toml` link), so Save
+wrote a stray file and the save was silently lost (caught in #652 review). If the
 target's directory does not exist, Save fails with
 `config <link> links to <target>, whose directory does not exist` and creates no
 directories. A **read-only** target (Nix Home Manager's `/nix/store`) makes the temp-file
@@ -742,7 +746,8 @@ create in the target's directory fail; for a symlinked path that error is wrappe
 `config <link> links to <target>, which is not writable: ...` rather than naming only the
 temp file, and Save never falls back to replacing the link. A non-symlinked path's errors
 are unchanged. Coverage, all Unix-only: `TestSaveCreatesTargetOfDanglingSymlinkedConfig`,
-`TestSaveFollowsDanglingSymlinkChain`, `TestSaveDanglingSymlinkMissingTargetDirFailsClearly`,
+`TestSaveCreatesTargetOfRelativeDanglingSymlink`,
+`TestSaveRelativeDanglingSymlinkThroughSymlinkedDir`, `TestSaveFollowsDanglingSymlinkChain`, `TestSaveDanglingSymlinkMissingTargetDirFailsClearly`,
 `TestSaveReadOnlySymlinkTargetFailsClearly` (skipped as root, which ignores the `0555`
 directory mode).
 

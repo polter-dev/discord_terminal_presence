@@ -512,7 +512,12 @@ func danglingTarget(link string) (string, error) {
 		return "", fmt.Errorf("resolve symlinked config %s: %w", link, err)
 	}
 	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(link), target)
+		// The kernel resolves ".." from where the link really lives, so resolve its directory first.
+		linkDir, err := filepath.EvalSymlinks(filepath.Dir(link))
+		if err != nil {
+			return "", fmt.Errorf("resolve symlinked config %s: %w", link, err)
+		}
+		target = filepath.Join(linkDir, target)
 	}
 	dir, err := filepath.EvalSymlinks(filepath.Dir(target))
 	if errors.Is(err, fs.ErrNotExist) {
