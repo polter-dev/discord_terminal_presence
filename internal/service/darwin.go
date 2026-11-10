@@ -33,6 +33,11 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return State{Supported: true, Path: path}, err
 	}
+	// Build before unloading so a build failure leaves the running job alone.
+	content, err := BuildLaunchAgentPlist(exe)
+	if err != nil {
+		return State{Supported: true, Path: path}, err
+	}
 	previous := definitionSnapshot{}
 	if launch {
 		previous, err = snapshotDefinition(path)
@@ -45,28 +50,51 @@ func (s darwinService) install(exe string, launch, force bool) (State, error) {
 			return State{Supported: true, Path: path}, fmt.Errorf("cannot replace launch agent before unloading the existing job: %w", err)
 		}
 	}
-	content, err := BuildLaunchAgentPlist(exe)
-	if err != nil {
-		return State{Supported: true, Path: path}, err
-	}
 	if err := os.WriteFile(path, content, 0o644); err != nil {
-		return State{Supported: true, Path: path}, err
+		if !launch {
+			return State{Supported: true, Path: path}, err
+		}
+		// The previous job is already booted out, so roll back and reload it.
+		return s.installFailure(path, previous, status.Loaded, fmt.Errorf("write launch agent definition: %w", err), true)
 	}
 	if launch {
 		if err := s.load(path); err != nil {
-			rollbackErr := s.rollbackInstall(path, previous, status.Loaded)
-			return State{Supported: true, Installed: previous.exists, Path: path}, errors.Join(err, rollbackErr)
+			return s.installFailure(path, previous, status.Loaded, err, false)
 		}
 	}
 	return s.Status(), nil
 }
 
-func (s darwinService) rollbackInstall(path string, previous definitionSnapshot, priorLoaded string) error {
+// installFailure rolls back a failed install and says in the error whether
+// autostart was left in its previous working state.
+func (s darwinService) installFailure(path string, previous definitionSnapshot, priorLoaded string, cause error, alreadyUnloaded bool) (State, error) {
+	rollbackErr := s.rollbackInstall(path, previous, priorLoaded, alreadyUnloaded)
+	var verdict string
+	switch {
+	case rollbackErr != nil:
+		verdict = "autostart rollback did not fully complete, presence may still be off"
+	case previous.exists && priorLoaded == "true":
+		verdict = "the previous autostart definition was restored and reloaded, presence is unaffected"
+	case previous.exists:
+		verdict = "the previous autostart definition was restored (it was not running before this attempt)"
+	default:
+		verdict = "no autostart definition is registered (there was none before this attempt)"
+	}
+	return State{Supported: true, Installed: previous.exists, Path: path},
+		errors.Join(fmt.Errorf("install launch agent failed, %s: %w", verdict, cause), rollbackErr)
+}
+
+func (s darwinService) rollbackInstall(path string, previous definitionSnapshot, priorLoaded string, alreadyUnloaded bool) error {
 	var rollbackErrs []error
 	stopped := true
-	if err := s.unload(path); err != nil {
-		stopped = false
-		rollbackErrs = append(rollbackErrs, fmt.Errorf("stop failed launch agent during rollback: %w", err))
+	// Skip a second unload when install already stopped the job: it would re-read a
+	// plist the failed write may have truncated, and a parse failure there would
+	// be mistaken for the job still running.
+	if !alreadyUnloaded {
+		if err := s.unload(path); err != nil {
+			stopped = false
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("stop failed launch agent during rollback: %w", err))
+		}
 	}
 	restored := true
 	if !stopped && !previous.exists {
