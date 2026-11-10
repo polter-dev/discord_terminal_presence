@@ -1,0 +1,203 @@
+name: Daemon soak
+
+# Manual memory soak for #589: runs an isolated daemon (temp HOME/XDG, no
+# Discord) under synthetic process activity and samples its memory over time.
+# GitHub-hosted jobs stop at 6 hours, so a run here is shorter than the 24 hours
+# the issue's close procedure asks for.
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: "Soak length in minutes (1-330; the job is killed at 360)"
+        type: number
+        default: 300
+      runner:
+        description: "Runner OS (the #589 observation was on macOS)"
+        type: choice
+        default: macos-latest
+        options:
+          - macos-latest
+          - ubuntu-latest
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    name: Soak (${{ inputs.runner }}, ${{ inputs.duration_minutes }} min)
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: mkdir -p "$RUNNER_TEMP/soak" && go build -o "$RUNNER_TEMP/soak/termp" ./cmd/termp
+
+      - name: Run soak
+        shell: bash
+        env:
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        run: |
+          set -euo pipefail
+          case "$DURATION_MINUTES" in ''|*[!0-9]*) echo "duration_minutes must be a whole number" >&2; exit 1 ;; esac
+          if [ "$DURATION_MINUTES" -lt 1 ] || [ "$DURATION_MINUTES" -gt 330 ]; then
+            echo "duration_minutes must be 1-330 to fit the 6 hour job limit" >&2; exit 1
+          fi
+          interval=30
+          soak="$RUNNER_TEMP/soak"
+          out="$soak/out"
+          mkdir -p "$out" "$soak/bin"
+
+          # Isolated state for every termp process below (AGENTS.md rule 6).
+          isolate() {
+            export HOME="$1"
+            export XDG_CONFIG_HOME="$1/.config" XDG_CACHE_HOME="$1/.cache"
+            export XDG_STATE_HOME="$1/.local/state" XDG_DATA_HOME="$1/.local/share"
+            export XDG_RUNTIME_DIR="$1/run" TMPDIR="$1/tmp"
+            mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$TMPDIR" "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+          }
+          export NO_UPDATE_CHECK=1 GOTRACEBACK=all
+
+          # Baseline: a fresh daemon's goroutine count, read from a SIGQUIT dump.
+          # The soak daemon can only be dumped once, at the end, so this gives the
+          # start figure to compare against.
+          (
+            isolate "$soak/baseline-home"
+            "$soak/termp" start --foreground >"$out/baseline-daemon.log" 2>&1 &
+            bpid=$!
+            sleep 60
+            kill -QUIT "$bpid"
+            wait "$bpid" || true
+          )
+
+          # Activity generator: terminal-attached processes named like catalog
+          # tools (copies of bash running a light CPU loop under a pty), short-lived
+          # process churn, and a 100-process burst every minute, so every scan has
+          # matches to enrich and select and the process table keeps changing.
+          cat >"$soak/work.sh" <<'EOF'
+          end=$((SECONDS + $1))
+          while [ "$SECONDS" -lt "$end" ]; do
+            i=0; while [ "$i" -lt 3000 ]; do i=$((i + 1)); done
+            sleep 1
+          done
+          EOF
+          tools=(claude codex gemini nvim htop lazygit k9s)
+          for t in "${tools[@]}"; do cp "$(command -v bash)" "$soak/bin/$t"; done
+          launch_tool() {
+            local t=${tools[RANDOM % ${#tools[@]}]} dur=$((30 + RANDOM % 870))
+            if [ "$RUNNER_OS" = macOS ]; then
+              script -q /dev/null "$soak/bin/$t" "$soak/work.sh" "$dur" </dev/null >/dev/null 2>&1 &
+            else
+              script -qfec "$soak/bin/$t $soak/work.sh $dur" /dev/null </dev/null >/dev/null 2>&1 &
+            fi
+          }
+          (
+            tick=0
+            while :; do
+              if [ "$(pgrep -f "$soak/work.sh" | wc -l)" -lt 12 ]; then launch_tool; fi
+              for _ in 1 2 3 4 5 6 7 8 9 10; do sh -c ':'; done
+              tick=$((tick + 1))
+              if [ $((tick % 20)) -eq 0 ]; then
+                for _ in $(seq 100); do sleep 2 & done
+                wait
+              fi
+              sleep 3
+            done
+          ) >/dev/null 2>&1 &
+          gen=$!
+
+          isolate "$soak/home"
+          GODEBUG=gctrace=1 "$soak/termp" start --foreground >"$out/daemon.log" 2>&1 &
+          pid=$!
+          sleep 5
+          kill -0 "$pid" || { cat "$out/daemon.log"; exit 1; }
+
+          echo "Isolation check: daemon state is under $HOME"
+          find "$HOME" -type f | sed "s|^$soak/||"
+          test -n "$(find "$HOME" -name termp.pid)"
+          ps -o pid=,command= -p "$pid"
+
+          echo "elapsed_s,rss_kb,vsz_kb,threads,fds,host_procs,tool_procs" >"$out/samples.csv"
+          start=$(date +%s)
+          stop=$((start + DURATION_MINUTES * 60))
+          while :; do
+            now=$(date +%s)
+            kill -0 "$pid" || { echo "daemon exited during the soak" >&2; tail -50 "$out/daemon.log"; exit 1; }
+            read -r rss vsz < <(ps -o rss=,vsz= -p "$pid")
+            if [ "$RUNNER_OS" = macOS ]; then
+              threads=$(($({ ps -M -p "$pid" || true; } | wc -l) - 1))
+              fds=$(($({ lsof -nP -p "$pid" || true; } | wc -l) - 1))
+            else
+              threads=$(ps -o nlwp= -p "$pid" | tr -d ' ')
+              fds=$(find /proc/"$pid"/fd -mindepth 1 -maxdepth 1 | wc -l)
+            fi
+            echo "$((now - start)),$rss,$vsz,$threads,$fds,$(($(ps -A | wc -l) - 1)),$(pgrep -f "$soak/work.sh" | wc -l | tr -d ' ')" >>"$out/samples.csv"
+            [ "$now" -ge "$stop" ] && break
+            sleep "$interval"
+          done
+
+          echo "termp status at the end of the soak:"
+          "$soak/termp" status || true
+          kill -QUIT "$pid"
+          wait "$pid" || true
+          kill "$gen" || true
+          pkill -f "$soak/work.sh" || true
+
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          python3 - "$RUNNER_TEMP/soak/out" <<'EOF' | tee "$RUNNER_TEMP/soak/out/summary.txt"
+          import csv, pathlib, re, sys
+
+          out = pathlib.Path(sys.argv[1])
+          rows = [{k: int(v) for k, v in r.items()} for r in csv.DictReader(open(out / "samples.csv"))]
+
+          def trend(xs, ys):
+              # Least-squares slope per hour over the second half, past warm-up.
+              xs, ys = xs[len(xs) // 2:], ys[len(ys) // 2:]
+              mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+              sxx = sum((x - mx) ** 2 for x in xs)
+              return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx * 3600 if sxx else float("nan")
+
+          print(f"Soak samples: {len(rows)} over {rows[-1]['elapsed_s'] / 60:.1f} min")
+          t = [r["elapsed_s"] for r in rows]
+          for col, unit in [("rss_kb", "KB"), ("vsz_kb", "KB"), ("threads", ""), ("fds", ""), ("host_procs", ""), ("tool_procs", "")]:
+              v = [r[col] for r in rows]
+              print(f"{col:11} start {v[0]:>9} finish {v[-1]:>9} min {min(v):>9} max {max(v):>9} "
+                    f"second-half trend {trend(t, v):+10.1f} {unit}/hour")
+
+          gc = re.compile(r"^gc \d+ @([\d.]+)s .*?(\d+)->(\d+)->(\d+) MB, (\d+) MB goal")
+          heap = [(float(m[1]), int(m[4])) for m in map(gc.match, open(out / "daemon.log", errors="replace")) if m]
+          if heap:
+              ht, hv = [x for x, _ in heap], [y for _, y in heap]
+              print(f"live heap   start {hv[0]:>9} finish {hv[-1]:>9} min {min(hv):>9} max {max(hv):>9} "
+                    f"second-half trend {trend(ht, hv):+10.1f} MB/hour  ({len(heap)} GCs, gctrace MB resolution)")
+          else:
+              print("live heap   no gctrace lines found")
+
+          def goroutines(name):
+              # SIGQUIT dump: total, and without g0 and goroutines the runtime started.
+              blocks = re.split(r"(?m)^(?=goroutine \d+ )", open(out / name, errors="replace").read())[1:]
+              blocks = [b for b in blocks if not b.startswith("goroutine 0 ")]
+              user = [b for b in blocks if not re.search(r"(?m)^created by runtime\.", b)]
+              return f"{len(blocks)} ({len(user)} non-runtime)"
+          print(f"goroutines  fresh daemon after 60s {goroutines('baseline-daemon.log')}, soak daemon at finish {goroutines('daemon.log')}")
+          EOF
+          { echo '```'; cat "$RUNNER_TEMP/soak/out/summary.txt"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload samples
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: soak-${{ inputs.runner }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/soak/out
