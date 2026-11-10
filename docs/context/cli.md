@@ -540,6 +540,11 @@ while tools without that explicit opt-out retain the default disclosure establis
 uses the normal fallback details with no partial collection or small image (#592).
 Per-tool enablement is passed into detector selection, and hot reloads that change it
 trigger an immediate rescan; the global `enabled` switch still clears mapped presence.
+`detectorConfig(cfg)` is the only builder of `detector.Config`: the daemon, live watch,
+`status` and `watch --once` all use it, so a per-tool `enabled = false` tool is skipped
+everywhere instead of the one-shot commands featuring it as idle or as the detected
+tool (#637). The one-shot scans take their process source from `newOneShotLister`, a
+test seam.
 Live watch loads the daemon's episode anchors for matching elapsed-time display but runs
 the detector read-only, leaving `presence.json` persistence exclusively to the daemon.
 It shares the daemon's config-change transaction and hot-reconfigures detector settings;
