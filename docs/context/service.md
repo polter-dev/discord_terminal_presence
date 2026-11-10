@@ -55,8 +55,15 @@ when the file already matches the snapshot, because a read-only or `uchg` file r
 install write before truncating and would refuse the restore the same way, which used to leave
 the agent unloaded. Whether writing the plist before unloading would be safe on macOS is an
 open question: nothing here settles whether `launchctl bootout` resolves the job from the
-loaded Label or by re-reading the plist at that path, so the order was not changed. Covered
-only through the `Runner` and filesystem test seams; real `launchd` behaviour needs hardware.
+loaded Label or by re-reading the plist at that path, so the order was not changed. The unit
+tests reach it only through the `Runner` and filesystem seams. Real `launchd` coverage comes from
+`.github/workflows/macos-launchd.yml` (#646): the `macos-latest` runner has a `gui/<uid>`
+login domain. The job runs `termp autostart install` over a `chmod 444` plist and then a
+`chflags uchg` plist. Each time it checks that the install fails, that `launchctl print`
+still shows the job loaded, and that the error says "restored and reloaded". A normal
+install after unlocking must then succeed. Against the pre-#643 code (`bfa369e^`) the
+read-only check fails with the job gone from the domain. Presence and the error wording
+still need a person and a Discord client.
 Windows snapshot queries are best effort so an export or verbose-state query failure does
 not block an overwrite that Task Scheduler would accept. If activation then fails without
 a complete snapshot, the replacement definition is left in place; a pre-existing task is
