@@ -106,6 +106,52 @@ func TestNewSetupModelWiresServiceUninstall(t *testing.T) {
 	}
 }
 
+// Setup must apply the same install-path check as `termp autostart install`:
+// warn, skip autostart, still save the config, and finish without failing (#664).
+func TestNewSetupModelSkipsAutostartForExecutableInstallWouldRefuse(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "termp")
+	if err := os.WriteFile(exe, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, wantErr := service.ValidateInstallExecutable(exe, false)
+	if wantErr == nil {
+		t.Fatalf("ValidateInstallExecutable(%q) = nil, want the temp-path refusal", exe)
+	}
+	cfg := config.Default()
+	cfg.StartAtLogin = true
+	manager := &fakeSetupServiceManager{}
+	var saved *config.Config
+	model := newSetupModel(cfg, func(next config.Config) (string, error) {
+		saved = &next
+		return "/tmp/config.toml", nil
+	}, manager, func() (string, error) { return exe, nil })
+
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 1000, Height: 100})
+	model = updated.(tui.SetupModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(tui.SetupModel)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(tui.SetupModel)
+	if cmd == nil {
+		t.Fatal("setup confirmation did not return an apply command")
+	}
+	updated, _ = model.Update(cmd())
+	model = updated.(tui.SetupModel)
+
+	if manager.installedExe != "" || manager.definitionExe != "" {
+		t.Fatalf("setup registered autostart for %q/%q, want it skipped", manager.installedExe, manager.definitionExe)
+	}
+	if model.Err() != nil || !model.Applied() || saved == nil {
+		t.Fatalf("setup result = err:%v applied:%t saved:%t, want a successful apply that saved config", model.Err(), model.Applied(), saved != nil)
+	}
+	if got := model.AutostartWarning(); got != wantErr.Error() {
+		t.Fatalf("AutostartWarning() = %q, want the install refusal %q", got, wantErr)
+	}
+	if view := model.View(); !strings.Contains(view, "Autostart: skipped") {
+		t.Fatalf("setup summary does not report autostart as skipped:\n%s", view)
+	}
+}
+
 func TestNewSetupModelWiresCompletionInstallWithTempHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

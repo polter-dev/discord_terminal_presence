@@ -26,6 +26,14 @@ type SetupInstalledFunc func() (bool, error)
 // SetupExeFunc resolves the executable path used for autostart.
 type SetupExeFunc func() (string, error)
 
+// SetupSkipAutostartError, returned by a SetupExeFunc, makes setup skip autostart
+// and still save the config, reporting Err as a warning instead of failing, as for
+// a binary `termp autostart install` would refuse (#664).
+type SetupSkipAutostartError struct{ Err error }
+
+func (e SetupSkipAutostartError) Error() string { return e.Err.Error() }
+func (e SetupSkipAutostartError) Unwrap() error { return e.Err }
+
 // SetupCompletionInstallFunc installs shell completion and returns modified paths.
 type SetupCompletionInstallFunc func() ([]string, error)
 
@@ -54,6 +62,7 @@ type SetupModel struct {
 	applied           bool
 	applying          bool
 	autostart         string
+	autostartWarning  string
 	completion        string
 	width             int
 	height            int
@@ -66,6 +75,7 @@ type setupApplyResultMsg struct {
 	cfg        config.Config
 	path       string
 	autostart  string
+	warning    string
 	completion string
 	err        error
 }
@@ -137,6 +147,11 @@ func (m SetupModel) Applied() bool {
 	return m.applied
 }
 
+// AutostartWarning returns why the applied setup skipped autostart, or "".
+func (m SetupModel) AutostartWarning() string {
+	return m.autostartWarning
+}
+
 // Err returns the latest setup error.
 func (m SetupModel) Err() error {
 	return m.err
@@ -159,6 +174,7 @@ func (m SetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cfg = msg.cfg
 		m.path = msg.path
 		m.autostart = msg.autostart
+		m.autostartWarning = msg.warning
 		m.completion = msg.completion
 		m.err = nil
 		m.applied = true
@@ -413,11 +429,14 @@ func applySetup(original, desired config.Config, save SetupSaveFunc, install Set
 	installRequired := desired.StartAtLogin
 	uninstallRequired := !desired.StartAtLogin && (!stateKnown || isInstalled)
 
-	resolvedExe := ""
+	resolvedExe, warning := "", ""
 	if installRequired && exe != nil {
 		var err error
 		resolvedExe, err = exe()
-		if err != nil {
+		var skip SetupSkipAutostartError
+		if errors.As(err, &skip) {
+			installRequired, warning = false, skip.Error()
+		} else if err != nil {
 			return setupApplyResultMsg{err: err}
 		}
 	}
@@ -436,7 +455,9 @@ func applySetup(original, desired config.Config, save SetupSaveFunc, install Set
 		autostart = "already enabled"
 	}
 	var reconcileErr error
-	if installRequired {
+	if warning != "" {
+		autostart = "skipped (the reason is printed when setup exits)"
+	} else if installRequired {
 		autostart = "installed"
 		if install != nil {
 			reconcileErr = install(resolvedExe)
@@ -448,7 +469,7 @@ func applySetup(original, desired config.Config, save SetupSaveFunc, install Set
 		}
 	}
 	if reconcileErr == nil {
-		return setupApplyResultMsg{cfg: desired, path: path, autostart: autostart}
+		return setupApplyResultMsg{cfg: desired, path: path, autostart: autostart, warning: warning}
 	}
 
 	var autostartRollbackErr error
