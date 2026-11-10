@@ -67,9 +67,13 @@ When Windows rollback cannot end the replacement task, a valid verbose status sh
 task is stopped makes the failure benign. A running or indeterminate result is joined into
 the install error, and prior activation is not restarted while the replacement process may
 still be running (#527).
-Filesystem-backed launchd and systemd tests run only on their native host OS because their
-temporary home isolation follows Unix home-directory semantics. Simulated Windows rollback
-tests do not depend on a home directory and continue to run on Windows CI.
+Tests isolate the home with `fakeHome`, which sets `HOME` and `USERPROFILE` because
+`os.UserHomeDir` reads only `USERPROFILE` on Windows. Before #628 it set only `HOME`, so the
+unguarded simulated launchd/systemd tests wrote definitions into the real Windows profile and
+`TestDarwinDisableAndEnableAreIdempotent` passed there without hitting its injected failures;
+`TestFakeHomeRedirectsUserHomeDir` guards the helper. Tests that drive the real `launchctl` or
+`systemctl` paths, or rely on Unix permission semantics, still carry `requireGOOS`. Simulated
+Windows rollback tests do not depend on a home directory and continue to run on every OS.
 
 Executable resolution and install validation errors name both the failed operation and
 the path being checked, so platform path errors retain actionable termp context.
