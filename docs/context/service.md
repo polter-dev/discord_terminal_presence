@@ -175,8 +175,15 @@ The logon task runs the Windows-only companion launcher `termpw.exe`
 window open for the daemon's whole life under `InteractiveToken`; the launcher
 has no console of its own, spawns `termp.exe start --foreground
 --internal-daemon-log` with `CREATE_NO_WINDOW`, waits for the daemon's lifetime so Task
-Scheduler still owns the process (`RestartOnFailure` and `schtasks /End` keep working), and
+Scheduler still owns the process (`RestartOnFailure` keeps working), and
 propagates the daemon's exit status so a real crash still triggers restart.
+Task Scheduler's End (`schtasks /End`, Stop-ScheduledTask, and therefore the `/End` in
+`Disable`, `Uninstall` and rollback) terminates only `termpw.exe`, which used to orphan
+the daemon, so `termp setup` with start-at-login turned off left presence running (#662).
+The launcher now assigns itself to a `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job before
+spawning the daemon; the daemon inherits the job and Windows ends it when the launcher dies.
+Job setup fails open (the daemon still starts). `TestTerminatingLauncherStopsDaemon`
+(`cmd/termpw`, windows-latest only) kills a built launcher and asserts its child exits.
 `windowsTaskExec` selects the launcher when it sits beside the daemon (the
 shipped layout: goreleaser ships `termpw.exe` in the Windows `.zip` and Scoop
 archives next to `termp.exe`). A Scoop invocation path under `shims` is special:
