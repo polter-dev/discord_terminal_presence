@@ -603,7 +603,15 @@ func TestAutostartFallbackMarkerOwnsLogAndIdentifiesTrigger(t *testing.T) {
 	}
 }
 
+// restoreStdFilesAfter undoes the std-file swap a successful console release
+// makes on Windows (#663).
+func restoreStdFilesAfter(t *testing.T) {
+	stdin, stdout, stderr := os.Stdin, os.Stdout, os.Stderr
+	t.Cleanup(func() { os.Stdin, os.Stdout, os.Stderr = stdin, stdout, stderr })
+}
+
 func TestReleaseAutostartConsoleLabelsExplainsAndReleases(t *testing.T) {
+	restoreStdFilesAfter(t)
 	var calls []string
 	var output bytes.Buffer
 	err := releaseAutostartConsoleWith(

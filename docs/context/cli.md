@@ -871,6 +871,16 @@ to the replacement. This prevents the old file finalizer from double-closing a r
 numeric handle. Windows coverage verifies the `*os.File` close state through a second
 `Close` returning `os.ErrClosed`, which distinguishes an owning close from raw handle
 closure underneath a still-open `*os.File` (#514).
+In the no-launcher fallback, `FreeConsole` frees the console's standard handle numbers
+while `os.Stdin`, `os.Stdout` and `os.Stderr` still hold them, and Windows hands the
+numbers to the next opens (the log lock file often got the old stderr number, which
+`redirectStderr` then closed, so every managed log write failed). After a successful
+release, `releaseAutostartConsoleWith` calls `retireConsoleStdFiles`, which keeps the
+three old files reachable in `retiredConsoleStdFiles` (so neither a close nor a finalizer
+ever runs on them) and replaces them with null-device files; it is a no-op off Windows.
+The process standard-handle table is left as it is except for stderr, which
+`redirectStderr` rebinds to the log. `TestAutostartConsoleReleaseKeepsLogLockHandle`
+reproduces the reuse by closing the raw stderr handle in place of `FreeConsole` (#663).
 The banner, startup error, and reload error render through `SanitizeSingleLine`, matching
 every other single-line render boundary in the CLI.
 

@@ -23,6 +23,8 @@ func releaseAutostartConsoleWith(output io.Writer, setTitle func(string) error, 
 	}
 	if err := freeConsole(); err != nil {
 		errs = append(errs, fmt.Errorf("release console: %w", err))
+	} else if err := retireConsoleStdFiles(); err != nil {
+		errs = append(errs, fmt.Errorf("replace released console handles: %w", err))
 	}
 	return errors.Join(errs...)
 }
