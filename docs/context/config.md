@@ -738,7 +738,14 @@ target is joined to the link's *resolved* directory (`EvalSymlinks(Dir(link))`),
 kernel resolves `..` from where the link really lives: joining it textually to the unresolved
 path picked a different file when the config directory was itself a symlink (e.g.
 `~/.config -> ~/dotfiles/config` with a Stow-style `../../store/config.toml` link), so Save
-wrote a stray file and the save was silently lost (caught in #652 review). If the
+wrote a stray file and the save was silently lost (caught in #652 review). The target
+text itself is never cleaned either (#656): it is joined raw, split with `filepath.Split`,
+and only the raw directory is passed to `EvalSymlinks`, which walks it component by
+component, so `..` fails on a missing directory and follows a symlinked one as the kernel
+does. `filepath.Join`/`Dir` used to cancel `missing/..` as text, which made a link to
+`missing/../config.toml` resolve to itself and recurse forever (Save hung), made
+`missing/../other.toml` report success while the link stayed dangling, and sent
+`sublink/../store/config.toml` to a stray file. If the
 target's directory does not exist, Save fails with
 `config <link> links to <target>, whose directory does not exist` and creates no
 directories. A **read-only** target (Nix Home Manager's `/nix/store`) makes the temp-file
@@ -749,7 +756,9 @@ are unchanged. Coverage, all Unix-only: `TestSaveCreatesTargetOfDanglingSymlinke
 `TestSaveCreatesTargetOfRelativeDanglingSymlink`,
 `TestSaveRelativeDanglingSymlinkThroughSymlinkedDir`, `TestSaveFollowsDanglingSymlinkChain`, `TestSaveDanglingSymlinkMissingTargetDirFailsClearly`,
 `TestSaveReadOnlySymlinkTargetFailsClearly` (skipped as root, which ignores the `0555`
-directory mode).
+directory mode), and for #656 `TestSaveDanglingSymlinkDotDotPastMissingDirToItselfFails`
+(3s deadline via `saveWithin`), `TestSaveDanglingSymlinkDotDotPastMissingDirFails`,
+`TestSaveDanglingSymlinkDotDotAfterSymlinkedDir`.
 
 `Manager.Watch` matches that. The daemon watches `DefaultPath()` unresolved, and on Linux
 inotify on the link's directory never sees a rename in the target's directory. So when the

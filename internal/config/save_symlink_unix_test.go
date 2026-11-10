@@ -257,3 +257,86 @@ func TestSaveReadOnlySymlinkTargetFailsClearly(t *testing.T) {
 	}
 	requireSymlink(t, link)
 }
+
+// saveWithin runs Save with a deadline so a recursion bug fails the test
+// instead of hanging the suite.
+func saveWithin(t *testing.T, cfg Config, path string) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- Save(cfg, path) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(3 * time.Second):
+		t.Fatal("Save did not return within 3s")
+		return nil
+	}
+}
+
+// #656 case A: a dangling link to "missing/../config.toml" must not be cleaned
+// textually back into the link itself. The kernel fails on the missing
+// directory, so Save fails clearly instead of recursing forever.
+func TestSaveDanglingSymlinkDotDotPastMissingDirToItselfFails(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "config.toml")
+	if err := os.Symlink("missing/../config.toml", link); err != nil {
+		t.Fatal(err)
+	}
+	err := saveWithin(t, Default(), link)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("want a 'does not exist' error, got: %v", err)
+	}
+	requireSymlink(t, link)
+}
+
+// #656 case B: a dangling link to "missing/../other.toml" never resolves, so a
+// save next to the link would be lost. Save must fail, not report success.
+func TestSaveDanglingSymlinkDotDotPastMissingDirFails(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "config.toml")
+	if err := os.Symlink("missing/../other.toml", link); err != nil {
+		t.Fatal(err)
+	}
+	err := saveWithin(t, Default(), link)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("want a 'does not exist' error, got: %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(dir, "other.toml")); statErr == nil {
+		t.Fatal("Save wrote other.toml, which the link does not resolve to")
+	}
+	requireSymlink(t, link)
+}
+
+// #656 case C: ".." after a symlinked directory in the target resolves from the
+// directory the symlink points at, as the kernel does, not textually.
+func TestSaveDanglingSymlinkDotDotAfterSymlinkedDir(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{filepath.Join(root, "real", "sub"), filepath.Join(root, "real", "store"), filepath.Join(root, "store"), filepath.Join(root, "conf")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(root, "real", "sub"), filepath.Join(root, "sublink")); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "conf", "config.toml")
+	if err := os.Symlink(root+"/sublink/../store/config.toml", link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.Enabled = false
+	if err := saveWithin(t, cfg, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "store", "config.toml")); err == nil {
+		t.Fatal("Save wrote a stray file at root/store/config.toml instead of the link's target")
+	}
+	got, err := LoadPathUnsettled(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Fatal("loading through the link did not see the save")
+	}
+	requireSymlink(t, link)
+}
