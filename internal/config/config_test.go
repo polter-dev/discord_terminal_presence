@@ -1056,6 +1056,59 @@ func TestManagerStartupUnsettledSnapshotFailsClosed(t *testing.T) {
 	}
 }
 
+// TestManagerStartupUncertifiedSeedWithholdsOnlyPresenceAndPosture is #635.
+// An uncertified construction used to replace the whole decoded config with
+// defaults, so update_check = false and fallback_messages were ignored for the
+// horizon. Only presence and the inputs of the loosening guard's privacy
+// posture are uncertain; holding those at defaults keeps the guard comparing
+// against defaults, so a settled reload of the same looser bytes still waits
+// out the horizon instead of committing on the uncertified baseline.
+func TestManagerStartupUncertifiedSeedWithholdsOnlyPresenceAndPosture(t *testing.T) {
+	path := withConfigHome(t)
+	body := "update_check = false\nfallback_messages = [\"Shipping things\"]\n[privacy]\nshow_directory = true\n"
+	writeConfig(t, path, "enabled = true\n"+body)
+
+	// Every read differs, so the bounded settle gives up (unsettled).
+	reads := 0
+	snapshot := func(string) fileSnapshot {
+		reads++
+		return fileSnapshot{exists: true, data: []byte(fmt.Sprintf("enabled = true\nscan_interval = \"%ds\"\n", reads) + body)}
+	}
+	settleNow := time.Unix(0, 0)
+	manager := newManagerPathWith(
+		path,
+		snapshot,
+		func() time.Time { return settleNow },
+		func(delay time.Duration) { settleNow = settleNow.Add(delay) },
+	)
+	defer manager.Close()
+
+	cfg, err := manager.Current()
+	if err != nil {
+		t.Fatalf("Current() = %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatal("Current().Enabled = true from an unsettled snapshot")
+	}
+	if cfg.UpdateCheck {
+		t.Fatal("Current().UpdateCheck = true, want the file's update_check = false during the horizon")
+	}
+	if !reflect.DeepEqual(cfg.FallbackMessages, []string{"Shipping things"}) {
+		t.Fatalf("Current().FallbackMessages = %q, want the file's list", cfg.FallbackMessages)
+	}
+	if cfg.Privacy.ShowDirectory {
+		t.Fatal("Current().Privacy.ShowDirectory = true from an uncertified snapshot, want the default held")
+	}
+	assertManagerLooseningGuardArmed(t, manager, "for an uncertified construction")
+
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("Reload() = %v", err)
+	}
+	if cfg, _ := manager.Current(); cfg.Enabled {
+		t.Fatal("settled reload with show_directory = true enabled presence before the horizon")
+	}
+}
+
 func TestInitFileWritesAnnotatedLoadableConfig(t *testing.T) {
 	path := withConfigHome(t)
 	if err := InitFile(path, false); err != nil {
