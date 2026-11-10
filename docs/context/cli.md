@@ -134,7 +134,12 @@ polling.
 Setup rewrites enabled service definitions but does not relaunch an already-running
 daemon. Config/autostart success survives a completion-only failure and the summary
 reports that partial outcome. Completion removal attempts every shell; details live in
-[`completioninstall.md`](completioninstall.md).
+[`completioninstall.md`](completioninstall.md). `newSetupModel` runs the resolved
+executable through `service.ValidateInstallExecutable` (unforced; setup has no `--force`
+equivalent) before autostart is registered; a refusal is wrapped as
+`tui.SetupSkipAutostartError`, so setup saves the config, skips autostart, and after the
+TUI exits prints the same refusal `termp autostart install` gives on stderr as a warning
+without failing (#664). A failure to resolve the executable at all still fails setup.
 
 Plain `termp uninstall` remains the start-at-login removal alias and points users to
 `termp uninstall --all`. Full uninstall confirms unless `--yes` is supplied, stops and

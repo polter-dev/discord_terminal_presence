@@ -33,7 +33,12 @@ an install refused before it touches the disk, such as a definition owned by ano
 installation, would otherwise be refused again by the compensating uninstall and print
 the same refusal a second time as a failed restore of state termp never changed (#540).
 Unknown state after a failure still cleans up, because uninstall over an absent
-definition is a no-op on every platform. Completion
+definition is a no-op on every platform. A `SetupExeFunc` error wrapped in
+`SetupSkipAutostartError` is not a failure: setup skips autostart (no install, uninstall
+or rollback), still saves the config, reports `Autostart: skipped` in the summary, and
+exposes the reason through `AutostartWarning` for the command to print after the
+alt-screen TUI exits (#664). Any other executable-resolution error still fails setup
+before config is saved. Completion
 installation runs afterward as an optional outcome. If only completion installation fails,
 setup is still applied: config and autostart remain in effect, the model adopts the
 persisted config, and the summary reports completion failure as partial success.

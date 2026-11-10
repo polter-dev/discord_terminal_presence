@@ -538,8 +538,12 @@ func setupWithConfigLoader(args []string, load func() (config.Config, error)) er
 	if err != nil {
 		return err
 	}
-	if setupModel, ok := finalModel.(tui.SetupModel); ok && setupModel.Err() != nil {
+	setupModel, ok := finalModel.(tui.SetupModel)
+	if ok && setupModel.Err() != nil {
 		return setupModel.Err()
+	}
+	if ok && setupModel.AutostartWarning() != "" {
+		fmt.Fprintf(os.Stderr, "Warning: setup saved your config but skipped autostart: %s\n", setupModel.AutostartWarning())
 	}
 	return nil
 }
@@ -552,6 +556,21 @@ type setupServiceManager interface {
 }
 
 func newSetupModel(cfg config.Config, save tui.SetupSaveFunc, manager setupServiceManager, exe tui.SetupExeFunc) tui.SetupModel {
+	validatedExe := exe
+	if exe != nil {
+		// Setup refuses the same binaries `termp autostart install` does, but warns instead of failing (#664).
+		validatedExe = func() (string, error) {
+			path, err := exe()
+			if err != nil {
+				return "", err
+			}
+			path, err = service.ValidateInstallExecutable(path, false)
+			if err != nil {
+				return "", tui.SetupSkipAutostartError{Err: err}
+			}
+			return path, nil
+		}
+	}
 	installAutostart := func(path string) error {
 		return installSetupAutostart(manager, path, currentDaemonPID() > 0)
 	}
@@ -562,7 +581,7 @@ func newSetupModel(cfg config.Config, save tui.SetupSaveFunc, manager setupServi
 	autostartInstalled := func() (bool, error) {
 		return manager.Status().Installed, nil
 	}
-	model := tui.NewSetupModel(cfg, save, installAutostart, uninstallAutostart, exe, autostartInstalled)
+	model := tui.NewSetupModel(cfg, save, installAutostart, uninstallAutostart, validatedExe, autostartInstalled)
 	shell := completioninstall.DetectShell(os.Getenv("SHELL"))
 	path, err := completioninstall.TargetPath(shell, os.UserHomeDir)
 	if err != nil {
