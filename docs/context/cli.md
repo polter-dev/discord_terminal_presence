@@ -18,7 +18,13 @@ tag-pinned archives. `.github/workflows/release.yml` and `.goreleaser.yaml` own 
 including gated Homebrew Cask and Scoop manifest publication;
 `.github/workflows/verify-release-secrets.yml` provides the manual publishing-token
 pre-flight check. `.github/workflows/ci.yml` owns cross-platform tests and real
-package-layout integration probes.
+package-layout integration probes. `.github/workflows/soak.yml` is a manual
+(`workflow_dispatch`) memory soak for #589: an isolated foreground daemon (temp HOME/XDG,
+`NO_UPDATE_CHECK`, no Discord) runs under synthetic tool-named pty processes and churn
+while RSS/VSZ/threads/fds are sampled every 30s; live heap comes from `GODEBUG=gctrace=1`
+and goroutine counts from SIGQUIT dumps (a fresh baseline daemon, then the soak daemon at
+the end), so the shipped binary needs no pprof hook. Runs are capped at 330 minutes by
+the 6 hour hosted-job limit, shorter than the issue's 24 hour procedure.
 
 **Invariants / gotchas:** Start treats the validated PID file as final arbiter, also
 recognizes a fresh same-user/same-executable `discord.json` publisher, and waits for
