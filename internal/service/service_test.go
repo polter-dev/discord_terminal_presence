@@ -276,6 +276,19 @@ func fakeHome(t *testing.T) string {
 	return home
 }
 
+// os.UserHomeDir reads USERPROFILE on Windows, so a HOME-only fakeHome let
+// tests write service definitions into the real profile there (#628).
+func TestFakeHomeRedirectsUserHomeDir(t *testing.T) {
+	home := fakeHome(t)
+	got, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != home {
+		t.Fatalf("os.UserHomeDir() = %q after fakeHome, want %q", got, home)
+	}
+}
+
 func requireGOOS(t *testing.T, goos string) {
 	t.Helper()
 	if runtime.GOOS != goos {
@@ -1188,6 +1201,11 @@ func TestDarwinDisableAndEnableAreIdempotent(t *testing.T) {
 			manager := Manager{GOOS: "darwin", Runner: runner, Executable: owned}
 			if _, err := tt.run(manager); err != nil {
 				t.Fatal(err)
+			}
+			for call := range tt.fail {
+				if !hasCall(runner.calls, call) {
+					t.Fatalf("calls = %#v, want injected failure %q to be exercised", runner.calls, call)
+				}
 			}
 		})
 	}
