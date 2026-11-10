@@ -346,6 +346,18 @@ func (m *Manager) Watch(ctx context.Context) error {
 		_ = watcher.Close()
 		return err
 	}
+	// A symlinked config is saved in its target's directory (#638), which inotify
+	// on the link's directory never sees, so watch the target too.
+	// shortcut: resolved once per Watch, so retargeting the link to another directory goes unseen until restart.
+	target := filepath.Clean(m.path)
+	if resolved, err := filepath.EvalSymlinks(m.path); err == nil && resolved != target {
+		target = resolved
+		if targetDir := filepath.Dir(target); targetDir != dir {
+			if err := watcher.Add(targetDir); err != nil {
+				m.reportWatchFailure(err) // keep watching the link's directory as before
+			}
+		}
+	}
 
 	go func() {
 		defer watcher.Close()
@@ -355,7 +367,7 @@ func (m *Manager) Watch(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				if filepath.Clean(event.Name) != filepath.Clean(m.path) {
+				if name := filepath.Clean(event.Name); name != filepath.Clean(m.path) && name != target {
 					continue
 				}
 				if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) || event.Has(fsnotify.Remove) {
