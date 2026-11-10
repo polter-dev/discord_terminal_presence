@@ -25,8 +25,8 @@ func TestRemoveKnownFilesFromDirectoryPreservesUnknownFiles(t *testing.T) {
 	}
 
 	target := uninstallRemovalTarget{label: "config", path: dir, directory: true}
-	if err := removeKnownFilesFromDirectory(target, os.Remove, os.RemoveAll); err != nil {
-		t.Fatal(err)
+	if kept, err := removeKnownFilesFromDirectory(target, os.Remove, os.RemoveAll); err != nil || !kept {
+		t.Fatalf("removeKnownFilesFromDirectory() = %t, %v; want kept, nil", kept, err)
 	}
 
 	if _, err := os.Stat(known); !os.IsNotExist(err) {
@@ -52,8 +52,8 @@ func TestRemoveKnownFilesFromDirectoryRemovesEmptiedDirectory(t *testing.T) {
 	}
 
 	target := uninstallRemovalTarget{label: "state", path: dir, directory: true}
-	if err := removeKnownFilesFromDirectory(target, os.Remove, os.RemoveAll); err != nil {
-		t.Fatal(err)
+	if kept, err := removeKnownFilesFromDirectory(target, os.Remove, os.RemoveAll); err != nil || kept {
+		t.Fatalf("removeKnownFilesFromDirectory() = %t, %v; want removed, nil", kept, err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("emptied termp directory still exists: %v", err)
@@ -71,11 +71,38 @@ func TestRemoveKnownFilesFromDirectoryRecognizesTempWritePrefix(t *testing.T) {
 	}
 
 	target := uninstallRemovalTarget{label: "config", path: dir, directory: true}
-	if err := removeKnownFilesFromDirectory(target, os.Remove, os.RemoveAll); err != nil {
+	if _, err := removeKnownFilesFromDirectory(target, os.Remove, os.RemoveAll); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("directory holding only a recognized temp-write file still exists: %v", err)
+	}
+}
+
+// TestRemoveKnownFilesFromDirectoryKeepsUnknownFileInRunDirectory covers the
+// PID directory recursion added for #636: a user's file inside run/ keeps
+// both run/ and its parent, while termp's PID file still goes.
+func TestRemoveKnownFilesFromDirectoryKeepsUnknownFileInRunDirectory(t *testing.T) {
+	dir := t.TempDir()
+	run := filepath.Join(dir, "run")
+	if err := os.Mkdir(run, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{"termp.pid": "{}", "notes.txt": "owner data"} {
+		if err := os.WriteFile(filepath.Join(run, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	target := uninstallRemovalTarget{label: "runtime directory", path: dir, directory: true}
+	if kept, err := removeKnownFilesFromDirectory(target, os.Remove, os.RemoveAll); err != nil || !kept {
+		t.Fatalf("removeKnownFilesFromDirectory() = %t, %v; want kept, nil", kept, err)
+	}
+	if _, err := os.Stat(filepath.Join(run, "termp.pid")); !os.IsNotExist(err) {
+		t.Fatalf("PID file still exists: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(run, "notes.txt")); err != nil || string(data) != "owner data" {
+		t.Fatalf("unknown file in run/ = %q, %v; want preserved owner data", data, err)
 	}
 }
 
@@ -90,6 +117,8 @@ func TestIsKnownUninstallFile(t *testing.T) {
 		{name: "usage.json", want: true},
 		{name: "presence.json", want: true},
 		{name: "update-check.json", want: true},
+		{name: "discord.json", want: true},
+		{name: "update-check.json.lock", want: true},
 		{name: "termp.log", want: true},
 		{name: "termp.log.lock", want: true},
 		{name: "termp.log.1", want: true},

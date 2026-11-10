@@ -927,6 +927,20 @@ fixes in the same window:
   only recognized files still ends up fully gone, preserving the "everything termp
   created is gone" promise; anything else, and therefore the directory around it,
   survives.
+- **#636 (full uninstall removes daemon state and reports kept directories).** The
+  #562 allowlist omitted `discord.json`, which every daemon start writes next to
+  `usage.json`, so the state directory survived while the output said `Removed state:` and
+  "All termp-created data was removed." The list now also has `discord.json`,
+  `update-check.json.lock`, `termp.pid` and `run`; a recognized entry that is a real
+  directory (`run`, never a symlink) is cleaned recursively with the same rules. When
+  `pidFilePath` has the `.../termp/run/termp.pid` shape (its fallback when
+  `XDG_RUNTIME_DIR` is unset), `defaultUninstallTargets` adds that `termp` directory as a
+  "runtime directory" target, deduplicated where it equals the
+  state or update-cache directory (Windows, Linux). `removeUninstallTarget` and
+  `removeKnownFilesFromDirectory` return `kept`, and a directory kept for files termp did
+  not create prints `Kept <label>: <path> (it holds files termp did not create)` instead
+  of `Removed`. The `$TMPDIR/termp-<euid>` PID fallback (no user cache directory) is not
+  a target.
 - **#563 (single oversized log record bounded).** `rotatingLogWriter.Write` used to
   rotate only when the *existing* file was nonempty and the new record would push it over
   `maxBytes`, so one write larger than the cap went straight into an empty file whole,
