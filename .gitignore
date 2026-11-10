@@ -11,8 +11,6 @@
 /docs/process/*
 !/docs/process/context-ledger.md
 !/docs/process/github-intake.md
-!/docs/process/orchestration.md
-!/docs/process/rate-limit-ladder.md
 !/docs/product/
 /docs/product/*
 !/docs/product/architecture.md

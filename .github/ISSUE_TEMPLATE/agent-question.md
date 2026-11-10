@@ -7,7 +7,7 @@ assignees: []
 
 <!-- One decision per issue. Keep it answerable in a single reply. -->
 <!-- Agents: apply the `needs-human` label yourself after opening. This template
-     deliberately does NOT auto-apply it — the label is the lead's polling signal,
+     deliberately does NOT auto-apply it — the label is the orchestrator's polling signal,
      and this is a public repo, so anyone could otherwise inject an issue that
      arrives pre-tagged as an owner decision. -->
 
@@ -27,8 +27,8 @@ assignees: []
 
 ## Blocked
 - **Task paused:** <!-- which task/milestone stops until this is answered -->
-- **Runner:** <!-- implementer-sonnet / mechanical-haiku / lead -->
+- **Runner:** <!-- orchestrator / implementer / reviewer / scout -->
 
 ---
 *To answer:* reply in a comment, then remove the `needs-human` label (or close the issue)
-to signal the lead to resume.
+to signal the orchestrator to resume.
