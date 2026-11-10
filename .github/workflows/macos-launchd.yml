@@ -1,0 +1,93 @@
+name: macOS launchd
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-launchd-rollback:
+    # Real launchctl against a disposable runner: the #646 rollback checks for #619.
+    name: macOS launchd autostart rollback
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Require a gui launchd domain
+        run: |
+          launchctl print "gui/$(id -u)" >domain.out
+          head -n 20 domain.out
+
+      - name: Build termp into ~/.local/bin
+        # Install refuses a binary inside the source tree or a temp directory.
+        run: |
+          go build -o "$HOME/.local/bin/termp" ./cmd/termp
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install autostart
+        run: |
+          termp autostart install
+          launchctl print "gui/$(id -u)/dev.termp.daemon"
+
+      - name: "Check 1: install over a read-only plist rolls back and reloads"
+        run: |
+          plist="$HOME/Library/LaunchAgents/dev.termp.daemon.plist"
+          chmod 444 "$plist"
+          if termp autostart install >install.out 2>&1; then
+            cat install.out
+            echo "::error::install succeeded over a read-only plist"
+            exit 1
+          fi
+          echo "--- install error (check 3 wording) ---"
+          cat install.out
+          echo "---"
+          launchctl print "gui/$(id -u)/dev.termp.daemon" || {
+            echo "::error::dev.termp.daemon is not loaded after the failed install"
+            exit 1
+          }
+          grep -q "restored and reloaded" install.out || {
+            echo "::error::install error does not say the previous definition was restored and reloaded"
+            exit 1
+          }
+          chmod 644 "$plist"
+
+      - name: "Check 2: install over a uchg-locked plist rolls back and reloads"
+        run: |
+          plist="$HOME/Library/LaunchAgents/dev.termp.daemon.plist"
+          chflags uchg "$plist"
+          if termp autostart install >install.out 2>&1; then
+            cat install.out
+            echo "::error::install succeeded over a uchg-locked plist"
+            exit 1
+          fi
+          echo "--- install error (check 3 wording) ---"
+          cat install.out
+          echo "---"
+          launchctl print "gui/$(id -u)/dev.termp.daemon" || {
+            echo "::error::dev.termp.daemon is not loaded after the failed install"
+            exit 1
+          }
+          grep -q "restored and reloaded" install.out || {
+            echo "::error::install error does not say the previous definition was restored and reloaded"
+            exit 1
+          }
+
+      - name: "Check 4: a normal install works after unlocking"
+        run: |
+          plist="$HOME/Library/LaunchAgents/dev.termp.daemon.plist"
+          chflags nouchg "$plist"
+          chmod 644 "$plist"
+          termp autostart install
+          launchctl print "gui/$(id -u)/dev.termp.daemon"
