@@ -4,7 +4,8 @@ On macOS and Linux, the default location is `~/.config/termp/config.toml`, or
 `$XDG_CONFIG_HOME/termp/config.toml` when `XDG_CONFIG_HOME` is set. Windows uses the
 native user config directory, normally `%AppData%\termp\config.toml`.
 
-The format is TOML. Valid changes hot-reload; an invalid edit leaves a running daemon's
+The format is TOML. Valid changes hot-reload (except `fallback_messages`, which is
+chosen once per daemon session; see its row below); an invalid edit leaves a running daemon's
 last-good behavior in place. If an existing config is already invalid when the daemon
 starts, the daemon stays running but disables presence until a valid change reloads.
 Missing config files still use enabled first-run defaults. Startup load failures are
@@ -44,7 +45,7 @@ config file.
 | `headliner_idle_timeout` | duration | `"60s"` | Idle time before a busier tool may replace the current featured tool |
 | `activity_switching` | bool | `true` | Allow activity-based featured-tool changes |
 | `details_format` | string | `"Using {tool}"` | Custom details template supporting `{tool}` and `{dir}` |
-| `fallback_messages` | string[] | built-in messages | Non-empty details choices when no directory or collection is rendered |
+| `fallback_messages` | string[] | built-in messages | Non-empty details choices when no directory or collection is rendered. One is chosen when the daemon starts (once per session, to avoid flicker), so edits apply after `termp stop` + `termp start` |
 | `feedback_url` | URL | project feedback URL | Link opened by the settings feedback action |
 
 `NO_UPDATE_CHECK` disables release checks whenever that environment variable is present,
