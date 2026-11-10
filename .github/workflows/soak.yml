@@ -28,7 +28,7 @@ permissions:
 jobs:
   soak:
     name: Soak (${{ inputs.runner }}, ${{ inputs.duration_minutes }} min)
-    runs-on: ${{ inputs.runner || 'macos-latest' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 360
     steps:
       - name: Check out repository
@@ -203,5 +203,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: soak-${{ inputs.runner || 'macos-latest' }}-${{ github.run_id }}
+          name: soak-${{ inputs.runner || 'ubuntu-latest' }}-${{ github.run_id }}
           path: ${{ runner.temp }}/soak/out
