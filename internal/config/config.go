@@ -517,16 +517,20 @@ func danglingTarget(link string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolve symlinked config %s: %w", link, err)
 		}
-		target = filepath.Join(linkDir, target)
+		// Joined raw: filepath.Join would cancel ".." as text, which the kernel does not (#656).
+		target = linkDir + string(filepath.Separator) + target
 	}
-	dir, err := filepath.EvalSymlinks(filepath.Dir(target))
+	// EvalSymlinks walks the raw directory component by component, so ".." fails
+	// on a missing directory and follows a symlinked one, exactly as the kernel does.
+	rawDir, base := filepath.Split(target)
+	dir, err := filepath.EvalSymlinks(rawDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("config %s links to %s, whose directory does not exist", link, target)
 	}
 	if err != nil {
 		return "", fmt.Errorf("config %s links to %s, whose directory cannot be resolved: %w", link, target, err)
 	}
-	resolved := filepath.Join(dir, filepath.Base(target))
+	resolved := filepath.Join(dir, base)
 	// A chain of links ending in a missing file: follow it so no link in it is replaced.
 	if info, err := os.Lstat(resolved); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return danglingTarget(resolved)
