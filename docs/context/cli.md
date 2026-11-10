@@ -25,6 +25,20 @@ while RSS/VSZ/threads/fds are sampled every 30s; live heap comes from `GODEBUG=g
 and goroutine counts from SIGQUIT dumps (a fresh baseline daemon, then the soak daemon at
 the end), so the shipped binary needs no pprof hook. Runs are capped at 330 minutes by
 the 6 hour hosted-job limit, shorter than the issue's 24 hour procedure.
+`.github/workflows/macos-launchd.yml` runs the real-`launchctl` autostart rollback checks
+for #619 on `macos-latest` (#646, described in `service.md`).
+`.github/workflows/windows-autostart.yml` runs `.github/scripts/windows-autostart-verify.ps1`
+on `windows-latest` against the GoReleaser snapshot. It installs the real Windows zip and
+the generated Scoop manifest (served from `127.0.0.1`, hash unchanged), drives the
+interactive `termp setup` through a real ConPTY (`drive-setup-tui.py`), runs `termp
+autostart install`, and asserts the registered task action: `termpw.exe` beside the
+daemon, Scoop's `apps\termp\current` launcher, or the `--internal-autostart` fallback with
+its warning. It starts and ends the real task with `schtasks /Run` and `/End`, checking
+the daemon process, its `termp.log` start record, that `/End` stops the daemon, and that
+autostart survives a Scoop update and cleanup (#472, #545). It first found the Scoop
+install refusal (#472), the daemon orphaned by `/End` (#662), and the intermittently
+missing fallback start record (#663). It cannot observe a real logon or whether a console
+window is visible.
 
 **Invariants / gotchas:** Start treats the validated PID file as final arbiter, also
 recognizes a fresh same-user/same-executable `discord.json` publisher, and waits for
