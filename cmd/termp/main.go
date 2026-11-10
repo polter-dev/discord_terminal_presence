@@ -1759,14 +1759,7 @@ func status(args []string) error {
 			if err := ctx.Err(); err != nil {
 				return detector.Detection{}, err
 			}
-			return detector.ActiveDetectionWithPresence(reg, detector.NewGopsutilLister(), detector.Config{
-				ScanInterval:           cfg.ScanIntervalDuration(),
-				IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
-				Pin:                    cfg.Pin,
-				HeadlinerIdleTimeout:   cfg.HeadlinerIdleTimeoutDuration(),
-				CorroborateIdleWithCPU: detector.DefaultCorroborateIdleWithCPU,
-				ActivitySwitching:      cfg.ActivitySwitching,
-			})
+			return detector.ActiveDetectionWithPresence(reg, newOneShotLister(), detectorConfig(cfg))
 		},
 	})
 	serviceState := probes.service
@@ -2630,20 +2623,16 @@ func watch(args []string) error {
 	return err
 }
 
+// newOneShotLister is the process source for status and watch --once; tests swap it.
+var newOneShotLister = func() detector.ProcessLister { return detector.NewGopsutilLister() }
+
 func watchSnapshot(now time.Time) (string, []string, error) {
 	cfg, settled, loadErr := config.LoadReadOnly()
 	reg, err := registry.NewWithCustom(cfg.CustomTools...)
 	if err != nil {
 		return "", nil, err
 	}
-	detection, err := detector.ActiveDetectionWithPresence(reg, detector.NewGopsutilLister(), detector.Config{
-		ScanInterval:           cfg.ScanIntervalDuration(),
-		IdleClearTimeout:       cfg.IdleClearTimeoutDuration(),
-		Pin:                    cfg.Pin,
-		HeadlinerIdleTimeout:   cfg.HeadlinerIdleTimeoutDuration(),
-		CorroborateIdleWithCPU: detector.DefaultCorroborateIdleWithCPU,
-		ActivitySwitching:      cfg.ActivitySwitching,
-	})
+	detection, err := detector.ActiveDetectionWithPresence(reg, newOneShotLister(), detectorConfig(cfg))
 	if err != nil {
 		debugf("watch snapshot scan skipped: %v", err)
 		detection = detector.Detection{None: true}
