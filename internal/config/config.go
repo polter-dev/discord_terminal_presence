@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -460,10 +461,17 @@ func Save(cfg Config, path string) error {
 	}
 
 	// A symlinked config (dotfiles setup) is saved to its target so the link survives (#638).
+	link := ""
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		link = path
 		resolved, err := filepath.EvalSymlinks(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			resolved, err = danglingTarget(path)
+		} else if err != nil {
+			err = fmt.Errorf("resolve symlinked config %s: %w", path, err)
+		}
 		if err != nil {
-			return fmt.Errorf("resolve symlinked config %s: %w", path, err)
+			return err
 		}
 		path = resolved
 	}
@@ -476,6 +484,10 @@ func Save(cfg Config, path string) error {
 	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
+		if link != "" {
+			// Never fall back to replacing the link, e.g. one into a read-only /nix/store (#652).
+			return fmt.Errorf("config %s links to %s, which is not writable: %w", link, path, err)
+		}
 		return err
 	}
 	tmpPath := tmp.Name()
@@ -489,6 +501,37 @@ func Save(cfg Config, path string) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+// danglingTarget returns the missing file a dangling config link points at, so
+// Save can create it and keep the link (#652). It creates no directories: the
+// target's directory must already exist.
+func danglingTarget(link string) (string, error) {
+	target, err := os.Readlink(link)
+	if err != nil {
+		return "", fmt.Errorf("resolve symlinked config %s: %w", link, err)
+	}
+	if !filepath.IsAbs(target) {
+		// The kernel resolves ".." from where the link really lives, so resolve its directory first.
+		linkDir, err := filepath.EvalSymlinks(filepath.Dir(link))
+		if err != nil {
+			return "", fmt.Errorf("resolve symlinked config %s: %w", link, err)
+		}
+		target = filepath.Join(linkDir, target)
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("config %s links to %s, whose directory does not exist", link, target)
+	}
+	if err != nil {
+		return "", fmt.Errorf("config %s links to %s, whose directory cannot be resolved: %w", link, target, err)
+	}
+	resolved := filepath.Join(dir, filepath.Base(target))
+	// A chain of links ending in a missing file: follow it so no link in it is replaced.
+	if info, err := os.Lstat(resolved); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return danglingTarget(resolved)
+	}
+	return resolved, nil
 }
 
 // LoadPath reads a settled TOML config for a caller that may write the loaded

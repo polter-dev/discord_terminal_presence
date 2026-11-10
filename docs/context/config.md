@@ -726,9 +726,30 @@ link survives and the target receives the save. Until #638 the rename replaced t
 itself with a regular file, silently detaching a dotfiles setup. This is the owner's
 decision (#640), chosen over refusing like `InitFile`: the config path is the user's own,
 so following their link grants nothing they could not already write, and refusing would
-stop every symlinked user from saving. A link that cannot be resolved (dangling, loop)
-returns a `resolve symlinked config` error instead of replacing it. Unix coverage:
+stop every symlinked user from saving. A link that cannot be resolved (a loop) returns a
+`resolve symlinked config` error instead of replacing it. Unix coverage:
 `TestSaveWritesThroughSymlinkedConfig` (`internal/config/save_symlink_unix_test.go`).
+
+Two follow-ups are the owner's decision on #652. A **dangling** link (for example GNU Stow
+linking a dotfiles file not yet created) makes `EvalSymlinks` fail with not-exist, so
+`danglingTarget` reads the link, resolves only the target's parent, and Save creates the target there and keeps the link. A chain of links
+ending in a missing file is followed to its end, so no link in it is replaced. A relative
+target is joined to the link's *resolved* directory (`EvalSymlinks(Dir(link))`), because the
+kernel resolves `..` from where the link really lives: joining it textually to the unresolved
+path picked a different file when the config directory was itself a symlink (e.g.
+`~/.config -> ~/dotfiles/config` with a Stow-style `../../store/config.toml` link), so Save
+wrote a stray file and the save was silently lost (caught in #652 review). If the
+target's directory does not exist, Save fails with
+`config <link> links to <target>, whose directory does not exist` and creates no
+directories. A **read-only** target (Nix Home Manager's `/nix/store`) makes the temp-file
+create in the target's directory fail; for a symlinked path that error is wrapped as
+`config <link> links to <target>, which is not writable: ...` rather than naming only the
+temp file, and Save never falls back to replacing the link. A non-symlinked path's errors
+are unchanged. Coverage, all Unix-only: `TestSaveCreatesTargetOfDanglingSymlinkedConfig`,
+`TestSaveCreatesTargetOfRelativeDanglingSymlink`,
+`TestSaveRelativeDanglingSymlinkThroughSymlinkedDir`, `TestSaveFollowsDanglingSymlinkChain`, `TestSaveDanglingSymlinkMissingTargetDirFailsClearly`,
+`TestSaveReadOnlySymlinkTargetFailsClearly` (skipped as root, which ignores the `0555`
+directory mode).
 
 `Manager.Watch` matches that. The daemon watches `DefaultPath()` unresolved, and on Linux
 inotify on the link's directory never sees a rename in the target's directory. So when the
