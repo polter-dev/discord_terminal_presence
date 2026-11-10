@@ -334,7 +334,9 @@ own:
 - `missingFile`: a genuine first run or an unlink/recreate window mid-save (#448
   route A), which are indistinguishable at construction.
 
-In each case construction seeds `invalidFallbackWithPath` (presence off), retains the
+In each case construction seeds the decoded config with presence off and with the
+inputs of the loosening guard's privacy posture (`Enabled`, `Display`, `Privacy`,
+`Tools`, everything `Resolve` reads) held at `invalidFallbackWithPath` defaults, retains the
 snapshot as the accepted baseline, and routes the defaulted candidate through the same
 `enabled`-loosening choke point every reload uses, passing `enabledDefined = false`
 because it cannot vouch for the bytes. The guard is therefore armed on every construction
@@ -344,6 +346,19 @@ still reaches enabled defaults on its own, one loosening horizon later, driven b
 guard's own `time.AfterFunc` retry rather than by any filesystem event. Startup itself is
 never blocked: the first-run path still returns in well under 100ms, it just returns with
 presence off.
+
+Until #635 the seed replaced the *whole* decoded config with defaults, so during the
+horizon `update_check = false` was ignored by the daemon's immediate startup update refresh
+(a real release lookup when the cache was stale) and `run()`/`watch` picked their one-time
+fallback message from the built-in list, never re-picked on reload. Only presence is
+uncertain, so every other decoded setting now applies from construction. The posture
+inputs stay held on purpose: seeding them from uncertified bytes would make those bytes
+the guard's comparison baseline, and a settled reload of the same looser posture (e.g.
+`show_directory = true` with explicit `enabled = true`) would then commit presence-on
+immediately instead of after the horizon. `TestManagerStartupUncertifiedSeedWithholdsOnlyPresenceAndPosture`
+covers both halves (mutation-checked: withholding only `Enabled` fails it); the
+cmd/termp wiring is covered by `startup_config_horizon_test.go`. A new top-level
+`Config` field that `Resolve` reads must be added to that held list.
 
 The cost is a documented, deliberate trade: **presence starts up to three seconds late**
 on first run and on any config that omits the `enabled` key. Configs written by termp

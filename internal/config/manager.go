@@ -117,7 +117,13 @@ func newManagerPathWithHorizon(
 		(missingFile || defaultedEnabled || unsettledSnapshot)
 	pendingCfg := cfg
 	if uncertifiedEnabled {
-		cfg = invalidFallbackWithPath(path)
+		// Withhold only presence and what the loosening guard's privacy
+		// posture reads (Resolve: Enabled, Display, Privacy, Tools), so the
+		// guard still compares against defaults. Every other decoded setting,
+		// such as update_check and fallback_messages, applies from the start
+		// (#635).
+		held := invalidFallbackWithPath(path)
+		cfg.Enabled, cfg.Display, cfg.Privacy, cfg.Tools = held.Enabled, held.Display, held.Privacy, held.Tools
 	}
 	manager := &Manager{
 		path:      path,
