@@ -105,7 +105,7 @@ jobs:
           (
             tick=0
             while :; do
-              if [ "$(pgrep -f "$soak/work.sh" | wc -l)" -lt 12 ]; then launch_tool; fi
+              if [ "$(pgrep -f "^$soak/bin/" | wc -l)" -lt 12 ]; then launch_tool; fi
               for _ in 1 2 3 4 5 6 7 8 9 10; do sh -c ':'; done
               tick=$((tick + 1))
               if [ $((tick % 20)) -eq 0 ]; then
@@ -142,7 +142,7 @@ jobs:
               threads=$(ps -o nlwp= -p "$pid" | tr -d ' ')
               fds=$(find /proc/"$pid"/fd -mindepth 1 -maxdepth 1 | wc -l)
             fi
-            echo "$((now - start)),$rss,$vsz,$threads,$fds,$(($(ps -A | wc -l) - 1)),$(pgrep -f "$soak/work.sh" | wc -l | tr -d ' '),$(wc -l <"$out/launches" | tr -d ' ')" >>"$out/samples.csv"
+            echo "$((now - start)),$rss,$vsz,$threads,$fds,$(($(ps -A | wc -l) - 1)),$(pgrep -f "^$soak/bin/" | wc -l | tr -d ' '),$(wc -l <"$out/launches" | tr -d ' ')" >>"$out/samples.csv"
             [ "$now" -ge "$stop" ] && break
             sleep "$interval"
           done
