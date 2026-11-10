@@ -108,10 +108,11 @@ system's own error text, which is locale-dependent.
 
 A not-exist error from `EvalSymlinks` alone is not trusted: the refusal fires only
 when `os.Stat` on the path also reports it missing. Go's `EvalSymlinks` walks the
-path itself and fails with `ERROR_PATH_NOT_FOUND` through the `current` junction
-Scoop creates with `New-Item -ItemType Junction` (empty print name, `attrib +R /L`),
-so before this every plain Scoop install was refused by `termp autostart install`
-while `termp setup` worked (#472). When the OS finds the file, the unresolved path
+path itself and fails with `ERROR_PATH_NOT_FOUND` through any junction in the middle
+of a path (Go 1.23+ `os.Lstat` reports a junction as neither symlink nor directory, so
+the walk returns `ENOTDIR`; `mklink /J` junctions fail too, the print name is irrelevant).
+Scoop's `current` junction hit this, so before this every plain Scoop install was
+refused by `termp autostart install` while `termp setup` worked (#472). When the OS finds the file, the unresolved path
 is judged instead. `install_path_junction_windows_test.go` builds that junction with
 Scoop's own two commands and is run by the windows-latest job.
 
