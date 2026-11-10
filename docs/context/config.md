@@ -719,6 +719,17 @@ renames it. New files are created `0600`; forced replacement of an existing regu
 preserves that file's permission bits. Migration copies also preserve the source mode.
 Without `force`, an existing regular file is not replaced.
 
+`Save` (used by `termp settings` and `termp setup`, both on `DefaultPath()`) writes through
+a symlinked config to its target: when `Lstat` reports a symlink it resolves the path with
+`filepath.EvalSymlinks` and does the temp-file-and-rename in the target's directory, so the
+link survives and the target receives the save. Until #638 the rename replaced the link
+itself with a regular file, silently detaching a dotfiles setup. This is the owner's
+decision (#640), chosen over refusing like `InitFile`: the config path is the user's own,
+so following their link grants nothing they could not already write, and refusing would
+stop every symlinked user from saving. A link that cannot be resolved (dangling, loop)
+returns a `resolve symlinked config` error instead of replacing it. Unix coverage:
+`TestSaveWritesThroughSymlinkedConfig` (`internal/config/save_symlink_unix_test.go`).
+
 Until #573, `privacyPosture` covered only `enabled`, `show_directory`,
 `directory_basename_only`, and the directory allowlist. `display.collection` and
 `display.small_image` both publish a second running tool's name and icon
