@@ -129,6 +129,12 @@ func ValidateInstallExecutable(exe string, force bool) (string, error) {
 	case err == nil:
 		candidate = resolved
 	case errors.Is(err, fs.ErrNotExist):
+		// EvalSymlinks walks components itself and reports some reparse points
+		// Windows follows fine as missing, such as Scoop's PowerShell-made
+		// `current` junction (#472). Only refuse when the OS agrees.
+		if _, statErr := os.Stat(invocationPath); !errors.Is(statErr, fs.ErrNotExist) {
+			break
+		}
 		return "", fmt.Errorf(
 			"cannot install autostart from %q: %s (%w). Run `where termp` on Windows (`which termp` elsewhere) to see the path your shell actually resolves, re-run `termp autostart install` from that path, or pass --force to register this path unchecked",
 			invocationPath, missingComponentDetail(invocationPath), err,
