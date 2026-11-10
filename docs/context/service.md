@@ -106,6 +106,15 @@ on that), that a missing directory component yields the actionable message, and
 that `--force` bypasses resolution there too. No test asserts on the operating
 system's own error text, which is locale-dependent.
 
+A not-exist error from `EvalSymlinks` alone is not trusted: the refusal fires only
+when `os.Stat` on the path also reports it missing. Go's `EvalSymlinks` walks the
+path itself and fails with `ERROR_PATH_NOT_FOUND` through the `current` junction
+Scoop creates with `New-Item -ItemType Junction` (empty print name, `attrib +R /L`),
+so before this every plain Scoop install was refused by `termp autostart install`
+while `termp setup` worked (#472). When the OS finds the file, the unresolved path
+is judged instead. `install_path_junction_windows_test.go` builds that junction with
+Scoop's own two commands and is run by the windows-latest job.
+
 Any other resolution failure (an unreadable parent
 directory, an unfollowable reparse point, a flaky share) no longer aborts the
 install: validation falls back to judging the unresolved absolute path, which
