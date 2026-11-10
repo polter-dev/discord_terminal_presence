@@ -271,6 +271,10 @@ creation time), so elapsed timers do not restart for processes that remain
 present. Episode state is written atomically; temp files left by interrupted
 writes are removed after they have been stale for an hour.
 
+The one exception is `fallback_messages`: the daemon picks one message when it
+starts and keeps it for the whole session, so changes apply after
+`termp stop` and `termp start`.
+
 Create a fully commented starter config with:
 
 ```sh
