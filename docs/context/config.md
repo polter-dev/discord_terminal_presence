@@ -719,6 +719,29 @@ renames it. New files are created `0600`; forced replacement of an existing regu
 preserves that file's permission bits. Migration copies also preserve the source mode.
 Without `force`, an existing regular file is not replaced.
 
+`Save` (used by `termp settings` and `termp setup`, both on `DefaultPath()`) writes through
+a symlinked config to its target: when `Lstat` reports a symlink it resolves the path with
+`filepath.EvalSymlinks` and does the temp-file-and-rename in the target's directory, so the
+link survives and the target receives the save. Until #638 the rename replaced the link
+itself with a regular file, silently detaching a dotfiles setup. This is the owner's
+decision (#640), chosen over refusing like `InitFile`: the config path is the user's own,
+so following their link grants nothing they could not already write, and refusing would
+stop every symlinked user from saving. A link that cannot be resolved (dangling, loop)
+returns a `resolve symlinked config` error instead of replacing it. Unix coverage:
+`TestSaveWritesThroughSymlinkedConfig` (`internal/config/save_symlink_unix_test.go`).
+
+`Manager.Watch` matches that. The daemon watches `DefaultPath()` unresolved, and on Linux
+inotify on the link's directory never sees a rename in the target's directory. So when the
+path resolves (`EvalSymlinks`) to a file elsewhere, Watch also adds the target's directory
+and accepts events named after either the link or the resolved target. Without this, the
+write-through save stopped hot reload on Linux. (On main, the rename over the link had
+fired an event there.) It also fixes the older Linux gap where editing the dotfiles file
+directly never reloaded. If adding the target directory fails, that failure is reported on
+the watcher-error channel and the link's directory is still watched, as before. The target
+is resolved once per Watch, so pointing the link at a different directory goes unseen
+until the watch restarts. `TestWatchReloadsAfterSaveThroughSymlinkedConfig` fails on Linux
+without this change. It passes either way on macOS, so only the ubuntu CI job proves it.
+
 Until #573, `privacyPosture` covered only `enabled`, `show_directory`,
 `directory_basename_only`, and the directory allowlist. `display.collection` and
 `display.small_image` both publish a second running tool's name and icon

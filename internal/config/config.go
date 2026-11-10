@@ -459,6 +459,15 @@ func Save(cfg Config, path string) error {
 		return err
 	}
 
+	// A symlinked config (dotfiles setup) is saved to its target so the link survives (#638).
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("resolve symlinked config %s: %w", path, err)
+		}
+		path = resolved
+	}
+
 	dir := filepath.Dir(path)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
