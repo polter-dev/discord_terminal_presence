@@ -92,10 +92,12 @@ jobs:
             sleep 1
           done
           EOF
+          : >"$out/launches"
           tools=(claude codex gemini nvim htop lazygit k9s)
           for t in "${tools[@]}"; do cp "$(command -v bash)" "$soak/bin/$t"; done
           launch_tool() {
             local t=${tools[RANDOM % ${#tools[@]}]} dur=$((30 + RANDOM % 870))
+            echo "$t" >>"$out/launches"
             if [ "$RUNNER_OS" = macOS ]; then
               script -q /dev/null "$soak/bin/$t" "$soak/work.sh" "$dur" </dev/null >/dev/null 2>&1 &
             else
@@ -128,7 +130,7 @@ jobs:
           test -n "$(find "$HOME" -name termp.pid)"
           ps -o pid=,command= -p "$pid"
 
-          echo "elapsed_s,rss_kb,vsz_kb,threads,fds,host_procs,tool_procs" >"$out/samples.csv"
+          echo "elapsed_s,rss_kb,vsz_kb,threads,fds,host_procs,tool_procs,tool_launches" >"$out/samples.csv"
           start=$(date +%s)
           stop=$((start + DURATION_MINUTES * 60))
           while :; do
@@ -142,7 +144,7 @@ jobs:
               threads=$(ps -o nlwp= -p "$pid" | tr -d ' ')
               fds=$(find /proc/"$pid"/fd -mindepth 1 -maxdepth 1 | wc -l)
             fi
-            echo "$((now - start)),$rss,$vsz,$threads,$fds,$(($(ps -A | wc -l) - 1)),$(pgrep -f "$soak/work.sh" | wc -l | tr -d ' ')" >>"$out/samples.csv"
+            echo "$((now - start)),$rss,$vsz,$threads,$fds,$(($(ps -A | wc -l) - 1)),$(pgrep -f "$soak/work.sh" | wc -l | tr -d ' '),$(wc -l <"$out/launches" | tr -d ' ')" >>"$out/samples.csv"
             [ "$now" -ge "$stop" ] && break
             sleep "$interval"
           done
@@ -173,7 +175,7 @@ jobs:
 
           print(f"Soak samples: {len(rows)} over {rows[-1]['elapsed_s'] / 60:.1f} min")
           t = [r["elapsed_s"] for r in rows]
-          for col, unit in [("rss_kb", "KB"), ("vsz_kb", "KB"), ("threads", ""), ("fds", ""), ("host_procs", ""), ("tool_procs", "")]:
+          for col, unit in [("rss_kb", "KB"), ("vsz_kb", "KB"), ("threads", ""), ("fds", ""), ("host_procs", ""), ("tool_procs", ""), ("tool_launches", "")]:
               v = [r[col] for r in rows]
               print(f"{col:11} start {v[0]:>9} finish {v[-1]:>9} min {min(v):>9} max {max(v):>9} "
                     f"second-half trend {trend(t, v):+10.1f} {unit}/hour")
