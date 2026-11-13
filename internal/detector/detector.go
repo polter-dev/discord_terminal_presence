@@ -269,6 +269,9 @@ type Selector struct {
 	saveEpisodes       func(*EpisodeStore)
 }
 
+// matchProcess is the registry matcher; tests replace it to count calls.
+var matchProcess = (*registry.Registry).MatchProcess
+
 type processCPUObservation struct {
 	total       float64
 	lastChanged time.Time
@@ -333,7 +336,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	observedProcesses := make(map[string]struct{})
 	episodesChanged := false
 	for _, proc := range processes {
-		tool, ok := s.registry.MatchProcess(registry.ProcessInfo{
+		tool, ok := matchProcess(s.registry, registry.ProcessInfo{
 			Name:    proc.Name,
 			Exe:     proc.Exe,
 			Cmdline: proc.Cmdline,
