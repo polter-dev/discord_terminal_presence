@@ -133,6 +133,10 @@ rematches everything. Matched processes, including disabled tools, still take th
 path every scan. Tests count matcher calls through the package-level `matchProcess`
 seam (`no_match_memo_test.go`); the equivalence test clears `noMatch` before every scan
 of a second selector and compares detections across an exclude flip and a reload.
+`no_match_key_test.go` pins the key itself (#672): identities sharing a `noMatchKey` must
+get the same `MatchProcess` answer, and the `python -m <tool> <subcommand>`, empty-argv
+`Cmdline` and argv-length forms that answer differently must get different keys. It fails
+if the argv cap drops to 3 or 2 entries or `Cmdline` leaves the key.
 
 Tmux pane discovery is a lazy per-scan snapshot (#596): constructing an enricher does
 not spawn `tmux`; the first `Detached` lookup queries once and all later lookups in that
