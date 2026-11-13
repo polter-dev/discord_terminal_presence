@@ -267,10 +267,32 @@ type Selector struct {
 	instanceChallenges map[string]instanceChallenge
 	episodes           *EpisodeStore
 	saveEpisodes       func(*EpisodeStore)
+	// noMatch holds identities that matched no tool on the previous scan,
+	// so an unchanged one skips the matcher. Rebuilt every scan, dropped on
+	// Reconfigure.
+	noMatch map[noMatchKey]struct{}
 }
 
 // matchProcess is the registry matcher; tests replace it to count calls.
 var matchProcess = (*registry.Registry).MatchProcess
+
+// noMatchKey holds every input registry.MatchProcess reads. The matcher looks
+// at argv[0..3] and whether argv is empty or shorter than four entries, and
+// bounds each argv entry it reads, so later entries never change the answer.
+type noMatchKey struct {
+	name, exe, argv0, cmdline string
+	argc                      int
+	argv                      [4]string
+}
+
+func newNoMatchKey(proc Process) noMatchKey {
+	key := noMatchKey{name: proc.Name, exe: proc.Exe, argv0: proc.Argv0, cmdline: proc.Cmdline}
+	key.argc = min(len(proc.Argv), len(key.argv))
+	for i := range key.argc {
+		key.argv[i] = registry.BoundIdentityField(proc.Argv[i])
+	}
+	return key
+}
 
 type processCPUObservation struct {
 	total       float64
@@ -301,6 +323,7 @@ func (s *Selector) Reconfigure(reg *registry.Registry, config Config) {
 	}
 	s.registry = reg
 	s.config = normalizeConfig(config)
+	s.noMatch = nil
 }
 
 func newSelectorWithEpisodes(reg *registry.Registry, config Config, clock Clock, episodes *EpisodeStore, save func(*EpisodeStore)) *Selector {
@@ -335,7 +358,13 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 	eligibleEpisodes := make(map[string]struct{})
 	observedProcesses := make(map[string]struct{})
 	episodesChanged := false
+	noMatch := make(map[noMatchKey]struct{}, len(s.noMatch))
 	for _, proc := range processes {
+		key := newNoMatchKey(proc)
+		if _, known := s.noMatch[key]; known {
+			noMatch[key] = struct{}{}
+			continue
+		}
 		tool, ok := matchProcess(s.registry, registry.ProcessInfo{
 			Name:    proc.Name,
 			Exe:     proc.Exe,
@@ -344,6 +373,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 			Argv:    proc.Argv,
 		})
 		if !ok {
+			noMatch[key] = struct{}{}
 			continue
 		}
 		if s.config.DisabledTools[tool.ID] {
@@ -401,6 +431,7 @@ func (s *Selector) SelectWithEnricher(processes []Process, enricher ProcessEnric
 		}
 		candidateInstances[tool.ID] = append(candidateInstances[tool.ID], candidate)
 	}
+	s.noMatch = noMatch
 	for key := range s.processCPU {
 		if _, observed := observedProcesses[key]; !observed {
 			delete(s.processCPU, key)
