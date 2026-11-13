@@ -120,6 +120,20 @@ Recovery establishes a fresh per-process baseline. Process observations are keye
 by PID and creation time, so starts, exits, and PID reuse cannot mix unrelated
 cumulative CPU totals.
 
+The selector keeps a negative match memo (#670): identities that matched no tool on the
+previous scan skip `registry.MatchProcess` on the next one. `noMatchKey` holds every
+input the matcher reads: `Name`, `Exe`, `Argv0` and `Cmdline` as given, plus `argv[0..3]`
+(each bounded with `registry.BoundIdentityField`, as the matcher bounds them) and
+`min(len(argv), 4)`, because an empty argv switches the matcher to `Cmdline` parsing and
+`python -m` depends on the argv length. Later argv entries never change a match. `Exe` is
+left unbounded on purpose: `processIdentity` does not bound it, so the matcher sees all of
+it. The memo is rebuilt every scan from the keys seen (never larger than the live
+process set) and dropped on `Selector.Reconfigure`, so any registry or config reload
+rematches everything. Matched processes, including disabled tools, still take the full
+path every scan. Tests count matcher calls through the package-level `matchProcess`
+seam (`no_match_memo_test.go`); the equivalence test clears `noMatch` before every scan
+of a second selector and compares detections across an exclude flip and a reload.
+
 Tmux pane discovery is a lazy per-scan snapshot (#596): constructing an enricher does
 not spawn `tmux`; the first `Detached` lookup queries once and all later lookups in that
 scan reuse the result. Scans with no matched tools never query tmux, and a missing tmux
